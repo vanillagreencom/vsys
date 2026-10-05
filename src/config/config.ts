@@ -335,7 +335,10 @@ export interface LoadedConfig {
   layeredAgentTools: string[];
 }
 
-/** The refusals a caller or a test tells apart; the message is for the reader. */
+/**
+ * The refusals a caller or a test tells apart. `errorText()` in
+ * `src/ui/refusals.ts` writes what the reader sees.
+ */
 export type ConfigRefusal =
   | { kind: "keybinding-clash"; clashes: { key: string; actions: string[] }[] }
   | { kind: "pressure-order" }
@@ -346,10 +349,9 @@ export type ConfigRefusal =
 export class ConfigError extends Error {
   constructor(
     readonly refusal: ConfigRefusal,
-    message: string,
     options?: ErrorOptions,
   ) {
-    super(message, options);
+    super(refusal.kind, options);
   }
 }
 
@@ -422,10 +424,7 @@ export function validate(value: unknown, base = defaults()): Config {
       "History window must be greater than zero and at most 24 hours",
     );
   if (c.pressureRed > 100 || c.pressureAmber > c.pressureRed)
-    throw new ConfigError(
-      { kind: "pressure-order" },
-      "Pressure thresholds must increase from amber to red and cannot exceed 100 percent",
-    );
+    throw new ConfigError({ kind: "pressure-order" });
   for (const [key, allowed] of Object.entries(choices)) {
     if (!allowed.includes(String(c[key as keyof Config])))
       throw new Error(`Invalid ${key}`);
@@ -488,15 +487,7 @@ export function validate(value: unknown, base = defaults()): Config {
     .filter(([, on]) => on.length > 1)
     .map(([key, on]) => ({ key, actions: on }));
   if (clashes.length)
-    throw new ConfigError(
-      { kind: "keybinding-clash", clashes },
-      `Keybindings must be unique: ${clashes
-        .map(
-          ({ key, actions: on }) =>
-            `${key} is bound to ${on.slice(0, -1).join(", ")} and ${on.at(-1)}`,
-        )
-        .join("; ")}`,
-    );
+    throw new ConfigError({ kind: "keybinding-clash", clashes });
   return c;
 }
 
@@ -715,10 +706,7 @@ function applyConfigLineEdits(
       if (pending.has(key)) {
         const currentValue = (inKeys ? currentKeysTable : currentTop)[key];
         if (!isSingleLineValue(line, key, currentValue))
-          throw new ConfigError(
-            { kind: "multi-line-value", key },
-            `Settings save cannot edit ${key}: its line in config.toml holds more than this one line's value. Edit ${key} by hand in config.toml to one line, then Settings can save it again.`,
-          );
+          throw new ConfigError({ kind: "multi-line-value", key });
         const replacement = pending.get(key) ?? null;
         if (replacement !== null) out.push(replacement);
         pending.delete(key);
@@ -793,11 +781,7 @@ function verifyOnlyNamedKeysChanged(
     currentParsed = Bun.TOML.parse(currentBody) as Record<string, unknown>;
     newParsed = Bun.TOML.parse(configText) as Record<string, unknown>;
   } catch (error) {
-    throw new ConfigError(
-      { kind: "save-unloadable" },
-      `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
+    throw new ConfigError({ kind: "save-unloadable" }, { cause: error });
   }
   const changedTop = new Set<string>(edit.changedKeys);
   const topKeys = new Set([
@@ -807,10 +791,7 @@ function verifyOnlyNamedKeysChanged(
   for (const key of topKeys) {
     if (key === "keys" || changedTop.has(key)) continue;
     if (!sameTomlValue(currentParsed[key], newParsed[key]))
-      throw new ConfigError(
-        { kind: "untouched-value-changed", key },
-        `Settings save would change ${key}, which this save never touched: refusing to write a config.toml that moved content it did not mean to change`,
-      );
+      throw new ConfigError({ kind: "untouched-value-changed", key });
   }
   const changedActions = new Set<string>(edit.changedKeyActions);
   const currentKeysTable = (currentParsed.keys ?? {}) as Record<
@@ -850,11 +831,7 @@ function verifyPatchedBody(
     const parsed = Bun.TOML.parse(configText) as Record<string, unknown>;
     reloaded = validate(prepareConfigInput(parsed, base).input, base);
   } catch (error) {
-    throw new ConfigError(
-      { kind: "save-unloadable" },
-      `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    );
+    throw new ConfigError({ kind: "save-unloadable" }, { cause: error });
   }
   for (const key of edit.changedKeys) {
     if (!sameValue(key, reloaded[key], next[key]))

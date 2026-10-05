@@ -28,6 +28,7 @@ import {
   sparkline,
 } from "./format";
 import { useScreenKeys } from "./keys";
+import { errorText } from "./refusals";
 import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import {
@@ -341,7 +342,11 @@ export function Agent({
         // its newest columns would read as sampled and empty.
         if (current) {
           setLoaded(null);
-          setSeriesError(String(error));
+          setSeriesError(
+            error instanceof Error
+              ? `${error.name}: ${errorText(error)}`
+              : String(error),
+          );
           setLoading(false);
         }
       });

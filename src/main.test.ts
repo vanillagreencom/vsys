@@ -48,6 +48,12 @@ test("once exports structured evidence and fails visibly on source errors", asyn
     expect(invalid.code).toBe(1);
     const empty = await run(["--config", ""]);
     expect(empty.code).toBe(1);
+    // A typed refusal reaches the terminal written out, never as its kind.
+    const pressure = join(f.root, "pressure.toml");
+    writeFileSync(pressure, "pressureAmber = 90\npressureRed = 50\n");
+    const refused = await run(["--config", pressure]);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).not.toContain("pressure-order");
   } finally {
     f.cleanup();
   }
