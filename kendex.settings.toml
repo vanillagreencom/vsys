@@ -157,6 +157,13 @@ DECISIONS_DIR = "docs/decisions"
 # holds the dependency, lint, type, test and build checks.
 DEV_VALIDATE_CMD = "python3 scripts/ci.py && python3 -m unittest discover -s scripts -p '*_test.py' && .agents/skills/bot-instructions/scripts/bot-instructions check"
 
+# Queue-only paths beside the shipped list, which already names
+# .github/workflows/*, this file and the harness-ci scripts: a change to one
+# runs in the merge queue before it lands. Blank-separated globs, where `*`
+# also matches `/`. A new entry is a file a required CI job runs or reads to
+# reach its verdict, as opposed to the code that verdict judges.
+HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/ci_test.py scripts/package_file_list_check.py scripts/package_file_list_check_test.py scripts/sample-check.ts scripts/bench-history.ts scripts/bench-scratch.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/*"
+
 # The repo-root executable the guard chain runs last, after doc-limits,
 # preflight, the bot-instructions check and the commit-guards batch. This
 # repository has no guard of its own; the full checks run through
