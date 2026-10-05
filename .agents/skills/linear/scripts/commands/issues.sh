@@ -135,10 +135,10 @@ Create Options:
   --review-born         This create came from a review finding, which is what
                         subjects it to the `Symptom:` half of the bar below.
 
-  Reach guard: with LINEAR_REQUIRE_REACH set in kendex.settings.toml [env],
-  create refuses a description with no `Reached by:` line, and a `--review-born
-  --priority 2` one with no `Symptom:`; a placeholder or null token (TBD, n/a,
-  none, -) counts as no line. Rule: project-management SKILL.md, § Disposition.
+  Reach guard: unless LINEAR_REQUIRE_REACH is set empty in kendex.settings.toml
+  [env], create refuses a description with no `Reached by:` line, and a
+  `--review-born --priority 2` one with no `Symptom:`; a placeholder or null
+  token (TBD, n/a, none, -) counts as no line. Rule: project-management SKILL.md, § Disposition.
 
   Label taxonomy: where the repository declares one (project-management
   references/labels.md, plus LINEAR_AGENT_LABELS), create, update --labels,

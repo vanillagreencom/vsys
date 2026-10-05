@@ -177,27 +177,38 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "${TMP:?}"' EXIT
 "$SCRIPT_DIR/adopt-refresh.sh" --templates-dir "$templates"
-settings_report=""
 # The release-installed parser must judge its own settings, including on a
 # first install. It reads and prints data without the refresh app credential.
 # Only the running copy of this script, the preserved default-branch copy or
-# the kendex release tree, consumes its output or publishes.
-if [ -e "$ROOT/.agents/skills/orch" ] || [ -L "$ROOT/.agents/skills/orch" ]; then
-  if ! env -i PATH="$PATH" HOME="$HOME" bash -s -- "$SCRIPT_DIR" "$ROOT" >"$TMP/settings.json" <<'SETTINGS_PARSE'
+# the kendex release tree, consumes its output or publishes. Without orch the
+# parse still scans the committed [env] table, which needs only this
+# package's settings library.
+orch=present
+if [ ! -e "$ROOT/.agents/skills/orch" ] && [ ! -L "$ROOT/.agents/skills/orch" ]; then
+  orch=absent
+  printf 'refresh-settings=orch-absent value=%s\n' "$ROOT/.agents/skills/orch"
+fi
+if ! env -i PATH="$PATH" HOME="$HOME" bash -s -- "$SCRIPT_DIR" "$ROOT" "$orch" >"$TMP/settings.json" <<'SETTINGS_PARSE'
 set -euo pipefail
 source "$1/lib/settings.sh"
-source "$2/.agents/skills/orch/scripts/lib/kendex-env.sh"
-source "$2/.agents/skills/orch/scripts/lib/overseer-launch.sh"
-KENDEX_ENV_FILE="$(rg_setting KENDEX_ENV_FILE "" "")"
-kendex_private_env_file private_file "$2"
-preference="$(rg_setting ORCH_OVERSEER_PREFERENCE "$OL_DEFAULT_PREFERENCE" "$private_file")"
-parse_status=0
-ol_preference_entries "$preference" || parse_status=$?
-[ "$parse_status" -le 1 ] || exit "$parse_status"
-# List committed [env] values that pin Fable or Astra; the report warns and
-# changes no exit. A comment, another table and a private override are not
-# committed [env] values.
+OL_REFUSED_ENTRIES=()
+OL_DEPRECATED_ENTRIES=()
+if [ "$3" = present ]; then
+  source "$2/.agents/skills/orch/scripts/lib/kendex-env.sh"
+  source "$2/.agents/skills/orch/scripts/lib/overseer-launch.sh"
+  KENDEX_ENV_FILE="$(rg_setting KENDEX_ENV_FILE "" "")"
+  kendex_private_env_file private_file "$2"
+  preference="$(rg_setting ORCH_OVERSEER_PREFERENCE "$OL_DEFAULT_PREFERENCE" "$private_file")"
+  parse_status=0
+  ol_preference_entries "$preference" || parse_status=$?
+  [ "$parse_status" -le 1 ] || exit "$parse_status"
+fi
+# List committed [env] values that pin Fable or Astra, and every committed
+# [env] setting as key and value pairs for the retired-settings match; the
+# report warns and changes no exit. A comment, another table and a private
+# override are not committed [env] values.
 deprecated_models=()
+committed=()
 if [ -f kendex.settings.toml ]; then
   table="$(rg_env_table kendex.settings.toml)"
   assignment='^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*"([^"]*)"'
@@ -205,50 +216,64 @@ if [ -f kendex.settings.toml ]; then
   while IFS= read -r line; do
     [[ $line =~ $assignment ]] || continue
     key="${BASH_REMATCH[1]}" value="${BASH_REMATCH[2]}"
+    committed+=("$key" "$value")
     if [[ $value == *gpt-6-astra* || $value == *fable* ]]; then
       deprecated_models+=("$key = \"$value\"")
     fi
   done <<<"$table"
 fi
 jq -cn --argjson refused_count "${#OL_REFUSED_ENTRIES[@]}" \
-  --argjson deprecated_count "${#OL_DEPRECATED_ENTRIES[@]}" --args \
+  --argjson deprecated_count "${#OL_DEPRECATED_ENTRIES[@]}" \
+  --argjson models_count "${#deprecated_models[@]}" --args \
   '($refused_count + $deprecated_count) as $models_start |
+   ($models_start + $models_count) as $committed_start |
    {refused: $ARGS.positional[:$refused_count],
     deprecated: $ARGS.positional[$refused_count:$models_start],
-    deprecated_models: $ARGS.positional[$models_start:]}' \
+    deprecated_models: $ARGS.positional[$models_start:$committed_start],
+    committed: ($ARGS.positional[$committed_start:] |
+      [range(0; length; 2) as $i | {(.[$i]): .[$i + 1]}] | add // {})}' \
   -- ${OL_REFUSED_ENTRIES[@]+"${OL_REFUSED_ENTRIES[@]}"} \
   ${OL_DEPRECATED_ENTRIES[@]+"${OL_DEPRECATED_ENTRIES[@]}"} \
-  ${deprecated_models[@]+"${deprecated_models[@]}"}
+  ${deprecated_models[@]+"${deprecated_models[@]}"} \
+  ${committed[@]+"${committed[@]}"}
 SETTINGS_PARSE
-  then
-    printf 'refresh-error=settings-extraction value=%s\n' "$ROOT/.agents/skills/orch" >&2
-    exit 1
-  fi
-  # The parser exports the existing report object as one compact JSON line.
-  # Refused entries can contain arbitrary text; validation checks data shape,
-  # never re-implements the preference grammar.
-  settings_lines=0
-  settings_output=valid
-  while IFS= read -r line || [ -n "$line" ]; do
-    settings_lines=$((settings_lines + 1))
-    if [ "$settings_lines" -ne 1 ] || ! jq -e -s '
-      length == 1 and (.[0] | type == "object" and
-        keys == ["deprecated", "deprecated_models", "refused"] and
-        (.refused | type == "array") and (.deprecated | type == "array") and
-        (.deprecated_models | type == "array") and
-        all(.refused[], .deprecated[], .deprecated_models[]; type == "string"))
-    ' <<<"$line" >/dev/null; then
-      settings_output=invalid
-    fi
-  done <"$TMP/settings.json"
-  if [ "$settings_lines" -ne 1 ] || [ "$settings_output" = invalid ]; then
-    printf 'refresh-error=settings-output value=%s\n' "$ROOT/.agents/skills/orch" >&2
-    exit 1
-  fi
-  settings_report="$(python3 "$SCRIPT_DIR/refresh-report.py" --settings <"$TMP/settings.json")"
-else
-  printf 'refresh-settings=orch-absent value=%s\n' "$ROOT/.agents/skills/orch"
+then
+  printf 'refresh-error=settings-extraction value=%s\n' "$ROOT/.agents/skills/orch" >&2
+  exit 1
 fi
+# The parser exports the existing report object as one compact JSON line.
+# Refused entries can contain arbitrary text; validation checks data shape,
+# never re-implements the preference grammar.
+settings_lines=0
+settings_output=valid
+while IFS= read -r line || [ -n "$line" ]; do
+  settings_lines=$((settings_lines + 1))
+  if [ "$settings_lines" -ne 1 ] || ! jq -e -s '
+    length == 1 and (.[0] | type == "object" and
+      keys == ["committed", "deprecated", "deprecated_models", "refused"] and
+      (.refused | type == "array") and (.deprecated | type == "array") and
+      (.deprecated_models | type == "array") and (.committed | type == "object") and
+      all(.refused[], .deprecated[], .deprecated_models[], .committed[]; type == "string"))
+  ' <<<"$line" >/dev/null; then
+    settings_output=invalid
+  fi
+done <"$TMP/settings.json"
+if [ "$settings_lines" -ne 1 ] || [ "$settings_output" = invalid ]; then
+  printf 'refresh-error=settings-output value=%s\n' "$ROOT/.agents/skills/orch" >&2
+  exit 1
+fi
+# setting_notes collects the change-class lines naming a consumer setting; a
+# run with no render change runs no classifier and reports none.
+setting_notes=()
+# Sets settings_report from the parse and setting_notes. A failed report
+# stops publication and auto-merge.
+report_settings() {
+  if ! settings_report="$(jq -c --args '. + {notes: $ARGS.positional}' -- ${setting_notes[@]+"${setting_notes[@]}"} <"$TMP/settings.json" |
+    python3 "$SCRIPT_DIR/refresh-report.py" --settings)"; then
+    printf 'refresh-error=settings-report value=%s\n' "$SCRIPT_DIR/refresh-report.py" >&2
+    exit 1
+  fi
+}
 kendex verify --scope project
 if ! engine_version="$(kendex --version)"; then
   printf 'refresh-error=read value=engine-version\n' >&2
@@ -257,6 +282,7 @@ fi
 printf -v version_report 'Engine version: `%s`.' "$engine_version"
 git add -A
 if git diff --cached --quiet; then
+  report_settings
   if [ -n "$pr" ]; then
     gh pr close "$pr" --repo "$GH_REPO"
   fi
@@ -294,6 +320,10 @@ while IFS= read -r line; do
   case "$line" in
     change_class=*) class="${line#change_class=}" ;;
     'class: class='*) class_line="$line" ;;
+    # Every verdict carries a queue-only line; only these causes name the
+    # repository's own settings.
+    'setting-unset: '* | 'queue-only: '*' cause=queue-list-undeclared' | \
+      'queue-only: '*' cause=queue-settings-unreadable') setting_notes+=("$line") ;;
   esac
 done <<<"$class_output"
 # change-class also emits standard as a fallback. Publication requires its
@@ -302,6 +332,7 @@ if [ "$class_result" -ne 0 ] || [ -z "$class" ] || [[ "$class_line" != "class: c
   printf 'refresh-error=read value=class\n' >&2
   exit 1
 fi
+report_settings
 merge_note='The refresh workflow arms auto-merge. The merge queue merges this pull request once the required approval, thread resolution and checks pass.'
 printf -v body 'Generated kendex updates.\n\n%s\n\nChange class: `%s`.\n\nClassifier:\n```text\n%s\n```\n\n%s\n' "$version_report" "$class" "$class_line" "$merge_note"
 if [ -n "$settings_report" ]; then

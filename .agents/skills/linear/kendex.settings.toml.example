@@ -23,7 +23,7 @@ LINEAR_AGENT_LABELS = ""
 # on: a description with no "Reached by" line is refused, and a
 # high-priority issue born from a review also needs a "Symptom" line. Empty
 # turns it off.
-LINEAR_REQUIRE_REACH = ""
+LINEAR_REQUIRE_REACH = "1"
 
 # How read commands print: "safe" flat, "table" for a person, "ids" bare
 # identifiers, "compact" small for routing, "raw" Linear's own nesting.
