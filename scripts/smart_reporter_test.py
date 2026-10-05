@@ -577,9 +577,11 @@ esac
             done, calls = self.run_install(Path(tmp), sums_text=wrong)
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: checksum=vsys-smart-report mismatch")
-            # The refusal names both values, computed and released.
-            self.assertIn(digest, done.stderr)
-            self.assertIn(release, done.stderr)
+            # The refusal names the computed value before the release's.
+            line = next((line for line in done.stderr.splitlines() if digest in line), "")
+            self.assertIn(digest, line)
+            self.assertIn(release, line)
+            self.assertLess(line.index(digest), line.index(release))
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_sha256sums_missing_a_file_installs_nothing(self) -> None:

@@ -71,7 +71,8 @@ class AgentWardenLimitRules(WardenRulesCase):
                     self.w.log, self.w.subprocess = old
                 # Report mode names the unit in one journal line, its only
                 # output, and never sets a property.
-                self.assertEqual(sum("unbounded.scope" in line for line in logs), 1)
+                self.assertEqual(len(logs), 1)
+                self.assertIn("unbounded.scope", logs[0])
                 self.assertFalse(any("set-property" in argv for argv in calls))
             finally:
                 self.w.CG_ROOT = old_root
