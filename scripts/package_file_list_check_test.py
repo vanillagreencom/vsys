@@ -86,9 +86,15 @@ class PackageFileListCheck(unittest.TestCase):
                 original.replace(row, "755 lib/vsys/warden/install warden/agent-warden\n"),
                 "manifest=path-source-mismatch path=lib/vsys/warden/install source=warden/agent-warden",
             ),
+            # ci.py runs the check with no packaging/ guard of its own, so a
+            # renamed packaging/ fails here.
+            ("manifest missing", None, f"read=failed path={self.repo.resolve() / MANIFEST}"),
         ):
             with self.subTest(name):
-                manifest.write_text(text)
+                if text is None:
+                    manifest.unlink()
+                else:
+                    manifest.write_text(text)
                 self.assertEqual(self.refusal(self.run_check()), expected)
 
     def test_extra_manifest_row_passes(self) -> None:
