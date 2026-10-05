@@ -7,9 +7,10 @@ import { capturePane, insideTmux } from "./collect/tmux";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
 import { runEffect, switchToPane } from "./effect";
-import { exportSnapshot, exportSummary } from "./model/export";
+import { exportSummary } from "./model/export";
 import { Session } from "./runtime";
 import { History } from "./store/history";
+import { exportSnapshot } from "./ui/export";
 import { errorText } from "./ui/refusals";
 import { dispatchWarden } from "./warden";
 
