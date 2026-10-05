@@ -15,6 +15,7 @@ Covers: warden/agent-warden warden/agent-confine warden/agent-confine-lineage-ca
 | `AGENT_WARDEN_JOB_UNITS` | warden | `orch-*.service` | Unit name patterns | Whitespace-separated systemd unit patterns left in place. |
 | `AGENT_WARDEN_ORPHAN_PROCS` | warden | `40` | Integer | Process count that makes an orphan harmful. |
 | `AGENT_WARDEN_ORPHAN_CPU` | warden | `0.5` | Finite decimal number | CPU cores that make an orphan harmful. |
+| `AGENT_WARDEN_ORPHAN_MEM_BYTES` | warden | `536870912` (512 MiB) | Integer | Anonymous memory, `anon` in the scope's `memory.stat`, that makes an orphan harmful. The default stops an idle 1.7 GB abandoned scope and keeps the small tools seen in orphan scopes, the largest a 159 MB browser daemon. An unread `memory.stat` makes no orphan harmful. |
 | `AGENT_SCOPE_TASKS_MAX` | both | `8192` | Integer or `infinity` | Per-session task ceiling. `infinity` sets no per-session cap, and the warden then caps no scope. |
 | `AGENT_SCOPE_TASKS_WARN` | warden | 75% of `AGENT_SCOPE_TASKS_MAX` (`6144`), or none when it is `infinity` | Integer | Per-session task warning threshold. |
 | `AGENT_SCOPE_MEM_HIGH` | launcher | `64G` | systemd size | Per-session soft memory ceiling passed to systemd. |

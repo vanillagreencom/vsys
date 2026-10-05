@@ -435,6 +435,12 @@ SCOPE_RE = re.compile(r"/agents\.slice/([^/]+\.scope)(?:/|$)")
 # server is ~6 idle processes.
 ORPHAN_PROC_MAX = env_number("AGENT_WARDEN_ORPHAN_PROCS", 40)
 ORPHAN_CPU_CORES = env_number("AGENT_WARDEN_ORPHAN_CPU", 0.5, _finite)
+# An idle abandoned scope can still hold memory: on 2026-10-05 a smoke run left
+# 20 idle processes holding ~1.7 GB for 12 hours. The live tools seen in orphan
+# scopes hold far less (op 55 MB, lane-mail watch 66 MB, agent-browser 159 MB),
+# so 512 MiB sits about 3x clear of both. Measured as the scope's anonymous
+# memory, so page cache a tool merely read never counts.
+ORPHAN_MEM_BYTES = env_number("AGENT_WARDEN_ORPHAN_MEM_BYTES", 512 * 1024**2)
 # Per-scope task ceiling. The slice as a whole caps at 16384 tasks; without a
 # per-scope cap one runaway lane consumes all of it and every other lane dies on
 # thread creation (EAGAIN). The cap must protect against a clearly-pathological
@@ -458,16 +464,18 @@ SCOPE_TASKS_WARN = env_number("AGENT_SCOPE_TASKS_WARN",
 # launch. 64 GiB default.
 SCOPE_MEM_HIGH = env_number("AGENT_SCOPE_MEM_HIGH_BYTES", 64 * 1024**3)
 SCOPE_MEM_WARN = env_number("AGENT_SCOPE_MEM_WARN_BYTES", SCOPE_MEM_HIGH * 3 // 4)
-STATUS_SCHEMA = "1.0"
+STATUS_SCHEMA = "1.1"
 STATUS_EVENT_LIMIT = 50
 STATUS_EVENT_KINDS = {"moved", "partial", "reaped", "near-cap", "waiting", "failed"}
 STATUS_NEAR_KINDS = {"tasks", "memory"}
 STATUS_INTERVAL = env_number("AGENT_WARDEN_INTERVAL", 30, _interval)
 
 
-def scope_harm(nproc, cores):
-    """A past-grace orphan is reaped only if it is heavy on one axis."""
-    return nproc >= ORPHAN_PROC_MAX or cores >= ORPHAN_CPU_CORES
+def scope_harm(nproc, cores, memory):
+    """A past-grace orphan is reaped only if it is heavy on one axis. Memory
+    that could not be read (None) never makes a scope harmful."""
+    return (nproc >= ORPHAN_PROC_MAX or cores >= ORPHAN_CPU_CORES
+            or (memory is not None and memory >= ORPHAN_MEM_BYTES))
 
 
 def _unit_rel(cgroup):
@@ -1185,10 +1193,20 @@ def scope_usage_usec(unit):
     return int(m.group(1)) if m else None
 
 
+def scope_anon_bytes(unit):
+    """Anonymous memory the scope and its nested cgroups hold, from its
+    memory.stat, or None. memory.current would also count page cache."""
+    txt = read(CG_ROOT / SLICE / unit / "memory.stat")
+    if not txt:
+        return None
+    m = re.search(r"^anon\s+(\d+)$", txt, re.M)
+    return int(m.group(1)) if m else None
+
+
 def reap_orphans(procs, st, correct, only=None):
     """Carry orphaned scopes across ticks; reap those that stay orphaned past the
-    grace period AND are harmful (many processes or steady CPU) on two ticks in a
-    row. CPU is measured across ticks from cpu.stat, so nothing is stopped on its
+    grace period AND are harmful (many processes, steady CPU or held memory) on
+    two ticks in a row. CPU is measured across ticks from cpu.stat, so nothing is stopped on its
     first sighting, and a one-tick spike in an otherwise idle server never trips
     it. A quiet abandoned server is reported and left running. Membership is
     re-read from the cgroup right before a stop. Restricted runs
@@ -1208,13 +1226,15 @@ def reap_orphans(procs, st, correct, only=None):
         prev_usage, prev_ts = p.get("usage"), p.get("usage_ts")
         if usage is not None and prev_usage is not None and prev_ts and now > prev_ts:
             cores = max(0.0, (usage - prev_usage) / 1e6 / (now - prev_ts))
+        memory = scope_anon_bytes(unit)
         age = now - first
-        harmful = age >= ORPHAN_GRACE and scope_harm(n, 0.0 if cores is None else cores)
+        harmful = age >= ORPHAN_GRACE and scope_harm(n, 0.0 if cores is None else cores, memory)
         # reap only when harmful on this tick and the one before it
         do_reap = harmful and p.get("harmful", False)
         entry = {"first": first, "usage": usage, "usage_ts": now, "harmful": harmful}
         tracked[unit] = entry
-        status_row = {"scope": unit, "processes": n, "cores": cores, "since": first, "harmful": harmful}
+        status_row = {"scope": unit, "processes": n, "cores": cores, "memory": memory,
+                      "since": first, "harmful": harmful}
         display_cores = 0.0 if cores is None else cores
         if age < ORPHAN_GRACE:
             status_rows.append(status_row)
@@ -1226,7 +1246,9 @@ def reap_orphans(procs, st, correct, only=None):
             log(f"orphan scope {unit}: {n} process(es), {display_cores:.1f} core(s), idle "
                 f"and abandoned {int(age)}s; watching, not reaping")
             continue
-        why = f"{n} process(es)" if n >= ORPHAN_PROC_MAX else f"{display_cores:.1f} core(s)"
+        why = (f"{n} process(es)" if n >= ORPHAN_PROC_MAX
+               else f"{display_cores:.1f} core(s)" if display_cores >= ORPHAN_CPU_CORES
+               else f"{memory >> 20} MiB anonymous memory")
         if not do_reap:
             status_rows.append(status_row)
             log(f"orphan scope {unit}: harmful ({why}) for the first tick; reaping on the next if it holds")
@@ -2010,12 +2032,13 @@ def status_errors(doc):
         else:
             for i, row in enumerate(rows):
                 where = f"orphans[{i}]"
-                if not _check_keys(errors, row, ("scope", "processes", "cores", "since", "harmful"), where):
+                if not _check_keys(errors, row, ("scope", "processes", "cores", "memory", "since", "harmful"), where):
                     continue
                 if not isinstance(row.get("scope"), str):
                     errors.append(f"{where}.scope must be a string")
                 _check_int(errors, row.get("processes"), f"{where}.processes")
                 _check_number_or_null(errors, row.get("cores"), f"{where}.cores")
+                _check_int_or_null(errors, row.get("memory"), f"{where}.memory")
                 _check_number(errors, row.get("since"), f"{where}.since")
                 if not isinstance(row.get("harmful"), bool):
                     errors.append(f"{where}.harmful must be a boolean")
@@ -2669,7 +2692,8 @@ def status():
         first = rec.get("first")
         waited = f"{int(now - first)}s" if first else "new this scan"
         n = len(pids)
-        gate = "harmful" if n >= ORPHAN_PROC_MAX else f"reaped when >= {ORPHAN_PROC_MAX} procs or >= {ORPHAN_CPU_CORES} cores"
+        gate = ("harmful" if n >= ORPHAN_PROC_MAX else f"reaped when >= {ORPHAN_PROC_MAX} procs, >= {ORPHAN_CPU_CORES} cores"
+                f" or >= {ORPHAN_MEM_BYTES >> 20} MiB anonymous memory")
         print(f"  ORPHAN {unit}: {n} process(es), launcher gone, {waited}; {gate}")
     ok, cur, mx = headroom()
     print(f"{SLICE} memory: " + ("unreadable" if cur < 0 else f"{cur >> 30} GiB of {mx >> 30 if mx else 'unlimited'}"
@@ -2938,9 +2962,10 @@ def selftest():
     }
     check("scope held by a live external parent is not an orphan",
           not orphans(held_by_live, manager_pids(held_by_live)))
-    check("npm storm (5140 procs, idle) is harmful by process count", scope_harm(5140, 0.0))
-    check("bun server (1 proc, 0.8 core) is harmful by CPU", scope_harm(1, 0.8))
-    check("quiet dev server (6 procs, 0 core) is not harmful", not scope_harm(6, 0.0))
+    check("npm storm (5140 procs, idle) is harmful by process count", scope_harm(5140, 0.0, None))
+    check("bun server (1 proc, 0.8 core) is harmful by CPU", scope_harm(1, 0.8, None))
+    check("abandoned smoke run (20 procs, idle, 1.7 GB) is harmful by memory", scope_harm(20, 0.0, 1700 * 10**6))
+    check("quiet dev server (6 procs, 0 core, 159 MB) is not harmful", not scope_harm(6, 0.0, 159 * 10**6))
     synthetic_st = _fixture_state()
     synthetic_tick = {"moves": [("escaped launch", _fixture_tree())], "waiting": [],
                       "orphans": [], "contained": [], "error": None, "procs": {}}

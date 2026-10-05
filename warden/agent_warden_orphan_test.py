@@ -53,9 +53,9 @@ class AgentWardenOrphanRules(WardenRulesCase):
             ("agent-warden session scope with live root is protected", "agent-warden-304-123.scope" in units, False),
             ("agent-warden session scope with missing root is orphan", "agent-warden-305-123.scope" in units, True),
             ("agent-warden session scope with reused pid is orphan", "agent-warden-306-123.scope" in units, True),
-            ("process count harm", self.w.scope_harm(5140, 0.0), True),
-            ("cpu harm", self.w.scope_harm(1, 0.8), True),
-            ("quiet orphan not harmful", self.w.scope_harm(6, 0.0), False),
+            ("process count harm", self.w.scope_harm(5140, 0.0, None), True),
+            ("cpu harm", self.w.scope_harm(1, 0.8, None), True),
+            ("quiet orphan not harmful", self.w.scope_harm(6, 0.0, None), False),
         ]
         for name, actual, expected in rows:
             with self.subTest(name=name):
@@ -160,6 +160,74 @@ class AgentWardenOrphanRules(WardenRulesCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["scope"], reaped_unit)
         self.assertEqual(events[0]["processes"], self.w.ORPHAN_PROC_MAX)
+
+    def _memory_ticks(self, module, scopes):
+        """Runs two reap ticks over idle fixture scopes past grace. Each scope
+        is (unit, processes, memory.stat text or None). Returns the first
+        tick's status rows by scope and the units stopped on the second."""
+        stopped = []
+        with scratch() as tmp:
+            old_root, old_reap, old_still = module.CG_ROOT, module.reap, module.scope_still_orphan
+            module.CG_ROOT = Path(tmp) / "cg"
+            try:
+                mgr = 4000
+                recs = {mgr: module.Proc(mgr, ppid=1, comm="systemd", argv=["/usr/lib/systemd/systemd", "--user"],
+                                         exe="/usr/lib/systemd/systemd", cgroup="/user.slice", start=1)}
+                now = module.time.time()
+                st = {"reaped": 0, "move_failures": 0, "event_seq": 0, "events": [], "orphans": {}}
+                for i, (unit, processes, stat) in enumerate(scopes):
+                    cg = f"/user.slice/user-{module.UID}.slice/user@{module.UID}.service/{module.SLICE}/{unit}"
+                    for j in range(processes):
+                        pid = 10000 + i * 100 + j
+                        recs[pid] = module.Proc(pid, ppid=mgr, comm="bun", argv=["bun"], exe="/usr/bin/bun", cgroup=cg, start=1)
+                    d = module.CG_ROOT / module.SLICE / unit
+                    d.mkdir(parents=True)
+                    (d / "cpu.stat").write_text("usage_usec 1000\n")
+                    # memory.current counts page cache; the harm test must not read it.
+                    (d / "memory.current").write_text(f"{8 * module.ORPHAN_MEM_BYTES}\n")
+                    if stat is not None:
+                        (d / "memory.stat").write_text(stat)
+                    st["orphans"][unit] = {"first": now - module.ORPHAN_GRACE - 10, "usage": 1000, "usage_ts": now - 30, "harmful": False}
+                module.reap = lambda unit: (stopped.append(unit), (True, ""))[1]
+                module.scope_still_orphan = lambda unit, managers: True
+                _, first_rows = module.reap_orphans(recs, st, True)
+                self.assertEqual(stopped, [], "nothing is stopped on the first harmful tick")
+                module.reap_orphans(recs, st, True)
+            finally:
+                module.CG_ROOT, module.reap, module.scope_still_orphan = old_root, old_reap, old_still
+        return {row["scope"]: row for row in first_rows}, stopped
+
+    def test_memory_harm_rows(self):
+        mem = self.w.ORPHAN_MEM_BYTES
+        many = self.w.ORPHAN_PROC_MAX
+        rows = [
+            # name, processes, memory.stat, harmful and stopped, status memory
+            ("idle at threshold", 20, f"anon {mem}\nfile 0\n", True, mem),
+            ("idle below threshold", 20, f"anon {mem - 1}\nfile 0\n", False, mem - 1),
+            ("page cache over threshold", 3, f"anon {mem // 8}\nfile {4 * mem}\n", False, mem // 8),
+            ("memory unread", 3, None, False, None),
+            ("memory.stat without anon", 3, f"file {4 * mem}\n", False, None),
+            ("memory unread, many processes", many, None, True, None),
+        ]
+        scopes = [(f"agent-confine-mem-{i}.scope", n, stat) for i, (_, n, stat, _, _) in enumerate(rows)]
+        first, stopped = self._memory_ticks(self.w, scopes)
+        for (unit, _, _), (name, _, _, harmful, memory) in zip(scopes, rows):
+            with self.subTest(name=name):
+                row = first.get(unit)
+                self.assertIsNotNone(row)
+                self.assertEqual((row["harmful"], row["memory"]), (harmful, memory))
+                self.assertEqual(unit in stopped, harmful)
+
+    def test_memory_axis_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "\n            or (memory is not None and memory >= ORPHAN_MEM_BYTES))"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, ")"), "agent_warden_mutant_memory_axis")
+        unit = "agent-confine-mem.scope"
+        first, stopped = self._memory_ticks(mutant, [(unit, 20, f"anon {mutant.ORPHAN_MEM_BYTES}\n")])
+        self.assertIn(unit, first)
+        self.assertFalse(first[unit]["harmful"])
+        self.assertEqual(stopped, [])
 
     def test_failed_reap_is_not_a_move_failure(self):
         with scratch() as tmp:
