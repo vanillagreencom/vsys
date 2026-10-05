@@ -56,7 +56,9 @@ test("warden resolver tries extracted archive beside executable", () => {
 
 test("warden resolver reports every path it tried", () => {
   expect(() => resolveWardenDir(["/a", "/b"], () => false)).toThrow(
-    "vsys warden installer not found; tried /a, /b",
+    expect.objectContaining({
+      refusal: { kind: "installer-not-found", tried: ["/a", "/b"] },
+    }),
   );
 });
 

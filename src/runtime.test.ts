@@ -568,9 +568,9 @@ test("pinned agent tool edits that omit shipped tools are refused before writes"
         ...config,
         agentTools: [...config.agentTools, "new-agent"],
       }),
-    ).rejects.toThrow(
-      `Pinned agentTools omits shipped agent tools: ${missingShipped}. Edit agentTools in config.toml, or remove it there to use the shared list.`,
-    );
+    ).rejects.toMatchObject({
+      refusal: { kind: "pinned-omits-shipped", missing: [missingShipped] },
+    });
     expect(readFileSync(configPath, "utf8")).toBe(configBody);
     expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
   } finally {
@@ -893,7 +893,9 @@ test("agent tool overlay rollback leaves a newer overlay after config writing fa
       }
       expect(thrown).toBeInstanceOf(AggregateError);
       expect((thrown as AggregateError).errors[0]).toBe(configError);
-      expect(String((thrown as Error).message)).toContain("rollback skipped");
+      expect((thrown as AggregateError).errors[1]).toMatchObject({
+        refusal: { kind: "overlay-changed" },
+      });
       expect(readFileSync(f.agentToolsPath, "utf8")).toBe(newerOverlayBody);
     } finally {
       session.stop();

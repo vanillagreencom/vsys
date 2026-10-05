@@ -3,7 +3,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Collector } from "./collect/collector";
 import { saveConfig } from "./config/config";
-import { sampleSummary } from "./main";
+import { main, sampleSummary } from "./main";
 import { summarySnapshot } from "./model/export";
 import { fixture, hermeticBin } from "./test/fixture";
 
@@ -123,20 +123,9 @@ test("once summary exports verdict schema and skips scratch collection", async (
     });
     const invalid = await run(["--summary", "--markdown"]);
     expect(invalid.code).toBe(1);
-    const missingOnce = Bun.spawn(
-      [process.execPath, "src/main.ts", "--summary", "--config", path],
-      {
-        stdout: "pipe",
-        stderr: "pipe",
-        env: { HOME: f.root, PATH: bin },
-      },
-    );
-    const [missingOnceStderr, missingOnceCode] = await Promise.all([
-      new Response(missingOnce.stderr).text(),
-      missingOnce.exited,
-    ]);
-    expect(missingOnceCode).toBe(1);
-    expect(missingOnceStderr).toContain("vsys: --summary requires --once");
+    await expect(main(["--summary", "--config", path])).rejects.toMatchObject({
+      refusal: { kind: "needs-once", flag: "--summary" },
+    });
   } finally {
     f.cleanup();
   }

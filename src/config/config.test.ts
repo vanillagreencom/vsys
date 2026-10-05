@@ -87,7 +87,12 @@ test("invalid settings stop loading", () => {
   // A saved binding on the key a new default takes names the key and both
   // actions, so the fix is one edit.
   expect(() => validate({ keys: { details: "o" } })).toThrow(
-    "Keybindings must be unique: o is bound to details and hold",
+    expect.objectContaining({
+      refusal: {
+        kind: "keybinding-clash",
+        clashes: [{ key: "o", actions: ["details", "hold"] }],
+      },
+    }),
   );
 });
 test("saving linked settings preserves the link and updates its target", async () => {
@@ -496,7 +501,11 @@ test("patchConfigBody refuses to edit a key whose current value spans more than 
       changedKeys: ["columns"],
       changedKeyActions: [],
     }),
-  ).toThrow("Settings save cannot edit columns: its line in config.toml");
+  ).toThrow(
+    expect.objectContaining({
+      refusal: { kind: "multi-line-value", key: "columns" },
+    }),
+  );
 });
 
 test("patchConfigBody opens a [keys] table when a keybinding change has none to join", () => {
@@ -525,7 +534,12 @@ test("patchConfigBody refuses a write that would combine into a config the loade
         changedKeyActions: [],
       },
     ),
-  ).toThrow("Pressure thresholds must increase");
+  ).toThrow(
+    expect.objectContaining({
+      refusal: { kind: "save-unloadable" },
+      cause: expect.objectContaining({ refusal: { kind: "pressure-order" } }),
+    }),
+  );
   // A hand-edited keybinding, valid alone, collides with a different
   // keybinding the Settings screen is saving to the same key.
   expect(() =>
@@ -535,7 +549,17 @@ test("patchConfigBody refuses a write that would combine into a config the loade
       base,
       { changedKeys: [], changedKeyActions: ["quit"] },
     ),
-  ).toThrow("Keybindings must be unique");
+  ).toThrow(
+    expect.objectContaining({
+      refusal: { kind: "save-unloadable" },
+      cause: expect.objectContaining({
+        refusal: {
+          kind: "keybinding-clash",
+          clashes: [{ key: "ctrl+q", actions: ["help", "quit"] }],
+        },
+      }),
+    }),
+  );
 });
 
 test("patchConfigBody refuses to edit a triple-quoted value rather than guess where it ends", () => {
@@ -556,7 +580,11 @@ test("patchConfigBody refuses to edit a triple-quoted value rather than guess wh
       changedKeys: ["excludeArgv"],
       changedKeyActions: [],
     }),
-  ).toThrow("Settings save cannot edit excludeArgv: its line in config.toml");
+  ).toThrow(
+    expect.objectContaining({
+      refusal: { kind: "multi-line-value", key: "excludeArgv" },
+    }),
+  );
   const withComment =
     'excludeArgv = [\n  """foo " bar""",\n]\n# Keep this local exclusion note\n';
   expect(() =>
@@ -566,7 +594,11 @@ test("patchConfigBody refuses to edit a triple-quoted value rather than guess wh
       base,
       { changedKeys: ["excludeArgv"], changedKeyActions: [] },
     ),
-  ).toThrow("Settings save cannot edit excludeArgv: its line in config.toml");
+  ).toThrow(
+    expect.objectContaining({
+      refusal: { kind: "multi-line-value", key: "excludeArgv" },
+    }),
+  );
   // An unrelated key leaves excludeArgv's own line untouched (the line
   // editor only ever copies a key it is not editing verbatim), so the
   // comment beside it survives and this save does not refuse.
@@ -599,5 +631,9 @@ test("the data-loss backstop refuses a save whose line scan edits a line inside 
       changedKeys: ["sort"],
       changedKeyActions: [],
     }),
-  ).toThrow("Settings save would change procRoot");
+  ).toThrow(
+    expect.objectContaining({
+      refusal: { kind: "untouched-value-changed", key: "procRoot" },
+    }),
+  );
 });
