@@ -19,7 +19,10 @@ from refusal import Refusal, refuse, report
 # runs warden/install, which installs the units and agent-tools.json, the
 # service unit starts agent-warden, and the documented pane launcher setup
 # links agent-confine, which runs agent-confine-lineage-capped beside it.
-# The manifest may ship more.
+# The scrub reporter is one owned set: its drop-in runs the report script
+# after every btrfs scrub, and its tmpfiles line creates the report directory
+# whose absence Storage reads as no reporter. The manifest may ship more.
+SCRUB_DROP_IN = "lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf"
 REQUIRED_MODES = {
     "lib/vsys/warden/install": 0o755,
     "lib/vsys/warden/agent-warden": 0o755,
@@ -29,15 +32,21 @@ REQUIRED_MODES = {
     "lib/vsys/warden/systemd/agent-warden.timer": 0o644,
     "lib/vsys/warden/systemd/agents.slice": 0o644,
     "lib/vsys/data/agent-tools.json": 0o644,
+    "lib/vsys/scripts/scrub-reporter/vsys-scrub-report": 0o755,
+    SCRUB_DROP_IN: 0o644,
+    "lib/tmpfiles.d/vsys-scrub.conf": 0o644,
 }
 # Every row ships its source at PAYLOAD_PREFIX + source path. warden/install
 # finds ../data/agent-tools.json and systemd/ beside itself, so the installed
 # tree must mirror the repository tree, and a row naming another script ships
-# the wrong file under a required name. vsys-git stages every row under /usr,
-# but install.sh and the vsys PKGBUILD copy only lib/vsys, so a row outside it
-# ships in one package and not the others; a row named `vsys` would overwrite
-# the binary in the release stage.
+# the wrong file under a required name. A row named `vsys` would overwrite the
+# binary in the release stage. Both packages ship every row under /usr: vsys-git
+# stages it there and the vsys PKGBUILD copies the release archive's lib.
+# install.sh copies only lib/vsys, because it installs nothing as root, so the
+# only rows outside it are the system files under SYSTEM_PREFIXES, where
+# systemd reads a package's own units and tmpfiles lines.
 PAYLOAD_PREFIX = "lib/vsys/"
+SYSTEM_PREFIXES = ("lib/systemd/system/", "lib/tmpfiles.d/")
 
 
 def read_text(path: Path) -> str:
@@ -66,7 +75,7 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
             mode = int(mode_text, 8)
         except ValueError:
             refuse(f"manifest=bad-mode-text line={number} mode={mode_text}")
-        if archive_path != PAYLOAD_PREFIX + source_path:
+        if not archive_path.startswith(SYSTEM_PREFIXES) and archive_path != PAYLOAD_PREFIX + source_path:
             refuse(f"manifest=path-source-mismatch path={archive_path} source={source_path}")
         rows[archive_path] = (mode, source_path)
     for archive_path, mode in REQUIRED_MODES.items():
@@ -79,6 +88,15 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
         if not (repo / source_path).is_file():
             refuse(f"manifest=source-missing path={source_path}")
     return rows
+
+
+def check_scrub_drop_in(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
+    """The packaged drop-in must run the script the package ships, at the
+    path pacman installs it to, or every scrub ends with no report."""
+    text = read_text(repo / rows[SCRUB_DROP_IN][1])
+    commands = re.findall(r"^ExecStopPost=(\S+)", text, flags=re.MULTILINE)
+    if len(commands) != 1 or not commands[0].startswith("/usr/") or commands[0].removeprefix("/usr/") not in rows:
+        refuse(f"drop-in=unpackaged-script path={SCRUB_DROP_IN} value={','.join(commands)}")
 
 
 def read_bytes(path: Path) -> bytes:
@@ -174,8 +192,8 @@ def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
     if re.search(r"\bcp\s+-a\b", text) or "--preserve=ownership" in text:
         refuse(f"pkgbuild=ownership-preserved package={name}", f"{name} preserves archive ownership while copying payload files.")
     if release:
-        if 'cp -R --no-preserve=ownership "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"' not in text:
-            refuse("pkgbuild=release-copy-missing package=vsys", "The vsys PKGBUILD does not copy the release lib/vsys tree without ownership.")
+        if 'cp -R --no-preserve=ownership "${srcdir}/lib" "${pkgdir}/usr/"' not in text:
+            refuse("pkgbuild=release-copy-missing package=vsys", "The vsys PKGBUILD does not copy the release lib tree without ownership.")
     elif 'packaging/stage-runtime-files.sh "${pkgdir}/usr"' not in text:
         refuse("pkgbuild=no-stage-script package=vsys-git", "The vsys-git PKGBUILD does not use the runtime staging script.")
 
@@ -191,7 +209,7 @@ def check_install_sh(repo: Path) -> None:
 
 def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
     check_tree(root / "usr", "installed", rows)
-    manifest_paths = {path.removeprefix("lib/vsys/") for path in rows}
+    manifest_paths = {path.removeprefix(PAYLOAD_PREFIX) for path in rows if path.startswith(PAYLOAD_PREFIX)}
     installed_paths = {
         str(path.relative_to(root / "usr" / "lib" / "vsys"))
         for path in (root / "usr" / "lib" / "vsys").rglob("*")
@@ -207,6 +225,7 @@ def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
 
 def run(repo: Path, installed_root: Path | None) -> None:
     rows = parse_manifest(repo)
+    check_scrub_drop_in(repo, rows)
     check_stage_script(repo, rows)
     check_release_workflow(repo)
     check_aur_git_workflow(repo)

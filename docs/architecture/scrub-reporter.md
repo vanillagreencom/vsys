@@ -1,12 +1,12 @@
 # Scrub reporter and check reports
 
-Covers: src/collect/scrub.ts src/collect/scrub.test.ts src/ui/integrity.ts scripts/scrub-reporter/ scripts/scrub_reporter_test.py
+Covers: src/collect/scrub.ts src/collect/scrub.test.ts src/ui/integrity.ts scripts/scrub-reporter/ scripts/scrub_reporter_test.py packaging/scrub-reporter/
 
 A check report is the only source of the last check in [storage integrity](storage-integrity.md). The scrub reporter writes it as root, and vsys parses it. The invariants that hold both, and the tests that enforce them, are in [storage integrity § Invariants](storage-integrity.md#invariants).
 
 ## The scrub reporter
 
-vsys runs no privileged code. `scripts/scrub-reporter/` holds the root side for a reader to install: `vsys-scrub-report`, the `btrfs-scrub@.service` drop-in that runs it after every scrub, and the tmpfiles line that creates `/var/lib/btrfs-scrub`. `install` puts the three in place under names of vsys's own, so a reporter already set up under another name keeps running beside it. It schedules no scrub.
+vsys runs no privileged code. `scripts/scrub-reporter/` holds the root side: `vsys-scrub-report`, the `btrfs-scrub@.service` drop-in that runs it after every scrub, and the tmpfiles line that creates `/var/lib/btrfs-scrub`. The vsys and vsys-git packages install the three as one set through `packaging/vsys-runtime-files.txt`: the script at `/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report`, the drop-in at `/usr/lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf` from `packaging/scrub-reporter/vsys-report.conf`, which names that script path, and the tmpfiles line at `/usr/lib/tmpfiles.d/vsys-scrub.conf`. `scripts/package_file_list_check.py` refuses a manifest without the three or a drop-in that runs another script. On a host that installs vsys without a package, `install` puts the three in place under `/usr/local/bin` and `/etc`, under names of vsys's own, so a reporter already set up under another name keeps running beside it. Its drop-in and tmpfiles line share the packaged names, so where both are present systemd reads the `/etc` copies and one reporter runs. Neither schedules a scrub.
 
 - The report directory tells an installed reporter that has not run yet from no reporter at all. The first reads "Never checked". The second names the missing source.
 - The reporter takes damaged addresses from the kernel log of the scrub's run, and only from lines whose device `btrfs device stats` lists for this filesystem. A logical address means something on one filesystem only, and every Btrfs filesystem writes to the one kernel log. It reads the line with and without the `scrub: ` prefix kernels since the scrub rewrite write.
