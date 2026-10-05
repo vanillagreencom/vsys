@@ -124,7 +124,7 @@ test("once summary exports verdict schema and skips scratch collection", async (
     const invalid = await run(["--summary", "--markdown"]);
     expect(invalid.code).toBe(1);
     await expect(main(["--summary", "--config", path])).rejects.toMatchObject({
-      refusal: { kind: "needs-once", flag: "--summary" },
+      refusal: { kind: "needs-once" },
     });
   } finally {
     f.cleanup();

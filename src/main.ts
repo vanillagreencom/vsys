@@ -13,10 +13,7 @@ import { History } from "./store/history";
 import { dispatchWarden } from "./warden";
 
 /** The refusals a caller or a test tells apart; the message is for the reader. */
-export type ArgumentRefusal = {
-  kind: "needs-once";
-  flag: "--markdown" | "--summary";
-};
+export type ArgumentRefusal = { kind: "needs-once" };
 
 export class ArgumentError extends Error {
   constructor(
@@ -62,13 +59,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   if (process.platform !== "linux")
     throw new Error("vsys requires Linux with cgroup v2");
   if (values.markdown && !values.once)
-    throw new ArgumentError(
-      { kind: "needs-once", flag: "--markdown" },
-      "--markdown requires --once",
-    );
+    throw new Error("--markdown requires --once");
   if (values.summary && !values.once)
     throw new ArgumentError(
-      { kind: "needs-once", flag: "--summary" },
+      { kind: "needs-once" },
       "--summary requires --once",
     );
   if (values.summary && values.markdown)

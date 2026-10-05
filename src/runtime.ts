@@ -66,7 +66,12 @@ interface Events {
 /** The refusals a caller or a test tells apart; the message is for the reader. */
 export type SettingsRefusal =
   | { kind: "pinned-omits-shipped"; missing: string[] }
-  | { kind: "overlay-changed" };
+  | { kind: "overlay-changed" }
+  | {
+      kind: "rollback-skipped" | "rollback-failed";
+      saveError: unknown;
+      rollbackError: unknown;
+    };
 
 export class SettingsError extends Error {
   constructor(
@@ -339,10 +344,16 @@ export class Session {
               writtenOverlayBody,
             );
           } catch (rollbackError) {
-            throw new AggregateError(
-              [error, rollbackError],
+            const skipped =
               rollbackError instanceof SettingsError &&
-                rollbackError.refusal.kind === "overlay-changed"
+              rollbackError.refusal.kind === "overlay-changed";
+            throw new SettingsError(
+              {
+                kind: skipped ? "rollback-skipped" : "rollback-failed",
+                saveError: error,
+                rollbackError,
+              },
+              skipped
                 ? "Config save failed and agent-tools rollback skipped because the overlay changed after this save"
                 : "Config save failed and agent-tools rollback failed",
             );
