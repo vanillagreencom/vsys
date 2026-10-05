@@ -112,6 +112,8 @@ ot_message() { # REASON FIELD=VALUE...
     item-repo-unresolved) text='The checkout repository or configured Linear team could not be resolved. Nothing was launched.' ;;
     item-foreign) text='This item belongs to another repository. Nothing was launched.
 fix=File a prioritized issue in that repository and send it with lane-mail peer send --repo [REPO]; with no live repository overseer, ask a live registered master, else the owner, with a recommendation to launch its overseer.' ;;
+    overseer-foreign) text='The checkout this launch runs from belongs to another repository than the fleet overseer'"'"'s and is not one that overseer lists in ORCH_CONNECTED_REPOS, so its lane would work there while this fleet records and watches it. Nothing was launched. repo is that repository and overseer the overseer'"'"'s, each its origin OWNER/REPO, or its main checkout directory where no GitHub origin reads. Where repo is an OWNER/REPO, add it to ORCH_CONNECTED_REPOS in the overseer repository'"'"'s settings in a reviewed change; or mail that repository'"'"'s overseer with lane-mail peer send --repo [REPO] (peer-mail.md § Addressing).' ;;
+    overseer-unjudged) text='Whether this launch runs in the fleet overseer'"'"'s repository or one it lists could not be judged. Nothing was launched. cause=state-read is the --state-dir'"'"'s oversee state, which workflow-state could not resolve or jq could not read, with their own words above; overseer-root is the directory the state records as the overseer'"'"'s, or, where it records none, the directory workflow-state resolves the --state-dir to, below a .git entry, and checkout-root the checkout this launch runs from, each not a git checkout git can read, with git'"'"'s own words above; setting is ORCH_CONNECTED_REPOS, which orch-env could not read from the overseer'"'"'s directory or jq could not match, with its own words above; origin is the checkout this launch runs from, whose origin remote is absent, unreadable or not a github.com URL, so the list cannot be matched.' ;;
     claim-unrecorded) text='The previous claim is missing, so under --lane auto the next item cannot be spread off its account. The batch stops.' ;;
     item-owned) text='Another session owns this work item. Its worktree was skipped. Where no session runs it, a dead lane or a hosted create that failed after its sandbox started, launch it again with --relaunch. Without --cmd, a hosted Codex or Pi relaunch selects a matching session on the host, or runs the start brief in the same call when none exists.' ;;
     worktree-failed) text='The worktree helper failed to create this item.' ;;
@@ -434,11 +436,14 @@ Options:
                     each launch's directory is placed: a fleet passes the
                     directory holding the file `workflow-state path oversee`
                     prints from the overseer's checkout, so a launch run
-                    from another repository records into the state the
+                    from another directory records into the state the
                     watch reads. Without it the launch names
                     no fleet: no lane record is written and no state is
                     created, which is what a launch-only handoff wants
-                    (handoff.md § 2).
+                    (handoff.md § 2). A launch under it runs in the
+                    overseer's repository or in one the overseer's
+                    ORCH_CONNECTED_REPOS lists; any other is refused as
+                    overseer-foreign (see below).
   --launch-flags S  Flags for the harness command THIS LAUNCHER BUILDS, chosen
                     per task by the caller (model, effort, permission posture).
                     They reach a harness only through that command. A --cmd
@@ -731,6 +736,27 @@ without it:
                     over-cap-admitted and recorded in its lane record as
                     over_cap fleet. One item only, refused as over-cap-items
                     otherwise.
+
+Every launch, relaunch and wake under --state-dir is judged on the overseer's
+repository, or on this checkout's own where neither the state nor the
+--state-dir names one, before the state is touched. The overseer's directory
+is the one the state's overseer record names, else the directory
+workflow-state resolves the --state-dir to, a relative value against this
+checkout's main root, which sits in the overseer's checkout; a --state-dir
+outside any git checkout whose state records no overseer directory names no
+overseer repository, so the launch binds to this checkout's own and goes
+ahead. A checkout sharing that
+directory's git common directory, or whose origin names the same OWNER/REPO,
+goes ahead. Any other goes ahead only where ORCH_CONNECTED_REPOS, read
+through orch-env from that overseer directory and never from this checkout,
+lists the checkout's origin OWNER/REPO, compared case-insensitively; it is a
+blank-separated list, empty by default, which admits the overseer's own
+repository alone. The lane record of a launch it admits carries that
+repository as repo where nothing else names one. Any other is refused as
+overseer-foreign, and one that cannot be judged as overseer-unjudged, except a
+launch or relaunch whose state does not parse, which the fleet cap refuses
+first as cap-unreadable. A --state-dir below a .git entry git cannot read is
+one that cannot be judged, never one outside any checkout.
 
 Exit codes:
   0   at least one lane launched or handed to a background job and none

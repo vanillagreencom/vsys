@@ -1343,9 +1343,12 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
   # the option alone leaves a resolved launch's record null, and lane-close
   # then has no repository to read the item's state with. Every other tracker
   # records the option and nothing else, the resolver's answer there being the
-  # caller's own checkout rather than anything this lane's item lives in.
+  # caller's own checkout rather than anything this lane's item lives in. A
+  # launch ORCH_CONNECTED_REPOS admitted records the listed repository where
+  # neither named one, so lane-close reads its pull request there.
   record_repo="$REPO"
   [[ "$TRACKER" != github ]] || record_repo="$repo"
+  [[ -n "$record_repo" ]] || record_repo="$CONNECTED_REPO"
   rec="$(jq -cn --arg item "$item" --arg tracker "$TRACKER" --arg repo "$record_repo" --arg harness "$LAUNCH_HARNESS" \
     --arg window "$window" --arg account "$account" --arg host "$host" \
     --arg mail_root "$mail_root" --arg surface "$surface" --arg model "$LAUNCH_MODEL" --arg effort "$LAUNCH_EFFORT" --arg preference_entry "$PREFERENCE_ENTRY" \
@@ -3000,6 +3003,10 @@ elif [[ -n "${LINEAR_TEAM:-}" ]]; then
   checkout_repo="$(jq -er '.team.key | strings | select(length > 0)' <<<"$team_record")" \
     || { ot_message item-repo-unresolved tracker=linear "team=$LINEAR_TEAM" >&2; exit 1; }
 fi
+# A fleet launch runs in its overseer's repository, or in one the overseer's
+# checkout lists in ORCH_CONNECTED_REPOS; lib/lane-cap.sh's overseer_bind judges
+# it.
+[[ "$FLEET" != true ]] || overseer_bind || exit 1
 launched=0
 preparing=0
 failed=0
@@ -3059,6 +3066,8 @@ for raw in "${ITEMS[@]}"; do
       exit 1
     fi
   fi
+  [[ "$OVERSEER_BIND" != foreign ]] \
+    || { ot_message overseer-foreign "item=$item" "repo=$LAUNCH_NAME" "overseer=$OVERSEER_NAME" route=connected-repos,peer-mail >&2; exit 1; }
   if [[ "$FLEET" == true && "$state_ready" != true ]]; then
     if ! "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} exists oversee; then
       if [[ "$WAKE" == true ]]; then
@@ -3097,6 +3106,12 @@ for raw in "${ITEMS[@]}"; do
   # refusal stops the batch: the count it refused on stands for every later
   # item.
   if [[ "$CAP_GATED" == true ]] && ! cap_gate "$item" "$wt_id" "$title"; then
+    failed=$((failed + 1))
+    break
+  fi
+  # A state the count read where the binding could not is never launched unjudged.
+  if [[ "$OVERSEER_BIND" == unread ]]; then
+    ot_message overseer-unjudged cause=state-read state=oversee >&2
     failed=$((failed + 1))
     break
   fi
