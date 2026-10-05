@@ -1215,7 +1215,6 @@ def reap_orphans(procs, st, correct, only=None):
             log(f"  reaped orphan scope {unit}: stopped {n} process(es), {why}, after {int(age)}s")
             tracked.pop(unit, None)
         else:
-            st["move_failures"] += 1
             status_rows.append(status_row)
             log(f"  reap of {unit} failed: {err}")
     st["orphans"] = tracked
