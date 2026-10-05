@@ -133,7 +133,7 @@ export interface Integrity {
    */
   logged: CsumFailure[];
   /**
-   * The logged failures a clean check has since read past, where the state is
+   * The logged failures a check that left no damage has since read past, where the state is
    * `healthy` or `stale` and the kernel logged any: the oldest and newest
    * failure time and the start of the check that cleared them, in
    * milliseconds. Null otherwise, so a cleared verdict never hides that

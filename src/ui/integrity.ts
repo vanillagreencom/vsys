@@ -64,6 +64,8 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
 }
 /**
  * The days the kernel logged the failures, and the day the check cleared them.
+ * That check may have corrected errors rather than found none, so the words
+ * say it left no damage, never that it was clean.
  * The log can reach back past a new year, so a range that crosses one names
  * every year, or two failures a year apart would read as one day.
  */
@@ -79,7 +81,7 @@ function clearedText(cleared: NonNullable<Integrity["cleared"]>): string {
     });
   const first = day(cleared.first);
   const last = day(cleared.last);
-  return `errors on ${first === last ? first : `${first} to ${last}`}, clean check ${day(cleared.checkedAt)}`;
+  return `errors on ${first === last ? first : `${first} to ${last}`}, no damage left by the check on ${day(cleared.checkedAt)}`;
 }
 /**
  * Whether the remembered finished check standing in for an unavailable
