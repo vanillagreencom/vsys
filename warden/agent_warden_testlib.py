@@ -124,7 +124,23 @@ class WardenMutantMixin:
             return load_warden(env, name, path)
 
 
-class WardenRulesCase(WardenMutantMixin, unittest.TestCase):
+class WardenStateMixin:
+    """Points a loaded warden's state files and cgroup root at a sandbox."""
+
+    def point_status_state(self, module, base):
+        old = module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT
+        module.STATE_DIR = base / "state"
+        module.STATE = module.STATE_DIR / "state.json"
+        module.STATUS = module.STATE_DIR / "status.json"
+        module.LOCK = module.STATE_DIR / "lock"
+        module.CG_ROOT = base / "cg"
+        return old
+
+    def restore_status_state(self, module, old):
+        module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT = old
+
+
+class WardenRulesCase(WardenMutantMixin, WardenStateMixin, unittest.TestCase):
     """One warden module loaded under a private home, shared by a suite's rows."""
 
     @classmethod

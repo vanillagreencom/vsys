@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -62,16 +63,17 @@ class AgentWardenScratchRules(WardenRulesCase):
                 self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
     def _reap_failing_twice(self, w):
-        """Two sweeps over a gone scope's folder whose removal keeps failing,
-        sharing one failed set as run() shares it through the state file."""
+        """Two run() ticks over a gone scope's folder whose removal keeps
+        failing. Each tick opens and closes State, so only state.json carries
+        the logged failure from the first tick to the second, as it does
+        between the timer's oneshot runs."""
         with scratch() as tmp:
             base = Path(tmp)
-            old_cg, old_parent = w.CG_ROOT, w.AGENT_TMPDIR_PARENT
-            w.CG_ROOT = base / "cg"
+            old_state = self.point_status_state(w, base)
+            old_parent = w.AGENT_TMPDIR_PARENT
             w.AGENT_TMPDIR_PARENT = str(base / "scratch")
             try:
-                agent_slice = w.CG_ROOT / w.SLICE
-                agent_slice.mkdir(parents=True)
+                (w.CG_ROOT / w.SLICE).mkdir(parents=True)
                 scratch_dir = Path(w.AGENT_TMPDIR_PARENT)
                 scratch_dir.mkdir(parents=True)
                 fails = scratch_dir / "agent-confine-500-600"
@@ -81,41 +83,56 @@ class AgentWardenScratchRules(WardenRulesCase):
                 old = time.time() - w.SCRATCH_GRACE - 1
                 os.utime(fails, (old, old))
                 os.utime(also_gone, (old, old))
-                logs, failed = [], set()
-                old_log, old_rmtree = w.log, w.shutil.rmtree
-                w.log = logs.append
+                logs = []
+                stubbed = ("log", "scan", "plan", "reap_orphans", "enforce_task_caps", "warn_near_cap")
+                saved = {name: getattr(w, name) for name in stubbed}
+                old_rmtree = w.shutil.rmtree
 
                 def flaky_rmtree(path, *a, **kw):
                     if str(path) == str(fails):
                         raise OSError("boom")
                     return old_rmtree(path, *a, **kw)
 
+                w.log = logs.append
+                w.scan = lambda: {}
+                w.plan = lambda procs, only=None: ([], [], [], [])
+                w.reap_orphans = lambda procs, st, correct, only=None: ([], [])
+                w.enforce_task_caps = lambda correct: []
+                w.warn_near_cap = lambda: ([], set(), True)
                 w.shutil.rmtree = flaky_rmtree
                 try:
-                    removed = w.reap_scratch_dirs(True, {}, failed) + w.reap_scratch_dirs(True, {}, failed)
+                    exits = [w.run(True), w.run(True)]
                 finally:
-                    w.log, w.shutil.rmtree = old_log, old_rmtree
-                return (fails.is_dir(), also_gone.exists(), removed, failed,
+                    for name, value in saved.items():
+                        setattr(w, name, value)
+                    w.shutil.rmtree = old_rmtree
+                persisted = json.loads(w.STATE.read_text())["scratch_failed"]
+                return (exits, fails.is_dir(), also_gone.exists(), persisted,
                         sum("name=agent-confine-500-600" in line for line in logs))
             finally:
-                w.CG_ROOT, w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+                w.AGENT_TMPDIR_PARENT = old_parent
+                self.restore_status_state(w, old_state)
 
     def test_reap_scratch_dirs_rmtree_failure_rows(self):
         # The failing folder survives, the other gone scope is still removed,
-        # and the failure is logged once over two sweeps; with the once-only
-        # guard removed it is logged at every sweep.
+        # and the failure is logged once over two ticks. With the once-only
+        # guard removed, or with run() no longer writing the logged names
+        # back to the state file, it is logged at every tick.
         text = WARDEN.read_text()
         guard = "            if name not in failed:\n"
-        self.assertEqual(text.count(guard), 1)
-        mutant = self.load_mutant(text.replace(guard, "            if True:\n"), "agent_warden_mutant_scratch_log_once")
+        writeback = "                st[\"scratch_failed\"] = sorted(scratch_failed)\n"
+        for line in (guard, writeback):
+            self.assertEqual(text.count(line), 1)
+        no_guard = self.load_mutant(text.replace(guard, "            if True:\n"), "agent_warden_mutant_scratch_log_once")
+        no_writeback = self.load_mutant(text.replace(writeback, ""), "agent_warden_mutant_scratch_writeback")
         rows = [
-            ("the reaper logs the failure once", self.w, 1),
-            ("with the guard removed it logs at every sweep", mutant, 2),
+            ("the warden logs the failure once", self.w, ["agent-confine-500-600"], 1),
+            ("with the guard removed it logs at every tick", no_guard, ["agent-confine-500-600"], 2),
+            ("with the state writeback removed it logs at every tick", no_writeback, [], 2),
         ]
-        for name, w, logged in rows:
+        for name, w, persisted, logged in rows:
             with self.subTest(name=name):
-                self.assertEqual(self._reap_failing_twice(w),
-                                 (True, False, ["agent-confine-700-800"], {"agent-confine-500-600"}, logged))
+                self.assertEqual(self._reap_failing_twice(w), ([0, 0], True, False, persisted, logged))
 
     def _reap_read_only(self, w):
         """Reap a gone scope's folder holding a mode-555 directory, as an

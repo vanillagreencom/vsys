@@ -3,10 +3,10 @@ import os
 from pathlib import Path
 import unittest
 
-from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, clean_env, default_tool_exe, load_warden, scratch
+from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, WardenStateMixin, clean_env, default_tool_exe, load_warden, scratch
 
 
-class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
+class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = scratch()
@@ -33,18 +33,6 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
 
     def _cg(self, unit):
         return f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service/{self.w.SLICE}/{unit}"
-
-    def point_status_state(self, module, base):
-        old = module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT
-        module.STATE_DIR = base / "state"
-        module.STATE = module.STATE_DIR / "state.json"
-        module.STATUS = module.STATE_DIR / "status.json"
-        module.LOCK = module.STATE_DIR / "lock"
-        module.CG_ROOT = base / "cg"
-        return old
-
-    def restore_status_state(self, module, old):
-        module.STATE_DIR, module.STATE, module.STATUS, module.LOCK, module.CG_ROOT = old
 
     def write_status_cgroup(self, module, *, scope="agent-warden-1-2.scope", lane_memory="24"):
         slice_dir = module.CG_ROOT / module.SLICE
