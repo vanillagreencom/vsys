@@ -6,8 +6,11 @@ import { act } from "react";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
+import type { Snapshot } from "../model/types";
+import { meters } from "../model/verdict";
 import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
+import { meterTile } from "./attention";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
   groupLabels,
@@ -168,22 +171,53 @@ test("an idle parent filtered from the list still leaves its children nested", (
   expect(prefixes.get("a.slice/two/deep")).toBe("      └─ ");
 });
 
-test("Resources sizes its tiles by the width it has, at a hundred columns", async () => {
+test("Resources wraps its tiles at a hundred columns and draws every detail whole", async () => {
   const c = defaults();
-  const s = emptySnapshot();
-  const t = await mount(s, c, { width: 100, height: 30 });
-  try {
-    await t.press("3");
-    const lines = t.frame().split("\n");
-    const at = (text: string) => lines.findIndex((line) => line.includes(text));
-    // Four tiles in ninety-six columns are twenty-two columns each, under the
-    // width a tile needs, so they wrap to two rows instead of truncating.
-    expect(at("CPU wait")).toBeGreaterThan(-1);
-    expect(at("Swap")).toBeGreaterThan(at("CPU wait"));
-    // The detail under the number is a whole sentence, not a cut one.
-    expect(lines.some((line) => line.includes("desktop"))).toBe(true);
-  } finally {
-    await t.close();
+  const zram = (device: string) => ({
+    device,
+    original: 1 << 30,
+    compressed: 1 << 28,
+    used: 1 << 28,
+  });
+  // The first sample reads no CPU share at all. The control row gives Swap
+  // more devices than its tile holds, so the check below has a cut to find.
+  const rows: [string, (s: Snapshot) => void, boolean][] = [
+    ["first sample", () => {}, false],
+    [
+      "three zram devices",
+      (s) => {
+        s.system.zram = [zram("zram0"), zram("zram1"), zram("zram2")];
+      },
+      true,
+    ],
+  ];
+  for (const [name, plant, cut] of rows) {
+    const s = emptySnapshot();
+    plant(s);
+    const t = await mount(s, c, { width: 100, height: 30 });
+    try {
+      await t.press("3");
+      const lines = t.frame().split("\n");
+      const at = (text: string) =>
+        lines.findIndex((line) => line.includes(text));
+      // Four tiles in ninety-six columns are twenty-two columns each, under
+      // the width a tile needs, so they wrap to two rows instead of truncating.
+      expect(at("CPU wait"), name).toBeGreaterThan(-1);
+      expect(at("Swap"), name).toBeGreaterThan(at("CPU wait"));
+      // A tile cuts a detail with the mark, so a tile row without one drew
+      // every detail whole.
+      const tiles = lines.slice(at("CPU wait"), at("Groups"));
+      expect(
+        tiles.some((line) => line.includes("…")),
+        name,
+      ).toBe(cut);
+      if (cut) continue;
+      const frame = lines.join("\n");
+      for (const m of meters(s, c).filter((m) => m.id !== "builds"))
+        expect(frame, name).toContain(meterTile(m, s, c).detail);
+    } finally {
+      await t.close();
+    }
   }
 });
 

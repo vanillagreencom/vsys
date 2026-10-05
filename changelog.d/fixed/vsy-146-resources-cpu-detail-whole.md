@@ -1,0 +1,1 @@
+- On a first sample, the Resources CPU wait tile at 100 columns no longer cuts off its detail line.

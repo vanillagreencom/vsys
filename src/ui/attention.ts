@@ -789,12 +789,15 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
   const level = meter.level;
   // The headline is time lost to waiting; the detail is how much of the
   // machine is in use. Two percentages of different things sit one line apart,
-  // so each says which it is.
+  // so each says which it is. On the first sample neither is read, and saying
+  // so once keeps the line whole in the tile Resources draws at 100 columns.
   if (meter.id === "cpu")
     return {
       label: "CPU wait",
       value: pc(v.system, "psi"),
-      detail: `in use: agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")}`,
+      detail: [v.agents, v.desktop].every((n) => n === null || n === undefined)
+        ? `in use: ${unread(s, "delegation")}`
+        : `in use: agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")}`,
       level,
       facts: [
         ["Time tasks waited", pc(v.system, "psi")],
