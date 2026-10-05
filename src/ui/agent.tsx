@@ -102,12 +102,14 @@ export function AgentIdentity({
         <span attributes={ui.bold} fg={levelColor(laneLevel(lane, c))}>
           {safe(lane.name)}
         </span>
-        {badge && (
-          <span fg={levelColor(badge.level)}>
-            {`  ${badgeText(badge, lane, c)}`}
-          </span>
-        )}
       </Line>
+      {/* Its own line, wrapping: the cause names the threshold it crossed, and
+          a long lane name beside it would cut that number off. */}
+      {badge && (
+        <Line flexShrink={0} wrapMode="word" fg={levelColor(badge.level)}>
+          {safe(badgeText(badge, lane, c))}
+        </Line>
+      )}
       <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
         {safe(
           [
