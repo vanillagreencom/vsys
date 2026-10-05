@@ -112,6 +112,60 @@ lane_context_shape() {
   esac
 }
 
+# lane_context_pane_shape CMD PANE_PID — lane_context_shape for a pane whose
+# foreground process is CMD and whose own process is PANE_PID, into
+# LANE_PANE_SHAPE, naming a Copilot CLI pane too. That pane reads `node`, its
+# npm loader, or `copilot`, the binary started directly, so its harness is a
+# process carrying one of Copilot's own names (lib/lane-state.sh §
+# lane_harness_process_re) at most two levels under the pane: its shell, the
+# loader, the binary. A Codex pane also reads `node`, and a Copilot run it
+# starts sits deeper, under its own tool shell, so it is not this pane's
+# harness. The process reads are lib/lane-state.sh's, which the caller sources.
+#
+# LANE_PANE_ACCOUNT is a Copilot pane's account, read off the nearest such
+# process, whose environment is the session's own wherever the reader runs:
+# the COPILOT_HOME it was started with, else its HOME's `.copilot`, the root
+# Copilot itself defaults to. It is empty for any other pane, and where that
+# environment cannot be read, as on a host without /proc, so the caller names
+# no account it did not read. Status 2 is a process table that could not be
+# read.
+#
+# This read stands in for the session's own sessionStart row
+# (hooks/session-start-row.sh through lib/session-rows.sh session_rows_write),
+# the one documented source of its account, since Copilot reports a running
+# session's account to nothing outside it. That row cannot answer here: a
+# session started before the hook install, or with no overseer mailbox
+# directory, writes none, and lib/overseer-launch.sh ol_caller_known keeps
+# only a row naming claude or codex.
+LANE_PANE_SHAPE="" LANE_PANE_ACCOUNT=""
+lane_context_pane_shape() { # CMD PANE_PID
+  local table name_re found pid var copilot_home="" home=""
+  LANE_PANE_SHAPE="" LANE_PANE_ACCOUNT=""
+  case "$1" in
+    node | copilot)
+      table="$(lane_process_table)" || return 2
+      name_re="$(lane_harness_process_re copilot)" || return 2
+      found="$(lane_process_below "$table" "$2" "$name_re" 1 2 pids)" || return 2
+      if [[ -n "$found" ]]; then
+        LANE_PANE_SHAPE=copilot
+        pid="$(awk 'NR == 1 || $1 < hops { hops = $1; pid = $2 } END { print pid }' <<<"$found")" || return 2
+        # A process gone since the table was read has no environment left to
+        # read, the same answer as a host with none.
+        while IFS= read -r -d '' var; do
+          case "$var" in
+            COPILOT_HOME=*) copilot_home="${var#*=}" ;;
+            HOME=*) home="${var#*=}" ;;
+          esac
+        done 2>/dev/null <"/proc/$pid/environ" || :
+        [[ -n "$copilot_home" || -z "$home" ]] || copilot_home="$home/.copilot"
+        LANE_PANE_ACCOUNT="$copilot_home"
+        return 0
+      fi
+      ;;
+  esac
+  LANE_PANE_SHAPE="$(lane_context_shape "$1")"
+}
+
 # The config directory a session of shape $1 runs its credential out of: a
 # lane's, and an overseer's where its launch record names none. `lanes context`
 # asks it about the pane it is reading, and the lane's own turn-end hook asks
