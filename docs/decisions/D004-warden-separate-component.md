@@ -22,6 +22,6 @@
 
 **Revisit When**: A Bun foreign-function interface port can call pidfd and libsystemd with the same safety properties, or the dashboard needs to own an automatic correction action with a new explicit promise.
 
-**Verification**: `python3 scripts/ci.py` runs `python3 warden/agent-warden --selftest` and `python3 -m unittest discover -s warden -p '*_test.py'` before the Bun checks when `warden/` exists. `docs/architecture/warden.md` states the component boundary and names the tests for the warden rules.
+**Verification**: `python3 scripts/ci.py` runs `python3 -m unittest discover -s warden -p '*_test.py'`, which holds the `--selftest` run, before the Bun checks, and fails when `warden/` is missing. `docs/architecture/warden.md` states the component boundary and names the tests for the warden rules.
 
 **References**: [D002](D002-lane-action-mechanism.md), [D003](D003-action-resolved-at-the-keypress.md), [warden architecture](../architecture/warden.md)

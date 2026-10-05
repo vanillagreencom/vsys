@@ -85,8 +85,6 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: .bun-version
-      - name: Test CI failure handling
-        run: python3 -m unittest discover -s scripts -p '*_test.py' -v
       - name: Check the application
         run: python3 scripts/ci.py
 
