@@ -162,7 +162,7 @@ DEV_VALIDATE_CMD = "python3 scripts/ci.py && python3 -m unittest discover -s scr
 # runs in the merge queue before it lands. Blank-separated globs, where `*`
 # also matches `/`. A new entry is a file a required CI job runs or reads to
 # reach its verdict, as opposed to the code that verdict judges.
-HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/ci_test.py scripts/package_file_list_check.py scripts/package_file_list_check_test.py scripts/sample-check.ts scripts/bench-history.ts scripts/bench-scratch.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/*"
+HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/ci_test.py scripts/package_file_list_check.py scripts/package_file_list_check_test.py scripts/build.ts scripts/sample-check.ts scripts/bench-history.ts scripts/bench-scratch.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/* warden/agent_warden_testlib.py"
 
 # The repo-root executable the guard chain runs last, after doc-limits,
 # preflight, the bot-instructions check and the commit-guards batch. This
