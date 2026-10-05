@@ -174,6 +174,25 @@ test("the reason follows what the probe found, not the interface name", () => {
       detail: "cpu memory",
     }),
   ).toBe("this login session is not given cpu memory");
+  // A refused journal search and a tmux with no server are not a file that
+  // cannot be read or a session missing a controller: each takes its own
+  // reason rather than the one the same failure gives an interface without one.
+  for (const [id, failure, fallback] of [
+    ["kernel-log", "unreadable", "psi"],
+    ["kernel-log", "incomplete", "delegation"],
+    ["tmux", "incomplete", "delegation"],
+  ] as const) {
+    const cap: Capability = {
+      id,
+      available: false,
+      failure,
+      source: "journalctl",
+      detail: "no kernel message",
+    };
+    expect(capabilityReason(cap)).not.toBe(
+      capabilityReason({ ...cap, id: fallback }),
+    );
+  }
   // A readable io.stat at the root is not one in the groups below it.
   expect(
     capabilityReason({
