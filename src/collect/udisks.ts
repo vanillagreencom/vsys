@@ -114,10 +114,18 @@ export interface UdisksDrive {
    */
   detected: number | null;
 }
+/** How a busctl call failed: a reading's own, which the model leaves out. */
+export type UdisksCause =
+  | "launch"
+  | "refused"
+  | "timeout"
+  | "abandoned"
+  | "malformed";
+type UdisksOutcome = (NonNullable<Outcome> & { cause: UdisksCause }) | null;
 export interface UdisksReading {
   drives: UdisksDrive[];
   /** Null where udisks answered; otherwise why vsys could not ask it. */
-  outcome: Outcome;
+  outcome: UdisksOutcome;
 }
 type Run = typeof spawnText;
 
@@ -136,13 +144,14 @@ const absentPatterns: RegExp[] = [
   // "Call failed: Unit udisks2.service not found."
   /Unit udisks2\.service not found/,
 ];
-export function classifyBusctl(error: string): Outcome {
+export function classifyBusctl(error: string): UdisksOutcome {
   const detail = error.trim();
   return {
     failure: absentPatterns.some((p) => p.test(detail))
       ? "absent"
       : "unreadable",
     detail,
+    cause: "refused",
   };
 }
 
@@ -250,7 +259,8 @@ async function listUdisks(
   run: Run,
   timeoutMs: number,
 ): Promise<
-  { targets: Target[]; outcome: null } | { targets: null; outcome: Outcome }
+  | { targets: Target[]; outcome: null }
+  | { targets: null; outcome: UdisksOutcome }
 > {
   let listed: Awaited<ReturnType<Run>>;
   try {
@@ -259,7 +269,11 @@ async function listUdisks(
     if (error instanceof RunnerAbandoned)
       return {
         targets: null,
-        outcome: { failure: "unreadable", detail: error.message },
+        outcome: {
+          failure: "unreadable",
+          detail: error.message,
+          cause: "abandoned",
+        },
       };
     // Nothing ran. A confirmed-missing executable surfaces its own errno,
     // ENOENT; anything else that stopped busctl from starting — EAGAIN at
@@ -271,13 +285,18 @@ async function listUdisks(
       outcome: {
         failure: code === "ENOENT" ? "absent" : "unreadable",
         detail: String(error),
+        cause: "launch",
       },
     };
   }
   if (listed.timedOut)
     return {
       targets: null,
-      outcome: { failure: "unreadable", detail: timeoutDetail(timeoutMs) },
+      outcome: {
+        failure: "unreadable",
+        detail: timeoutDetail(timeoutMs),
+        cause: "timeout",
+      },
     };
   if (listed.status !== 0)
     return { targets: null, outcome: classifyBusctl(listed.error) };
@@ -286,7 +305,11 @@ async function listUdisks(
   } catch (error) {
     return {
       targets: null,
-      outcome: { failure: "malformed", detail: String(error) },
+      outcome: {
+        failure: "malformed",
+        detail: String(error),
+        cause: "malformed",
+      },
     };
   }
 }
@@ -305,10 +328,10 @@ async function queryDrives(
   targets: Target[],
 ): Promise<UdisksReading> {
   const refusals: string[] = [];
-  let firstRefusal: string | undefined;
-  const noteRefusal = (detail: string) => {
+  let firstRefusal: { detail: string; cause: UdisksCause } | undefined;
+  const noteRefusal = (cause: UdisksCause, detail: string) => {
     refusals.push(detail);
-    firstRefusal ??= detail;
+    firstRefusal ??= { detail, cause };
   };
   const drives = await Promise.all(
     targets.map(async ({ name, model, drive, iface, identity, detected }) => {
@@ -319,15 +342,18 @@ async function queryDrives(
           timeoutMs,
         );
       } catch (error) {
-        noteRefusal(error instanceof Error ? error.message : String(error));
+        noteRefusal(
+          error instanceof RunnerAbandoned ? "abandoned" : "launch",
+          error instanceof Error ? error.message : String(error),
+        );
         return { name, model, written: null, identity, detected };
       }
       if (answer.timedOut) {
-        noteRefusal(timeoutDetail(timeoutMs));
+        noteRefusal("timeout", timeoutDetail(timeoutMs));
         return { name, model, written: null, identity, detected };
       }
       if (answer.status !== 0) {
-        noteRefusal(answer.error.trim());
+        noteRefusal("refused", answer.error.trim());
         return { name, model, written: null, identity, detected };
       }
       try {
@@ -337,16 +363,16 @@ async function queryDrives(
             : ataWritten(answer.out);
         return { name, model, written, identity, detected };
       } catch (error) {
-        noteRefusal(String(error));
+        noteRefusal("malformed", String(error));
         return { name, model, written: null, identity, detected };
       }
     }),
   );
-  const outcome: Outcome =
+  const outcome: UdisksOutcome =
     targets.length > 0 &&
     refusals.length === targets.length &&
     firstRefusal !== undefined
-      ? { failure: "incomplete", detail: firstRefusal }
+      ? { failure: "incomplete", ...firstRefusal }
       : null;
   return { drives, outcome };
 }

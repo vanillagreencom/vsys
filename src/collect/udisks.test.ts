@@ -49,6 +49,7 @@ test("busctl's refusals are classified from its own words", () => {
       error,
       failure,
       detail: error,
+      cause: "refused",
     });
 });
 test("NVMe gives bytes, and ATA gives bytes only where attribute 241 is in sectors", () => {
@@ -121,6 +122,7 @@ test("a source that could not be asked, or answered for no drive, says why", asy
     outcome: {
       failure: "absent",
       detail: "Failed to connect to bus: No such file or directory",
+      cause: "refused",
     },
   });
   const missing = await readUdisks(async () => {
@@ -128,7 +130,7 @@ test("a source that could not be asked, or answered for no drive, says why", asy
       code: "ENOENT",
     });
   });
-  expect(missing.outcome?.failure).toBe("absent");
+  expect(missing.outcome).toMatchObject({ failure: "absent", cause: "launch" });
   // A launch failure that is not a confirmed absence — the process limit
   // reached, say — is its own cause rather than mislabeled as no busctl on
   // the path.
@@ -141,7 +143,11 @@ test("a source that could not be asked, or answered for no drive, says why", asy
   });
   expect(stalled).toEqual({
     drives: [],
-    outcome: { failure: "unreadable", detail: String(launchFailure) },
+    outcome: {
+      failure: "unreadable",
+      detail: String(launchFailure),
+      cause: "launch",
+    },
   });
   const garbled = await readUdisks(async () => ({
     out: "{",
@@ -149,7 +155,7 @@ test("a source that could not be asked, or answered for no drive, says why", asy
     status: 0,
     timedOut: false,
   }));
-  expect(garbled.outcome?.failure).toBe("malformed");
+  expect(garbled.outcome?.cause).toBe("malformed");
   // One refusal among two drives keeps both rows and is no outcome; refusals
   // for every drive are.
   const bus = (second: unknown) =>
@@ -169,6 +175,7 @@ test("a source that could not be asked, or answered for no drive, says why", asy
   expect(both.outcome).toEqual({
     failure: "incomplete",
     detail: "Call failed: Access denied",
+    cause: "refused",
   });
   expect(both.drives.map((d) => d.written)).toEqual([null, null]);
 });
@@ -213,6 +220,7 @@ test("a real child that outlives its deadline is read as an explained timeout, n
     outcome: {
       failure: "unreadable",
       detail: "busctl did not answer within 50 ms",
+      cause: "timeout",
     },
   });
 });
@@ -223,6 +231,7 @@ test("a listing that never answers is abandoned at the deadline, not left hangin
     outcome: {
       failure: "unreadable",
       detail: "busctl runner abandoned after 2510 ms with no response",
+      cause: "abandoned",
     },
   });
 });
@@ -250,7 +259,11 @@ test("a drive whose SMART query fails to launch keeps its row, written unknown, 
         detected: null,
       },
     ],
-    outcome: { failure: "incomplete", detail: launchFailure.message },
+    outcome: {
+      failure: "incomplete",
+      detail: launchFailure.message,
+      cause: "launch",
+    },
   });
 });
 test("a drive query spawnText reports timed out is read as a timeout, even though its status and empty stderr alone look like an ordinary SIGTERM exit", async () => {
@@ -279,6 +292,7 @@ test("a drive query spawnText reports timed out is read as a timeout, even thoug
     outcome: {
       failure: "incomplete",
       detail: "busctl did not answer within 50 ms",
+      cause: "timeout",
     },
   });
 });
@@ -305,6 +319,7 @@ test("a drive whose SMART query never answers keeps its row, written unknown", a
     outcome: {
       failure: "incomplete",
       detail: "busctl runner abandoned after 2510 ms with no response",
+      cause: "abandoned",
     },
   });
 });
@@ -766,6 +781,7 @@ test("a listing that fails during the hold is never read as proof of no swap: it
     outcome: {
       failure: "absent",
       detail: "Failed to connect to bus: No such file or directory",
+      cause: "refused",
     },
   });
   // A failed swap-check listing must not fall through to readUdisks() for a
@@ -943,6 +959,7 @@ test("an initial listing failure, with no prior held reading at all, is not kept
     outcome: {
       failure: "absent",
       detail: "Failed to connect to bus: No such file or directory",
+      cause: "refused",
     },
   });
   // The bus answers on the very next sample, still inside the hold that

@@ -1359,7 +1359,11 @@ test("with no report directory, udisks answers in its place or says why it canno
       source: null,
     },
   ]);
-  expect(neither.storage.udisks?.failure).toBe("absent");
+  // The reading's cause stays out of the snapshot.
+  expect(neither.storage.udisks).toEqual({
+    failure: "absent",
+    detail: expect.any(String),
+  });
   expect(neither.errors).toEqual([]);
   // With udisks absent too, no source supplies a number, and the capability
   // still says so: this is not the scenario the fix above changes, and its

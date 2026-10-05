@@ -27,8 +27,18 @@ const unread = (state: "absent" | "failed"): Sccache => ({
   recent: null,
 });
 const source = "sccache --show-stats";
+/** Why a query gave no counters; the message is for the reader. */
+export class SccacheError extends Error {
+  constructor(
+    readonly kind: "failed" | "timeout" | "malformed",
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
 /** A failed query keeps what it failed with, so every sample can report it. */
-type Outcome = { reading: Sccache } | { failure: unknown };
+type Outcome = { reading: Sccache } | { failure: SccacheError };
 /**
  * Read-only stats query. A missing binary is an absent feature, not an error.
  * The deadline kills the child, because a wedged cache server must not hold
@@ -76,7 +86,8 @@ export class SccacheCollector {
    */
   private async query(): Promise<string> {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Error(
+    const late = new SccacheError(
+      "timeout",
       `sccache --show-stats did not answer within ${this.timeoutMs} ms`,
     );
     const deadline = new Promise<never>((_, reject) => {
@@ -106,12 +117,19 @@ export class SccacheCollector {
     try {
       counters = parseSccacheStats(await this.query());
     } catch (e) {
-      return (e as NodeJS.ErrnoException).code === "ENOENT"
-        ? { reading: unread("absent") }
-        : { failure: e };
+      if ((e as NodeJS.ErrnoException).code === "ENOENT")
+        return { reading: unread("absent") };
+      if (e instanceof SccacheError) return { failure: e };
+      const message = e instanceof Error ? e.message : String(e);
+      return { failure: new SccacheError("failed", message, { cause: e }) };
     }
     return counters === null
-      ? { failure: "Missing cache hit and miss counters" }
+      ? {
+          failure: new SccacheError(
+            "malformed",
+            "Missing cache hit and miss counters",
+          ),
+        }
       : { reading: this.record(time, counters) };
   }
   private record(time: number, now: Counters): Sccache {

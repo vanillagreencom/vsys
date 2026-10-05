@@ -1,6 +1,18 @@
 import { expect, test } from "bun:test";
 import { Reader } from "./io";
-import { parseSccacheStats, SccacheCollector } from "./sccache";
+import { parseSccacheStats, SccacheCollector, SccacheError } from "./sccache";
+
+/** A reader that keeps each error's kind, which a source error's message does not carry. */
+class Kinds extends Reader {
+  kinds: { source: string; kind: unknown }[] = [];
+  override error(source: string, error: unknown): void {
+    this.kinds.push({
+      source,
+      kind: error instanceof SccacheError && error.kind,
+    });
+    super.error(source, error);
+  }
+}
 
 /** The shape `sccache --show-stats` prints, including the qualified subsets. */
 const stats = (hits: number, misses: number) =>
@@ -64,7 +76,7 @@ test("a restarted cache server rebases instead of reporting a negative delta", a
 });
 
 test("a missing binary is absent, other failures are reported once", async () => {
-  const r = new Reader();
+  const r = new Kinds();
   const absent = Object.assign(new Error("no sccache"), { code: "ENOENT" });
   const missing = new SccacheCollector(async () => {
     throw absent;
@@ -81,11 +93,11 @@ test("a missing binary is absent, other failures are reported once", async () =>
     throw new Error("server unreachable");
   }, 0);
   expect((await broken.collect(r, 0)).state).toBe("failed");
-  expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
+  expect(r.kinds).toEqual([{ source: "sccache --show-stats", kind: "failed" }]);
 });
 
 test("a wedged cache server times out rather than holding the sample", async () => {
-  const r = new Reader();
+  const r = new Kinds();
   // A query that never answers, standing in for a wedged sccache server. The
   // deadline also reaches it, which is how the real query kills its child.
   const given: number[] = [];
@@ -102,7 +114,9 @@ test("a wedged cache server times out rather than holding the sample", async () 
   expect((await wedged.collect(r, 0)).state).toBe("failed");
   expect(Date.now() - started).toBeLessThan(2000);
   expect(given).toEqual([5]);
-  expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
+  expect(r.kinds).toEqual([
+    { source: "sccache --show-stats", kind: "timeout" },
+  ]);
 });
 
 test("the stats query is not repeated on every sample", async () => {
@@ -129,19 +143,19 @@ test("a failed query keeps its source error on the samples the throttle skips", 
     return answer;
   }, 5000);
   // A fresh reader per sample, as the collector builds one. Each row is the
-  // sample time and the error that sample must report.
-  const rows: [number, string][] = [
-    [0, "server unreachable"],
-    [1000, "server unreachable"],
-    [4999, "server unreachable"],
-    [5000, "Missing cache hit and miss counters"],
-    [9999, "Missing cache hit and miss counters"],
+  // sample time and the kind of error that sample must report.
+  const rows: [number, SccacheError["kind"]][] = [
+    [0, "failed"],
+    [1000, "failed"],
+    [4999, "failed"],
+    [5000, "malformed"],
+    [9999, "malformed"],
   ];
-  for (const [time, message] of rows) {
+  for (const [time, kind] of rows) {
     if (time === 1000) answer = "Compile requests 3\n";
-    const r = new Reader();
+    const r = new Kinds();
     expect((await c.collect(r, time)).state).toBe("failed");
-    expect(r.errors).toEqual([{ source: "sccache --show-stats", message }]);
+    expect(r.kinds).toEqual([{ source: "sccache --show-stats", kind }]);
   }
   expect(calls).toBe(2);
   // A query that reads the counters clears the error on its sample and the
