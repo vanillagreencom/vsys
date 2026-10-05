@@ -60,9 +60,8 @@ async function check(name: string, source: string) {
 
 test("the type check reports an indexed read used without a guard", async () => {
   const { code, output } = await check("unguarded", unguarded);
-  expect(output).toMatch(
-    /unguarded\.ts\(3,10\): error TS18048: 'item' is possibly 'undefined'/,
-  );
+  // tsc's machine-read location and diagnostic code, not its sentence.
+  expect(output).toMatch(/unguarded\.ts\(3,10\): error TS18048:/);
   expect(code).not.toBe(0);
 });
 

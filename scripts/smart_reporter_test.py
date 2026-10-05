@@ -352,7 +352,14 @@ esac
             self.assertFalse(reports.exists(), "an option-shaped SMARTCTL_TIMEOUT must refuse before any report directory is made")
 
 
-REPORTER_FILES = ("vsys-smart-report", "vsys-smart-report.service", "vsys-smart-report.timer", "vsys-smart.conf")
+def installer_files() -> tuple[str, ...]:
+    """The files the installer fetches, read from its own download loop."""
+    install = [line.strip() for line in (REPORTER / "install").read_text().splitlines()]
+    loop = next(line for line in install if line.startswith("for name in "))
+    return tuple(loop.removeprefix("for name in ").removesuffix("; do").split())
+
+
+REPORTER_FILES = installer_files()
 
 
 def reporter_sums() -> str:
@@ -592,9 +599,11 @@ esac
     def test_the_release_checksums_every_file_the_installer_fetches(self) -> None:
         # The installer refuses a file SHA256SUMS does not name, so the
         # release must checksum each one and expect it in the combined list.
-        install = [line.strip() for line in (REPORTER / "install").read_text().splitlines()]
-        loop = next(line for line in install if line.startswith("for name in "))
-        self.assertEqual(tuple(loop.removeprefix("for name in ").removesuffix("; do").split()), REPORTER_FILES)
+        # The loop fetches every shipped file beside the installer itself, so
+        # a file added to the directory is held to this test without an edit.
+        shipped = {path.name for path in REPORTER.iterdir() if path.name != "install"}
+        self.assertIn("vsys-smart-report", REPORTER_FILES)
+        self.assertEqual(set(REPORTER_FILES), shipped)
         release = [line.strip() for line in (ROOT / ".github" / "workflows" / "release.yml").read_text().splitlines()]
         self.assertIn(f"sha256sum {' '.join(REPORTER_FILES)} > smart-reporter.sha256", release)
         expected = [line.removesuffix(" | sort)").removesuffix(" \\") for line in release]

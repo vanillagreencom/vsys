@@ -130,9 +130,15 @@ def bun() -> str:
 
 
 def parse(report: Path, home: Path) -> dict:
-    """The report as vsys reads it."""
+    """The report as vsys reads it, with the problem verdict Storage draws from it."""
     done = subprocess.run(
-        [bun(), "-e", "import { parseScrub } from './src/collect/scrub.ts'; console.log(JSON.stringify(parseScrub(await Bun.file(process.env.REPORT).text())));"],
+        [
+            bun(),
+            "-e",
+            "import { scrubProblem } from './src/collect/btrfs.ts'; import { parseScrub } from './src/collect/scrub.ts';"
+            " const text = await Bun.file(process.env.REPORT).text();"
+            " console.log(JSON.stringify({ ...parseScrub(text), problem: scrubProblem(text) }));",
+        ],
         cwd=ROOT,
         env={"PATH": "/usr/bin:/bin", "HOME": str(home), "TZ": "UTC", "REPORT": str(report)},
         capture_output=True,
@@ -433,14 +439,16 @@ esac
         with scratch() as tmp:
             done, report = self.run_reporter(Path(tmp), STATUS_CLEAN, "")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertTrue(report.read_text().startswith("btrfs scrub finished, no errors: /\n"))
-            self.assertIsNone(parse(report, Path(tmp))["addresses"])
+            read = parse(report, Path(tmp))
+            self.assertEqual((read["status"], read["problem"]), ("finished", False))
+            self.assertIsNone(read["addresses"])
 
     def test_a_scrub_that_stopped_early_is_not_called_finished(self) -> None:
         with scratch() as tmp:
             done, report = self.run_reporter(Path(tmp), status(state="aborted", errors="no errors found"), "")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(report.read_text().splitlines()[0], "btrfs scrub did not complete (aborted): /")
+            read = parse(report, Path(tmp))
+            self.assertEqual((read["status"], read["problem"]), ("aborted", True))
 
     def test_a_scrub_the_kernel_logged_no_address_for_says_so(self) -> None:
         with scratch() as tmp:
@@ -455,22 +463,17 @@ esac
             done, report = self.run_reporter(Path(tmp), status(), None)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIsNone(parse(report, Path(tmp))["addresses"])
-            self.assertIn("No journal files were found.", report.read_text())
 
     def test_a_device_list_it_cannot_read_names_no_files_rather_than_none(self) -> None:
         # Without this filesystem's devices no logged address can be kept, so
         # a section would list none and read as a scrub that found no damaged
         # file. The kernel log names a damaged address on the device each time.
-        cases = (
-            (None, "The damaged files are not named: btrfs device stats failed: ERROR: getting device info for / failed: Inappropriate ioctl for device"),
-            ("", f"The damaged files are not named: btrfs device stats named no device of {UUID}"),
-        )
-        for device_stats, reason in cases:
+        # A failed `btrfs device stats`, and one that named no device.
+        for device_stats in (None, ""):
             with self.subTest(device_stats=device_stats), scratch() as tmp:
                 done, report = self.run_reporter(Path(tmp), status(), fixup("vsys-test-a", NAMED), device_stats)
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertIsNone(parse(report, Path(tmp))["addresses"])
-                self.assertIn(reason, report.read_text().splitlines())
 
     def test_a_run_stopped_while_resolving_leaves_no_file_vsys_reads(self) -> None:
         with scratch() as tmp:

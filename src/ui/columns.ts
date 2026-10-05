@@ -174,7 +174,9 @@ function wrapRows(
   width: number,
 ): { from: number; to: number }[] {
   if (width < 1)
-    throw new Error(`Cannot wrap text into ${width} columns: needs at least 1`);
+    throw new RangeError(
+      `Cannot wrap text into ${width} columns: needs at least 1`,
+    );
   const rows: { from: number; to: number }[] = [];
   let at = 0;
   while (at < drawn.length) {

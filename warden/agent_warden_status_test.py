@@ -775,70 +775,71 @@ class AgentWardenStatusRules(WardenMutantMixin, unittest.TestCase):
         for field in ("pid", "start", "processes"):
             doc = json.loads(json.dumps(base))
             doc["outside"][0][field] = None
-            rows.append((f"outside {field} null", doc))
+            rows.append((f"outside {field} null", doc, f"outside[0].{field}"))
             doc = json.loads(json.dumps(base))
             doc["waiting"][0][field] = None
-            rows.append((f"waiting {field} null", doc))
+            rows.append((f"waiting {field} null", doc, f"waiting[0].{field}"))
         doc = json.loads(json.dumps(base))
         doc["orphans"] = [{"scope": "orphan.scope", "processes": None, "cores": None, "since": 1, "harmful": False}]
-        rows.append(("orphan processes null", doc))
+        rows.append(("orphan processes null", doc, "orphans[0].processes"))
         doc = json.loads(json.dumps(base))
         doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": True, "since": 1, "harmful": False}]
-        rows.append(("orphan cores bool", doc))
+        rows.append(("orphan cores bool", doc, "orphans[0].cores"))
         doc = json.loads(json.dumps(base))
         doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": float("inf"), "since": 1, "harmful": False}]
-        rows.append(("orphan cores infinite", doc))
+        rows.append(("orphan cores infinite", doc, "orphans[0].cores"))
         doc = json.loads(json.dumps(base))
         doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": True, "harmful": False}]
-        rows.append(("orphan since bool", doc))
+        rows.append(("orphan since bool", doc, "orphans[0].since"))
         doc = json.loads(json.dumps(base))
         doc["contained"] = [{"unit": "orch.service", "processes": None}]
-        rows.append(("contained processes null", doc))
+        rows.append(("contained processes null", doc, "contained[0].processes"))
         doc = json.loads(json.dumps(base))
         doc["events"][0]["time"] = float("nan")
-        rows.append(("event time nan", doc))
+        rows.append(("event time nan", doc, "events[0].time"))
         doc = json.loads(json.dumps(base))
         doc["time"] = float("inf")
-        rows.append(("top time infinite", doc))
+        rows.append(("top time infinite", doc, "time"))
         doc = json.loads(json.dumps(base))
         doc["interval"] = 0
-        rows.append(("interval zero", doc))
+        rows.append(("interval zero", doc, "interval"))
         doc = json.loads(json.dumps(base))
         doc["lanes"] = [{"scope": [], "label": {"tool": None, "worktree": None}, "tasks": 1, "tasksMax": 2, "memory": 3, "memoryHigh": 4, "near": []}]
-        rows.append(("lane scope list", doc))
+        rows.append(("lane scope list", doc, "lanes[0].scope"))
         doc = json.loads(json.dumps(base))
         doc["lanes"][0]["near"] = [[]]
-        rows.append(("lane near list", doc))
+        rows.append(("lane near list", doc, "lanes[0].near"))
         doc = json.loads(json.dumps(base))
         doc["outside"][0]["reason"] = []
-        rows.append(("outside reason list", doc))
+        rows.append(("outside reason list", doc, "outside[0].reason"))
         doc = json.loads(json.dumps(base))
         doc["events"][0]["kind"] = []
-        rows.append(("event kind list", doc))
+        rows.append(("event kind list", doc, "events[0].kind"))
         doc = json.loads(json.dumps(base))
         doc["events"][0]["near"] = []
-        rows.append(("event near list", doc))
+        rows.append(("event near list", doc, "events[0].near"))
         doc = json.loads(json.dumps(base))
         doc["mode"] = []
-        rows.append(("mode list", doc))
+        rows.append(("mode list", doc, "mode"))
         doc = json.loads(json.dumps(base))
         doc["error"] = "other"
-        rows.append(("unknown error id", doc))
+        rows.append(("unknown error id", doc, "error"))
         for key in ("outside", "waiting", "contained"):
             doc = json.loads(json.dumps(base))
             doc[key] = None
-            rows.append((f"{key} null without error", doc))
+            rows.append((f"{key} null without error", doc, key))
         doc = json.loads(json.dumps(base))
         doc["orphans"] = None
-        rows.append(("orphans null without error allowed", doc, False))
-        for row in rows:
-            if len(row) == 3:
-                name, doc, should_error = row
-            else:
-                name, doc = row
-                should_error = True
+        rows.append(("orphans null without error allowed", doc, None))
+        # Each error opens with the path of the field it rejects, so a row
+        # passes only on its own field's error, not on any error at all.
+        for name, doc, field in rows:
             with self.subTest(name=name):
-                self.assertEqual(bool(self.w.status_errors(doc)), should_error)
+                fields = [error.split(" ", 1)[0] for error in self.w.status_errors(doc)]
+                if field is None:
+                    self.assertEqual(fields, [])
+                else:
+                    self.assertIn(field, fields)
 
 
     def test_near_cap_status_episode_lifetime_rows(self):

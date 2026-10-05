@@ -1,3 +1,4 @@
+import ctypes
 import importlib.machinery
 import importlib.util
 import os
@@ -69,6 +70,32 @@ def tracked_offenders(root, forbidden):
     if not paths:
         raise AssertionError(f"git ls-files listed no file under {root}/warden: the portability extractor is broken")
     return [name for name in paths if (Path(root) / name).is_file() and forbidden in (Path(root) / name).read_text(errors="ignore")]
+
+
+class FakeSdBus:
+    """libsystemd stand-in recording each (sv) property start_scope appends."""
+
+    def __init__(self):
+        self.properties = []
+
+    def sd_bus_message_append(self, m, signature, *args):
+        if signature == b"(sv)":
+            self.properties.append((args[0].value, args[2].value))
+        return 0
+
+    def values(self, name):
+        return [value for key, value in self.properties if key == name]
+
+    def __getattr__(self, name):
+        return lambda *args: 0
+
+
+def started_scope(module):
+    """The FakeSdBus a call to `module`'s Bus.start_scope appended its properties to."""
+    bus = module.Bus.__new__(module.Bus)
+    bus.lib, bus.bus = FakeSdBus(), ctypes.c_void_p()
+    bus.start_scope("agent-warden-1-2.scope", [])
+    return bus.lib
 
 
 def materialize_warden_script(base, text=None):

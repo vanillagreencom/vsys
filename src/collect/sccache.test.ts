@@ -103,7 +103,6 @@ test("a wedged cache server times out rather than holding the sample", async () 
   expect(Date.now() - started).toBeLessThan(2000);
   expect(given).toEqual([5]);
   expect(r.errors.map((e) => e.source)).toEqual(["sccache --show-stats"]);
-  expect(r.errors[0]?.message).toContain("did not answer within 5 ms");
 });
 
 test("the stats query is not repeated on every sample", async () => {

@@ -3,6 +3,7 @@ import { defaults } from "../config/config";
 import type { CacheEffect } from "../model/builds";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
 import { mount } from "../test/harness";
+import { present } from "../test/present";
 import { cacheDetail, cacheLevel, cacheText } from "./builds-screen";
 
 test("the cache reading states its window and never divides by nothing", () => {
@@ -108,10 +109,10 @@ test("the linkers cell stays inside its column on the rendered Builds screen", a
     const linkers = row.slice(start).trimEnd();
     // The cell starts where its heading starts and ends inside its width, the
     // cut marked, rather than spilling the rest of the list past the column.
-    expect(row.indexOf("7 linkers")).toBe(start);
+    expect(row.indexOf(`${c.linkerNames.length} linkers`)).toBe(start);
     expect(linkers.length).toBe(30);
     expect(linkers.endsWith("…")).toBe(true);
-    expect(row).not.toContain("ld.bfd");
+    expect(row).not.toContain(present(c.linkerNames.at(-1), "a linker name"));
   } finally {
     await t.close();
   }

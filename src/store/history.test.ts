@@ -667,6 +667,16 @@ function sharedHistory(busyTimeoutMs?: number) {
 // either past the runner's default; no row's verdict rests on the timeout.
 const slowRowMs = 30_000;
 
+/** The SQLite error code `run` throws, or null when it returns. */
+function thrownCode(run: () => unknown): unknown {
+  try {
+    run();
+  } catch (error) {
+    return error instanceof Error && "code" in error ? error.code : undefined;
+  }
+  return null;
+}
+
 test(
   "a write that overlaps another connection's write lock waits and succeeds",
   async () => {
@@ -680,7 +690,7 @@ test(
     // takes from there to its own write, so the write meets the lock.
     const other = await otherDashboard(root, path, time - 1000, 100);
     // The lock is really held: a connection that does not wait is refused.
-    expect(() => probe.exec("BEGIN IMMEDIATE")).toThrow("database is locked");
+    expect(thrownCode(() => probe.exec("BEGIN IMMEDIATE"))).toBe("SQLITE_BUSY");
     other.start();
     expect(() => h.add(emptySnapshot(time))).not.toThrow();
     expect(await other.released).toBe("released");
@@ -705,7 +715,7 @@ test(
     // dashboard's 50 ms wait: a write that never waits refuses at once and
     // falls under it, and a loaded host only lengthens a wait, never shortens it.
     const began = performance.now();
-    expect(() => h.add(emptySnapshot(time))).toThrow("database is locked");
+    expect(thrownCode(() => h.add(emptySnapshot(time)))).toBe("SQLITE_BUSY");
     expect(performance.now() - began).toBeGreaterThanOrEqual(25);
     other.release();
     expect(await other.released).toBe("released");

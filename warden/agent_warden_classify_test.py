@@ -136,12 +136,17 @@ class AgentWardenClassifyRules(WardenRulesCase):
             for key in ("HOME", "XDG_RUNTIME_DIR", "MISE_DATA_DIR"):
                 Path(env_no_overlay[key]).mkdir(parents=True, exist_ok=True)
             module_no_overlay = load_warden(env_no_overlay, "agent_warden_no_owner_overlay")
-        old_names = {"claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "dsh", "grok", "antigravity", "agy", "omp", "ori", "fx", "cursor-agent", "muse"}
-        shipped_names = {"claude", "codex", "gemini", "copilot", "opencode", "crush", "cursor-agent", "pi", "grok", "antigravity"}
-        old_mise = ["claude", "codex", "pi", "opencode", "gemini", "copilot", "crush", "cursor-agent", "npm-deepseek-ai-dsh", "npm-xai-official-grok", "aqua-google-antigravity-antigravity-cli", "github-can1357-oh-my-pi", "github-open-router-labs-ori-releases", "github-vercel-labs-fx", "http-muse"]
-        self.assertEqual(module.AGENT_COMMS, old_names)
+        # Read from the two data files rather than copied here, so a tool added
+        # to either needs no edit to this test.
+        shipped = json.loads((ROOT / "data" / "agent-tools.json").read_text())["tools"]
+        owner = json.loads((ROOT / "data" / "owner-agent-tools.json").read_text())["tools"]
+        shipped_names = {tool["name"] for tool in shipped}
+        owner_names = {tool["name"] for tool in owner}
+        self.assertTrue(owner_names - shipped_names, "the owner overlay adds no tool")
+        mise_dirs = {directory for tool in shipped + owner for directory in tool.get("mise", [])}
+        self.assertEqual(module.AGENT_COMMS, shipped_names | owner_names)
         self.assertEqual(module_no_overlay.AGENT_COMMS, shipped_names)
-        for directory in old_mise:
+        for directory in sorted(mise_dirs):
             with self.subTest(directory=directory):
                 self.assertTrue(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/{directory}/bin/tool"))
         self.assertFalse(module.AGENT_PATH_RE.search(f"{env['MISE_DATA_DIR']}/installs/unlisted/bin/tool"))

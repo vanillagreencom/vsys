@@ -13,7 +13,8 @@ import {
 import { mount } from "../test/harness";
 import { present } from "../test/present";
 import { hints, Waiting } from "./App";
-import { headerRowWidth, views } from "./chrome";
+import { headerRowWidth, keyLabel, viewKey, views } from "./chrome";
+import { homeRegions, type NamedRegion, storageRegions } from "./regions";
 
 test("keys and the mouse move between tabs, open an agent, and quit", async () => {
   const c = defaults();
@@ -136,9 +137,20 @@ test("the help overlay opens on its key and any key closes it", async () => {
   try {
     await t.press("?");
     expect(t.frame()).toContain("next and previous region");
-    expect(t.frame()).toMatch(/0 2 3 4 5 6 7\s+go to a screen/);
-    expect(t.frame()).toMatch(/t a g b\s+jump to a Home region/);
-    expect(t.frame()).toMatch(/f i x\s+jump to a Storage region/);
+    // Each list is every binding it covers, in the order drawn, so a screen
+    // or region added later is held to the same rule without a new line here.
+    const listed = (keys: string[], label: string) =>
+      expect(t.frame().replace(/ +/g, " ")).toContain(
+        `${keys.join(" ")} ${label}`,
+      );
+    const regionKeys = (regions: readonly NamedRegion[]) =>
+      regions.map((region) => c.keys[region.action]);
+    listed(
+      views.map((view) => c.keys[viewKey(view)]),
+      "go to a screen",
+    );
+    listed(regionKeys(homeRegions), "jump to a Home region");
+    listed(regionKeys(storageRegions), "jump to a Storage region");
     expect(t.frame()).toMatch(
       /h l ← →\s+previous and next region, or the time cursor/,
     );
@@ -409,10 +421,12 @@ test("Home's and Storage's footers list the keys that jump to their regions", as
   const t = await mount(emptySnapshot(), c, { width: 160, height: 30 });
   try {
     const footer = () => t.frame().split("\n").at(-2) ?? "";
+    const hint = (regions: readonly NamedRegion[]) =>
+      `${regions.map((region) => keyLabel(c.keys[region.action])).join(" ")} jump`;
     await t.press("1");
-    expect(footer()).toContain("Space a g b jump");
+    expect(footer()).toContain(hint(homeRegions));
     await t.press("5");
-    expect(footer()).toContain("f i x jump");
+    expect(footer()).toContain(hint(storageRegions));
   } finally {
     await t.close();
   }

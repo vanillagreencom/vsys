@@ -91,14 +91,15 @@ test("a lane's badge names the worst thing about it, and its level follows the t
 test("the table's heading and its rows are built from one column spec", () => {
   const c = defaults();
   const spec = c.columns.map(tableColumn);
-  // Every configurable column has a spec, derived from the settings contract
-  // rather than from a second list here.
-  expect(spec.length).toBe(c.columns.length);
+  // Every configurable column has a label of its own, derived from the
+  // settings contract rather than from a second list here; a column with none
+  // would head the table with its config key.
   for (const name of columns)
-    expect({ name, label: tableColumn(name).label }).toEqual({
+    expect({
       name,
-      label: columnLabels[name] ?? name,
-    });
+      labelled: Object.hasOwn(columnLabels, name),
+      label: tableColumn(name).label,
+    }).toEqual({ name, labelled: true, label: columnLabels[name] ?? "" });
   // A row occupies exactly the columns the heading does.
   const lane = laneSnapshot({ name: "lane-a" });
   const row = c.columns
@@ -168,11 +169,7 @@ test("Agents finds a worktree and clears the search without losing the list", as
     expect(t.frame()).toContain("payments");
     expect(t.frame()).not.toContain("website");
     await t.press("/");
-    await act(async () => {
-      t.ui.mockInput.pressEscape();
-      await Bun.sleep(50);
-    });
-    await t.ui.renderOnce();
+    await t.press("escape");
     expect(t.frame()).toContain("website");
   } finally {
     await t.close();

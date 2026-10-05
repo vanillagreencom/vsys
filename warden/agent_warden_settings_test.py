@@ -1,5 +1,4 @@
 import contextlib
-import ctypes
 import io
 import math
 from pathlib import Path
@@ -8,7 +7,7 @@ import sys
 from types import SimpleNamespace
 import unittest
 
-from agent_warden_testlib import ROOT, WARDEN, clean_env, load_warden, materialize_warden_script, scratch
+from agent_warden_testlib import ROOT, WARDEN, clean_env, load_warden, materialize_warden_script, scratch, started_scope
 
 # (variable, raw value, module attribute, expected value, fallback logged)
 SETTING_ROWS = [
@@ -78,30 +77,12 @@ def task_cap_run(raw, path=WARDEN):
     return module.enforce_task_caps(True), calls
 
 
-class FakeSdBus:
-    """libsystemd stand-in recording each TasksMax property start_scope appends."""
-
-    def __init__(self):
-        self.tasks_max = []
-
-    def sd_bus_message_append(self, m, signature, *args):
-        if signature == b"(sv)" and args[0].value == b"TasksMax":
-            self.tasks_max.append(args[2].value)
-        return 0
-
-    def __getattr__(self, name):
-        return lambda *args: 0
-
-
 def scope_tasks_max(raw, path=WARDEN):
     module, _ = load_with({"AGENT_SCOPE_TASKS_MAX": raw}, "agent_warden_start_scope", path)
-    bus = module.Bus.__new__(module.Bus)
-    bus.lib, bus.bus = FakeSdBus(), ctypes.c_void_p()
     try:
-        bus.start_scope("agent-warden-1-2.scope", [])
+        return started_scope(module).values(b"TasksMax")
     except Exception as e:  # noqa: BLE001
         return repr(e)
-    return bus.lib.tasks_max
 
 
 class AgentWardenSettingsRules(unittest.TestCase):

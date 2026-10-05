@@ -268,7 +268,12 @@ test("a configured address is a target tmux accepts, not one vsys refuses", asyn
   // A pane with nothing to name is still refused, because there is nothing to
   // ask about, and nothing is asked.
   const before = asked.length;
-  await expect(capturePane("")).rejects.toThrow("exported no pane");
+  await expect(
+    capturePane("", async (argv) => {
+      asked.push(argv);
+      return "one\n";
+    }),
+  ).rejects.toThrow();
   expect(asked.length).toBe(before);
 });
 

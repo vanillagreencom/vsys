@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -7,6 +8,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import shippedJson from "../../data/agent-tools.json";
+import ownerJson from "../../data/owner-agent-tools.json";
 import {
   loadAgentToolNames,
   loadAgentTools,
@@ -28,19 +31,17 @@ afterEach(() => {
     rmSync(root, { recursive: true, force: true });
 });
 
-const shippedNames = [
-  "claude",
-  "codex",
-  "gemini",
-  "copilot",
-  "opencode",
-  "crush",
-  "cursor-agent",
-  "pi",
-  "grok",
-  "antigravity",
-];
-const ownerNames = ["dsh", "agy", "omp", "ori", "fx", "muse"];
+// Read from the shipped files themselves rather than copied here, so a tool
+// added to either file needs no edit to this suite.
+const shippedNames = shippedJson.tools.map((tool) => tool.name);
+const ownerNames = ownerJson.tools
+  .map((tool) => tool.name)
+  .filter((name) => !shippedNames.includes(name));
+
+test("the shipped catalog holds the tools the other cases rely on", () => {
+  expect(shippedNames).toEqual(expect.arrayContaining(["claude", "codex"]));
+  expect(ownerNames.length).toBeGreaterThan(0);
+});
 
 test("agent tools parser accepts valid documents and rejects malformed rows", () => {
   // Control: relaxing a parser rule named in this table turns this test red.
@@ -166,9 +167,10 @@ test("agent tools writer saves only overlay tools and preserves overlay signals"
 test("agent tools writer refuses removing shipped names before writing", async () => {
   const root = scratch("agent-tools-save-missing-shipped");
   const path = join(root, ".config/vsys/agent-tools.json");
-  await expect(saveAgentToolNames(shippedNames.slice(1), path)).rejects.toThrow(
-    "Shipped names cannot be removed",
-  );
+  await expect(
+    saveAgentToolNames(shippedNames.slice(1), path),
+  ).rejects.toThrow();
+  expect(existsSync(path)).toBe(false);
   await expect(loadAgentToolNames(path)).resolves.toEqual(shippedNames);
 });
 

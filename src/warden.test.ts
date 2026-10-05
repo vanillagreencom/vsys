@@ -3,13 +3,12 @@ import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   mkdirSync,
-  readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-import { resolveWardenDir } from "./warden";
+import { defaultWardenCandidates, resolveWardenDir } from "./warden";
 
 test("warden resolver uses checkout before installed package", () => {
   const checkout = "/repo/warden";
@@ -61,35 +60,13 @@ test("warden resolver reports every path it tried", () => {
   );
 });
 
-test("warden resolver candidate order mutant exposes reversed lookup", async () => {
-  const source = readFileSync(join(import.meta.dir, "warden.ts"), "utf8");
-  const old = "return [checkout, installed, archive];";
-  expect(source.split(old).length - 1).toBe(1);
-  const dir = join(
-    process.cwd(),
-    "tmp",
-    "warden-resolver-mutants",
-    randomUUID(),
-  );
-  mkdirSync(dir, { recursive: true });
-  const mutant = join(dir, "warden-mutant.ts");
-  writeFileSync(
-    mutant,
-    source.replace(old, "return [installed, checkout, archive];"),
-  );
-  try {
-    const module = await import(pathToFileURL(mutant).href);
-    const candidates = module.defaultWardenCandidates(
-      "/repo/src",
-      process.execPath,
-    );
-    expect(candidates[0]).not.toBe(resolve("/repo/src", "../warden"));
-    expect(candidates).toContain(
-      resolve(dirname(process.execPath), "lib/vsys/warden"),
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test("warden candidates put the checkout before the installed and archive copies", () => {
+  const execDir = dirname(realpathSync(process.execPath));
+  expect(defaultWardenCandidates("/repo/src", process.execPath)).toEqual([
+    resolve("/repo/src", "../warden"),
+    resolve(execDir, "../lib/vsys/warden"),
+    resolve(execDir, "lib/vsys/warden"),
+  ]);
 });
 
 test("warden dispatch forwards args and exits with installer status", async () => {

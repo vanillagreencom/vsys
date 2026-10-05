@@ -36,7 +36,10 @@ test("every stored setting sits in exactly one group, and no group names a stran
 test("the Settings list opens with the sources row and ends with the keys", () => {
   const items = settingItems(defaults());
   expect(items[0]).toEqual({ kind: "sources" });
-  expect(items.at(-1)).toEqual({ kind: "setting", key: "keys.exportMarkdown" });
+  const keys = Object.keys(defaults().keys).map(
+    (action) => ({ kind: "setting", key: `keys.${action}` }) as const,
+  );
+  expect(items.slice(-keys.length)).toEqual(keys);
   expect(items.filter((i) => i.kind === "setting").length).toBe(
     Object.keys(defaults()).length - 1 + Object.keys(defaults().keys).length,
   );
@@ -137,10 +140,10 @@ test("Settings edits a value in place and honours a changed quit binding", async
   try {
     await t.press("7");
     expect(t.frame()).toContain("Refresh interval");
-    // The capability rows, the unreadable-sources row and the settings-file
-    // row come before the settings, and the refresh interval is the last of
-    // the five Display settings above it.
-    const above = s.capabilities.length + 2 + 5;
+    const above = settingItems(c, s.capabilities).findIndex(
+      (item) => item.kind === "setting" && item.key === "refreshMs",
+    );
+    expect(above).toBeGreaterThan(0);
     for (let i = 0; i < above; i++) await t.press("down");
     await t.press("enter");
     expect(t.frame()).toContain("Enter saves");
@@ -278,7 +281,11 @@ test("Settings opens on a snapshot stored before the capability probe", async ()
     expect(frame).toMatch(/Refresh interval\s+1s/);
     expect(frame).toMatch(/Low memory limit\s+1\.0 GiB/);
     expect(frame).toMatch(/Save history\s+Off/);
-    expect(frame).toMatch(/Table columns\s+name, account, cwd, and 18 more/);
+    expect(frame).toMatch(
+      new RegExp(
+        `Table columns\\s+name, account, cwd, and ${c.columns.length - 3} more`,
+      ),
+    );
     expect(frame).not.toContain("not available");
   } finally {
     await t.close();
@@ -627,6 +634,10 @@ test("a query that matches nothing leaves Enter with nothing to open", async () 
   }
 });
 
+/** The label of the last Settings row, the last key binding. */
+const lastKeyLabel = (c: Config) =>
+  settingLabel(`keys.${present(Object.keys(c.keys).at(-1), "a key binding")}`);
+
 test("the editor opens in view when the layout moves the row it edits", async () => {
   const c = defaults();
   const s = emptySnapshot();
@@ -652,7 +663,7 @@ test("the editor opens in view when the layout moves the row it edits", async ()
     const frame = t.frame();
     // This row's editor, named by the row it edits. Measuring on the old
     // layout scrolled to the top of the list, where the opened row is not.
-    expect(frame).toContain("Export markdown · Enter saves");
+    expect(frame).toContain(`${lastKeyLabel(c)} · Enter saves`);
     expect(frame).not.toContain("Storage units");
   } finally {
     await t.close();
@@ -686,7 +697,7 @@ test("the second scroll read waits for the renderer's own frame under its real f
     // not moved, so the renderer's own next frame, which only that clock can
     // trigger, provably has not happened yet.
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(t.frame()).not.toContain("Export markdown · Enter saves");
+    expect(t.frame()).not.toContain(`${lastKeyLabel(c)} · Enter saves`);
     // Only now does the renderer's own frame arrive, under its real cap. One
     // render runs the frame that corrects the scroll; the frame event fires
     // after that render already drew, so a second one is what shows it.
@@ -694,7 +705,7 @@ test("the second scroll read waits for the renderer's own frame under its real f
     await t.ui.renderOnce();
     await t.ui.renderOnce();
     const frame = t.frame();
-    expect(frame).toContain("Export markdown · Enter saves");
+    expect(frame).toContain(`${lastKeyLabel(c)} · Enter saves`);
     expect(frame).not.toContain("Storage units");
   } finally {
     await t.close();

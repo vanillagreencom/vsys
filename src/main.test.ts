@@ -78,44 +78,23 @@ test("once summary exports verdict schema and skips scratch collection", async (
     };
     const summary = await run(["--summary"]);
     expect(summary.code).toBe(0);
-    const parsed = JSON.parse(summary.stdout);
+    const { meters, ...parsed } = JSON.parse(summary.stdout);
+    // The meter list is open: a meter added later is held to the same shape
+    // without a new entry here.
+    expect(meters.length).toBeGreaterThan(0);
+    for (const meter of meters)
+      expect(meter).toEqual({
+        id: expect.any(String),
+        level: "ok",
+        max: expect.any(Number),
+        value: expect.any(Number),
+      });
     expect({
       ...parsed,
       time: typeof parsed.time,
-      meters: parsed.meters.map((meter: { value: unknown; max: unknown }) => ({
-        ...meter,
-        value: meter.value === null ? null : typeof meter.value,
-        max: meter.max === null ? null : typeof meter.max,
-      })),
     }).toMatchInlineSnapshot(`
       {
         "errors": [],
-        "meters": [
-          {
-            "id": "cpu",
-            "level": "ok",
-            "max": "number",
-            "value": "number",
-          },
-          {
-            "id": "memory",
-            "level": "ok",
-            "max": "number",
-            "value": "number",
-          },
-          {
-            "id": "disk",
-            "level": "ok",
-            "max": "number",
-            "value": "number",
-          },
-          {
-            "id": "builds",
-            "level": "ok",
-            "max": "number",
-            "value": "number",
-          },
-        ],
         "schema": "vsys.summary.v1",
         "time": "number",
         "verdict": [
