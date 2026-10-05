@@ -31,5 +31,5 @@ Load from [oversee-events.md § Event kinds](oversee-events.md#event-kinds) at a
 
 - `permission` means `vanillagreen-overseer` lacks one of § Credential's alert permissions, an owner step on the app or installation: tell the owner once.
 - `credential`, source `installation-token`, means the fleet has not supplied a usable token through `ORCH_SECURITY_ALERT_TOKEN_FILE`: the control VM for a hosted overseer, the fleet worker for a local one. Restore the token supply. The watch makes no alert API call and retains the prior rows.
-- `feature-off` is the alert feature turned off on that repository: tell the owner once, whose call turning it on is.
+- `feature-off` is Dependabot alerts turned off on that repository: tell the owner once, whose call turning it on is. Code or secret scanning answering `feature-off`, as on a private repository without GitHub's paid security products, is off rather than unread: the watch prints no line for it, and its rows stand. A repository with the feature on, a licensed private one included, keeps its alerts.
 - Any other cause is named in GitHub's or workflow-state's words on the stderr line beside it.
