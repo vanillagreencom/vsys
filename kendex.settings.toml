@@ -12,10 +12,11 @@ LINEAR_TEAM = "vsys"
 # Issue identifier prefix used in examples (e.g. PROJ-123).
 LINEAR_TEAM_PREFIX = "VSY"
 
-# Declared agent-routing label set (e.g. "agent:maintainer, agent:rust").
-# Non-empty makes `issues create` refuse a create carrying none of them —
-# such an issue is invisible to agent routing. Empty = guard off.
-LINEAR_AGENT_LABELS = "agent:maintainer, agent:runtime, agent:rust, agent:iced, agent:researcher, agent:multi, agent:human"
+# Agent-routing labels. `issues create` refuses a create that carries none of
+# them, because agent routing never reaches such an issue. Each names an
+# installed agent, except agent:multi, a container whose children span agents,
+# and agent:human, work for a person. Empty turns the guard off.
+LINEAR_AGENT_LABELS = "agent:maintainer, agent:runtime, agent:rust, agent:researcher, agent:multi, agent:human"
 
 # Non-empty makes `issues create` hold the presence half of the creation bar
 # in the project-management skill's SKILL.md, § Disposition → **Name what
@@ -99,9 +100,10 @@ ORCH_LANE_SSH_PROMPT_SECS = "60"
 # Max concurrent lanes the overseer keeps in flight.
 ORCH_OVERSEER_LANES = "12"
 
-# Successor overseer order for oversee-succeed, as harness:rank:effort on the
-# tier ladder: top Claude tier, top Codex tier, then the second tier of each.
-ORCH_OVERSEER_PREFERENCE = "claude:1:high,codex:1:high,claude:2:high,codex:2:high"
+# The models a new or successor overseer tries, in order, as
+# harness:model:effort. A succession's walk then ends in the caller's own
+# harness.
+ORCH_OVERSEER_PREFERENCE = "claude:claude-opus-5-5:high,codex:gpt-6.1-sol:high"
 ORCH_OVERSEER_HEADROOM_PCT = "5"
 ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
