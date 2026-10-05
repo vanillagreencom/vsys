@@ -161,6 +161,45 @@ class AgentWardenOrphanRules(WardenRulesCase):
         self.assertEqual(events[0]["scope"], reaped_unit)
         self.assertEqual(events[0]["processes"], self.w.ORPHAN_PROC_MAX)
 
+    def test_failed_reap_is_not_a_move_failure(self):
+        with scratch() as tmp:
+            old_root, old_reap, old_still = self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan
+            self.w.CG_ROOT = Path(tmp) / "cg"
+            try:
+                mgr = 4000
+                unit = "agent-confine-stuck.scope"
+                cg = self._cg(unit)
+                recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")}
+                for i in range(self.w.ORPHAN_PROC_MAX):
+                    recs[5000 + i] = self.P(5000 + i, mgr, "bun", ["bun"], cg, exe="/usr/bin/bun")
+                d = self.w.CG_ROOT / self.w.SLICE / unit
+                d.mkdir(parents=True)
+                (d / "cpu.stat").write_text("")
+                now = self.w.time.time()
+                st = {
+                    "reaped": 0,
+                    "move_failures": 0,
+                    "event_seq": 0,
+                    "events": [],
+                    "orphans": {unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True}},
+                }
+                self.w.reap = lambda unit: (False, "stop refused")
+                self.w.scope_still_orphan = lambda unit, managers: True
+                reaped, rows = self.w.reap_orphans(recs, st, True)
+            finally:
+                self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan = old_root, old_reap, old_still
+        checks = [
+            ("nothing reaped", reaped, []),
+            ("move failures unchanged", st["move_failures"], 0),
+            ("reaped unchanged", st["reaped"], 0),
+            ("no event", st["events"], []),
+            ("scope still listed", [row["scope"] for row in rows], [unit]),
+            ("scope still tracked", unit in st["orphans"], True),
+        ]
+        for name, actual, expected in checks:
+            with self.subTest(name=name):
+                self.assertEqual(actual, expected)
+
     def test_scope_still_orphan_refuses_incomplete_membership(self):
         with scratch() as tmp:
             old_root, old_proc = self.w.CG_ROOT, self.w.Proc
