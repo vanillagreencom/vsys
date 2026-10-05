@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Config, columns, validate } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
+import { worstPressure } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
@@ -346,7 +347,7 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
  */
 export type LaneBadge =
   | { kind: "unconfined"; level: "danger" }
-  | { kind: "cap"; level: "danger"; cap: number | null; floor: number }
+  | { kind: "cap"; level: "danger"; cap: number | null; floor: number | null }
   | {
       kind: "pressure";
       level: "danger" | "warn";
@@ -355,25 +356,27 @@ export type LaneBadge =
       threshold: number;
     }
   | { kind: "blocked"; level: "warn" };
+/**
+ * A lane's cap under the floor, judged on the cap and the floor it names, so a
+ * sample pinned from before the floor changed cannot claim a cap is under a
+ * floor it is not. Only a stored lane that predates its cap reading falls back
+ * to the decision it was stored with, and names neither number.
+ */
+export function lowCap(
+  lane: Lane,
+  c: Config,
+): { cap: number | null; floor: number | null } | null {
+  if (lane.memoryMax !== null)
+    return lane.memoryMax < c.memoryFloor
+      ? { cap: lane.memoryMax, floor: c.memoryFloor }
+      : null;
+  return lane.dangerous ? { cap: null, floor: null } : null;
+}
 export function laneBadge(lane: Lane, c: Config): LaneBadge | null {
   if (lane.unconfined) return { kind: "unconfined", level: "danger" };
-  if (lane.dangerous)
-    return {
-      kind: "cap",
-      level: "danger",
-      cap: lane.memoryMax,
-      floor: c.memoryFloor,
-    };
-  const waits = [
-    { resource: "cpu", some: lane.pressure },
-    { resource: "memory", some: lane.memoryPressure },
-    { resource: "io", some: lane.ioPressure },
-  ] as const;
-  let worst: { resource: "cpu" | "memory" | "io"; some: number } | null = null;
-  // A lane stored before a pressure was read carries none at all.
-  for (const { resource, some } of waits)
-    if (typeof some === "number" && (worst === null || some > worst.some))
-      worst = { resource, some };
+  const cap = lowCap(lane, c);
+  if (cap) return { kind: "cap", level: "danger", ...cap };
+  const worst = worstPressure(lane);
   if (worst && worst.some > c.pressureRed)
     return {
       kind: "pressure",

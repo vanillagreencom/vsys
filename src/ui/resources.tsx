@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
-import { coveringGroup, effectiveMax } from "../model/lanes";
+import { coveringGroup, dangerousCap, effectiveMax } from "../model/lanes";
 import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Snapshot } from "../model/types";
 import { type Level, meters } from "../model/verdict";
@@ -159,7 +159,11 @@ export function groupCause(
   if (s.lanes.some((l) => l.id === g.path && l.unconfined))
     return { kind: "unconfined", level: "danger" };
   const cap = effectiveMax(s.groups, g.path).max;
-  if (cap !== null && cap < c.memoryFloor && holdsLane(g, s))
+  if (
+    cap !== null &&
+    dangerousCap(g, s.groups, c.memoryFloor) &&
+    holdsLane(g, s)
+  )
     return { kind: "cap", level: "danger", cap, floor: c.memoryFloor };
   let worst: { resource: string; some: number } | null = null;
   for (const [resource, p] of Object.entries(g.pressure))

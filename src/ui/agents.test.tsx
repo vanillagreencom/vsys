@@ -77,6 +77,18 @@ test("every coloured lane row carries a badge naming its cause, worst first", ()
       { kind: "cap", level: "danger", cap: 256 * mib, floor: c.memoryFloor },
       "danger",
     ],
+    [
+      "pinned from before the floor was lowered under its cap",
+      { dangerous: true, memoryMax: 2 * c.memoryFloor },
+      null,
+      "ok",
+    ],
+    [
+      "stored before its cap was read",
+      { dangerous: true, memoryMax: null },
+      { kind: "cap", level: "danger", cap: null, floor: null },
+      "danger",
+    ],
     ["at the amber line", { pressure: c.pressureAmber }, null, "ok"],
     [
       "past the amber line",
@@ -134,6 +146,21 @@ test("every coloured lane row carries a badge naming its cause, worst first", ()
       badge: laneBadge(lane, c),
       level: laneLevel(lane, c),
     }).toEqual({ name, badge, level });
+  }
+});
+
+test("a lane red from a stall alone names the stall beside the list", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The Wait column shows CPU, and the State cell is too narrow for the
+  // number, so only the selected agent's header beside the list can show it.
+  s.lanes = [laneSnapshot({ name: "lane-a", pressure: 0, ioPressure: 30 })];
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("30.0%");
+  } finally {
+    await t.close();
   }
 });
 

@@ -85,6 +85,34 @@ test("a serious filesystem row carries its cause with the number that tripped it
     );
 });
 
+test("a serious filesystem row names its cause on the row", async () => {
+  const c = defaults();
+  const rows: [Parameters<typeof volumeSnapshot>[1], string][] = [
+    [{ delta: { "x/corruption_errs": 3 } }, "x/corruption_errs"],
+    // 1e6 bytes, under the floor; the device row above shows it too, so only
+    // the mount's own row is searched.
+    [{ free: 1e6 }, "976.6 KiB"],
+  ];
+  for (const [overrides, value] of rows) {
+    const s = emptySnapshot();
+    s.storage.volumes = [volumeSnapshot("/srv/data", overrides)];
+    const t = await mount(s, c, { width: 140, height: 30 });
+    try {
+      await t.press("5");
+      const row = t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("/srv/data"));
+      expect({ value, shown: row?.includes(value) }).toEqual({
+        value,
+        shown: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
 test("Storage opens with write totals and keeps filesystem state below them", async () => {
   const c = defaults();
   const s = emptySnapshot();

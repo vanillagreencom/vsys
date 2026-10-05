@@ -79,9 +79,11 @@ export function blockedText(l: Lane): string {
 export function waitText(resource: string, some: number, threshold: number) {
   return `${resource} wait ${percent(some)} over ${percent(threshold)}`;
 }
-/** A memory cap under the floor, named with both numbers. */
-export function floorText(cap: number | null, floor: number, c: Config) {
-  return `memory cap ${amount(cap, c)} under ${bytes(floor, c)}`;
+/** A memory cap under the floor, named with both numbers where they are known. */
+export function floorText(cap: number | null, floor: number | null, c: Config) {
+  return cap === null || floor === null
+    ? "memory cap under the low memory limit"
+    : `memory cap ${bytes(cap, c)} under ${bytes(floor, c)}`;
 }
 export function laneValue(l: Lane, key: string, c: Config): string {
   const value = l[key as keyof Lane];

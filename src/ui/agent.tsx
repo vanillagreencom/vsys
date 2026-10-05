@@ -10,7 +10,7 @@ import { parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
-import { badgeText, laneBadge, laneLevel } from "./agents";
+import { badgeText, laneBadge, laneLevel, lowCap } from "./agents";
 import { keyLabel, screenPad } from "./chrome";
 import { fit } from "./columns";
 import {
@@ -158,7 +158,7 @@ export function AgentTiles({
         key="Memory"
         label="Memory"
         value={amount(lane.rss, c)}
-        level={lane.dangerous ? "danger" : "ok"}
+        level={lowCap(lane, c) ? "danger" : "ok"}
         detail={`cache ${amount(lane.cache, c)} · swap ${amount(lane.swap, c)}`}
       />
       <Tile
@@ -202,7 +202,7 @@ export function AgentSummary({
       <Field
         label="Limits"
         value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap}`}
-        color={lane.dangerous ? ui.danger : undefined}
+        color={lowCap(lane, c) ? ui.danger : undefined}
       />
       <Field
         label="Builds"
@@ -538,7 +538,7 @@ export function Agent({
         <Field
           label="Limits"
           value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap} · make jobs ${lane.jobs ?? "not set"} · jobserver ${lane.jobserver ?? "not set"}`}
-          color={lane.dangerous ? ui.danger : undefined}
+          color={lowCap(lane, c) ? ui.danger : undefined}
         />
         <Field
           label="Builds"

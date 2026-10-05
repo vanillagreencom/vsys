@@ -168,6 +168,33 @@ test("a coloured group row carries its cause, and a low cap is a cause only on a
   }
 });
 
+test("Resources names the floor for a capped lane and not for a capped service", async () => {
+  const c = defaults();
+  const mib = 1024 * 1024;
+  const rows: [string, string, boolean][] = [
+    ["agents.slice/a.scope", "a.scope", true],
+    ["app.slice/slack-listen.service", "slack-listen.service", false],
+  ];
+  for (const [path, name, named] of rows) {
+    const s = emptySnapshot();
+    s.groups = [
+      groupSnapshot({ path, name, max: 256 * mib, memory: 70 * mib }),
+    ];
+    s.lanes = [laneSnapshot({ cgroup: "agents.slice/a.scope" })];
+    const t = await mount(s, c, { width: 120, height: 30 });
+    try {
+      await t.press("3");
+      // The floor is 1 GiB, and nothing else on this screen reads that.
+      expect({ path, named: t.frame().includes("1.0 GiB") }).toEqual({
+        path,
+        named,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
 test("groups that decode to one name are separated, and hiding rows never renames one", () => {
   const g = (path: string, name: string, pids: number[] = [], memory = 0) =>
     groupSnapshot({

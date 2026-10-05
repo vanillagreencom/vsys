@@ -417,10 +417,25 @@ export function processTree(procs: Proc[]): { proc: Proc; depth: number }[] {
     })
     .map(({ proc, chain }) => ({ proc, depth: chain.length - 1 }));
 }
+/**
+ * The resource a lane stalls on most, and that stall. A lane stored before a
+ * pressure was read carries none for it, so only numbers compete.
+ */
+export function worstPressure(
+  lane: Lane,
+): { resource: "cpu" | "memory" | "io"; some: number } | null {
+  const waits = [
+    { resource: "cpu", some: lane.pressure },
+    { resource: "memory", some: lane.memoryPressure },
+    { resource: "io", some: lane.ioPressure },
+  ] as const;
+  let worst: { resource: "cpu" | "memory" | "io"; some: number } | null = null;
+  for (const { resource, some } of waits)
+    if (typeof some === "number" && (worst === null || some > worst.some))
+      worst = { resource, some };
+  return worst;
+}
 /** Agents colouring considers every resource while its pressure column shows CPU. */
 export function lanePressure(lane: Lane): number | null {
-  const values = [lane.pressure, lane.memoryPressure, lane.ioPressure].filter(
-    (n): n is number => typeof n === "number",
-  );
-  return values.length ? Math.max(...values) : null;
+  return worstPressure(lane)?.some ?? null;
 }
