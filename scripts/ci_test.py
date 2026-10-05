@@ -83,9 +83,16 @@ class ApplicationChecks(unittest.TestCase):
         )
 
     def assertRefused(self, result, line):
-        """The run failed on the refusal whose key=value line is `line`."""
+        """The run failed on the refusal whose key=value line is `line`, and
+        the error annotation after it carries the refusal's prose."""
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn(line, result.stderr.splitlines())
+        lines = result.stderr.splitlines()
+        self.assertIn(line, lines)
+        after = lines[lines.index(line) + 1:]
+        self.assertTrue(after, result.stderr)
+        annotation = after[0]
+        self.assertTrue(annotation.startswith("::error::"), annotation)
+        self.assertNotIn(annotation.partition(": ")[2], ("", line))
 
     def logged(self):
         return self.commands.read_text().splitlines() if self.commands.exists() else []

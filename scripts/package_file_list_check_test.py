@@ -55,10 +55,21 @@ class PackageFileListCheck(unittest.TestCase):
             text=True,
         )
 
-    def refusal(self, result: subprocess.CompletedProcess[str]) -> str:
-        """The refusal's key=value line, which the check prints first."""
+    def refusal(self, result: subprocess.CompletedProcess[str], prose: bool = True) -> str:
+        """The refusal's key=value line, which the check prints first. The
+        error annotation after it carries the refusal's prose, or for a
+        refusal with none, the key line itself."""
         self.assertNotEqual(result.returncode, 0)
-        return result.stderr.splitlines()[0]
+        lines = result.stderr.splitlines()
+        self.assertGreaterEqual(len(lines), 2, result.stderr)
+        line, annotation = lines[0], lines[1]
+        self.assertTrue(annotation.startswith("::error::"), annotation)
+        message = annotation.partition(": ")[2]
+        if prose:
+            self.assertNotIn(message, ("", line))
+        else:
+            self.assertEqual(message, line)
+        return line
 
     def test_current_package_contract_passes(self) -> None:
         result = self.run_check()
@@ -69,33 +80,38 @@ class PackageFileListCheck(unittest.TestCase):
         original = manifest.read_text()
         row = "755 lib/vsys/warden/install warden/install\n"
         self.assertIn(row, original)
-        for name, text, expected in (
-            ("required row missing", original.replace(row, ""), "manifest=missing-required path=lib/vsys/warden/install"),
+        # The manifest refusals carry no prose; a failed read carries the
+        # read error's.
+        for name, text, expected, prose in (
+            ("required row missing", original.replace(row, ""), "manifest=missing-required path=lib/vsys/warden/install", False),
             (
                 "required row wrong mode",
                 original.replace(row, "644" + row[3:]),
                 "manifest=bad-mode path=lib/vsys/warden/install actual=644 expected=755",
+                False,
             ),
             (
                 "row outside lib/vsys",
                 original + "644 lib/systemd/user/x.service warden/systemd/agents.slice\n",
                 "manifest=path-source-mismatch path=lib/systemd/user/x.service source=warden/systemd/agents.slice",
+                False,
             ),
             (
                 "required path from another warden script",
                 original.replace(row, "755 lib/vsys/warden/install warden/agent-warden\n"),
                 "manifest=path-source-mismatch path=lib/vsys/warden/install source=warden/agent-warden",
+                False,
             ),
             # ci.py runs the check with no packaging/ guard of its own, so a
             # renamed packaging/ fails here.
-            ("manifest missing", None, f"read=failed path={self.repo.resolve() / MANIFEST}"),
+            ("manifest missing", None, f"read=failed path={self.repo.resolve() / MANIFEST}", True),
         ):
             with self.subTest(name):
                 if text is None:
                     manifest.unlink()
                 else:
                     manifest.write_text(text)
-                self.assertEqual(self.refusal(self.run_check()), expected)
+                self.assertEqual(self.refusal(self.run_check(), prose), expected)
 
     def test_extra_manifest_row_passes(self) -> None:
         (self.repo / "data" / "extra.json").write_text("{}\n")
@@ -151,7 +167,7 @@ class PackageFileListCheck(unittest.TestCase):
         ))
         # The first manifest row not sourced from agent-warden is refused;
         # which one that is belongs to the manifest's order.
-        self.assertEqual(self.refusal(self.run_check()).split()[0], "staged=content-mismatch")
+        self.assertEqual(self.refusal(self.run_check(), prose=False).split()[0], "staged=content-mismatch")
 
 
 class InstallScript(unittest.TestCase):

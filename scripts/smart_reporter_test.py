@@ -570,11 +570,16 @@ esac
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_a_checksum_mismatch_installs_nothing(self) -> None:
-        wrong = "".join(f"{'0' * 64}  {name}\n" for name in REPORTER_FILES)
+        release = "0" * 64
+        wrong = "".join(f"{release}  {name}\n" for name in REPORTER_FILES)
+        digest = hashlib.sha256((REPORTER / "vsys-smart-report").read_bytes()).hexdigest()
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), sums_text=wrong)
             self.assertEqual(done.returncode, 1)
             self.assertEqual(done.stderr.splitlines()[0], "smart-reporter: checksum=vsys-smart-report mismatch")
+            # The refusal names both values, computed and released.
+            self.assertIn(digest, done.stderr)
+            self.assertIn(release, done.stderr)
             self.assertFalse(any(call.startswith(("install ", "systemd-tmpfiles", "systemctl")) for call in calls))
 
     def test_sha256sums_missing_a_file_installs_nothing(self) -> None:

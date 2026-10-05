@@ -2811,8 +2811,9 @@ def selftest():
     try:
         delivery = deliver_notice("moved", "summary", "body", True, lambda k, s, b: calls.append((s, b)) or True)
         check("fresh consumer suppresses event notify-send", calls == [] and delivery == "consumer")
+        check("notice left to consumer leaves one journal line", len(logs) == 1 and "summary" in logs[0])
         deliver_notice("moved", "summary", "body", False, lambda k, s, b: calls.append((s, b)) or True)
-        check("stale consumer uses fallback notify-send", calls == [("summary", "body")])
+        check("stale consumer uses fallback notify-send", calls == [("summary", "body")] and len(logs) == 1)
         st = default_state()
         deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1000.0, lambda k, s, b: calls.append((s, b)) or True)
         deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1001.0, lambda k, s, b: calls.append((s, b)) or True)
@@ -2821,7 +2822,8 @@ def selftest():
         deliver_episode_notice(st, "tasks", "lane.scope", "near", "body", False, 1002.0, lambda k, s, b: calls.append((s, b)) or True)
         check("episode fallback re-notifies after clear", calls.count(("near", "body")) == 2)
         st = default_state()
-        deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda k, s, b: calls.append((s, b)) or True)
+        delivery, _ = deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", True, 1000.0, lambda k, s, b: calls.append((s, b)) or True)
+        check("episode left to consumer leaves one journal line", delivery == "consumer" and len(logs) == 2 and "memory" in logs[1])
         deliver_episode_notice(st, "memory", "lane.scope", "memory", "body", False, 1001.0, lambda k, s, b: calls.append((s, b)) or True)
         check("fallback resumes once after consumer heartbeat goes stale", calls.count(("memory", "body")) == 1)
     finally:

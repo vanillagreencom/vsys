@@ -56,10 +56,18 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         self.w.log = logs.append
         try:
             sender = lambda k, s, b: calls.append((k, s, b)) or True
-            self.assertEqual(self.w.deliver_notice("moved", "summary", "body", True, sender), "consumer")
-            self.assertEqual(calls, [])
-            self.assertEqual(self.w.deliver_notice("moved", "summary", "body", False, sender), "sent")
-            self.assertEqual(calls, [("moved", "summary", "body")])
+            # A notice left to the consumer leaves one journal line naming
+            # its summary; a sent one leaves none.
+            for summary, fresh, expected, logged in (
+                ("handoff-summary", True, "consumer", 1),
+                ("fallback-summary", False, "sent", 0),
+            ):
+                with self.subTest(summary=summary):
+                    before = len(logs)
+                    self.assertEqual(self.w.deliver_notice("moved", summary, "body", fresh, sender), expected)
+                    self.assertEqual(len(logs) - before, logged)
+                    self.assertEqual(sum(summary in line for line in logs[before:]), logged)
+            self.assertEqual(calls, [("moved", "fallback-summary", "body")])
         finally:
             self.w.log = old_log
 
@@ -79,8 +87,13 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             ]
             for name, kind, fresh, now, expected in rows:
                 with self.subTest(name=name):
+                    before = len(logs)
                     delivery, _key = self.w.deliver_episode_notice(st, kind, "lane.scope", kind, "body", fresh, now, sender)
                     self.assertEqual(delivery, expected)
+                    # Only a notice left to the consumer leaves a journal line.
+                    logged = 1 if expected == "consumer" else 0
+                    self.assertEqual(len(logs) - before, logged)
+                    self.assertEqual(sum(kind in line for line in logs[before:]), logged)
             self.w.clear_episodes(st, {"tasks"})
             self.assertEqual(self.w.deliver_episode_notice(st, "tasks", "lane.scope", "tasks", "body", False, 1002.0, sender)[0], "sent")
             self.assertEqual(calls, [("tasks", "tasks", "body"), ("memory", "memory", "body"), ("tasks", "tasks", "body")])
