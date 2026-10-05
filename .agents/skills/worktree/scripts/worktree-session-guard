@@ -47,6 +47,10 @@ Options (a flag a command does not take is a usage failure):
   --owner NAME       claim, refresh, release, status. Lease owner; defaults to
                      KENDEX_SESSION_OWNER, HT_SESSION_OWNER, then USER for
                      mutating owner commands.
+  --adopt            claim. Has effect only with --owner: take over a lease
+                     held under the environment owner above, as a
+                     session-start claim leaves it; without it that lease
+                     refuses --owner.
   --ttl-minutes N    release, sweep. Heartbeat TTL in minutes (default 720).
   --stale            release. Release a lease only when it is past the TTL.
   --force            release. Release a foreign lease regardless of age.
@@ -55,11 +59,11 @@ Options (a flag a command does not take is a usage failure):
 
 Mutations (claim, refresh, release, sweep) serialize on a lock in the
 repository's common dir, through flock(1) where it is on PATH and a mkdir
-mutex otherwise.
+mutex otherwise; either refuses after waiting 60 seconds for it.
 
-Exit codes: 0 success, 1 usage/Git failure, 3 no lock, 4 non-guard lock,
-5 enumeration failure or a lease sweep could not evaluate, 75 foreign
-owner/lock or a lease not yet stale.
+Exit codes: 0 success, 1 usage/Git failure or a lock wait that ran out,
+3 no lock, 4 non-guard lock, 5 enumeration failure or a lease sweep could
+not evaluate, 75 foreign owner/lock or a lease not yet stale.
 EOF
 }
 
@@ -243,18 +247,20 @@ release_guard_mutex() {
 # one takes two independent locks and serializes nothing. It sits beside the
 # single-host assumption the lock's location in the common dir already makes.
 # When neither mechanism can take the lock the command fails loudly rather
-# than running unguarded.
+# than running unguarded. Both wait the same bound, so a caller such as the
+# session-start hook gets this refusal rather than a wait with no end.
+readonly GUARD_MUTEX_WAIT_SECONDS=60
 acquire_guard_mutex() {
 	local common="$1" lock_path tries=0
 	lock_path="$common/kendex-worktree-session-guard.lock"
 	if command -v flock >/dev/null 2>&1; then
 		exec 9>"$lock_path" || fail guard-lock-open "$lock_path" "Cannot open the session lock file."
-		flock -x 9 || fail guard-lock-acquire "$lock_path" "Cannot acquire the session lock."
+		flock -x -w "$GUARD_MUTEX_WAIT_SECONDS" 9 || fail guard-lock-timeout "$lock_path" "Cannot acquire the session lock within ${GUARD_MUTEX_WAIT_SECONDS}s; another guard process holds it."
 		return 0
 	fi
 	# Armed before the loop, never after it wins: with no holder liveness a
 	# leaked directory is never reclaimed, so every later mutation on this
-	# repository would wait 60s and fail. release_guard_mutex is a no-op while
+	# repository would wait the bound and fail. release_guard_mutex is a no-op while
 	# GUARD_MUTEX_DIR is empty, so arming early costs nothing. One command
 	# boundary is still uncovered — a signal handled between mkdir returning
 	# and the assignment below — because recording the directory before mkdir
@@ -263,7 +269,7 @@ acquire_guard_mutex() {
 	trap release_guard_mutex EXIT
 	while ! mkdir -- "$lock_path.d" 2>/dev/null; do
 		tries=$((tries + 1))
-		[[ "$tries" -lt 600 ]] || fail guard-mutex-timeout "$lock_path.d" "Cannot acquire the session mutex. If no guard process is running, remove this directory."
+		[[ "$tries" -lt $((GUARD_MUTEX_WAIT_SECONDS * 10)) ]] || fail guard-mutex-timeout "$lock_path.d" "Cannot acquire the session mutex. If no guard process is running, remove this directory."
 		sleep 0.1
 	done
 	GUARD_MUTEX_DIR="$lock_path.d"
@@ -310,7 +316,7 @@ status_json() {
 }
 
 claimed_by() {
-	worktree_message guard-owner-conflict "path=$REQUESTED_PATH owner=$1" "Another session owns this worktree." >&2
+	worktree_message guard-owner-conflict "path=$REQUESTED_PATH owner=$1" "A lease under another owner holds this worktree." >&2
 }
 
 release_current() {
@@ -364,6 +370,7 @@ ttl="$DEFAULT_TTL_MINUTES"
 stale=false
 force=false
 dry_run=false
+adopt=false
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--owner) require_flag_applies --owner 'claim refresh release status'; [[ $# -ge 2 ]] || fail guard-option-value --owner "This option requires a value."; OWNER="$(sanitize_owner "$2")"; owner_set=true; shift 2 ;;
@@ -371,12 +378,14 @@ while [[ $# -gt 0 ]]; do
 		--stale) require_flag_applies --stale 'release'; stale=true; shift ;;
 		--force) require_flag_applies --force 'release'; force=true; shift ;;
 		--dry-run) require_flag_applies --dry-run 'sweep'; dry_run=true; shift ;;
+		--adopt) require_flag_applies --adopt 'claim'; adopt=true; shift ;;
 		--repo) require_flag_applies --repo 'release status list sweep'; [[ $# -ge 2 ]] || fail guard-option-value --repo "This option requires a directory."; repo="$2"; repo_set=true; shift 2 ;;
 		-h | --help) usage; exit 0 ;;
 		*) fail guard-option-unknown "$1" "Unknown session-guard option." ;;
 	esac
 done
 [[ "$repo_set" == true || -z "$path" || ! -d "$path" ]] || repo="$path"
+env_owner="${KENDEX_SESSION_OWNER:-${HT_SESSION_OWNER:-${USER:-}}}"
 if [[ "$owner_set" != true ]]; then
 	OWNER="${KENDEX_SESSION_OWNER:-${HT_SESSION_OWNER:-}}"
 	if [[ -z "$OWNER" && ( "$command" == claim || "$command" == refresh || ( "$command" == release && "$stale" != true ) ) ]]; then
@@ -396,7 +405,13 @@ case "$command" in
 		if read_lease; then
 			lease_is_managed "$LEASE_TEXT" || { worktree_message guard-lock-unmanaged "$REQUESTED_PATH" "The worktree lock belongs to another tool." >&2; exit "$EXIT_OWNED"; }
 			recorded="$(lease_field "$LEASE_TEXT" owner 2>/dev/null || true)"
-			[[ "$recorded" == "$OWNER" ]] || { claimed_by "${recorded:-unknown}"; exit "$EXIT_OWNED"; }
+			# A session-start hook claims under the env ladder before the
+			# workflow claims under the issue ID. Only that caller says the two
+			# are one session: another --owner claim, such as output-prune's,
+			# relies on this refusal to keep a lease a session took after its
+			# probe.
+			[[ "$recorded" == "$OWNER" || ( "$adopt" == true && -n "$env_owner" && "$recorded" == "$env_owner" ) ]] \
+				|| { claimed_by "${recorded:-unknown}"; exit "$EXIT_OWNED"; }
 			claimed="$(lease_field "$LEASE_TEXT" claimed_epoch 2>/dev/null || true)"
 			[[ "$claimed" =~ ^[0-9]+$ ]] || claimed="$now"
 	else
