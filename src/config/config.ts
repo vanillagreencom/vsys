@@ -335,6 +335,24 @@ export interface LoadedConfig {
   layeredAgentTools: string[];
 }
 
+/** The refusals a caller or a test tells apart; the message is for the reader. */
+export type ConfigRefusal =
+  | { kind: "keybinding-clash"; clashes: { key: string; actions: string[] }[] }
+  | { kind: "pressure-order" }
+  | { kind: "multi-line-value"; key: string }
+  | { kind: "untouched-value-changed"; key: string }
+  | { kind: "save-unloadable" };
+
+export class ConfigError extends Error {
+  constructor(
+    readonly refusal: ConfigRefusal,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
+}
+
 /**
  * Whether a setting holds its default. `serialize` writes only the settings
  * that differ.
@@ -404,7 +422,8 @@ export function validate(value: unknown, base = defaults()): Config {
       "History window must be greater than zero and at most 24 hours",
     );
   if (c.pressureRed > 100 || c.pressureAmber > c.pressureRed)
-    throw new Error(
+    throw new ConfigError(
+      { kind: "pressure-order" },
       "Pressure thresholds must increase from amber to red and cannot exceed 100 percent",
     );
   for (const [key, allowed] of Object.entries(choices)) {
@@ -467,12 +486,17 @@ export function validate(value: unknown, base = defaults()): Config {
     actions.set(key, [...(actions.get(key) ?? []), action]);
   const clashes = [...actions]
     .filter(([, on]) => on.length > 1)
-    .map(
-      ([key, on]) =>
-        `${key} is bound to ${on.slice(0, -1).join(", ")} and ${on.at(-1)}`,
-    );
+    .map(([key, on]) => ({ key, actions: on }));
   if (clashes.length)
-    throw new Error(`Keybindings must be unique: ${clashes.join("; ")}`);
+    throw new ConfigError(
+      { kind: "keybinding-clash", clashes },
+      `Keybindings must be unique: ${clashes
+        .map(
+          ({ key, actions: on }) =>
+            `${key} is bound to ${on.slice(0, -1).join(", ")} and ${on.at(-1)}`,
+        )
+        .join("; ")}`,
+    );
   return c;
 }
 
@@ -691,7 +715,8 @@ function applyConfigLineEdits(
       if (pending.has(key)) {
         const currentValue = (inKeys ? currentKeysTable : currentTop)[key];
         if (!isSingleLineValue(line, key, currentValue))
-          throw new Error(
+          throw new ConfigError(
+            { kind: "multi-line-value", key },
             `Settings save cannot edit ${key}: its line in config.toml holds more than this one line's value. Edit ${key} by hand in config.toml to one line, then Settings can save it again.`,
           );
         const replacement = pending.get(key) ?? null;
@@ -768,8 +793,10 @@ function verifyOnlyNamedKeysChanged(
     currentParsed = Bun.TOML.parse(currentBody) as Record<string, unknown>;
     newParsed = Bun.TOML.parse(configText) as Record<string, unknown>;
   } catch (error) {
-    throw new Error(
+    throw new ConfigError(
+      { kind: "save-unloadable" },
       `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   const changedTop = new Set<string>(edit.changedKeys);
@@ -780,7 +807,8 @@ function verifyOnlyNamedKeysChanged(
   for (const key of topKeys) {
     if (key === "keys" || changedTop.has(key)) continue;
     if (!sameTomlValue(currentParsed[key], newParsed[key]))
-      throw new Error(
+      throw new ConfigError(
+        { kind: "untouched-value-changed", key },
         `Settings save would change ${key}, which this save never touched: refusing to write a config.toml that moved content it did not mean to change`,
       );
   }
@@ -822,8 +850,10 @@ function verifyPatchedBody(
     const parsed = Bun.TOML.parse(configText) as Record<string, unknown>;
     reloaded = validate(prepareConfigInput(parsed, base).input, base);
   } catch (error) {
-    throw new Error(
+    throw new ConfigError(
+      { kind: "save-unloadable" },
       `Settings save produced a config.toml this project's own loader refuses: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
     );
   }
   for (const key of edit.changedKeys) {

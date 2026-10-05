@@ -12,6 +12,18 @@ import { Session } from "./runtime";
 import { History } from "./store/history";
 import { dispatchWarden } from "./warden";
 
+/** The refusals a caller or a test tells apart; the message is for the reader. */
+export type ArgumentRefusal = { kind: "needs-once" };
+
+export class ArgumentError extends Error {
+  constructor(
+    readonly refusal: ArgumentRefusal,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
 export async function sampleSummary(
   collector: Pick<Collector, "sample">,
   pause: () => Promise<void> = () => Bun.sleep(100),
@@ -49,7 +61,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
   if (values.markdown && !values.once)
     throw new Error("--markdown requires --once");
   if (values.summary && !values.once)
-    throw new Error("--summary requires --once");
+    throw new ArgumentError(
+      { kind: "needs-once" },
+      "--summary requires --once",
+    );
   if (values.summary && values.markdown)
     throw new Error("--summary and --markdown cannot be combined");
   if (values.config === "") throw new Error("Config path cannot be empty");

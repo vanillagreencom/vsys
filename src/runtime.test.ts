@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
 import { writeFileAtomic } from "./config/atomic";
@@ -568,9 +574,9 @@ test("pinned agent tool edits that omit shipped tools are refused before writes"
         ...config,
         agentTools: [...config.agentTools, "new-agent"],
       }),
-    ).rejects.toThrow(
-      `Pinned agentTools omits shipped agent tools: ${missingShipped}. Edit agentTools in config.toml, or remove it there to use the shared list.`,
-    );
+    ).rejects.toMatchObject({
+      refusal: { kind: "pinned-omits-shipped", missing: [missingShipped] },
+    });
     expect(readFileSync(configPath, "utf8")).toBe(configBody);
     expect(readFileSync(f.agentToolsPath, "utf8")).toBe(overlayBody);
   } finally {
@@ -832,8 +838,14 @@ test("agent tool overlay rolls back when config writing fails", async () => {
   }
 });
 
-test("agent tool overlay rollback leaves a newer overlay after config writing fails", async () => {
-  for (const existingOverlay of [false, true]) {
+test("agent tool overlay rollback after config writing fails is skipped over a newer overlay and reported when it fails", async () => {
+  const cases = [
+    { overlay: "newer", kind: "rollback-skipped" },
+    { overlay: "unreadable", kind: "rollback-failed" },
+  ] as const;
+  for (const [existingOverlay, { overlay, kind }] of [false, true].flatMap(
+    (existing) => cases.map((c) => [existing, c] as const),
+  )) {
     const f = fixture();
     const configPath = join(f.root, "config.toml");
     const overlayBody = `${JSON.stringify(
@@ -875,7 +887,11 @@ test("agent tool overlay rollback leaves a newer overlay after config writing fa
         makeSource: async () => ({ sample: async () => emptySnapshot(2000) }),
         agentToolsPath: f.agentToolsPath,
         writeConfig: async () => {
-          f.write(f.agentToolsPath, newerOverlayBody);
+          if (overlay === "newer") f.write(f.agentToolsPath, newerOverlayBody);
+          else {
+            rmSync(f.agentToolsPath);
+            mkdirSync(f.agentToolsPath);
+          }
           throw configError;
         },
       },
@@ -891,10 +907,10 @@ test("agent tool overlay rollback leaves a newer overlay after config writing fa
       } catch (error) {
         thrown = error;
       }
-      expect(thrown).toBeInstanceOf(AggregateError);
-      expect((thrown as AggregateError).errors[0]).toBe(configError);
-      expect(String((thrown as Error).message)).toContain("rollback skipped");
-      expect(readFileSync(f.agentToolsPath, "utf8")).toBe(newerOverlayBody);
+      expect(thrown).toMatchObject({ refusal: { kind } });
+      expect(thrown).toHaveProperty("refusal.saveError", configError);
+      if (overlay === "newer")
+        expect(readFileSync(f.agentToolsPath, "utf8")).toBe(newerOverlayBody);
     } finally {
       session.stop();
       f.cleanup();

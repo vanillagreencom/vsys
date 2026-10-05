@@ -143,7 +143,7 @@ test("duplicate times and a checkpoint past the budget fail visibly", () => {
       next.procs = [processSnapshot({ cwd: `/work/${"x".repeat(8192)}/${i}` })];
       open.add(next.time, JSON.stringify(next));
     }
-  }).toThrow("A history checkpoint exceeds the memory budget");
+  }).toThrow(expect.objectContaining({ refusal: { kind: "over-budget" } }));
 });
 /**
  * A checkpoint built straight from its stored shape, skipping `encode()` so a
@@ -176,7 +176,9 @@ test("decode rejects a truncated or malformed archived table", () => {
     ],
   );
   expect(() => shortColumn.at(1000)).toThrow(
-    "Archived column procs.pid has no row 1",
+    expect.objectContaining({
+      refusal: { kind: "short-column", table: "procs", field: "pid", row: 1 },
+    }),
   );
 
   // A `columns` entry holding anything but an array.
@@ -191,13 +193,15 @@ test("decode rejects a truncated or malformed archived table", () => {
     ],
   );
   expect(() => nonArrayColumn.at(1000)).toThrow(
-    "Invalid archived column: procs.pid",
+    expect.objectContaining({
+      refusal: { kind: "invalid-column", table: "procs", field: "pid" },
+    }),
   );
 
   // A line index past every sealed and open line the checkpoint holds.
   const missingLine = plant([1000, 2000], ["0"]);
   expect(() => missingLine.at(2000)).toThrow(
-    "Archive checkpoint has no line 1",
+    expect.objectContaining({ refusal: { kind: "missing-line", line: 1 } }),
   );
 });
 test("an append compresses only the lines that append added", () => {
