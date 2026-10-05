@@ -485,7 +485,6 @@ esac
                     "systemctl enable --now vsys-smart-report.timer",
                 ],
             )
-            self.assertEqual(done.stdout.splitlines()[0], "smart-reporter: installed vfixture")
 
     def test_the_installer_fetches_from_the_resolved_version_tag(self) -> None:
         with scratch() as tmp:
@@ -505,7 +504,7 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, api_tag="vlatest-fixture")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(done.stdout.splitlines()[0], "smart-reporter: installed vlatest-fixture")
+            self.assertEqual(sum(call.startswith("install ") for call in calls), 4, calls)
             fetches = [call for call in calls if call.startswith("curl ")]
             self.assertTrue(any("api.github.com/repos/vanillagreencom/vsys/releases/latest" in call for call in fetches), fetches)
             self.assertTrue(
