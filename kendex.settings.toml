@@ -102,7 +102,7 @@ ORCH_OVERSEER_LANES = "12"
 
 # The models a new or successor overseer tries, in order, as
 # harness:model:effort. A succession's walk then ends in the caller's own
-# harness and account.
+# harness, on any of its accounts with room.
 ORCH_OVERSEER_PREFERENCE = "claude:claude-opus-5-5:high,codex:gpt-6.1-sol:high"
 ORCH_OVERSEER_HEADROOM_PCT = "5"
 ORCH_OVERSEER_WALL_MINUTES = "20"
