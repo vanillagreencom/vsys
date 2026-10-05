@@ -16,6 +16,13 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 CHECK = ROOT / "scripts" / "package_file_list_check.py"
 INSTALL = ROOT / "install.sh"
+MANIFEST = "packaging/vsys-runtime-files.txt"
+
+sys.path.insert(0, str(CHECK.parent))
+
+from package_file_list_check import parse_manifest  # noqa: E402
+
+PAYLOAD = parse_manifest(ROOT)
 
 
 class PackageFileListCheck(unittest.TestCase):
@@ -29,19 +36,12 @@ class PackageFileListCheck(unittest.TestCase):
             ".github/workflows/release.yml",
             ".github/workflows/aur-git.yml",
             ".github/workflows/ci.yml",
-            "packaging/vsys-runtime-files.txt",
+            MANIFEST,
             "packaging/stage-runtime-files.sh",
             "packaging/vsys/PKGBUILD",
             "packaging/vsys-git/PKGBUILD",
             "install.sh",
-            "warden/install",
-            "warden/agent-warden",
-            "warden/agent-confine",
-            "warden/agent-confine-lineage-capped",
-            "warden/systemd/agent-warden.service",
-            "warden/systemd/agent-warden.timer",
-            "warden/systemd/agents.slice",
-            "data/agent-tools.json",
+            *(source for _mode, source in PAYLOAD.values()),
         ):
             source = ROOT / path
             target = self.repo / path
@@ -59,15 +59,37 @@ class PackageFileListCheck(unittest.TestCase):
         result = self.run_check()
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_missing_warden_file_fails(self) -> None:
-        (self.repo / "packaging" / "vsys-runtime-files.txt").write_text(
-            (self.repo / "packaging" / "vsys-runtime-files.txt")
-            .read_text()
-            .replace("755 lib/vsys/warden/install warden/install\n", "")
-        )
+    def test_manifest_defects_fail(self) -> None:
+        manifest = self.repo / MANIFEST
+        original = manifest.read_text()
+        row = "755 lib/vsys/warden/install warden/install\n"
+        self.assertIn(row, original)
+        for name, text, expected in (
+            ("required row missing", original.replace(row, ""), "manifest missing required"),
+            ("required row wrong mode", original.replace(row, "644" + row[3:]), "manifest bad-mode"),
+            (
+                "row outside lib/vsys",
+                original + "644 lib/systemd/user/x.service warden/systemd/agents.slice\n",
+                "manifest path-source mismatch",
+            ),
+            (
+                "required path from another warden script",
+                original.replace(row, "755 lib/vsys/warden/install warden/agent-warden\n"),
+                "manifest path-source mismatch",
+            ),
+        ):
+            with self.subTest(name):
+                manifest.write_text(text)
+                result = self.run_check()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+
+    def test_extra_manifest_row_passes(self) -> None:
+        (self.repo / "data" / "extra.json").write_text("{}\n")
+        manifest = self.repo / MANIFEST
+        manifest.write_text(manifest.read_text() + "644 lib/vsys/data/extra.json data/extra.json\n")
         result = self.run_check()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("manifest payload mismatch", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_user_unit_install_path_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
@@ -153,20 +175,11 @@ class InstallScript(unittest.TestCase):
         vsys.write_text(f"{shape} binary\n")
         vsys.chmod(0o755)
         if shape == "full":
-            for relative in (
-                "warden/install",
-                "warden/agent-warden",
-                "warden/agent-confine",
-                "warden/agent-confine-lineage-capped",
-                "warden/systemd/agent-warden.service",
-                "warden/systemd/agent-warden.timer",
-                "warden/systemd/agents.slice",
-                "data/agent-tools.json",
-            ):
-                source = ROOT / relative
-                target = stage / "lib" / "vsys" / relative
+            for archive_path, (mode, source) in PAYLOAD.items():
+                target = stage / archive_path
                 target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
+                shutil.copyfile(ROOT / source, target)
+                target.chmod(mode)
         elif shape == "partial":
             target = stage / "lib" / "vsys" / "warden" / "install"
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -303,26 +316,16 @@ class InstallScript(unittest.TestCase):
         self.install_umask = 0o077
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        root = self.lib_root()
-        for path in (root, root / "warden", root / "warden" / "systemd", root / "data"):
+        prefix = self.root / "home" / ".local"
+        directories = set()
+        for archive_path, (mode, _source) in PAYLOAD.items():
+            path = prefix / archive_path
             with self.subTest(path=path):
-                self.assertEqual(self.mode(path), 0o755)
-        for path in (
-            root / "warden" / "install",
-            root / "warden" / "agent-warden",
-            root / "warden" / "agent-confine",
-            root / "warden" / "agent-confine-lineage-capped",
-        ):
-            with self.subTest(path=path):
-                self.assertEqual(self.mode(path), 0o755)
-        for path in (
-            root / "warden" / "systemd" / "agent-warden.service",
-            root / "warden" / "systemd" / "agent-warden.timer",
-            root / "warden" / "systemd" / "agents.slice",
-            root / "data" / "agent-tools.json",
-        ):
-            with self.subTest(path=path):
-                self.assertEqual(self.mode(path), 0o644)
+                self.assertEqual(self.mode(path), mode)
+            directories.update(path.relative_to(self.lib_root()).parents)
+        for directory in directories:
+            with self.subTest(path=directory):
+                self.assertEqual(self.mode(self.lib_root() / directory), 0o755)
 
     def test_full_archive_replaces_existing_warden_tree(self) -> None:
         self.make_archive("full")

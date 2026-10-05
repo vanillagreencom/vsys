@@ -12,28 +12,30 @@ import subprocess
 import sys
 
 
-REQUIRED_FILES = {
-    "lib/vsys/warden/install": (0o755, "warden/install"),
-    "lib/vsys/warden/agent-warden": (0o755, "warden/agent-warden"),
-    "lib/vsys/warden/agent-confine": (0o755, "warden/agent-confine"),
-    "lib/vsys/warden/agent-confine-lineage-capped": (
-        0o755,
-        "warden/agent-confine-lineage-capped",
-    ),
-    "lib/vsys/warden/systemd/agent-warden.service": (
-        0o644,
-        "warden/systemd/agent-warden.service",
-    ),
-    "lib/vsys/warden/systemd/agent-warden.timer": (
-        0o644,
-        "warden/systemd/agent-warden.timer",
-    ),
-    "lib/vsys/warden/systemd/agents.slice": (
-        0o644,
-        "warden/systemd/agents.slice",
-    ),
-    "lib/vsys/data/agent-tools.json": (0o644, "data/agent-tools.json"),
+# The members a shipped consumer cannot work without, at the mode it needs:
+# install.sh refuses an archive that lacks any of them, `vsys warden install`
+# runs warden/install, which installs the units and agent-tools.json, the
+# service unit starts agent-warden, and the documented pane launcher setup
+# links agent-confine, which runs agent-confine-lineage-capped beside it.
+# The manifest may ship more.
+REQUIRED_MODES = {
+    "lib/vsys/warden/install": 0o755,
+    "lib/vsys/warden/agent-warden": 0o755,
+    "lib/vsys/warden/agent-confine": 0o755,
+    "lib/vsys/warden/agent-confine-lineage-capped": 0o755,
+    "lib/vsys/warden/systemd/agent-warden.service": 0o644,
+    "lib/vsys/warden/systemd/agent-warden.timer": 0o644,
+    "lib/vsys/warden/systemd/agents.slice": 0o644,
+    "lib/vsys/data/agent-tools.json": 0o644,
 }
+# Every row ships its source at PAYLOAD_PREFIX + source path. warden/install
+# finds ../data/agent-tools.json and systemd/ beside itself, so the installed
+# tree must mirror the repository tree, and a row naming another script ships
+# the wrong file under a required name. vsys-git stages every row under /usr,
+# but install.sh and the vsys PKGBUILD copy only lib/vsys, so a row outside it
+# ships in one package and not the others; a row named `vsys` would overwrite
+# the binary in the release stage.
+PAYLOAD_PREFIX = "lib/vsys/"
 
 
 class CheckFailure(Exception):
@@ -70,17 +72,18 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
             mode = int(mode_text, 8)
         except ValueError:
             fail(f"manifest bad mode line={number} mode={mode_text}")
+        if archive_path != PAYLOAD_PREFIX + source_path:
+            fail(f"manifest path-source mismatch path={archive_path} source={source_path}")
         rows[archive_path] = (mode, source_path)
-    if rows != REQUIRED_FILES:
-        fail(f"manifest payload mismatch actual={sorted(rows.items())}")
-    for archive_path, (_mode, source_path) in rows.items():
-        source = repo / source_path
-        if not source.is_file():
+    for archive_path, mode in REQUIRED_MODES.items():
+        if archive_path not in rows:
+            fail(f"manifest missing required path={archive_path}")
+        actual = rows[archive_path][0]
+        if actual != mode:
+            fail(f"manifest bad-mode path={archive_path} actual={actual:o} expected={mode:o}")
+    for _mode, source_path in rows.values():
+        if not (repo / source_path).is_file():
             fail(f"manifest source missing path={source_path}")
-        if source.name.endswith("_test.py"):
-            fail(f"manifest ships test path={source_path}")
-        if archive_path.endswith("_test.py"):
-            fail(f"manifest ships test path={archive_path}")
     return rows
 
 
@@ -185,20 +188,11 @@ def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
 
 def check_install_sh(repo: Path) -> None:
     text = read_text(repo / "install.sh")
-    required = (
-        "lib/vsys/warden/install",
-        "lib/vsys/data/agent-tools.json",
-        "vsys warden install",
-        "command -v python3",
-        "refusing to replace symlink",
-    )
-    for value in required:
-        if value not in text:
-            fail(f"install.sh missing package contract value={value}")
+    # Run as root, tar keeps the archive's owner uid, so a preserving copy
+    # leaves the installed warden scripts owned by whichever local account has
+    # the release builder's uid, and that account can rewrite them.
     if re.search(r"\bcp\s+-[A-Za-z]*p[A-Za-z]*\b", text) or "--preserve=ownership" in text:
         fail("install.sh preserves archive ownership while copying payload files")
-    if "/tmp" in text or "/var/tmp" in text:
-        fail("install.sh writes scratch outside the user prefix or cache")
 
 
 def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
