@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
-import { volumesByDevice } from "../model/integrity";
+import { integrities, volumesByDevice } from "../model/integrity";
 import type {
   CapabilityFailure,
   ScratchOrigin,
@@ -13,7 +13,8 @@ import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
 import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
 import { osc52 } from "./clipboard";
-import { possibleSentence } from "./integrity";
+import { age } from "./format";
+import { clearedText, possibleSentence } from "./integrity";
 import { type KeyHandler, KeyProvider } from "./keys";
 import { regionOf, regionRanges, storageRegions } from "./regions";
 import { driveReporterInstall, reporterInstall } from "./settings";
@@ -687,6 +688,56 @@ function unreportedSnapshot(
   s.storage.csumFailures = csumFailures;
   return s;
 }
+
+test("cleared failures sit under the integrity line, which keeps both its times at width 120", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const s = emptySnapshot(time);
+  s.storage.volumes = [
+    volumeSnapshot("/", {
+      device: "/dev/nvme0n1p2",
+      fsid: "fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/var/lib/btrfs-scrub/root.result",
+      text: "Error summary: no errors found",
+      problem: false,
+      readable: true,
+      fsid: "fs",
+      startedAt: time - 3600000,
+      status: "finished",
+      uncorrectable: 0,
+      addresses: [],
+    },
+  ];
+  s.storage.csumFailures = {
+    fs: [{ root: 5, inode: 9, at: time - 20 * 86400000 }],
+  };
+  const item = present(integrities(s, c)[0], "the root filesystem");
+  const cleared = present(item.cleared ?? undefined, "the cleared failures");
+  const t = await mount(s, c, { width: 120, height: 40 });
+  try {
+    await t.press("5");
+    const frame = t.frame();
+    // One row carries both times; the dates are on a line of their own.
+    expect(
+      frame
+        .split("\n")
+        .some(
+          (line) =>
+            line.includes(age(item.checkAge)) &&
+            line.includes(age(item.errorAge)),
+        ),
+    ).toBe(true);
+    expect(frame).toContain(clearedText(cleared));
+  } finally {
+    await t.close();
+  }
+});
 
 test("a machine with no scrub reporter says so and copies the command that installs one", async () => {
   const c = defaults();

@@ -1,1 +1,1 @@
-- A healthy Storage line now names the days, with the year where they cross one, of logged checksum failures a later check cleared, and the day of that check.
+- A healthy Storage integrity row now lists, under it, the days of logged checksum failures a later check cleared and that check's day, the year included where they cross one.

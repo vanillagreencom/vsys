@@ -55,21 +55,23 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
 export function integrityLine(item: Integrity, scrub?: Capability): string {
   return [
     integrityWords(item, scrub),
-    // A cleared verdict and one with nothing ever logged read alike without
-    // this, so the reader is told old errors from none.
-    ...(item.cleared ? [clearedText(item.cleared)] : []),
     `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago (scrub report)`}`,
     `last new error ${errorTime(item)}`,
   ].join(" · ");
 }
 /**
- * The days the kernel logged the failures, and the day the check cleared them.
+ * The days the kernel logged the failures, and the day the check cleared them,
+ * so a cleared verdict reads apart from one with nothing ever logged. It sits
+ * under the integrity line rather than in it: the line is one truncated row,
+ * and the dates would push its two times off a narrow screen.
  * That check may have corrected errors rather than found none, so the words
  * say it left no damage, never that it was clean.
  * The log can reach back past a new year, so a range that crosses one names
  * every year, or two failures a year apart would read as one day.
  */
-function clearedText(cleared: NonNullable<Integrity["cleared"]>): string {
+export function clearedText(
+  cleared: NonNullable<Integrity["cleared"]>,
+): string {
   const year =
     new Date(cleared.first).getFullYear() !==
     new Date(cleared.checkedAt).getFullYear();

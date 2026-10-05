@@ -26,6 +26,7 @@ import { columnGap, fit } from "./columns";
 import { age, amount, gap } from "./format";
 import {
   blocksText,
+  clearedText,
   counterSentence,
   damageAdvice,
   integrityLine,
@@ -457,6 +458,13 @@ export function Storage({
               width={16}
               value={blocksText(item, scrubSource)}
             />
+            {item.cleared && (
+              <Field
+                label="Cleared errors"
+                width={16}
+                value={clearedText(item.cleared)}
+              />
+            )}
             {item.groups.length === 0 && (
               <Empty text={noDamageText(item, scrubSource)} />
             )}

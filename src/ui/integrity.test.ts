@@ -6,6 +6,7 @@ import { volumeSnapshot } from "../test/fixture";
 import { present } from "../test/present";
 import {
   blocksText,
+  clearedText,
   damageAdvice,
   integrityLine,
   integrityWords,
@@ -524,37 +525,11 @@ test("a check that has not finished counted nothing, and its report is not blame
   );
 });
 
-test("a healthy line with cleared failures reads apart from one with none logged", () => {
-  const cleared = integrity(
-    present(
-      volumesByDevice([
-        volumeSnapshot("/", {
-          fsid: "fs",
-          errors: { "1/corruption_errs": 0 },
-          countersAvailable: true,
-        }),
-      ])[0],
-      "root device",
-    ),
-    {
-      scrubs: [report({ startedAt: now - 3600000 })],
-      csumFailures: { fs: [{ root: 5, inode: 9, at: now - 20 * day }] },
-    },
-    now,
-    c,
-  );
-  expect(cleared.state).toBe("healthy");
-  expect(integrityLine(cleared)).not.toBe(
-    integrityLine({ ...cleared, cleared: null }),
-  );
-});
-
 test("cleared failures a year apart never read as one day", () => {
   const year = 365 * day;
   const at = now - 20 * day;
-  const item = state([report({ startedAt: now - 3600000 })]);
   const oneDay = { first: at, last: at, checkedAt: now - 3600000 };
-  expect(
-    integrityLine({ ...item, cleared: { ...oneDay, first: at - year } }),
-  ).not.toBe(integrityLine({ ...item, cleared: oneDay }));
+  expect(clearedText({ ...oneDay, first: at - year })).not.toBe(
+    clearedText(oneDay),
+  );
 });
