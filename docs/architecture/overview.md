@@ -92,3 +92,4 @@ Pressure: the recent percentage of time that tasks stalled on a resource.
 - [warden-status.md](warden-status.md): read when changing the warden status file or its fixtures.
 
 Subsystems with no topic file of their own: `src/model/shell.ts` quotes a copied command so a paste survives an escaped scope name; `src/collect/io.ts` holds the `Reader` that records a source error against the source that failed, and `spawnText()`, which [lanes](lanes.md) describes; `src/config/editor.ts` parses a setting a reader typed.
+<!-- VSY-138 docs-only probe; do not merge -->
