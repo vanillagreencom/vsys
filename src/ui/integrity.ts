@@ -62,13 +62,24 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
     `last new error ${errorTime(item)}`,
   ].join(" · ");
 }
-const calendarDay = (at: number): string =>
-  new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-/** The days the kernel logged the failures, and the day the check cleared them. */
+/**
+ * The days the kernel logged the failures, and the day the check cleared them.
+ * The log can reach back past a new year, so a range that crosses one names
+ * every year, or two failures a year apart would read as one day.
+ */
 function clearedText(cleared: NonNullable<Integrity["cleared"]>): string {
-  const first = calendarDay(cleared.first);
-  const last = calendarDay(cleared.last);
-  return `errors on ${first === last ? first : `${first} to ${last}`}, clean check ${calendarDay(cleared.checkedAt)}`;
+  const year =
+    new Date(cleared.first).getFullYear() !==
+    new Date(cleared.checkedAt).getFullYear();
+  const day = (at: number) =>
+    new Date(at).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      ...(year ? { year: "numeric" } : {}),
+    });
+  const first = day(cleared.first);
+  const last = day(cleared.last);
+  return `errors on ${first === last ? first : `${first} to ${last}`}, clean check ${day(cleared.checkedAt)}`;
 }
 /**
  * Whether the remembered finished check standing in for an unavailable

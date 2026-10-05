@@ -548,3 +548,13 @@ test("a healthy line with cleared failures reads apart from one with none logged
     integrityLine({ ...cleared, cleared: null }),
   );
 });
+
+test("cleared failures a year apart never read as one day", () => {
+  const year = 365 * day;
+  const at = now - 20 * day;
+  const item = state([report({ startedAt: now - 3600000 })]);
+  const oneDay = { first: at, last: at, checkedAt: now - 3600000 };
+  expect(
+    integrityLine({ ...item, cleared: { ...oneDay, first: at - year } }),
+  ).not.toBe(integrityLine({ ...item, cleared: oneDay }));
+});
