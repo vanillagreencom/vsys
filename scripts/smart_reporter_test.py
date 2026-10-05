@@ -504,7 +504,8 @@ esac
         with scratch() as tmp:
             done, calls = self.run_install(Path(tmp), version=None, api_tag="vlatest-fixture")
             self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertEqual(sum(call.startswith("install ") for call in calls), 4, calls)
+            installs = [call.split() for call in calls if call.startswith("install ")]
+            self.assertEqual([Path(call[2]).name for call in installs], list(REPORTER_FILES), calls)
             fetches = [call for call in calls if call.startswith("curl ")]
             self.assertTrue(any("api.github.com/repos/vanillagreencom/vsys/releases/latest" in call for call in fetches), fetches)
             self.assertTrue(
