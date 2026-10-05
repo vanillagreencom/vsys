@@ -1,1 +1,1 @@
-- On a first sample, the Resources CPU wait tile at 100 columns no longer cuts off its detail line.
+- On a first sample with neither CPU share read, the CPU wait tile says once that the in-use share is not available, and fits the Resources tile at 100 columns unless a capability reason is added.

@@ -171,7 +171,7 @@ test("an idle parent filtered from the list still leaves its children nested", (
   expect(prefixes.get("a.slice/two/deep")).toBe("      └─ ");
 });
 
-test("Resources wraps its tiles at a hundred columns and draws every detail whole", async () => {
+test("Resources wraps its tiles at a hundred columns and draws a first sample's details whole", async () => {
   const c = defaults();
   const zram = (device: string) => ({
     device,

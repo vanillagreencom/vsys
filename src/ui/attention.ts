@@ -789,8 +789,9 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
   const level = meter.level;
   // The headline is time lost to waiting; the detail is how much of the
   // machine is in use. Two percentages of different things sit one line apart,
-  // so each says which it is. On the first sample neither is read, and saying
-  // so once keeps the line whole in the tile Resources draws at 100 columns.
+  // so each says which it is. Where neither share is read, as on a first
+  // sample, saying so once fits the tile Resources draws at 100 columns unless
+  // a capability reason is appended.
   if (meter.id === "cpu")
     return {
       label: "CPU wait",

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
-import type { CapabilityId, Snapshot } from "../model/types";
+import type { CapabilityId, Group, Snapshot } from "../model/types";
 import { causeOrder, causes, meters, topSwapHolder } from "../model/verdict";
 import {
   emptySnapshot,
@@ -623,6 +623,27 @@ test("the disk meter reports free space and says when mounts are unreadable", ()
   expect(tile(s).detail).toBe("mount information unavailable");
   const bare = emptySnapshot();
   expect(tile(bare).detail).toBe("no watched filesystems");
+});
+
+test("the CPU meter says once that no share is read, and names the share it did read", () => {
+  const c = defaults();
+  const slice = (name: string, cpuPercent: number) =>
+    groupSnapshot({ path: name, parent: "", name, cpuPercent });
+  // A host with no desktop slice reads the agent share and never the desktop's.
+  const rows: [Group[], string][] = [
+    [[], "in use: not available"],
+    [
+      [slice(c.agentSlice, 12.5)],
+      "in use: agents 12.5% · desktop not available",
+    ],
+    [[slice(c.desktopSlice, 3)], "in use: agents not available · desktop 3.0%"],
+  ];
+  for (const [groups, detail] of rows) {
+    const s = emptySnapshot();
+    s.groups = groups;
+    const cpu = present(meters(s, c)[0], "the CPU meter");
+    expect(meterTile(cpu, s, c).detail).toBe(detail);
+  }
 });
 
 test("a meter names the interface behind a missing reading", () => {
