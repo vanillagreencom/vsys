@@ -28,9 +28,13 @@ REQUIRED_MODES = {
     "lib/vsys/warden/systemd/agents.slice": 0o644,
     "lib/vsys/data/agent-tools.json": 0o644,
 }
-# vsys-git stages every row under /usr, but install.sh and the vsys PKGBUILD
-# copy only lib/vsys, so a row outside it ships in one package and not the
-# others; a row named `vsys` would overwrite the binary in the release stage.
+# Every row ships its source at PAYLOAD_PREFIX + source path. warden/install
+# finds ../data/agent-tools.json and systemd/ beside itself, so the installed
+# tree must mirror the repository tree, and a row naming another script ships
+# the wrong file under a required name. vsys-git stages every row under /usr,
+# but install.sh and the vsys PKGBUILD copy only lib/vsys, so a row outside it
+# ships in one package and not the others; a row named `vsys` would overwrite
+# the binary in the release stage.
 PAYLOAD_PREFIX = "lib/vsys/"
 
 
@@ -68,8 +72,8 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
             mode = int(mode_text, 8)
         except ValueError:
             fail(f"manifest bad mode line={number} mode={mode_text}")
-        if not archive_path.startswith(PAYLOAD_PREFIX):
-            fail(f"manifest path outside {PAYLOAD_PREFIX} path={archive_path}")
+        if archive_path != PAYLOAD_PREFIX + source_path:
+            fail(f"manifest path-source mismatch path={archive_path} source={source_path}")
         rows[archive_path] = (mode, source_path)
     for archive_path, mode in REQUIRED_MODES.items():
         if archive_path not in rows:

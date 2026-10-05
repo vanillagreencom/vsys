@@ -70,7 +70,12 @@ class PackageFileListCheck(unittest.TestCase):
             (
                 "row outside lib/vsys",
                 original + "644 lib/systemd/user/x.service warden/systemd/agents.slice\n",
-                "manifest path outside",
+                "manifest path-source mismatch",
+            ),
+            (
+                "required path from another warden script",
+                original.replace(row, "755 lib/vsys/warden/install warden/agent-warden\n"),
+                "manifest path-source mismatch",
             ),
         ):
             with self.subTest(name):
@@ -80,8 +85,9 @@ class PackageFileListCheck(unittest.TestCase):
                 self.assertIn(expected, result.stderr)
 
     def test_extra_manifest_row_passes(self) -> None:
+        (self.repo / "data" / "extra.json").write_text("{}\n")
         manifest = self.repo / MANIFEST
-        manifest.write_text(manifest.read_text() + "644 lib/vsys/data/extra.json data/agent-tools.json\n")
+        manifest.write_text(manifest.read_text() + "644 lib/vsys/data/extra.json data/extra.json\n")
         result = self.run_check()
         self.assertEqual(result.returncode, 0, result.stderr)
 
