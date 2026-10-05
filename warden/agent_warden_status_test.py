@@ -781,6 +781,9 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": 1.5, "since": 1, "harmful": False}]
         rows.append(("orphan memory fraction", doc, "orphans[0].memory"))
         doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": 1, "harmful": False}]
+        rows.append(("orphan memory missing", doc, "orphans[0]"))
+        doc = json.loads(json.dumps(base))
         doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": None, "since": True, "harmful": False}]
         rows.append(("orphan since bool", doc, "orphans[0].since"))
         doc = json.loads(json.dumps(base))

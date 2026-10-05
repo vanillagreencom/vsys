@@ -429,7 +429,7 @@ REAP = os.environ.get("AGENT_WARDEN_REAP", "1") != "0"
 JOB_UNIT_PATTERNS = tuple(x for x in os.environ.get("AGENT_WARDEN_JOB_UNITS", "orch-*.service").split() if x)
 SCOPE_RE = re.compile(r"/agents\.slice/([^/]+\.scope)(?:/|$)")
 # An orphan is reaped only when it is also HARMFUL, so a quiet abandoned dev or
-# preview server (a few idle processes, no CPU) is reported and left alone. The
+# preview server (a few idle processes, no CPU, little memory) is reported and left alone. The
 # two outages both crossed one of these: the npm storm reached 5140 processes in
 # one scope; the bun servers each burned ~0.8 of a core. A normal orphaned dev
 # server is ~6 idle processes.
@@ -1208,7 +1208,8 @@ def reap_orphans(procs, st, correct, only=None):
     grace period AND are harmful (many processes, steady CPU or held memory) on
     two ticks in a row. CPU is measured across ticks from cpu.stat, so nothing is stopped on its
     first sighting, and a one-tick spike in an otherwise idle server never trips
-    it. A quiet abandoned server is reported and left running. Membership is
+    it. A quiet abandoned server holding little memory is reported and left
+    running. Membership is
     re-read from the cgroup right before a stop. Restricted runs
     (AGENT_WARDEN_ONLY) never reap. Returns the units reaped."""
     managers = manager_pids(procs)
