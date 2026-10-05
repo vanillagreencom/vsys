@@ -158,7 +158,7 @@ def check_ci_workflow(repo: Path) -> None:
 
 def check_pkgbuild(repo: Path, name: str, *, release: bool) -> None:
     text = read_text(repo / "packaging" / name / "PKGBUILD")
-    for dependency in ("'python'", "'systemd-libs'"):
+    for dependency in ("'python'", "'systemd'", "'systemd-libs'"):
         if dependency not in text:
             refuse(f"pkgbuild=dependency-missing package={name} value={dependency}")
     forbidden = ("/usr/lib/systemd/user", "systemctl", "preset")

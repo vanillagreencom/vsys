@@ -1,0 +1,1 @@
+- The Arch packages now require `systemd` and list `udisks2`, `tmux`, `libnotify`, `sccache`, `btrfs-progs` and `smartmontools` as optional dependencies.
