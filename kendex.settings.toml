@@ -200,10 +200,9 @@ COMMIT_GUARDS_CHANGELOG_PATHS = "changelog.d/*/*.md"
 # release scripts, the packaging recipes and the installer.
 COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS = "src/* scripts/* packaging/* install.sh"
 
-# The app's version file, beside the record. With it the changelog-entries
-# lane refuses a major increase whose release holds no Breaking entry and,
-# from 1.0, a patch whose release holds an Added or a Breaking entry and a
-# minor whose release holds a Breaking entry.
+# The app's version file, beside the record. The changelog-entries lane
+# judges each version increase in it by the commit-guards release-version
+# rule (.agents/skills/commit-guards/CHECKS.md § Release versions).
 COMMIT_GUARDS_CHANGELOG_VERSION_PATHS = "package.json"
 
 # The markdown lanes judge every tracked markdown file, not only the files a
