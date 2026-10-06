@@ -55,6 +55,13 @@ export const screenWidth = (width: number): number => width - screenPad * 2;
 export const panelWidth = (width: number): number =>
   width >= wideWidth ? Math.floor((width - 3) / 2) : width;
 /**
+ * The columns the selected item's detail takes beside its list, from the
+ * terminal width: a third of the row at or above `wideWidth`, and none below
+ * it, where each screen draws the detail in its own place.
+ */
+export const sideWidth = (width: number): number =>
+  width >= wideWidth ? Math.floor(width / 3) : 0;
+/**
  * The columns a card's detail draws into, from the terminal width: the screen
  * padding, then the panel it sits in, then the rule and indent of the block
  * that draws it. Card copy is measured here, so the words a card writes and

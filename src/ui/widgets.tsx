@@ -19,7 +19,7 @@ import {
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText, sortedColumns } from "./columns";
-import { levelColor, readingWeight, ui } from "./theme";
+import { levelColor, readingWeight, scrollbar, ui } from "./theme";
 
 /**
  * The colour of the band a selected row is drawn as, while the row is
@@ -292,18 +292,40 @@ export function Nothing({ text, next }: { text: string; next: string }) {
   );
 }
 
-/** A dim label followed by its value on one line. */
+/**
+ * A dim label followed by its value on one line, or, with `wrap`, a value that
+ * wraps under itself rather than losing its end at the edge.
+ */
 export function Field({
   label,
   value,
   width = 12,
   color,
+  wrap = false,
 }: {
   label: string;
   value: string;
   width?: number;
   color?: RGBA;
+  wrap?: boolean;
 }) {
+  if (wrap)
+    return (
+      <box flexDirection="row" flexShrink={0}>
+        <Line width={width} flexShrink={0} attributes={ui.dim}>
+          {fit(label, width)}
+        </Line>
+        <Line
+          flexGrow={1}
+          flexShrink={1}
+          minWidth={0}
+          wrapMode="word"
+          fg={color}
+        >
+          {safe(value)}
+        </Line>
+      </box>
+    );
   return (
     <Line height={1} flexShrink={0} truncate>
       <span attributes={ui.dim}>{fit(label, width)}</span>
@@ -576,6 +598,85 @@ export function Detail({ children }: { children: ReactNode }) {
       paddingLeft={detailIndent - detailRule - 1}
     >
       {children}
+    </box>
+  );
+}
+
+/** The blank columns between a list and the detail beside it. */
+export const sideGap = 3;
+/**
+ * A list and the selected item's detail. Given a panel width, the detail sits
+ * in a panel that wide right of the list, so a row is read against what it
+ * means without the right side of a wide terminal standing blank. The panel
+ * is drawn whenever it has a width, so the list's width never depends on the
+ * row selected, and it scrolls by itself, because a detail can be taller than
+ * the screen. Given none, the list is drawn alone, with the detail under it
+ * where the screen asks for `below`; any other screen draws its detail itself,
+ * under the selected row or not at all. The list sits at one place in the tree
+ * at every width, and the panel is added or dropped beside it, so a terminal
+ * resized across `wideWidth` keeps the list mounted, its scroll position and
+ * its selected row with it.
+ */
+export function SplitPane({
+  side,
+  item,
+  detail,
+  below = false,
+  children,
+}: {
+  /**
+   * The panel's columns, from `sideWidth`, or zero, which places the detail as
+   * narrow. A screen with nothing selected passes zero, so its list keeps the
+   * whole row rather than standing beside an empty panel.
+   */
+  side: number;
+  /** The selected item's identity: a new item opens its detail at the top. */
+  item: string | undefined;
+  detail: ReactNode;
+  below?: boolean;
+  children: ReactNode;
+}) {
+  const panel = useRef<ScrollBoxRenderable | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new item is the re-run trigger, not a value the effect reads
+  useEffect(() => {
+    if (panel.current) panel.current.scrollTop = 0;
+  }, [item]);
+  return (
+    <box flexDirection="row" flexGrow={1} minHeight={0} gap={sideGap}>
+      <box
+        id="split-list"
+        flexDirection="column"
+        flexGrow={1}
+        minWidth={0}
+        minHeight={0}
+      >
+        {children}
+        {side <= 0 && below && detail && (
+          <box
+            id="split-detail"
+            flexDirection="column"
+            flexShrink={0}
+            marginTop={1}
+          >
+            {detail}
+          </box>
+        )}
+      </box>
+      {side > 0 && (
+        <scrollbox
+          ref={panel}
+          id="split-detail"
+          width={side}
+          flexShrink={0}
+          minHeight={0}
+          scrollY
+          scrollbarOptions={scrollbar}
+          contentOptions={{ flexShrink: 0 }}
+        >
+          <Section title="Selected" width={side} marginTop={0} />
+          {detail}
+        </scrollbox>
+      )}
     </box>
   );
 }

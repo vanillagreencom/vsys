@@ -28,6 +28,7 @@ import {
   panelWidth,
   screenPad,
   screenWidth,
+  sideWidth,
 } from "./chrome";
 import { osc52 } from "./clipboard";
 import { wrapLines } from "./columns";
@@ -36,6 +37,7 @@ import { homeItems, homeTarget, recentChanges } from "./home";
 import { homeRegions } from "./regions";
 import { ui } from "./theme";
 import { eventKey } from "./timeline";
+import { sideGap } from "./widgets";
 
 test("Home lists every concern first, then the busiest agents, capped", () => {
   const c = defaults();
@@ -1333,11 +1335,16 @@ test("a change row cuts with a mark, at any width, and its columns line up", asy
         columns: 1,
       });
       // Timeline draws the same changes at its own width, cut the same way.
+      // From `wideWidth` up the selected change sits in a panel right of the
+      // list, so each row is read up to the list's own edge.
       await t.press("6");
+      const side = sideWidth(width);
+      const listEnd = width - screenPad - side - (side ? sideGap : 0);
       const listed = t
         .frame()
         .split("\n")
-        .filter((line) => /Lane started/.test(line));
+        .filter((line) => /Lane started/.test(line))
+        .map((line) => line.slice(0, listEnd));
       expect({
         width,
         cut: listed.map((row) => row.trimEnd().endsWith("…")),

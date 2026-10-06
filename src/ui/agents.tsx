@@ -8,7 +8,7 @@ import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { Agent, AgentSummary } from "./agent";
-import { narrowWidth, screenPad, wideWidth } from "./chrome";
+import { narrowWidth, screenPad, sideWidth } from "./chrome";
 import {
   type Column,
   cell,
@@ -45,6 +45,8 @@ import {
   Reading,
   Row,
   Sparkline,
+  SplitPane,
+  sideGap,
   TableHeader,
 } from "./widgets";
 
@@ -615,11 +617,13 @@ export function Agents({
     }
     return false;
   });
-  // Above the stated width the selected agent's summary sits beside the list,
-  // so a row can be read against what it means without leaving the list.
-  const sidePane = width >= wideWidth && !searching && !chooser && !table;
-  const sideWidth = sidePane ? Math.max(34, Math.floor(width / 3)) : 0;
-  const listWidth = width - sideWidth - (sidePane ? 3 : 0);
+  // The search box, the column chooser and the table take the whole row, so
+  // the summary sits beside the plain list only, and only with a lane chosen.
+  const side =
+    searching || chooser || table || lanes[selected] === undefined
+      ? 0
+      : sideWidth(width);
+  const listWidth = width - side - (side ? sideGap : 0);
   // The program and the wait share leave a narrow list; the name takes
   // whatever the fixed columns leave, and the heading reads the same spec.
   const narrow = listWidth < narrowWidth;
@@ -816,14 +820,21 @@ export function Agents({
   const sortLabel = `${columnLabels[c.sort] ?? c.sort} ${c.descending ? "↓" : "↑"}`;
   const topCpu = Math.max(100, ...lanes.map((l) => l.cpu ?? 0));
   return (
-    <box
-      flexDirection="row"
-      flexGrow={1}
-      minHeight={0}
-      paddingX={screenPad}
-      gap={3}
-    >
-      <box flexDirection="column" flexGrow={1} minWidth={0} minHeight={0}>
+    <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
+      <SplitPane
+        side={side}
+        item={selectedLane?.id}
+        detail={
+          selectedLane && (
+            <AgentSummary
+              lane={selectedLane}
+              snapshot={s}
+              config={c}
+              width={side}
+            />
+          )
+        }
+      >
         <Line height={1} flexShrink={0} truncate>
           <span
             attributes={ui.bold}
@@ -1032,17 +1043,7 @@ export function Agents({
             />
           </>
         )}
-      </box>
-      {sidePane && selectedLane && (
-        <box flexDirection="column" flexShrink={0} width={sideWidth}>
-          <AgentSummary
-            lane={selectedLane}
-            snapshot={s}
-            config={c}
-            width={sideWidth}
-          />
-        </box>
-      )}
+      </SplitPane>
     </box>
   );
 }
