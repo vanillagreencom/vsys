@@ -213,6 +213,17 @@ gh_graphql() {
     done
 }
 
+# The identity the selected token acts as, the GraphQL viewer, as
+# {login, databaseId}. It answers for a user token and an app installation
+# token alike; REST `/user` refuses an installation token. For an
+# installation token databaseId is the app's bot account id, the one REST
+# writes as `.user.id` on the app's comments and GraphQL on its Bot author.
+gh_viewer() {
+    local data
+    data=$(gh_graphql 'query { viewer { login databaseId } }') || return 1
+    jq -c '.viewer' <<<"$data"
+}
+
 # True when a captured `gh api` failure is GitHub answering "no such resource".
 # For a caller that ACTS on not-found, deciding whether to send its request
 # somewhere else rather than only telling the user what went wrong.
@@ -283,6 +294,21 @@ gh_rest() {
             ;;
         esac
     done
+}
+
+# One REST collection, every page merged into one array. `--paginate` prints
+# one array per page, so the pages are slurped and added. A read that prints
+# no page, as zero bytes do, or a page that is not an array is a broken read
+# and never an empty collection: an empty one reads as "nothing there".
+# Returns 1 when the read failed, 2 when its pages are malformed.
+# Usage: gh_rest_all "repos/{owner}/{repo}/issues/123/comments?per_page=100"
+gh_rest_all() {
+    local raw
+    raw=$(gh_rest "$1" --paginate) || return 1
+    jq -s 'if (length > 0) and all(type == "array") then add else error("pages are not arrays") end' <<<"$raw" 2>/dev/null || {
+        github_error "Paginated read of $1 returned no page, or a page that is not an array"
+        return 2
+    }
 }
 
 # Check whether a value is already a concrete GitHub token. `op://` references

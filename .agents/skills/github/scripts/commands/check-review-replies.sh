@@ -497,19 +497,16 @@ ACCOUNT_DEF='def account($id): {id: $id, login: (.login // "" | strings)}
       then tojson, "\(.login) id \(.id)" else error("no account id") end;
 '
 
-# One REST collection, every page merged into one array. `--paginate` emits
-# one array per page, so the pages are slurped and added. A read producing
-# zero bytes, or a page that is not an array, is a broken read and never an
-# empty collection: an empty one would erase findings.
+# One REST collection, every page merged into one array; an empty one would
+# erase findings, so a read gh_rest_all calls broken refuses.
 read_collection() { # WHAT ENDPOINT
-  local raw pages
-  if ! raw=$(gh_rest "$2" --paginate 2>"$READ_ERR"); then
-    refuse "read-failed" "$PR_NUMBER" "the $1 read failed: $(reader_said)"
-  fi
-  [ -n "$raw" ] || refuse "read-empty" "$PR_NUMBER" "the $1 read produced zero bytes"
-  pages=$(jq -s 'if (length > 0) and all(type == "array") then add else error("pages are not arrays") end' <<<"$raw" 2>/dev/null) ||
-    refuse "read-malformed" "$PR_NUMBER" "the $1 read returned pages that are not arrays"
-  printf '%s' "$pages"
+  local pages rc=0
+  pages=$(gh_rest_all "$2" 2>"$READ_ERR") || rc=$?
+  case "$rc" in
+    0) printf '%s' "$pages" ;;
+    2) refuse "read-malformed" "$PR_NUMBER" "the $1 read: $(reader_said)" ;;
+    *) refuse "read-failed" "$PR_NUMBER" "the $1 read failed: $(reader_said)" ;;
+  esac
 }
 
 [ "$#" -eq 1 ] && [[ "$1" =~ ^[1-9][0-9]*$ ]] ||
@@ -533,14 +530,9 @@ author_read=$(jq -r "$ACCOUNT_DEF"'.user | account(.id)' <<<"$pr_json" 2>/dev/nu
 AUTHOR_ACCOUNT="${author_read%%$'\n'*}"
 AUTHOR_NAMED="${author_read#*$'\n'}"
 
-# GraphQL `viewer` answers for a user token and an app installation token
-# alike; REST `/user` refuses an installation token. For an installation
-# token the viewer is typed User, and its databaseId is the app's bot
-# account id, the one REST writes on the app's comments and GraphQL on its
-# Bot author.
-viewer_json=$(gh_graphql 'query { viewer { login databaseId } }' 2>"$READ_ERR") ||
+viewer_json=$(gh_viewer 2>"$READ_ERR") ||
   refuse "read-failed" "$PR_NUMBER" "the viewer identity read failed: $(reader_said)"
-viewer_read=$(jq -r "$ACCOUNT_DEF"'.viewer | account(.databaseId)' <<<"$viewer_json" 2>/dev/null) ||
+viewer_read=$(jq -r "$ACCOUNT_DEF"'account(.databaseId)' <<<"$viewer_json" 2>/dev/null) ||
   refuse "read-malformed" "$PR_NUMBER" "the viewer identity read named no account id"
 VIEWER_ACCOUNT="${viewer_read%%$'\n'*}"
 VIEWER_NAMED="${viewer_read#*$'\n'}"
