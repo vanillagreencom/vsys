@@ -480,7 +480,11 @@ export class StorageCollector {
       });
     }
     if (this.scrubUnits) {
-      const missing = await missingScrubTimers(r, this.scrubUnits, scrubMounts);
+      const missing = await missingScrubTimers(
+        r,
+        this.scrubUnits,
+        mountInfo && scrubMounts,
+      );
       if (missing !== undefined) storage.missingScrubTimers = missing;
     }
     this.scrubDir = undefined;

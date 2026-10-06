@@ -66,21 +66,22 @@ export const scrubTimer = (mount: string): string =>
  * timers enabled, for good or for this boot, and offered one only where it
  * calls every one disabled: a masked or missing template, or a word vsys
  * does not know, offers nothing. Undefined where the packaged drop-in is not
- * installed, and null where systemd did not answer, which is not a list of
- * none.
+ * installed. Null where the drop-in, the mounts or systemd could not be read,
+ * which is not a list of none.
  */
 export async function missingScrubTimers(
   r: Reader,
   systemd: ScrubUnits,
-  mounts: ScrubMount[],
+  mounts: ScrubMount[] | null,
 ): Promise<string[] | null | undefined> {
   try {
     await stat(systemd.dropIn);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT")
-      r.error(systemd.dropIn, e);
-    return undefined;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    r.error(systemd.dropIn, e);
+    return null;
   }
+  if (mounts === null) return null;
   if (!mounts.length) return [];
   const units = [...new Set(mounts.map((m) => scrubTimer(m.mount)))];
   let words: string[] | null;

@@ -160,3 +160,23 @@ test("mounts whose filesystem id is unread are one filesystem by their device, a
     scrubTimer("/"),
   ]);
 });
+
+test("a drop-in or mount list that could not be read leaves the reporter unknown, not absent", async () => {
+  // A drop-in path whose parent is a file cannot be stat'ed for a reason
+  // other than its absence.
+  const blocked = units();
+  const r = new Reader();
+  expect(
+    await missingScrubTimers(
+      r,
+      { ...blocked, dropIn: join(blocked.dropIn, "child") },
+      volumes,
+    ),
+  ).toBe(null);
+  expect(r.errors.map((e) => e.source)).toEqual([
+    join(blocked.dropIn, "child"),
+  ]);
+  const unread = units();
+  expect(await missingScrubTimers(new Reader(), unread, null)).toBe(null);
+  expect(unread.asked).toEqual([]);
+});
