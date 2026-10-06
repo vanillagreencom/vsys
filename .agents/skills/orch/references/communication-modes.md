@@ -73,7 +73,7 @@ The template carries outcomes only. A question in the set names no mechanism the
 
 ## Owner asks
 
-An overseer's question to the owner is one owner ask: the template above for the mode, written to a file, sent with the recommendation and the deadline as fields, never as prose. The chat shows one line naming the ask. The recommended option is the one the ask takes at its deadline; `--wait` names one ask's minutes, and an ask without it takes `ORCH_ASK_WAIT_MINUTES`.
+An overseer's question to the owner is one owner ask: the template above for the mode, written to a file, sent with its form and its deadline as fields, never as prose. The template's recommendation is the option the ask records as `recommend`, the relay's Recommended line, and a question whose ask records none leaves it out. The chat shows one line naming the ask. `--wait` names one ask's minutes, and an ask without it takes `ORCH_ASK_WAIT_MINUTES`. Which forms record a recommendation, and what the deadline does for each, is the [lane-mail owner-channel contract](../scripts/lane-mail)'s.
 
 ```bash
 .agents/skills/orch/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --recommend [RECOMMENDED_OPTION] --file [PATH]
@@ -83,8 +83,14 @@ The owner can answer more than once. Each answer lands through `send --item over
 
 - The overseer closes the ask when it has its ruling: `resolve --item overseer --id [ASK_ID]`. The close is a separate record, reported as `owner-ask-closed`.
 - **The chat-answer rule.** Record each chat answer with `send --re` before acting. `resolve --text` records a chat answer and closes together only when the overseer already has its ruling.
-- At the deadline the watch runs `resolve --default`. An answered ask closes without a recommendation answer; an unanswered ask takes its recommendation.
+- At the deadline the watch runs `resolve --default` on each ask `pending --due` lists, with the outcome the [lane-mail owner-channel contract](../scripts/lane-mail) states.
 - After closing, later text arrives as a directive. A repeated delivery still names its original answer.
+
+A decision the owner's authority rule reserves to the owner is a reserved ask: a deletion or other irreversible step, spending beyond an approved figure, an external commitment, anything sent as the owner, and an x.0 release of kendex or an app. A send as the owner on Slack or by email is a draft ask, below; every other send as the owner, such as a GitHub or Linear comment, is a reserved ask. It takes `--reserved` in place of `--recommend`. The overseer closes it once it holds the owner's answer. Past its deadline and unanswered, "Waiting on you" marks it overdue and the Slack relay posts it once more in its thread; an answered one reads as awaiting close.
+
+```bash
+.agents/skills/orch/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --reserved --file [PATH]
+```
 
 An ask for the owner to approve a Slack message or an email sent as the owner is a draft ask: `--draft [PATH]` in place of `--options` and `--recommend`. The [lane-mail owner-channel contract](../scripts/lane-mail) states the draft's fields and its `text_hash`. Send only when the approval for that ask id names the `text_hash` that `pending --item overseer --to owner` prints. An edited draft is a new ask.
 
@@ -115,7 +121,7 @@ Running: [WHAT IS IN FLIGHT AND WHEN IT LANDS]
 Validation: [EACH RUNNING LANE: MINUTES SPENT VALIDATING, IN TOTAL AND PER ROUND OR RESTACK]
 Use 1: [HEADS SINCE THE LAST REPORT BY OUTCOME: APPROVED BY COPILOT ON RE-REQUEST, OVERSEER FALLBACK, DECLINES ON AN UNCHANGED HEAD]
 Next: [WHAT STARTS AFTER THAT]
-Waiting on you: [EACH OPEN QUESTION WITH ITS RECOMMENDATION AND THE TIME ITS DEFAULT STANDS, THEN EACH LANE BLOCKER, OR none]
+Waiting on you: [EACH OPEN QUESTION WITH WHAT ITS DEADLINE DOES AND WHEN, THEN EACH LANE BLOCKER, OR none]
 ```
 
 Under `engineer` a report is the same shape with the session's own vocabulary. The chat and the report file keep these rows. The owner's written summary takes [§ Owner messages](#owner-messages), not these rows. The Validation line per lane comes from that lane's workflow state `validate_rounds`, which [`dev-start.md` § Store Validation Time](../workflows/dev-start.md#store-validation-time) writes, so the owner sees what each round's and each restack's validation cost. The Escapes line is `oversee-report --help`'s count, so the owner sees whether one review cycle before the pull request lets more defects through. A bug issue counts only through its `Regressed-by: #N` line, which [issue-description-template.md](../../project-management/templates/issue-description-template.md) writes where the pull request that caused the defect is known; an issue that names a pull request only as its source is not an escape. The Use 1 line counts the fleet log's `use1` rows, which the overseer writes under [copilot-head-notices.md § Use 1 rows](copilot-head-notices.md#use-1-rows), one row per head approved through a Copilot head notice or the `awaiting-stale` fallback, so the owner sees each such head's route: approved by Copilot on re-request, overseer fallback, or declines on an unchanged head. Waiting on you is the unresolved owner asks `lane-mail pending --item overseer --to owner` lists, one record for the report, the relay and the chat.
@@ -130,7 +136,7 @@ For the master and every overseer, a conversation stays in the medium where it t
 
 | Message | Where | When | Mention |
 |---|---|---|---|
-| Decision needed | Slack and chat | At the moment the question exists: one question per message, with the options and a recommendation, in the ceo template. A question only in the chat has not been asked. | Yes |
+| Decision needed | Slack and chat | At the moment the question exists: one question per message, with the options, in the ceo template. A question only in the chat has not been asked. | Yes |
 | Critical notice | Slack and chat | A failure that stops work, loses data or money, or needs the owner within the hour. | Yes |
 | Progress report | Slack and chat | The master every hour, an overseer by `ORCH_REPORT_EVERY_MINUTES` ([Settings](../README.md#setup)), while the session runs, and before a succession. `oversee-report` still writes and prints during `ORCH_REPORT_QUIET_HOURS` (default midnight to 7 am in `ORCH_OWNER_TIME_ZONE`, default `America/Los_Angeles`), but sends no owner notice. Empty quiet hours turns suppression off. The first due report after the window sends the morning brief: **Landed**, **Running**, **Blocked** and **Waiting on you** cover the work since the last report sent to the owner, including overnight merges. Decisions needed and critical notices remain immediate. | No |
 | Reply | Where the owner's message arrived | An answer to an owner message. A reply on Slack shows in the chat as at most one line naming the post. | No |
@@ -151,8 +157,8 @@ For the master and every overseer, a conversation stays in the medium where it t
 3. Write a time in the owner's time zone with am or pm (`9:29 pm`), never as a `Z` stamp.
 4. Write each pull request, commit, issue and tracker item as a Markdown link labelled with its short name: `[REPO#N](https://github.com/OWNER/REPO/pull/N)`, `[SHORT_SHA](https://github.com/OWNER/REPO/commit/SHORT_SHA)`, `[KEY-N](TRACKER_ISSUE_URL)`; beside a file, the mrkdwn form below. The Slack relay links bare tracker ids as a backstop, including Linear ids. Never put a tracker id in a code span: code stays literal and reaches the owner unlinked.
 5. Every written owner message starts with what changed for the owner. Follow it with four labels and short bullets: **Landed**, **Running**, **Blocked**, **Waiting on you**. Each work item carries one link to its owning tracker issue URL: a Linear issue URL for a Linear item, or the GitHub issue URL for an `issue-N` item. Never use a pull request or commit link. The tracker issue links to its pull request. Say the outcome for the owner or the fleet, not the issue title. Group small changes into one bullet. End with **Waiting on you**, with `Nothing` when empty. Keep the whole message within about 15 lines; put detail in the report file. Send one post per report, never a thread of fragments. Send one notice per fact: a reply owed to two owner notes uses one `--ref` and names the other note in its text. The `report-due` summary ([oversee-events.md § Event kinds](oversee-events.md#event-kinds)) reaches Slack as the report file's comment only. The chat and the report file keep [§ Status report](#status-report) and carry no summary. The Routing table controls what also appears in the chat.
-6. **Waiting on you** there names each ask `lane-mail pending --item overseer --to owner` shows by its question, so the owner finds its thread in the channel, and what stands at its deadline, as a time in the owner's time zone. It is never empty while an ask is open.
-7. An ask sent during the owner's night gets no reply before morning. Its recommended option is the safe choice, and its deadline (`--wait`) falls after the owner's morning unless the ask can stand on that option.
+6. **Waiting on you** there names each ask `lane-mail pending --item overseer --to owner` shows by its question, so the owner finds its thread in the channel, and what its deadline does, at a time in the owner's time zone. It is never empty while an ask is open.
+7. An ask sent during the owner's night gets no reply before morning. An ask's recorded recommendation is the safe choice. Its deadline (`--wait`) falls after the owner's morning unless the ask can stand on that option.
 8. State a cost as its figure and its source, never as "a cost": "$0.106 per compute-hour, about $19 a month, Neon pricing page". Estimate added CI time against the 50,000 private-repository minutes a month the plan includes.
 9. Create nothing half-finished. Give each app, bot, account, channel or key its avatar, its name under the naming convention and its description when it is created.
 10. Report account headroom for every harness the fleet runs (Claude, Codex, Copilot), side by side.

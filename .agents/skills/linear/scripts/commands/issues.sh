@@ -47,6 +47,14 @@ Workflow Actions (composite operations for dev):
                  (--include-children-of <ID> for bundles; --container when the
                  target is a container parent closing after its children)
 
+Cross-team guard: with LINEAR_TEAM set, update, bulk-update, activate, block,
+unblock, complete, archive and trash|delete refuse an issue of another team
+before any write, with
+`linear: refused=cross-team action=<verb> issue=<ID> team=<KEY>
+own-team=<KEY> route=peer-mail`. Reads and relations, like comments, reach
+every team. With LINEAR_TEAM unset they run and print
+`linear: cross-team-guard=inactive action=<verb> cause=no-team`.
+
 Output Formats (all query commands):
   --format=safe         Flat, null-safe array (DEFAULT)
   --format=compact      Minimal fields for workflow routing (no description/url/timestamps)
@@ -93,7 +101,8 @@ Bulk Update:
 
 Create Options:
   --title <text>        Issue title (required)
-  --team <ref>          Team key or name (default: $LINEAR_TEAM; required when unset)
+  --team <ref>          Team key or name (default: $LINEAR_TEAM; required when unset);
+                        another team than $LINEAR_TEAM is refused
   --description <text>  Issue description
   --description-file <path>  Read description from file (preferred for markdown)
   --label(s) <a,b,c>    Comma-separated label names
@@ -619,6 +628,7 @@ bulk_update_issues() {
     local identifiers=()
     local from_stdin="false"
     local update_args=()
+    local attach_paths=()
 
     # Separate issue IDs from update options
     while [[ $# -gt 0 ]]; do
@@ -632,12 +642,14 @@ bulk_update_issues() {
             # (--attach re-uploads per issue: Linear assets are issue-agnostic
             # but each issue gets its own embed/attachment)
             update_args+=("$1" "$2")
+            [[ "$1" != --attach ]] || attach_paths+=("$2")
             shift 2
             ;;
         --state=* | --status=* | --labels=* | --label=* | --title=* | --description=* | --project=* | --parent=* | --milestone=* | --priority=* | --estimate=* | --assignee=* | --cycle=* | --sort-order=* | --attach=*)
             # Support --key=value syntax (AI agents often use this)
             local _key="${1%%=*}" _val="${1#*=}"
             update_args+=("$_key" "$_val")
+            [[ "$_key" != --attach ]] || attach_paths+=("$_val")
             shift
             ;;
         --remove-parent | --clear-cycle | --clear-estimate)
@@ -675,6 +687,11 @@ bulk_update_issues() {
         echo '{"error": "No update options provided. Example: bulk-update PROJ-1 PROJ-2 --state \"Backlog\""}' >&2
         return 1
     fi
+    # --attach: refuse unreadable paths before any API call.
+    if [ ${#attach_paths[@]} -gt 0 ]; then
+        attach_preflight_files "${attach_paths[@]}" || return 1
+    fi
+    linear_guard_issue_team bulk-update "${identifiers[@]}" || return 1
 
     # Process each issue
     local results=()
@@ -1212,6 +1229,7 @@ create_issue() {
     # before any API call.
     linear_set_team_target "$team"
     linear_require_team_target || return 1
+    local explicit_team="$team"
     team="$LINEAR_TEAM_TARGET"
 
     if [ -z "$title" ]; then
@@ -1254,6 +1272,9 @@ create_issue() {
     if [ ${#attach_paths[@]} -gt 0 ]; then
         attach_preflight_files "${attach_paths[@]}" || return 1
     fi
+
+    # The first request: the checks above need none, so they refuse first.
+    linear_guard_create_team "$explicit_team" || return 1
 
     # Resolve --project and --milestone BEFORE uploading: each can still
     # refuse — an unknown project, a milestone name with no project, an
@@ -1730,6 +1751,7 @@ update_issue() {
     if [ ${#attach_paths[@]} -gt 0 ]; then
         attach_preflight_files "${attach_paths[@]}" || return 1
     fi
+    linear_guard_issue_team update "$issue_id" || return 1
 
     local input_parts=()
 
@@ -2089,6 +2111,7 @@ confirm_archive_mutation() {
 archive_issue() {
     local issue_ref="$1"
     shift || true
+    linear_guard_issue_team archive "$issue_ref" || return 1
 
     # Resolve identifier to UUID (required for archive mutation)
     local issue_id
@@ -2113,6 +2136,7 @@ archive_issue() {
 trash_issue() {
     local issue_ref="$1"
     shift || true
+    linear_guard_issue_team trash "$issue_ref" || return 1
 
     # Resolve identifier to UUID (required for delete mutation)
     local issue_id
@@ -2707,6 +2731,8 @@ activate_issue() {
         esac
     done
 
+    linear_guard_issue_team activate "$issue_id" || return 1
+
     local agent_label=""
     if [ -n "$agent" ]; then
         agent_label="agent:$agent"
@@ -2812,6 +2838,7 @@ block_issue() {
         echo '{"error": "Required: --by <blocker-issue>"}' >&2
         return 1
     fi
+    linear_guard_issue_team block "$issue_id" || return 1
 
     # Get current labels and add "blocked"
     local issue_result
@@ -2891,6 +2918,7 @@ block_issue() {
 # Usage: unblock_issue CC-XXX
 unblock_issue() {
     local issue_id="$1"
+    linear_guard_issue_team unblock "$issue_id" || return 1
 
     # Get current labels and remove "blocked"
     local issue_result
@@ -3061,19 +3089,21 @@ complete_issue() {
         fi
     fi
 
+    local met_json=""
+    if [ "$done_when_met" = "all" ]; then
+        met_json='"all"'
+    elif [[ "$done_when_met" =~ ^[1-9][0-9]{0,3}(,[1-9][0-9]{0,3})*$ ]]; then
+        met_json=$(jq -cn --arg list "$done_when_met" '$list | split(",") | map(tonumber)') || return 1
+    elif [ -n "$done_when_met" ]; then
+        jq -cn --arg value "$done_when_met" \
+            '{error: ("--done-when-met takes all or comma-separated box numbers from 1, got: " + $value)}' >&2
+        return 1
+    fi
+    linear_guard_issue_team complete "$issue_id" || return 1
+
     local update_args=(--state "Done")
     local done_when_checked=""
-    if [ -n "$done_when_met" ]; then
-        local met_json
-        if [ "$done_when_met" = "all" ]; then
-            met_json='"all"'
-        elif [[ "$done_when_met" =~ ^[1-9][0-9]{0,3}(,[1-9][0-9]{0,3})*$ ]]; then
-            met_json=$(jq -cn --arg list "$done_when_met" '$list | split(",") | map(tonumber)') || return 1
-        else
-            jq -cn --arg value "$done_when_met" \
-                '{error: ("--done-when-met takes all or comma-separated box numbers from 1, got: " + $value)}' >&2
-            return 1
-        fi
+    if [ -n "$met_json" ]; then
         local issue_result description tick missing_count
         issue_result=$(get_issue "$issue_id" --format=raw) || return 1
         # The sentinel keeps a trailing newline the substitution would strip.

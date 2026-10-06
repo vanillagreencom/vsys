@@ -95,9 +95,9 @@ REVIEWER_SLOT_BUDGET = "0"
 # values: off | overseer
 ORCH_QUESTION_TOOL = "off"
 
-# How long a question for you waits, in minutes, before the watch takes the
-# recommendation every such question carries and reports it. An ask's own
-# --wait overrides it.
+# How long a question for you waits, in minutes, before its deadline;
+# `lane-mail --help` states what the deadline does for each form of
+# question. An ask's own --wait overrides it.
 ORCH_ASK_WAIT_MINUTES = "120"
 
 # Who the session is talking to. "ceo" asks only about outcomes, in plain
@@ -344,8 +344,8 @@ ORCH_OVERSEER_SUCCESSOR_ACCOUNTS = "1"
 # the lane.
 # ORCH_DIRECTIVE_UNREAD_SECS = "300"
 
-# Branch size, which is reported and never refuses work: the folders
-# holding generated copies, separated by spaces. A file under one of them
+# Shared CI and receipt measurement: folders holding generated copies,
+# separated by spaces. A file under one of them
 # leaves the count only where the file it was generated from changed too.
 # ORCH_SIZE_RENDER_ROOTS = ".agents .claude .codex .pi"
 

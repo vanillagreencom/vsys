@@ -184,6 +184,15 @@ if [ -n "$conflict_count" ] || [ "$held_count" -ne 0 ]; then
 fi
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "${TMP:?}"' EXIT
+# refresh keeps the files of a declaration deleted from kendex.toml by hand;
+# apply moves them to the trash as diffs of this pull request. A leftover
+# edited on disk is held, not trashed, and the verify below fails on it.
+apply_status=0
+kendex apply --scope project --yes --leave || apply_status=$?
+if [ "$apply_status" -ne 0 ]; then
+  printf 'refresh-error=apply value=%s\n' "$apply_status" >&2
+  exit 1
+fi
 "$SCRIPT_DIR/adopt-refresh.sh" --templates-dir "$templates"
 # The release-installed parser must judge its own settings, including on a
 # first install. It reads and prints data without the refresh app credential.

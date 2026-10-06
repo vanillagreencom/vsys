@@ -23,14 +23,15 @@ A nonzero count takes `⤵ workflows/review-pr-comments.md [PR_NUMBER] § 1-8 �
 `[READ_HEAD]` is the head this read bound before the triage, and nothing here rebinds it. Read the head again by the first command above and compare:
 
 - Still `[READ_HEAD]`: the triage pushed nothing. Run this read again from its top, for the same caller.
-- A new head: the triage pushed a fix. Return to merge-pr.md § 3 at its `pr-merge --check`, so § 3.1's CI wait and § 3.2's gates run on that head before any arm. A `[MICRO_ENTRY]` run escapes by [micro.md](../workflows/micro.md) § Escape condition 9 instead: its head moved.
+- A new head: the triage pushed a fix. Return to merge-pr.md § 3 at its `pr-merge --check`, so § 3.1's CI wait and § 3.2's gates run on that head before any arm. A `[MICRO_ENTRY]` run escapes by [micro.md](../workflows/micro.md) § Escape condition 8 instead: its head moved.
 
 ## What reads an open thread
 
-Three readers check open threads:
+Four readers check open threads:
 
 - This read, from merge-pr § 3.2 before the `not_approved` wait, and from merge-pr § 5 step 1 before every merge call. The § 5 read covers the entries that skip § 3.2: a [micro.md](../workflows/micro.md) § 4 entry and every return from the merge cycles.
 - `queue-wait`'s late-findings guard, on a thread posted after this read while the PR is armed or queued. Its `dequeued` verdict takes merge-pr § 5 step 1's Late-findings triage, which runs this read.
+- `ci-classify-refusal`, on a cause `none` refusal, one its readiness gates did not produce: an open thread withholds its `retry: same-head` line, so [merge-attempt.md § Exit routing](merge-attempt.md#exit-routing) returns to merge-pr § 3.2 instead of retrying.
 - GitHub, only where the base branch's ruleset requires thread resolution: `pr-merge --help` § Approvals and review threads.
 
 `check-review-replies`, which every `pr-merge` readiness check runs, reads every thread's replies but not whether a thread is open, so it is not one of them: `pr-merge --help` § Review replies.
