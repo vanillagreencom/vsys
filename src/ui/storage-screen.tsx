@@ -570,8 +570,13 @@ export function Storage({
       (open) => (
         <>
           <Disclosure open={open} name={fit(v.mount, 40)} />
+          {/* What the row has room for, marked where it is cut; the detail
+              below holds the whole cause. The marker, the disclosure and the
+              mount take the first 43 cells. */}
           {cause && (
-            <Ink color={ui.danger}>{safe(volumeCauseText(cause, c))}</Ink>
+            <Ink color={ui.danger}>
+              {safe(fit(volumeCauseText(cause, c), width - 43))}
+            </Ink>
           )}
         </>
       ),
@@ -579,6 +584,11 @@ export function Storage({
         color: levelColor(volumeLevel(v, c.freeFloor)),
         under: () => (
           <Detail>
+            {cause && (
+              <Line flexShrink={0} wrapMode="word" fg={ui.danger}>
+                {safe(volumeCauseText(cause, c))}
+              </Line>
+            )}
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}

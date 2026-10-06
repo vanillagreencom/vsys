@@ -113,6 +113,36 @@ test("a serious filesystem row names its cause on the row", async () => {
   }
 });
 
+test("a narrow Storage marks a cut cause and keeps it whole in the mount's detail", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // 1e6 bytes free against the 5 GiB floor: at 60 columns the row has room
+  // for only the start of the cause.
+  s.storage.volumes = [volumeSnapshot("/srv/data", { free: 1e6 })];
+  const t = await mount(s, c, { width: 60, height: 30 });
+  try {
+    await t.press("5");
+    await t.press("down");
+    const lines = t.frame().split("\n");
+    const at = lines.findIndex((line) => line.includes("/srv/data"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    const row = lines[at] ?? "";
+    // The detail is the run of lines drawn as children of the row.
+    const detail: string[] = [];
+    for (const line of lines.slice(at + 1)) {
+      if (!isChildLine(line)) break;
+      detail.push(line);
+    }
+    expect({
+      cutMarked: row.includes("…"),
+      free: detail.some((line) => line.includes("976.6 KiB")),
+      floor: detail.some((line) => line.includes("5.0 GiB")),
+    }).toEqual({ cutMarked: true, free: true, floor: true });
+  } finally {
+    await t.close();
+  }
+});
+
 test("Storage opens with write totals and keeps filesystem state below them", async () => {
   const c = defaults();
   const s = emptySnapshot();
