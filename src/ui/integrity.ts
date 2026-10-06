@@ -60,6 +60,32 @@ export function integrityLine(item: Integrity, scrub?: Capability): string {
   ].join(" · ");
 }
 /**
+ * The days the kernel logged the failures, and the day the check cleared them,
+ * so a cleared verdict reads apart from one with nothing ever logged. It sits
+ * under the integrity line rather than in it: the line is one truncated row,
+ * and the dates would push its two times off a narrow screen.
+ * That check may have corrected errors rather than found none, so the words
+ * say it left no damage, never that it was clean.
+ * The log can reach back past a new year, so a range that crosses one names
+ * every year, or two failures a year apart would read as one day.
+ */
+export function clearedText(
+  cleared: NonNullable<Integrity["cleared"]>,
+): string {
+  const year =
+    new Date(cleared.first).getFullYear() !==
+    new Date(cleared.checkedAt).getFullYear();
+  const day = (at: number) =>
+    new Date(at).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      ...(year ? { year: "numeric" } : {}),
+    });
+  const first = day(cleared.first);
+  const last = day(cleared.last);
+  return `errors on ${first === last ? first : `${first} to ${last}`}, no damage left by the check on ${day(cleared.checkedAt)}`;
+}
+/**
  * Whether the remembered finished check standing in for an unavailable
  * current report found damage. Both `blocksText` and `noDamageText` read
  * this one function rather than each testing `item.state` on their own, so

@@ -6,6 +6,7 @@ import { volumeSnapshot } from "../test/fixture";
 import { present } from "../test/present";
 import {
   blocksText,
+  clearedText,
   damageAdvice,
   integrityLine,
   integrityWords,
@@ -521,5 +522,14 @@ test("a check that has not finished counted nothing, and its report is not blame
   // A finished report that carried no count is still that.
   expect(blocksText(state([report({ uncorrectable: null })]))).toBe(
     "not available: the report carried no count",
+  );
+});
+
+test("cleared failures a year apart never read as one day", () => {
+  const year = 365 * day;
+  const at = now - 20 * day;
+  const oneDay = { first: at, last: at, checkedAt: now - 3600000 };
+  expect(clearedText({ ...oneDay, first: at - year })).not.toBe(
+    clearedText(oneDay),
   );
 });

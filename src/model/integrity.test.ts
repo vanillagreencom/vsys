@@ -592,6 +592,60 @@ test("the remembered check, not the aborted one, decides which logged failures a
   expect(onlyBefore.state).toBe("healthy");
 });
 
+test("a clean check clears logged failures only when it started after the newest, and keeps their dates", () => {
+  const c = defaults();
+  // Failures logged over a week, a month before the check.
+  const first = { root: 257, inode: 1, at: now - 26 * day };
+  const middle = { root: 257, inode: 2, at: now - 23 * day };
+  const last = { root: 257, inode: 3, at: now - 20 * day };
+  const csumFailures = { fs: [middle, last, first] };
+  type Answer = Pick<Integrity, "state" | "cleared">;
+  const rows: [string, Pick<Storage, "scrubs" | "csumFailures">, Answer][] = [
+    [
+      "a clean check that started after the newest failure",
+      { scrubs: [report({ startedAt: now - 3600000 })], csumFailures },
+      {
+        state: "healthy",
+        cleared: {
+          first: first.at,
+          last: last.at,
+          checkedAt: now - 3600000,
+        },
+      },
+    ],
+    [
+      // A failure logged while the check ran may sit in a block it had
+      // already passed, so only the start clears it.
+      "a clean check that started before the newest failure",
+      { scrubs: [report({ startedAt: last.at - 3600000 })], csumFailures },
+      { state: "new-errors", cleared: null },
+    ],
+    [
+      "a clean check that has gone stale",
+      { scrubs: [report({ startedAt: now - 19 * day })], csumFailures },
+      {
+        state: "stale",
+        cleared: { first: first.at, last: last.at, checkedAt: now - 19 * day },
+      },
+    ],
+    [
+      "a clean check with nothing logged",
+      { scrubs: [report()], csumFailures: { fs: [] } },
+      { state: "healthy", cleared: null },
+    ],
+  ];
+  for (const [name, storage, answer] of rows) {
+    const item = integrity(filesystem(), storage, now, {
+      ...c,
+      scrubMaxAgeDays: 14,
+    });
+    expect({ name, state: item.state, cleared: item.cleared }).toEqual({
+      name,
+      ...answer,
+    });
+  }
+});
+
 test("a report names a filesystem by its own identity, not by arriving first", () => {
   const c = defaults();
   const other = report({

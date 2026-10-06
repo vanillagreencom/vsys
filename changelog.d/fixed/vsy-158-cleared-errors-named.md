@@ -1,0 +1,1 @@
+- A healthy Storage integrity row now lists, under it, the days of logged checksum failures a later check cleared and that check's day, the year included where they cross one.
