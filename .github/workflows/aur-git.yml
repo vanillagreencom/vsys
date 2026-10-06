@@ -8,6 +8,8 @@ on:
       - "data/**"
       - "warden/**"
       - "packaging/vsys-git/**"
+      - "packaging/scrub-reporter/**"
+      - "scripts/scrub-reporter/**"
       - "packaging/stage-runtime-files.sh"
       - "packaging/vsys-runtime-files.txt"
       - "package.json"

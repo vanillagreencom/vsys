@@ -7,3 +7,6 @@
 644 lib/vsys/warden/systemd/agent-warden.timer warden/systemd/agent-warden.timer
 644 lib/vsys/warden/systemd/agents.slice warden/systemd/agents.slice
 644 lib/vsys/data/agent-tools.json data/agent-tools.json
+755 lib/vsys/scripts/scrub-reporter/vsys-scrub-report scripts/scrub-reporter/vsys-scrub-report
+644 lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf packaging/scrub-reporter/vsys-report.conf
+644 lib/tmpfiles.d/vsys-scrub.conf scripts/scrub-reporter/vsys-scrub.conf

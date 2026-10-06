@@ -286,6 +286,12 @@ export interface Storage {
    * drive report directory exists or the collector was given no udisks.
    */
   udisks?: { failure: CapabilityFailure; detail: string } | null;
+  /**
+   * Where the packaged scrub reporter is installed, the `btrfs-scrub@` timer
+   * each filesystem with none enabled needs, and null where the enabled
+   * timers could not be listed. Absent where no packaged reporter is.
+   */
+  missingScrubTimers?: string[] | null;
   scratchTime?: number | null;
   scratchPending?: boolean;
 }

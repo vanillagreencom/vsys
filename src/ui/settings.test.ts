@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { defaults } from "../config/config";
+import { shellLine } from "../model/shell";
 import type { Capability, CapabilityId } from "../model/types";
 import { writeTotals } from "../model/writes";
 import {
@@ -13,6 +14,8 @@ import {
   capabilityLoss,
   capabilityOffer,
   capabilityReason,
+  reporterInstall,
+  reporterOffer,
   settingDisplay,
   settingHelp,
   settingInfo,
@@ -405,4 +408,28 @@ test("a missing agent slice offers one line that limits it, and nothing else doe
     reason: "/fixture/agents.slice is masked, so systemd never starts it",
     loss: capabilityLoss(slice("absent"), c),
   });
+});
+
+test("with the packaged reporter, the scrub offer enables only the missing timers", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = capabilitySnapshot().map((cap) =>
+    cap.id === "scrub" ? { ...cap, available: false, failure: "absent" } : cap,
+  );
+  expect(reporterOffer(s, c, "scrub")?.command).toBe(reporterInstall);
+  const timers = ["btrfs-scrub@-.timer", "btrfs-scrub@mnt-a\\x2db.timer"];
+  s.storage.missingScrubTimers = timers;
+  expect(reporterOffer(s, c, "scrub")?.command).toBe(
+    shellLine(["sudo", "systemctl", "enable", "--now", ...timers]),
+  );
+  // Every timer enabled, or timers that could not be listed: nothing to offer,
+  // and never the install the package already did.
+  for (const missing of [[], null]) {
+    s.storage.missingScrubTimers = missing;
+    expect(reporterOffer(s, c, "scrub")).toBeUndefined();
+  }
+  s.storage.missingScrubTimers = timers;
+  expect(
+    reporterOffer(s, { ...c, scrubDir: "/elsewhere" }, "scrub"),
+  ).toBeUndefined();
 });

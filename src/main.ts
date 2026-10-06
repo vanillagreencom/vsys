@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { type Collector, createCollector } from "./collect/collector";
+import { packagedScrubUnits } from "./collect/scrub-timers";
 import { capturePane, insideTmux } from "./collect/tmux";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
@@ -71,7 +72,14 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     values.config !== undefined ? resolve(values.config) : undefined;
   const settingsPath = () => explicit ?? configPath();
   const config = await loadConfig(settingsPath());
-  const collector = await createCollector(config, !values.once);
+  const collector = await createCollector(
+    config,
+    !values.once,
+    undefined,
+    undefined,
+    undefined,
+    packagedScrubUnits,
+  );
   if (values.once) {
     try {
       if (values.summary) {

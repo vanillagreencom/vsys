@@ -3,6 +3,7 @@ import type { FinishedScrubMemory } from "./collect/btrfs";
 import { createCollector } from "./collect/collector";
 import type { KernelLog } from "./collect/kernel-log";
 import type { SccacheCollector } from "./collect/sccache";
+import { packagedScrubUnits } from "./collect/scrub-timers";
 import { collectionKeys } from "./collect/settings";
 import {
   type AgentToolNamesSave,
@@ -154,7 +155,14 @@ export class Session {
     this.makeSource =
       options.makeSource ??
       ((config, previous) =>
-        createCollector(config, true, previous, this.agentToolsPath));
+        createCollector(
+          config,
+          true,
+          previous,
+          this.agentToolsPath,
+          undefined,
+          packagedScrubUnits,
+        ));
     this.agentToolsPath = options.agentToolsPath ?? defaultAgentToolsPath;
     this.writeConfig = options.writeConfig ?? writeFileAtomic;
   }

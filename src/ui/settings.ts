@@ -1,7 +1,12 @@
 import { type Config, choices, defaults } from "../config/config";
 import { shellLine } from "../model/shell";
-import type { Capability, CapabilityId, LifetimeSource } from "../model/types";
-import { age, bytes } from "./format";
+import type {
+  Capability,
+  CapabilityId,
+  LifetimeSource,
+  Snapshot,
+} from "../model/types";
+import { age, bytes, count } from "./format";
 import { homeRegions, storageRegions } from "./regions";
 
 /**
@@ -490,18 +495,34 @@ const reporters = {
  * report directory does not exist, and it is the one the shipped reporter
  * writes to. A reader who pointed the directory elsewhere runs a reporter of
  * their own, and a directory that exists but cannot be read is not fixed by
- * installing anything.
+ * installing anything. Where the vsys package installed the scrub reporter,
+ * nothing is left to install, and the line enables the `btrfs-scrub` timers
+ * no filesystem has, or is not offered at all.
  */
 export function reporterOffer(
-  capabilities: Capability[],
+  s: Pick<Snapshot, "capabilities" | "storage">,
   c: Pick<Config, "scrubDir" | "smartDir">,
   id: CapabilityId,
 ): { sentence: string; command: string } | undefined {
   if (id !== "scrub" && id !== "smart") return undefined;
   const reporter = reporters[id];
-  const cap = capabilities.find((x) => x.id === id);
-  return cap?.failure === "absent" &&
-    c[reporter.dir] === defaults()[reporter.dir]
+  if (c[reporter.dir] !== defaults()[reporter.dir]) return undefined;
+  const timers = s.storage.missingScrubTimers;
+  if (id === "scrub" && timers !== undefined)
+    return timers?.length
+      ? {
+          sentence: `The scrub reporter is installed with vsys and reports each check, but no timer checks ${count(timers.length, "filesystem")}: ${timers.join(", ")}.`,
+          command: shellLine([
+            "sudo",
+            "systemctl",
+            "enable",
+            "--now",
+            ...timers,
+          ]),
+        }
+      : undefined;
+  const cap = s.capabilities.find((x) => x.id === id);
+  return cap?.failure === "absent"
     ? { sentence: reporter.sentence, command: reporter.command }
     : undefined;
 }
