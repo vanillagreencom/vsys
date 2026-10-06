@@ -32,7 +32,7 @@ bun run compile    # the standalone ./vsys binary the release and the vsys-git p
 bun run smoke      # one fixture sample with the bundle and one with a freshly compiled binary
 ```
 
-A new worker thread goes into `entrypoints` in `scripts/build.ts` and `ARTIFACTS` in `scripts/ci.py`; [collection-threads.md](docs/architecture/collection-threads.md) says why.
+A new worker thread goes into `entrypoints` in `scripts/build.ts` and `ARTIFACTS` in `scripts/ci.py`; [layers.md](docs/architecture/layers.md) says why.
 
 ## Benchmarks
 

@@ -13,7 +13,7 @@ A second detector lets a tile and a card disagree about one machine. One ranking
 ## Rules
 
 - Do add a cause to `CauseId`, `causeOrder` and `causeEvidence` together. The two tables are records over `CauseId`, so the type check refuses a cause one of them lacks.
-- Do say in `causeEvidence` whether a cause is a level, which must hold before it alerts, or an event, which alerts on the sample that shows it. The event log reads it ([events.md](events.md)).
+- Do say in `causeEvidence` whether a cause is a level, which must hold before it alerts, or an event, which alerts on the sample that shows it. The event log reads it ([history.md](history.md)).
 - Do make a cause's `lanes`, `groups` and `paths` its subjects, each its own alert. `at` names where a card lands without making that row a subject.
 - Do name a cgroup through `consumerName()`: the lane name where the group is a lane, otherwise the decoded unit name.
 - Do read agent lanes through `agentLanes()` and the agents' total through `agentTotal()`. Where the probe found no agent slice the total sums the agent lanes and stays unknown while any of them is unreported.
@@ -32,4 +32,4 @@ A consumer needs a summary field the model does not hold as a number, or a cause
 
 ## Not governed
 
-How an alert opens and closes over time: [events.md](events.md). How a card is drawn: [ui.md](ui.md).
+How an alert opens and closes over time: [history.md](history.md). How a card is drawn: [ui.md](ui.md).
