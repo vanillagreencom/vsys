@@ -10,8 +10,9 @@
 set -euo pipefail
 
 # The two scopes, resolved once. Sets GG_CHANGELOG_PATTERNS (space-separated
-# fragment globs), GG_CHANGELOG_SHOWN (that list as a reader must type it) and
-# GG_CHANGELOG_RECORD (the collated record, empty when that scope is off).
+# fragment globs), GG_CHANGELOG_SHOWN (that list as a reader must type it),
+# GG_CHANGELOG_PACKAGES (the package-file globs, empty when packages are off)
+# and GG_CHANGELOG_RECORD (the collated record, empty when that scope is off).
 # The caller has cd'd to the repository root and runs under `set -f`.
 gg_changelog_scopes() {
   local raw
@@ -22,6 +23,8 @@ gg_changelog_scopes() {
   gg_load_path_globs "$raw" changelog COMMIT_GUARDS_CHANGELOG_PATHS || return 1
   GG_CHANGELOG_PATTERNS="$GG_PATH_GLOBS"
   GG_CHANGELOG_SHOWN="$(gg_scrubbed "$GG_CHANGELOG_PATTERNS")"
+  raw="$(gg_setting COMMIT_GUARDS_CHANGELOG_PACKAGE_PATHS "")" || return 1
+  GG_CHANGELOG_PACKAGES="$(gg_config_path_list "$raw" changelog-package)" || return 1
   raw="$(gg_setting COMMIT_GUARDS_CHANGELOG_RECORD "CHANGELOG.md")" || return 1
   GG_CHANGELOG_RECORD=""
   [ -n "$raw" ] || return 0
@@ -32,6 +35,89 @@ gg_changelog_scopes() {
   ! gg_matches_path_glob "$GG_CHANGELOG_RECORD" \
     || gg_fail changelog-overlap "$GG_CHANGELOG_RECORD" "COMMIT_GUARDS_CHANGELOG_RECORD ($(gg_shown "$GG_CHANGELOG_RECORD")) is also matched by COMMIT_GUARDS_CHANGELOG_PATHS — the collated record is not a fragment"
 }
+
+# A pattern places package fragments when the segment after its glob-free
+# root is a bare `*`, the package slot, followed by the section and the name
+# alone: changelog.d/*/*/*.md places changelog.d/<package>/<section>/<name>.
+# Every other pattern, one globbing deeper in its path included, places the
+# repository's own program entries, and so does every pattern while no
+# package files are configured. Sets GG_PACKAGE_ROOT.
+gg_package_pattern() { # PATTERN — 0 when it has a package slot
+  local rest
+  [ -n "$GG_CHANGELOG_PACKAGES" ] || return 1
+  GG_PACKAGE_ROOT="$(gg_path_glob_root "$1")" || return 1
+  rest="${1#"$GG_PACKAGE_ROOT"/}"
+  case "$rest" in '*'/*/*) ;; *) return 1 ;; esac
+  case "${rest#*/}" in */*/*) return 1 ;; esac
+}
+
+# The package a placed fragment names, from its placing pattern's package
+# slot. Run after gg_path_glob_section placed PATH; sets GG_FRAGMENT_PACKAGE,
+# empty for a program entry.
+gg_fragment_package() { # PATH
+  local rest
+  GG_FRAGMENT_PACKAGE=""
+  gg_package_pattern "$GG_PATH_PLACER" || return 0
+  rest="${1#"$GG_PACKAGE_ROOT"/}"
+  GG_FRAGMENT_PACKAGE="${rest%%/*}"
+}
+
+# The package files, one pass over the index records in GG_TMP/files.z into
+# GG_TMP/packages.z: five NUL-terminated fields a row, the name, the package
+# directory, the mode, the sha and the path. A SKILL.md names its directory
+# and versions everything under it; any other file names itself, less its
+# extension, and carries no version, so its directory field is empty. A
+# glob declares a file at its own depth only, so hooks/*.sh leaves the
+# helpers under hooks/tests/ undeclared, and one name has one package file,
+# since a fragment directory can resolve to only one of them.
+gg_package_files() {
+  local rec f name dir rest
+  : >"$GG_TMP/packages.z"
+  [ -n "$GG_CHANGELOG_PACKAGES" ] || return 0
+  while IFS= read -r -d '' rec; do
+    f="${rec#*"$GG_TAB"}"
+    # shellcheck disable=SC2086
+    gg_path_placer "$f" $GG_CHANGELOG_PACKAGES || continue
+    case "$f" in
+      */SKILL.md) dir="${f%SKILL.md}"; name="${dir%/}"; name="${name##*/}" ;;
+      *) dir=""; name="${f##*/}"; name="${name%.*}" ;;
+    esac
+    ! gg_package_row "$name" \
+      || gg_fail package-duplicate "$(gg_shown "$GG_PACKAGE_PATH"):$(gg_shown "$f")" "Both files declare the package $(gg_shown "$name"); rename one or narrow COMMIT_GUARDS_CHANGELOG_PACKAGE_PATHS."
+    rest="${rec#* }"
+    printf '%s\0%s\0%s\0%s\0%s\0' "$name" "$dir" "${rec%% *}" "${rest%% *}" "$f" >>"$GG_TMP/packages.z" \
+      || gg_fail package-files "$(gg_shown "$f")" "Could not record the package file."
+  done <"$GG_TMP/files.z"
+}
+
+# NAME's row from GG_TMP/packages.z, in GG_PACKAGE_DIR, _MODE, _SHA and _PATH.
+gg_package_row() { # NAME — 0 when a package file declares NAME
+  local name
+  while IFS= read -r -d '' name && IFS= read -r -d '' GG_PACKAGE_DIR && IFS= read -r -d '' GG_PACKAGE_MODE \
+    && IFS= read -r -d '' GG_PACKAGE_SHA && IFS= read -r -d '' GG_PACKAGE_PATH; do
+    [ "$name" != "$1" ] || return 0
+  done <"$GG_TMP/packages.z"
+  return 1
+}
+
+GG_VERSION_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+
+# The version a package file states, on stdout: its frontmatter
+# metadata.version, read by lib/skill-roots.sh's gg_skill_id, which the
+# caller sources. A file this reads without one is a collection error.
+gg_package_version() { # MODE SHA PATH
+  local id
+  gg_mode_is_regular "$1" || gg_fail version-mode "$(gg_shown "$3"):$1" "A package file must be a regular file."
+  gg_read_blob "$2" "$3" version
+  id="$(gg_skill_id "$GG_TMP/blob")" || gg_fail version-read "$(gg_shown "$3")" "Expected frontmatter with a name and a metadata.version."
+  jq -enr --arg v "${id#*"$GG_NL"}" --arg re "$GG_VERSION_RE" '$v | select(test($re))' 2>"$GG_TMP/dependency.err" \
+    || gg_fail_cause version-read "$(gg_shown "$3")" "$GG_TMP/dependency.err" "Expected frontmatter metadata.version in major.minor.patch form."
+}
+
+# The record's part for package entries: one `### Packages` heading in a
+# release section, a level-4 heading per package beneath it. Its entries are
+# the packages' releases, never the program's, so the version check skips it.
+GG_PACKAGES_PART="packages"
 
 # A fragment is one Markdown list item: it opens with a hyphen and a space,
 # and every later line indents under it. A second marker or a heading would
@@ -163,7 +249,8 @@ gg_is_section() { # NAME — 0 when NAME is exactly one of the sections
 # with that section alone, after a "released<TAB>heading" row: those are the
 # entries the release publishes, and pending ones wait for the next release.
 # With whole_entry=1 the input is one fragment, whose entry_section names its
-# directory.
+# directory. packages_part, GG_PACKAGES_PART, names the part whose entries
+# are no release entry of the record's own version.
 GG_UNRELEASED_AWK='
 BEGIN { if (!release_level) release_level = 2 }
 function named_breaking(l) { return l ~ /^- \*\*Breaking:\*\*[ \t]+[^ \t]/ }
@@ -221,6 +308,7 @@ function heading_text(l,   i, n, t) {
       part = ""
     } else if (release_level == 2 && lvl == 3) part = tolower(heading_text(line))
     if (scope == "") next
+    if (packages_part != "" && part == packages_part) next
     if (named_breaking(line)) { rows[++count] = "breaking\t" line; row_scope[count] = scope }
     if (part == "added" && line ~ /^- /) { rows[++count] = "added\t" line; row_scope[count] = scope }
     next
