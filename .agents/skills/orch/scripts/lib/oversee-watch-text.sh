@@ -169,7 +169,16 @@ The long pass's events, checked and reported in this order:
   EVENT pr-watch rc=N        new review-gate attention; reducer output follows
   EVENT merged <PR> <branch> <repo>
                              an --item PR merged at or after --since, in any
-                             --repo. A parked record's item is an --item for
+                             --repo, <branch> being the item's own, its key
+                             lower-cased. The PR is the item's by
+                             lib/lane-state.sh's lane_own: the number a
+                             parked record names, a head on that branch, or
+                             the key in its title's conventional-commit scope
+                             or right after Closes on a body line, as a
+                             Claude cloud session's claude/ branch names no
+                             item; a search for the key that fills its page
+                             exits 2 as merged-search-truncated at 1000. A
+                             parked record's item is an --item for
                              this check alone, and the merge of the pull
                              request its record names, in that repository,
                              is followed by parked-merged below. Another pull
@@ -1024,6 +1033,7 @@ ow_message() { # REASON FIELD=VALUE...
     tracker-list-invalid) text='The tracker list output could not be parsed.' ;;
     owed-roster-invalid) text='The account listing read for the owed items could not be put to them, so the heartbeat names none.' ;;
     owed-accounts-unread) text='lanes list failed under this host, so the owed items on it read unjudged this heartbeat. Its own words follow.' ;;
+    merged-search-truncated) text='The merged pull requests naming the item in their title or body, since --since, reached the search limit, so the item'"'"'s own pull request may be past it and its merge unreported. No merged event is judged from a partial list.' ;;
     owed-list-truncated) text='The item repository open pull request listing reached its limit, so an owed issue-N pull request past it would be missing. The heartbeat names no owed item from a partial list.' ;;
     owed-wall-unjudged) text='lanes pick could not judge the wall for this host, harness and model, so the owed items on them read unjudged this heartbeat. Its own words follow.' ;;
     handoff-read-failed) text='The handoff record could not be read.' ;;
