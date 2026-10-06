@@ -23,7 +23,7 @@ import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
 import { keyLabel, screenPad } from "./chrome";
 import { columnGap, fit } from "./columns";
-import { age, amount, gap } from "./format";
+import { age, amount, bytes, gap } from "./format";
 import {
   blocksText,
   clearedText,
@@ -162,10 +162,35 @@ export function scratchSummary(
   };
 }
 
+/** What makes a volume serious, with the numbers that tripped it. */
+export type VolumeCause =
+  | { kind: "read-only" }
+  | { kind: "errors"; counter: string; growth: number }
+  | { kind: "free"; free: number; floor: number };
+export function volumeCause(v: Volume, freeFloor: number): VolumeCause | null {
+  if (v.readOnly) return { kind: "read-only" };
+  const grown = Object.entries(v.delta)
+    .filter(([, n]) => n > 0)
+    .sort(([, a], [, b]) => b - a)[0];
+  if (grown) return { kind: "errors", counter: grown[0], growth: grown[1] };
+  if (v.free !== null && v.free < freeFloor)
+    return { kind: "free", free: v.free, floor: freeFloor };
+  return null;
+}
 export function volumeLevel(v: Volume, freeFloor: number): Level {
-  if (v.readOnly || Object.values(v.delta).some((n) => n > 0)) return "danger";
-  if (v.free !== null && v.free < freeFloor) return "danger";
-  return "ok";
+  return volumeCause(v, freeFloor) ? "danger" : "ok";
+}
+function volumeCauseText(cause: VolumeCause, c: Config): string {
+  switch (cause.kind) {
+    case "read-only":
+      return "read-only";
+    case "errors":
+      return `${cause.counter} up ${cause.growth}`;
+    case "free":
+      return `${bytes(cause.free, c)} free, under ${bytes(cause.floor, c)}`;
+    default:
+      return cause satisfies never;
+  }
 }
 /** The error counters a volume reports, only those above zero. */
 function errorText(v: Volume): string {
@@ -546,19 +571,32 @@ export function Storage({
       },
     );
   };
-  const volumeRow = (i: number, v: Volume) =>
-    storageRow(
+  const volumeRow = (i: number, v: Volume) => {
+    const cause = volumeCause(v, c.freeFloor);
+    return storageRow(
       i,
       (open) => (
         <>
           <Disclosure open={open} name={fit(v.mount, 40)} />
-          {v.readOnly && <Ink color={ui.danger}>read-only</Ink>}
+          {/* What the row has room for, marked where it is cut; the detail
+              below holds the whole cause. The marker, the disclosure and the
+              mount take the first 43 cells. */}
+          {cause && (
+            <Ink color={ui.danger}>
+              {safe(fit(volumeCauseText(cause, c), width - 43))}
+            </Ink>
+          )}
         </>
       ),
       {
         color: levelColor(volumeLevel(v, c.freeFloor)),
         under: () => (
           <Detail>
+            {cause && (
+              <Line flexShrink={0} wrapMode="word" fg={ui.danger}>
+                {safe(volumeCauseText(cause, c))}
+              </Line>
+            )}
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}
@@ -567,6 +605,7 @@ export function Storage({
         ),
       },
     );
+  };
   const scratchRow = (
     i: number,
     item: Extract<StorageItem, { kind: "scratch" }>,

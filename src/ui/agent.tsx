@@ -10,7 +10,7 @@ import { parentChain, processTree } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
-import { laneBadge, laneLevel } from "./agents";
+import { badgeText, laneBadge, laneLevel, lowCap } from "./agents";
 import { keyLabel, screenPad } from "./chrome";
 import { fit } from "./columns";
 import {
@@ -95,15 +95,21 @@ export function AgentIdentity({
   config: Config;
 }) {
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
-  const badge = laneBadge(lane);
+  const badge = laneBadge(lane, c);
   return (
     <>
       <Line height={1} flexShrink={0} truncate>
         <span attributes={ui.bold} fg={levelColor(laneLevel(lane, c))}>
           {safe(lane.name)}
         </span>
-        {badge && <span fg={levelColor(badge.level)}>{`  ${badge.text}`}</span>}
       </Line>
+      {/* Its own line, wrapping: the cause names the threshold it crossed, and
+          a long lane name beside it would cut that number off. */}
+      {badge && (
+        <Line flexShrink={0} wrapMode="word" fg={levelColor(badge.level)}>
+          {safe(badgeText(badge, lane, c))}
+        </Line>
+      )}
       <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
         {safe(
           [
@@ -152,7 +158,7 @@ export function AgentTiles({
         key="Memory"
         label="Memory"
         value={amount(lane.rss, c)}
-        level={lane.dangerous ? "danger" : "ok"}
+        level={lowCap(lane, c) ? "danger" : "ok"}
         detail={`cache ${amount(lane.cache, c)} · swap ${amount(lane.swap, c)}`}
       />
       <Tile
@@ -196,7 +202,7 @@ export function AgentSummary({
       <Field
         label="Limits"
         value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap}`}
-        color={lane.dangerous ? ui.danger : undefined}
+        color={lowCap(lane, c) ? ui.danger : undefined}
       />
       <Field
         label="Builds"
@@ -532,7 +538,7 @@ export function Agent({
         <Field
           label="Limits"
           value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap} · make jobs ${lane.jobs ?? "not set"} · jobserver ${lane.jobserver ?? "not set"}`}
-          color={lane.dangerous ? ui.danger : undefined}
+          color={lowCap(lane, c) ? ui.danger : undefined}
         />
         <Field
           label="Builds"

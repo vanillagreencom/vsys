@@ -6,13 +6,21 @@ import { act } from "react";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
-import type { Snapshot } from "../model/types";
+import type { Group, Lane, Snapshot } from "../model/types";
 import { meters } from "../model/verdict";
-import { emptySnapshot, fixture, groupSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  fixture,
+  groupSnapshot,
+  laneSnapshot,
+} from "../test/fixture";
 import { mount } from "../test/harness";
+import { present } from "../test/present";
 import { meterTile } from "./attention";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
+  type GroupCause,
+  groupCause,
   groupLabels,
   groupLevel,
   groupRows,
@@ -59,9 +67,132 @@ test("a group's level follows its worst pressure, its cap and its memory thresho
     "warn",
   );
   expect(groupLevel(groupSnapshot({ memory: 89, high: 100 }), s, c)).toBe("ok");
-  const capped = groupSnapshot({ max: c.memoryFloor - 1, maxRead: true });
-  s.groups = [capped];
-  expect(groupLevel(capped, s, c)).toBe("danger");
+});
+
+test("a coloured group row carries its cause, and a low cap is a cause only on a lane", () => {
+  const c = defaults();
+  const mib = 1024 * 1024;
+  const capped = (path: string, extra: Partial<Group> = {}) =>
+    groupSnapshot({ path, max: 256 * mib, maxRead: true, ...extra });
+  const capCause: GroupCause = {
+    kind: "cap",
+    level: "danger",
+    cap: 256 * mib,
+    floor: c.memoryFloor,
+  };
+  const rows: [string, Group[], Lane[], GroupCause | null][] = [
+    [
+      "a service capped on purpose",
+      [capped("app.slice/slack-listen.service", { memory: 70 * mib })],
+      [laneSnapshot({ cgroup: "agents.slice/a.scope" })],
+      null,
+    ],
+    [
+      "a lane with the same cap",
+      [capped("agents.slice/a.scope", { memory: 70 * mib })],
+      [laneSnapshot({ cgroup: "agents.slice/a.scope" })],
+      capCause,
+    ],
+    [
+      "a slice whose cap holds a lane",
+      [capped("agents.slice")],
+      [laneSnapshot({ cgroup: "agents.slice/a.scope" })],
+      capCause,
+    ],
+    [
+      "a group-less lane under the capped group",
+      [capped("x.service", { kernelPath: "/user.slice/x.service" })],
+      [laneSnapshot({ cgroup: "/user.slice/x.service/sub" })],
+      capCause,
+    ],
+    [
+      "an escaped agent's own group",
+      [groupSnapshot({ path: "app.slice/a.scope" })],
+      [laneSnapshot({ id: "app.slice/a.scope", unconfined: true })],
+      { kind: "unconfined", level: "danger" },
+    ],
+    [
+      "pressure over the red line",
+      [
+        groupSnapshot({
+          pressure: {
+            cpu: { some: 1, full: 0, total: 0 },
+            io: { some: c.pressureRed + 1, full: 0, total: 0 },
+          },
+        }),
+      ],
+      [],
+      {
+        kind: "pressure",
+        level: "danger",
+        resource: "io",
+        some: c.pressureRed + 1,
+        threshold: c.pressureRed,
+      },
+    ],
+    [
+      "pressure over the amber line",
+      [
+        groupSnapshot({
+          pressure: {
+            memory: { some: c.pressureAmber + 1, full: 0, total: 0 },
+          },
+        }),
+      ],
+      [],
+      {
+        kind: "pressure",
+        level: "warn",
+        resource: "memory",
+        some: c.pressureAmber + 1,
+        threshold: c.pressureAmber,
+      },
+    ],
+    [
+      "memory near memory high",
+      [groupSnapshot({ memory: 95, high: 100 })],
+      [],
+      { kind: "high", level: "warn", memory: 95, high: 100 },
+    ],
+  ];
+  for (const [name, groups, lanes, cause] of rows) {
+    const s = emptySnapshot();
+    s.groups = groups;
+    s.lanes = lanes;
+    const g = present(groups[0], name);
+    expect({ name, cause: groupCause(g, s, c) }).toEqual({ name, cause });
+    expect({ name, level: groupLevel(g, s, c) }).toEqual({
+      name,
+      level: cause?.level ?? "ok",
+    });
+  }
+});
+
+test("Resources names the floor for a capped lane and not for a capped service", async () => {
+  const c = defaults();
+  const mib = 1024 * 1024;
+  const rows: [string, string, boolean][] = [
+    ["agents.slice/a.scope", "a.scope", true],
+    ["app.slice/slack-listen.service", "slack-listen.service", false],
+  ];
+  for (const [path, name, named] of rows) {
+    const s = emptySnapshot();
+    s.groups = [
+      groupSnapshot({ path, name, max: 256 * mib, memory: 70 * mib }),
+    ];
+    s.lanes = [laneSnapshot({ cgroup: "agents.slice/a.scope" })];
+    const t = await mount(s, c, { width: 120, height: 30 });
+    try {
+      await t.press("3");
+      // The floor is 1 GiB, and nothing else on this screen reads that.
+      expect({ path, named: t.frame().includes("1.0 GiB") }).toEqual({
+        path,
+        named,
+      });
+    } finally {
+      await t.close();
+    }
+  }
 });
 
 test("groups that decode to one name are separated, and hiding rows never renames one", () => {

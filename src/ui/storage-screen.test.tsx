@@ -25,6 +25,8 @@ import {
   scratchSummary,
   storageItems,
   udisksText,
+  type VolumeCause,
+  volumeCause,
   volumeLevel,
 } from "./storage-screen";
 import { ui } from "./theme";
@@ -61,6 +63,85 @@ test("a filesystem is serious when read-only, when errors grow, or when space is
     expect(volumeLevel(volumeSnapshot("/m", overrides), c.freeFloor)).toBe(
       level,
     );
+});
+
+test("a serious filesystem row carries its cause with the number that tripped it", () => {
+  const c = defaults();
+  const rows: [Parameters<typeof volumeSnapshot>[1], VolumeCause | null][] = [
+    [{}, null],
+    [{ readOnly: true, free: 0 }, { kind: "read-only" }],
+    [
+      { delta: { "x/read_io_errs": 1, "x/corruption_errs": 3 } },
+      { kind: "errors", counter: "x/corruption_errs", growth: 3 },
+    ],
+    [
+      { free: c.freeFloor - 1 },
+      { kind: "free", free: c.freeFloor - 1, floor: c.freeFloor },
+    ],
+    [{ free: null }, null],
+  ];
+  for (const [overrides, cause] of rows)
+    expect(volumeCause(volumeSnapshot("/m", overrides), c.freeFloor)).toEqual(
+      cause,
+    );
+});
+
+test("a serious filesystem row names its cause on the row", async () => {
+  const c = defaults();
+  const rows: [Parameters<typeof volumeSnapshot>[1], string][] = [
+    [{ delta: { "x/corruption_errs": 3 } }, "x/corruption_errs"],
+    // 1e6 bytes, under the floor; the device row above shows it too, so only
+    // the mount's own row is searched.
+    [{ free: 1e6 }, "976.6 KiB"],
+  ];
+  for (const [overrides, value] of rows) {
+    const s = emptySnapshot();
+    s.storage.volumes = [volumeSnapshot("/srv/data", overrides)];
+    const t = await mount(s, c, { width: 140, height: 30 });
+    try {
+      await t.press("5");
+      const row = t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("/srv/data"));
+      expect({ value, shown: row?.includes(value) }).toEqual({
+        value,
+        shown: true,
+      });
+    } finally {
+      await t.close();
+    }
+  }
+});
+
+test("a narrow Storage marks a cut cause and keeps it whole in the mount's detail", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // 1e6 bytes free against the 5 GiB floor: at 60 columns the row has room
+  // for only the start of the cause.
+  s.storage.volumes = [volumeSnapshot("/srv/data", { free: 1e6 })];
+  const t = await mount(s, c, { width: 60, height: 30 });
+  try {
+    await t.press("5");
+    await t.press("down");
+    const lines = t.frame().split("\n");
+    const at = lines.findIndex((line) => line.includes("/srv/data"));
+    expect(at).toBeGreaterThanOrEqual(0);
+    const row = lines[at] ?? "";
+    // The detail is the run of lines drawn as children of the row.
+    const detail: string[] = [];
+    for (const line of lines.slice(at + 1)) {
+      if (!isChildLine(line)) break;
+      detail.push(line);
+    }
+    expect({
+      cutMarked: row.includes("…"),
+      free: detail.some((line) => line.includes("976.6 KiB")),
+      floor: detail.some((line) => line.includes("5.0 GiB")),
+    }).toEqual({ cutMarked: true, free: true, floor: true });
+  } finally {
+    await t.close();
+  }
 });
 
 test("Storage opens with write totals and keeps filesystem state below them", async () => {

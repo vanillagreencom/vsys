@@ -1,0 +1,1 @@
+- A service with a small memory cap no longer draws red on Resources, and every red or amber row says why, with the numbers, in the row or its detail.

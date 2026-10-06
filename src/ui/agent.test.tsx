@@ -116,6 +116,36 @@ test("a lane with no readable member names no PID or age in its header", async (
   }
 });
 
+test("a narrow agent header keeps the cap and the floor its cause names", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const name = "default claude project-worktree";
+  s.lanes = [
+    laneSnapshot({ name, dangerous: true, memoryMax: 256 * 1024 * 1024 }),
+  ];
+  s.groups = [groupSnapshot()];
+  const t = await mount(s, c, { width: 60, height: 30 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    // The header runs from the name to the account line. The Limits field
+    // further down also shows the cap, so only the header is searched.
+    const lines = t.frame().split("\n");
+    const top = lines.findIndex((line) => line.includes(name));
+    const account = lines.findIndex((line) => line.includes("account"));
+    expect(top).toBeGreaterThanOrEqual(0);
+    expect(account).toBeGreaterThan(top);
+    const header = lines.slice(top, account).join("\n");
+    for (const value of ["256.0 MiB", "1.0 GiB"])
+      expect({ value, shown: header.includes(value) }).toEqual({
+        value,
+        shown: true,
+      });
+  } finally {
+    await t.close();
+  }
+});
+
 /** Opens one agent, opens its Actions section and selects Stop. */
 async function stopSelected(c: Config, calls: LaneCommand[]) {
   const s = emptySnapshot();

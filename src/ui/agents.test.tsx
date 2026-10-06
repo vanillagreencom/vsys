@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { act } from "react";
 import type { Config } from "../config/config";
 import { columns, defaults } from "../config/config";
-import type { Snapshot } from "../model/types";
+import type { Lane, Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
@@ -17,6 +17,7 @@ import { present } from "../test/present";
 import {
   columnLabels,
   findLanes,
+  type LaneBadge,
   laneBadge,
   laneLevel,
   tableColumn,
@@ -59,33 +60,108 @@ test("search matches every naming field, case-insensitively, in the sort order",
     expect(findLanes(lanes, query, c).map((l) => l.id)).toEqual(ids);
 });
 
-test("a lane's badge names the worst thing about it, and its level follows the thresholds", () => {
+test("every coloured lane row carries a badge naming its cause, worst first", () => {
   const c = defaults();
-  const plain = laneSnapshot();
-  expect(laneBadge(plain)).toBeNull();
-  expect(laneLevel(plain, c)).toBe("ok");
-  const escaped = laneSnapshot({ unconfined: true, dangerous: true });
-  expect(laneBadge(escaped)?.text).toBe("outside agent slice");
-  expect(laneLevel(escaped, c)).toBe("danger");
-  const capped = laneSnapshot({ dangerous: true });
-  expect(laneBadge(capped)?.level).toBe("danger");
-  const blocked = laneSnapshot({
-    state: "blocked",
-    blocked: 1,
-    blockedOn: "memory",
-  });
-  expect(laneBadge(blocked)).toEqual({
-    text: "blocked: 1 task waiting on memory",
-    level: "warn",
-  });
-  const rows: [number, Level][] = [
-    [c.pressureAmber, "ok"],
-    [c.pressureAmber + 0.1, "warn"],
-    [c.pressureRed, "warn"],
-    [c.pressureRed + 0.1, "danger"],
+  const mib = 1024 * 1024;
+  const rows: [string, Partial<Lane>, LaneBadge | null, Level][] = [
+    ["plain", {}, null, "ok"],
+    [
+      "escaped and capped",
+      { unconfined: true, dangerous: true },
+      { kind: "unconfined", level: "danger" },
+      "danger",
+    ],
+    [
+      "capped",
+      { dangerous: true, memoryMax: 256 * mib, pressure: c.pressureRed + 1 },
+      { kind: "cap", level: "danger", cap: 256 * mib, floor: c.memoryFloor },
+      "danger",
+    ],
+    [
+      "pinned from before the floor was lowered under its cap",
+      { dangerous: true, memoryMax: 2 * c.memoryFloor },
+      null,
+      "ok",
+    ],
+    [
+      "stored before its cap was read",
+      { dangerous: true, memoryMax: null },
+      { kind: "cap", level: "danger", cap: null, floor: null },
+      "danger",
+    ],
+    ["at the amber line", { pressure: c.pressureAmber }, null, "ok"],
+    [
+      "past the amber line",
+      { ioPressure: c.pressureAmber + 0.1 },
+      {
+        kind: "pressure",
+        level: "warn",
+        resource: "io",
+        some: c.pressureAmber + 0.1,
+        threshold: c.pressureAmber,
+      },
+      "warn",
+    ],
+    [
+      "at the red line",
+      { memoryPressure: c.pressureRed },
+      {
+        kind: "pressure",
+        level: "warn",
+        resource: "memory",
+        some: c.pressureRed,
+        threshold: c.pressureAmber,
+      },
+      "warn",
+    ],
+    [
+      "past the red line and blocked",
+      {
+        pressure: c.pressureRed + 0.1,
+        memoryPressure: 1,
+        state: "blocked",
+        blocked: 1,
+        blockedOn: "memory",
+      },
+      {
+        kind: "pressure",
+        level: "danger",
+        resource: "cpu",
+        some: c.pressureRed + 0.1,
+        threshold: c.pressureRed,
+      },
+      "danger",
+    ],
+    [
+      "blocked without a stall",
+      { state: "blocked", blocked: 1, blockedOn: "memory" },
+      { kind: "blocked", level: "warn" },
+      "ok",
+    ],
   ];
-  for (const [pressure, level] of rows)
-    expect(laneLevel(laneSnapshot({ pressure }), c)).toBe(level);
+  for (const [name, overrides, badge, level] of rows) {
+    const lane = laneSnapshot(overrides);
+    expect({
+      name,
+      badge: laneBadge(lane, c),
+      level: laneLevel(lane, c),
+    }).toEqual({ name, badge, level });
+  }
+});
+
+test("a lane red from a stall alone names the stall beside the list", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The Wait column shows CPU, and the State cell is too narrow for the
+  // number, so only the selected agent's header beside the list can show it.
+  s.lanes = [laneSnapshot({ name: "lane-a", pressure: 0, ioPressure: 30 })];
+  const t = await mount(s, c, { width: 160, height: 24 });
+  try {
+    await t.press("2");
+    expect(t.frame()).toContain("30.0%");
+  } finally {
+    await t.close();
+  }
 });
 
 test("the table's heading and its rows are built from one column spec", () => {
@@ -179,7 +255,7 @@ test("Agents finds a worktree and clears the search without losing the list", as
 test("a numeric column ends where its heading ends, on the rendered screen", async () => {
   const c = defaults();
   const s = emptySnapshot();
-  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 5, rss: 1024, pressure: 12 })];
+  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 5, rss: 1024, pressure: 8 })];
   const t = await mount(s, c, { width: 140, height: 24 });
   try {
     await t.press("2");
@@ -196,7 +272,7 @@ test("a numeric column ends where its heading ends, on the rendered screen", asy
     const rows: [string, string][] = [
       ["CPU", "5.0%"],
       ["Memory", "1.0 KiB"],
-      ["Wait", "12.0%"],
+      ["Wait", "8.0%"],
     ];
     for (const [label, value] of rows)
       expect({

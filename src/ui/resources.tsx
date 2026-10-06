@@ -1,14 +1,22 @@
 import { useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
-import { dangerousCap } from "../model/lanes";
+import { coveringGroup, dangerousCap, effectiveMax } from "../model/lanes";
 import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Snapshot } from "../model/types";
 import { type Level, meters } from "../model/verdict";
 import { meterTile } from "./attention";
 import { screenPad } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
-import { amount, bytes, gap, percent, share } from "./format";
+import {
+  amount,
+  bytes,
+  floorText,
+  gap,
+  percent,
+  share,
+  waitText,
+} from "./format";
 import { useScreenKeys } from "./keys";
 import { levelColor, metric, ui } from "./theme";
 import {
@@ -111,18 +119,91 @@ export function treePrefixes(groups: Group[]): Map<string, string> {
       walk(parent, "   ".repeat(depth(parent)));
   return prefixes;
 }
-export function groupLevel(g: Group, s: Snapshot, c: Config): Level {
+/** What made a group's row red or amber, with the numbers that tripped it. */
+export type GroupCause =
+  | { kind: "unconfined"; level: "danger" }
+  | { kind: "cap"; level: "danger"; cap: number; floor: number }
+  | {
+      kind: "pressure";
+      level: "danger" | "warn";
+      resource: string;
+      some: number;
+      threshold: number;
+    }
+  | { kind: "high"; level: "warn"; memory: number; high: number };
+/**
+ * Whether a group is a lane or holds one. A group-less lane carries its
+ * process's absolute kernel path, which resolves to its covering group first,
+ * as it does when the model decides the lane's own cap.
+ */
+function holdsLane(g: Group, s: Snapshot): boolean {
+  return s.lanes.some((l) => {
+    const path = l.cgroup.startsWith("/")
+      ? coveringGroup(s.groups, l.cgroup)?.path
+      : l.cgroup;
+    return (
+      path !== undefined &&
+      (g.path === "." || path === g.path || path.startsWith(`${g.path}/`))
+    );
+  });
+}
+/**
+ * The worst thing about a group. A cap under the floor is dangerous only to an
+ * agent lane, which it kills mid-build; a service capped on purpose is not one.
+ */
+export function groupCause(
+  g: Group,
+  s: Snapshot,
+  c: Config,
+): GroupCause | null {
+  if (s.lanes.some((l) => l.id === g.path && l.unconfined))
+    return { kind: "unconfined", level: "danger" };
+  const cap = effectiveMax(s.groups, g.path).max;
   if (
-    dangerousCap(g, s.groups, c.memoryFloor) ||
-    s.lanes.some((l) => l.id === g.path && l.unconfined)
+    cap !== null &&
+    dangerousCap(g, s.groups, c.memoryFloor) &&
+    holdsLane(g, s)
   )
-    return "danger";
-  const worst = Math.max(...Object.values(g.pressure).map((p) => p?.some ?? 0));
-  if (worst > c.pressureRed) return "danger";
-  if (worst > c.pressureAmber) return "warn";
+    return { kind: "cap", level: "danger", cap, floor: c.memoryFloor };
+  let worst: { resource: string; some: number } | null = null;
+  for (const [resource, p] of Object.entries(g.pressure))
+    if (p && (worst === null || p.some > worst.some))
+      worst = { resource, some: p.some };
+  if (worst && worst.some > c.pressureRed)
+    return {
+      kind: "pressure",
+      level: "danger",
+      ...worst,
+      threshold: c.pressureRed,
+    };
+  if (worst && worst.some > c.pressureAmber)
+    return {
+      kind: "pressure",
+      level: "warn",
+      ...worst,
+      threshold: c.pressureAmber,
+    };
   if (g.memory !== null && g.high !== null && g.memory >= g.high * 0.9)
-    return "warn";
-  return "ok";
+    return { kind: "high", level: "warn", memory: g.memory, high: g.high };
+  return null;
+}
+export function groupLevel(g: Group, s: Snapshot, c: Config): Level {
+  return groupCause(g, s, c)?.level ?? "ok";
+}
+function causeText(cause: GroupCause | null, c: Config): string {
+  if (cause === null) return "nothing over a threshold";
+  switch (cause.kind) {
+    case "unconfined":
+      return "agent outside the agent slice";
+    case "cap":
+      return floorText(cause.cap, cause.floor, c);
+    case "pressure":
+      return waitText(cause.resource, cause.some, cause.threshold);
+    case "high":
+      return `memory ${bytes(cause.memory, c)} past 90% of memory high ${bytes(cause.high, c)}`;
+    default:
+      return cause satisfies never;
+  }
 }
 
 /** The machine's meters, then the resource groups as a tree. */
@@ -193,6 +274,7 @@ export function Resources({
       ? null
       : SwapTotal - SwapFree;
   const current = rows[Math.min(selected, rows.length - 1)];
+  const currentCause = current ? groupCause(current, s, c) : null;
   const topCpu = Math.max(100, ...rows.map((g) => g.cpuPercent ?? 0));
   const topMemory = Math.max(1, ...rows.map((g) => g.memory ?? 0));
   const cpuBar: Column = { label: "", width: 8 };
@@ -218,8 +300,8 @@ export function Resources({
   const tileRows = Math.ceil(tileCount / tilesPerRow(tileCount, inner));
   // Each tile row is three lines and the rows sit one line apart; then the
   // blank under them, the section with its margin, the table heading, and the
-  // four detail fields with their own margin.
-  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - 5;
+  // five detail fields with their own margin.
+  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - 6;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
@@ -302,6 +384,11 @@ export function Resources({
       {current && (
         <box flexDirection="column" flexShrink={0} marginTop={1}>
           <Field label="Unit" value={current.name} />
+          <Field
+            label="Status"
+            value={causeText(currentCause, c)}
+            color={currentCause ? levelColor(currentCause.level) : undefined}
+          />
           <Field
             label="Limits"
             value={`memory high ${limit(current.high)} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${limit(current.swapMax)} · tasks max ${current.tasksMax ?? "none"}`}
