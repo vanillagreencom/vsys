@@ -133,6 +133,9 @@ if [[ ! -f "$SCRIPT_DIR/lib/kendex-env.sh" ]]; then
   exit 1
 fi
 source "$SCRIPT_DIR/lib/kendex-env.sh"
+# The caller's own exports, before any project file adds to them: see
+# committed_settings_keys.
+CALLER_ENV_NAMES="$(compgen -e)"
 kendex_load_project_env "$PROJECT_ROOT"
 
 GITHUB_AUTH_LIB="$SCRIPT_DIR/../../github/scripts/lib/gh-auth.sh"
@@ -768,6 +771,46 @@ emit_restack_rebase_map() {
   # The hop is on disk, so the rewrite it describes no longer needs the record.
   warn_uncleared_pending_rewrite "$wt"
 }
+
+caller_exported() { # NAME — 0 when the caller exported NAME
+  [[ $'\n'"$CALLER_ENV_NAMES"$'\n' == *$'\n'"$1"$'\n'* ]]
+}
+
+# The keys the main checkout's tracked settings files exported, one per line.
+# Git hands this environment to its hooks, whose settings resolvers read an
+# exported key ahead of the pushed tree's own settings. A layer is told by the
+# names it assigns, never by value: the caller's exports, and any key an
+# untracked settings file or the private env file assigns, are overrides no
+# branch carries. Each layer reloads into this subshell, cleared first of
+# every key the caller did not export.
+committed_settings_keys() (
+  name="" file="" rc=0 private="" tracked="" untracked=()
+  kendex_private_env_file private "$PROJECT_ROOT" || exit 1
+  while IFS= read -r name; do
+    caller_exported "$name" || unset "$name"
+  done < <(compgen -e)
+  for file in kendex.settings.toml .kendex/settings.toml; do
+    rc=0
+    git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$file" >/dev/null 2>&1 || rc=$?
+    # --error-unmatch keeps exit 1 for an untracked path alone.
+    case "$rc" in
+      0) kendex_load_settings_file "$PROJECT_ROOT/$file" || exit 1 ;;
+      1) untracked+=("$file") ;;
+      *) exit 1 ;;
+    esac
+  done
+  tracked="$(compgen -e)"
+  while IFS= read -r name; do
+    caller_exported "$name" || unset "$name"
+  done <<<"$tracked"
+  for file in ${untracked[@]+"${untracked[@]}"}; do
+    kendex_load_settings_file "$PROJECT_ROOT/$file" || exit 1
+  done
+  kendex_source_env_file "$PROJECT_ROOT/$private" || exit 1
+  while IFS= read -r name; do
+    [[ -n "${!name+x}" ]] || printf '%s\n' "$name"
+  done <<<"$tracked"
+)
 
 # Parse `push`'s arguments. Sets PUSH_ARG, PUSH_SET_UPSTREAM and
 # PUSH_AUTO_REBASE; returns 1 with the usage error on stderr for anything it
@@ -3754,10 +3797,23 @@ case "${1:-}" in
       PUSH_UPSTREAM_ARGS=("$SET_UPSTREAM")
       PUSH_REF="HEAD:refs/heads/${CURRENT_BRANCH}"
     fi
+    if ! PUSH_COMMITTED_KEYS="$(committed_settings_keys)"; then
+      worktree_message push-settings-unread "$PROJECT_ROOT" "Error: could not read the main checkout's committed settings to keep them out of the pre-push hooks; refusing to push." >&2
+      exit 1
+    fi
+    PUSH_UNEXPORT=()
+    while IFS= read -r PUSH_KEY; do
+      [[ -z "$PUSH_KEY" ]] || PUSH_UNEXPORT+=("$PUSH_KEY")
+    done <<<"$PUSH_COMMITTED_KEYS"
     PUSH_OUTPUT=""
     # Capture Git's vendor text so a failed push can emit its stable record
     # first. A successful push is defined by its exit status and stays quiet.
-    if ! PUSH_OUTPUT="$(LC_ALL=C git_with_github_https_auth -C "$WT_PATH" push ${PUSH_UPSTREAM_ARGS[@]+"${PUSH_UPSTREAM_ARGS[@]}"} ${PUSH_LEASE[@]+"${PUSH_LEASE[@]}"} "$REMOTE" "$PUSH_REF" 2>&1)"; then
+    # The committed keys stay shell variables, which the GitHub helper reads,
+    # and leave only the environment git and its hooks inherit.
+    if ! PUSH_OUTPUT="$(
+      [[ ${#PUSH_UNEXPORT[@]} -eq 0 ]] || export -n "${PUSH_UNEXPORT[@]}"
+      LC_ALL=C git_with_github_https_auth -C "$WT_PATH" push ${PUSH_UPSTREAM_ARGS[@]+"${PUSH_UPSTREAM_ARGS[@]}"} ${PUSH_LEASE[@]+"${PUSH_LEASE[@]}"} "$REMOTE" "$PUSH_REF" 2>&1
+    )"; then
       if push_output_refused_by_hook "$PUSH_OUTPUT"; then
         worktree_message push-hook-rejected "$REMOTE/${CURRENT_BRANCH:-HEAD}" "Error: A pre-push hook refused the push. The hook's own keyed lines are in the git output below — fix what they name." >&2
       elif push_output_lease_rejected "$PUSH_OUTPUT"; then

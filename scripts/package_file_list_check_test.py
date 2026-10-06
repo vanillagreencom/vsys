@@ -20,7 +20,7 @@ MANIFEST = "packaging/vsys-runtime-files.txt"
 
 sys.path.insert(0, str(CHECK.parent))
 
-from package_file_list_check import parse_manifest  # noqa: E402
+from package_file_list_check import PAYLOAD_PREFIX, SCRUB_DROP_IN, parse_manifest  # noqa: E402
 
 PAYLOAD = parse_manifest(ROOT)
 
@@ -113,6 +113,50 @@ class PackageFileListCheck(unittest.TestCase):
                     manifest.write_text(text)
                 self.assertEqual(self.refusal(self.run_check(), prose), expected)
 
+    def test_scrub_reporter_rows_are_required(self) -> None:
+        manifest = self.repo / MANIFEST
+        original = manifest.read_text()
+        for path in (
+            "lib/vsys/scripts/scrub-reporter/vsys-scrub-report",
+            SCRUB_DROP_IN,
+            "lib/tmpfiles.d/vsys-scrub.conf",
+        ):
+            with self.subTest(path):
+                rows = [line for line in original.splitlines(keepends=True) if f" {path} " in line]
+                self.assertEqual(len(rows), 1)
+                manifest.write_text(original.replace(rows[0], ""))
+                self.assertEqual(self.refusal(self.run_check(), prose=False), f"manifest=missing-required path={path}")
+
+    def test_scrub_drop_in_must_run_the_packaged_reporter_with_its_arguments(self) -> None:
+        drop_in = self.repo / PAYLOAD[SCRUB_DROP_IN][1]
+        original = drop_in.read_text()
+        command = "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report %f /var/lib/btrfs-scrub"
+        self.assertEqual(original.count(command), 1)
+        for name, wrong in (
+            ("unpackaged script", "/usr/local/bin/vsys-scrub-report %f /var/lib/btrfs-scrub"),
+            ("another packaged executable", "/usr/lib/vsys/warden/agent-warden %f /var/lib/btrfs-scrub"),
+            ("a payload file that is not executable", "/usr/lib/vsys/data/agent-tools.json %f /var/lib/btrfs-scrub"),
+            ("the reporter without arguments", "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report"),
+            ("the reporter without its report directory", "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report %f"),
+            # systemd reads an empty assignment as a reset of every earlier one.
+            ("a later reset", command + "\nExecStopPost="),
+        ):
+            with self.subTest(name):
+                drop_in.write_text(original.replace(command, wrong))
+                self.assertEqual(
+                    self.refusal(self.run_check(), prose=False).split()[0:2],
+                    ["drop-in=wrong-command", f"path={SCRUB_DROP_IN}"],
+                )
+
+    def test_manifest_source_the_aur_workflow_does_not_watch_fails(self) -> None:
+        (self.repo / "packaging" / "extra.json").write_text("{}\n")
+        manifest = self.repo / MANIFEST
+        manifest.write_text(manifest.read_text() + "644 lib/tmpfiles.d/extra.json packaging/extra.json\n")
+        self.assertEqual(
+            self.refusal(self.run_check(), prose=False),
+            "aur-git-workflow=path-missing value=packaging/extra.json",
+        )
+
     def test_extra_manifest_row_passes(self) -> None:
         (self.repo / "data" / "extra.json").write_text("{}\n")
         manifest = self.repo / MANIFEST
@@ -165,8 +209,8 @@ class PackageFileListCheck(unittest.TestCase):
     def test_ownership_preserving_release_copy_fails(self) -> None:
         pkgbuild = self.repo / "packaging" / "vsys" / "PKGBUILD"
         pkgbuild.write_text(pkgbuild.read_text().replace(
-            'cp -R --no-preserve=ownership "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"',
-            'cp -a "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"',
+            'cp -R --no-preserve=ownership "${srcdir}/lib" "${pkgdir}/usr/"',
+            'cp -a "${srcdir}/lib" "${pkgdir}/usr/"',
         ))
         self.assertEqual(self.refusal(self.run_check()), "pkgbuild=ownership-preserved package=vsys")
 
@@ -187,6 +231,48 @@ class PackageFileListCheck(unittest.TestCase):
         # The first manifest row not sourced from agent-warden is refused;
         # which one that is belongs to the manifest's order.
         self.assertEqual(self.refusal(self.run_check(), prose=False).split()[0], "staged=content-mismatch")
+
+
+class PackageFunctions(unittest.TestCase):
+    """Run each PKGBUILD's package() against a scratch srcdir and pkgdir, so
+    no test writes /usr: what lands under pkgdir is what pacman installs."""
+
+    def setUp(self) -> None:
+        scratch_root = ROOT / "tmp" / "package-function-tests"
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        self.scratch = tempfile.TemporaryDirectory(dir=scratch_root)
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name)
+
+    def package(self, name: str, srcdir: Path, cwd: Path) -> Path:
+        pkgdir = self.root / "pkg"
+        script = f'source "{ROOT}/packaging/{name}/PKGBUILD"; package'
+        env = {**os.environ, "srcdir": str(srcdir), "pkgdir": str(pkgdir)}
+        subprocess.run(["bash", "-euc", script], cwd=cwd, env=env, check=True)
+        return pkgdir / "usr"
+
+    def assert_scrub_reporter(self, usr: Path) -> None:
+        for path in ("lib/vsys/scripts/scrub-reporter/vsys-scrub-report", SCRUB_DROP_IN, "lib/tmpfiles.d/vsys-scrub.conf"):
+            mode, source = PAYLOAD[path]
+            self.assertEqual((usr / path).stat().st_mode & 0o777, mode, path)
+            self.assertEqual((usr / path).read_bytes(), (ROOT / source).read_bytes(), path)
+
+    def test_release_package_ships_scrub_reporter(self) -> None:
+        srcdir = self.root / "src"
+        subprocess.run([str(ROOT / "packaging" / "stage-runtime-files.sh"), str(srcdir)], check=True)
+        for name in ("vsys", "LICENSE", "README.md"):
+            (srcdir / name).write_text("fixture\n")
+        self.assert_scrub_reporter(self.package("vsys", srcdir, srcdir))
+
+    def test_git_package_ships_scrub_reporter(self) -> None:
+        srcdir = self.root / "src"
+        checkout = srcdir / "vsys-git"
+        for path in (MANIFEST, "packaging/stage-runtime-files.sh", *(source for _mode, source in PAYLOAD.values())):
+            (checkout / path).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT / path, checkout / path)
+        for name in ("vsys", "LICENSE", "README.md"):
+            (checkout / name).write_text("fixture\n")
+        self.assert_scrub_reporter(self.package("vsys-git", srcdir, srcdir))
 
 
 class InstallScript(unittest.TestCase):
@@ -363,6 +449,12 @@ class InstallScript(unittest.TestCase):
         directories = set()
         for archive_path, (mode, _source) in PAYLOAD.items():
             path = prefix / archive_path
+            # install.sh installs nothing as root, so it leaves the system
+            # files only a package installs.
+            if not archive_path.startswith(PAYLOAD_PREFIX):
+                with self.subTest(path=path):
+                    self.assertFalse(path.exists())
+                continue
             with self.subTest(path=path):
                 self.assertEqual(self.mode(path), mode)
             directories.update(path.relative_to(self.lib_root()).parents)

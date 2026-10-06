@@ -1,0 +1,1 @@
+- Where the package installed the scrub reporter, Settings and Storage offer to enable the `btrfs-scrub@` timers a watched filesystem lacks instead of the `curl | sudo bash` install.

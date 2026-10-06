@@ -23,8 +23,7 @@ sha256sums_aarch64=('SKIP')
 
 package() {
 	install -Dm755 "${srcdir}/vsys" "${pkgdir}/usr/bin/vsys"
-	install -d "${pkgdir}/usr/lib"
-	cp -R --no-preserve=ownership "${srcdir}/lib/vsys" "${pkgdir}/usr/lib/"
+	cp -R --no-preserve=ownership "${srcdir}/lib" "${pkgdir}/usr/"
 	install -Dm644 "${srcdir}/LICENSE" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 	install -Dm644 "${srcdir}/README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
 }

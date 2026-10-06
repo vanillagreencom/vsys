@@ -16,6 +16,11 @@ import type { KernelLog } from "./kernel-log";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
 import { counted, isReportName, parseScrub, stated } from "./scrub";
+import {
+  missingScrubTimers,
+  type ScrubMount,
+  type ScrubUnits,
+} from "./scrub-timers";
 import type { CollectionConfig } from "./settings";
 import type { Udisks } from "./udisks";
 
@@ -202,6 +207,11 @@ export class StorageCollector {
      * of the two collectors next reaches a finished report, both see it.
      */
     sharedFinishedScrub?: FinishedScrubMemory,
+    /**
+     * Where the packaged scrub reporter's drop-in and the enabled timers are
+     * read. A collector built without them reads no systemd configuration.
+     */
+    private scrubUnits: ScrubUnits | null = null,
   ) {
     this.finishedScrub = sharedFinishedScrub ?? new FinishedScrubMemory();
   }
@@ -413,9 +423,12 @@ export class StorageCollector {
       memory.failed();
       r.error(c.errorMemoryPath, e);
     }
-    for (const mount of btrfsMounts(mountInfo ?? []).filter(
-      (m) => !c.btrfsMounts.length || c.btrfsMounts.includes(m.mount),
-    )) {
+    // Every Btrfs mount, watched or not: a scrub timer on a mount the reader
+    // does not watch still checks the filesystem a watched mount shares.
+    const scrubMounts: ScrubMount[] = [];
+    for (const mount of btrfsMounts(mountInfo ?? [])) {
+      const watched =
+        !c.btrfsMounts.length || c.btrfsMounts.includes(mount.mount);
       let fsid =
         devices.get(mount.device) ??
         devices.get(mount.device.split("/").at(-1) ?? "") ??
@@ -428,9 +441,11 @@ export class StorageCollector {
             devices.get(canonical.split("/").at(-1) ?? "") ??
             null;
         } catch (error) {
-          r.error(mount.device, error);
+          if (watched) r.error(mount.device, error);
         }
       }
+      scrubMounts.push({ ...mount, fsid, watched });
+      if (!watched) continue;
       if (!fsid)
         r.error(
           mount.mount,
@@ -463,6 +478,14 @@ export class StorageCollector {
           countersAvailable: false,
         }),
       });
+    }
+    if (this.scrubUnits) {
+      const missing = await missingScrubTimers(
+        r,
+        this.scrubUnits,
+        mountInfo && scrubMounts,
+      );
+      if (missing !== undefined) storage.missingScrubTimers = missing;
     }
     this.scrubDir = undefined;
     try {

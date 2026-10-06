@@ -28,7 +28,8 @@ export interface DeviceVolumes {
  * repeating the one integrity state this grouping exists to state once. The
  * source is the fallback for a mount whose filesystem id could not be resolved.
  */
-const filesystemKey = (v: Volume): string => v.fsid ?? v.device;
+export const filesystemKey = (v: Pick<Volume, "fsid" | "device">): string =>
+  v.fsid ?? v.device;
 export function volumesByDevice(volumes: Volume[]): DeviceVolumes[] {
   const order: string[] = [];
   const byDevice = new Map<string, Volume[]>();
