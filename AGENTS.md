@@ -4,7 +4,7 @@ A Linux terminal dashboard for agent processes and system health, in TypeScript 
 
 ## Commands
 
-- `python3 scripts/ci.py`: the whole check contract, from the repository root; `CHECKS` in the script lists what it runs. Run it before claiming a change green.
+- `python3 scripts/ci.py`: the whole check contract, from the repository root; `main()` in the script is what it runs. Run it before claiming a change green.
 - `bun test src/`: the application suites alone, from the repository root; a run started elsewhere fails and says so.
 - `bun src/main.ts --once`: one JSON snapshot with no terminal, which is how a script sees real output.
 - The repository pins its Bun in `.bun-version` and ships it as a dependency. Where the system Bun differs, prefix a command with `PATH="$PWD/node_modules/.bin:$PATH"`.
