@@ -5,7 +5,7 @@
  * here anchors on a labelled field or on the `logical <address>:` heading, and
  * a report that carries no damaged-file section at all still parses.
  *
- * `docs/architecture/reporters.md` holds the format the reporter must write,
+ * `docs/architecture/storage-integrity.md` holds the format the reporter must write,
  * and `scripts/scrub-reporter/` ships the reporter that writes it.
  */
 

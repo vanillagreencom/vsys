@@ -24,7 +24,7 @@ One role table is the only place a colour changes. One column spec feeding both 
 - Do sanitize process text before drawing it. `src/ui/format.test.ts` checks that it cannot emit terminal controls.
 - Do restore the terminal on quit and on a failed shutdown alike. `src/main.test.ts` hangs a terminal up and sends a terminate signal.
 - Never name a colour value in a screen.
-- Never draw a zero for a reading that is null ([unknown-readings.md](unknown-readings.md)).
+- Never draw a zero for a reading that is null ([layers.md](layers.md)).
 - Never let a screen hold an effect. It holds a `LaneIntent` ([lane-actions.md](lane-actions.md)).
 - Never let a warning past the test gate. `src/test/warnings.ts`, preloaded by `bunfig.toml`, fails any test during which something wrote to `console.error` or `console.warn`, so the suites run from the repository root.
 

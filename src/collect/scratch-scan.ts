@@ -62,7 +62,10 @@ export const timerPace: PaceClock = {
 /**
  * How long a traversal that worked `busyMs` must rest to have held no more
  * than `dutyPercent` of its thread across the two. At 100 it rests not at
- * all, because there is no share left to give back.
+ * all, because there is no share left to give back. The rest is what bounds
+ * the scan's cost: an unrested traversal of a populated scratch tree holds
+ * more than a processor core while it runs, and faster reads alone leave it
+ * taking whatever a large root demands.
  */
 export function restMs(busyMs: number, dutyPercent: number): number {
   return dutyPercent >= 100 ? 0 : (busyMs * (100 - dutyPercent)) / dutyPercent;

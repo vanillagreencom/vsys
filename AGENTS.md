@@ -23,23 +23,21 @@ A Linux terminal dashboard for agent processes and system health, in TypeScript 
 
 ## Read when
 
-- Before moving work between `src/collect/`, `src/model/`, `src/store/` and `src/ui/`, or adding a read the collector makes: `docs/architecture/layers.md`.
-- Before adding a reading, a counter, a capability probe, a stored field or a screen that shows a number: `docs/architecture/unknown-readings.md`.
+- Before moving work between `src/collect/`, `src/model/`, `src/store/` and `src/ui/`, or adding a read the collector makes, a reading, a counter, a capability probe, a stored field or a screen that shows a number: `docs/architecture/layers.md`.
 - Before drawing a screen, a row, a column, a colour, a card, or anything the reader can act on: `docs/architecture/ui.md`.
 - Before adding or changing anything the dashboard does to a process, a cgroup or a unit: `docs/architecture/lane-actions.md`.
 - Before changing how a lane is found, named, judged against the agent slice, traced to its launcher, or matched to its tmux pane: `docs/architecture/lanes.md`.
-- Before changing which processes count as agent tools, the shared agent-tool data, or how the dashboard and the warden read it: `docs/architecture/agent-tools.md`.
-- Before changing how compile and link work, the build cache or the make token pools are counted: `docs/architecture/builds.md`.
-- Before changing how processes or scratch directories are read, adding a worker thread, or changing how a build ships one: `docs/architecture/collection-threads.md`.
-- Before changing what the timeline records, when an alert opens or closes, or what a stored event holds: `docs/architecture/events.md`.
+- Before changing which processes count as agent tools, the shared agent-tool data, or how the dashboard and the warden read it: `docs/architecture/lanes.md`.
+- Before changing how compile and link work, the build cache or the make token pools are counted: `docs/architecture/layers.md`.
+- Before changing how processes or scratch directories are read, which directories Storage measures as scratch, how often, or how much processor time the traversal may hold, adding a worker thread, or changing how a build ships one: `docs/architecture/layers.md`.
+- Before changing what the timeline records, when an alert opens or closes, or what a stored event holds: `docs/architecture/history.md`.
 - Before changing replay, retention, persistence, the stored record shape or the history write path: `docs/architecture/history.md`.
-- Before changing the scrub reporter, the drive reporter, the check report format, their installers, or the udisks2 fallback: `docs/architecture/reporters.md`.
-- Before changing which directories Storage measures as scratch, how often, or how much processor time the traversal may hold: `docs/architecture/scratch.md`.
-- Before adding a setting, changing what a settings save writes, or changing what a settings change rebuilds: `docs/architecture/settings.md`.
+- Before changing the scrub reporter, the drive reporter, the check report format, their installers, or the udisks2 fallback: `docs/architecture/storage-integrity.md`.
+- Before adding a setting, changing what a settings save writes, or changing what a settings change rebuilds: `docs/architecture/layers.md`.
 - Before changing whether a filesystem reads as damaged, checked or healthy, or how vsys reads the error counter, the kernel log and the check report: `docs/architecture/storage-integrity.md`.
 - Before adding a cause, changing how causes rank, changing a meter, or changing the summary JSON: `docs/architecture/verdict.md`.
 - Before changing what the optional warden under `warden/` moves, leaves alone, caps, reaps or reports: `docs/architecture/warden.md`.
-- Before changing `vsys warden install`, `warden/install`, the unit templates, or what a package ships beside the binary: `docs/architecture/warden-install.md`.
+- Before changing `vsys warden install`, `warden/install`, the unit templates, or what a package ships beside the binary: `docs/architecture/warden.md`.
 - Before building, benchmarking or releasing: `DEVELOPMENT.md`.
 
 ## Code Review Rules
