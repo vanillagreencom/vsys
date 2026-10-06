@@ -72,13 +72,13 @@ Open a filesystem to see the files that may be damaged. On some kernels the chec
 
 vsys deletes nothing and offers no command to delete a listed file.
 
-Checking a filesystem and naming its damaged files needs root, so vsys reads a report that the reporter writes as root after each Btrfs scrub, one file for each filesystem. vsys ships that reporter. Install it with:
+Checking a filesystem and naming its damaged files needs root, so vsys reads a report that the reporter writes as root after each Btrfs scrub, one file for each filesystem. vsys ships that reporter, and the vsys and vsys-git Arch packages install it. Where vsys was installed some other way, install it with:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vanillagreencom/vsys/main/scripts/scrub-reporter/install | sudo bash
 ```
 
-The installer refuses when the system has no `btrfs-scrub@.service` unit. Arch Linux's btrfs-progs package ships that unit. Fedora's and Ubuntu's btrfs-progs packages do not, so a reader on those distributions supplies the unit before this installer will proceed. It schedules no scrub. Enable a timer for each filesystem you want checked, for example `sudo systemctl enable --now btrfs-scrub@-.timer` for the root filesystem. Settings and Storage show the same install command while no report directory exists and the `scrubDir` setting is unchanged.
+The installer refuses when the system has no `btrfs-scrub@.service` unit. Arch Linux's btrfs-progs package ships that unit. Fedora's and Ubuntu's btrfs-progs packages do not, so a reader on those distributions supplies the unit before this installer will proceed. It schedules no scrub. Enable a timer for each filesystem you want checked, for example `sudo systemctl enable --now btrfs-scrub@-.timer` for the root filesystem. Settings and Storage show the same install command while no report directory exists and the `scrubDir` setting is unchanged. Where the package installed the reporter, they show only the timers no filesystem has yet and the command that enables them.
 
 vsys also reads the kernel log, when your user can read the system journal. It shows when the kernel last logged a failed read and which inode it was in, with no reporter installed. Storage names the source of each time it shows: the scrub report, the error counter or the kernel log. See [the scrub reporter](docs/architecture/scrub-reporter.md) for the report format.
 

@@ -22,6 +22,7 @@ import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { agentScratchDirs } from "./scratch";
+import { packagedScrubUnits, type ScrubUnits } from "./scrub-timers";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
@@ -128,6 +129,8 @@ export class Collector {
      * memory.
      */
     sharedFinishedScrub?: FinishedScrubMemory,
+    /** Absent unless a caller supplies them, so no test reads systemd's units. */
+    scrubUnits?: ScrubUnits,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -146,6 +149,7 @@ export class Collector {
       this.kernelLog,
       udisks ?? null,
       sharedFinishedScrub,
+      scrubUnits ?? null,
     );
     const probed = this.capabilities.find((cap) => cap.id === "tmux");
     this.tmuxOnPath = probed !== undefined && probed.failure !== "absent";
@@ -412,5 +416,6 @@ export async function createCollector(
     },
     new Udisks(),
     previous?.lastFinishedScrub,
+    packagedScrubUnits,
   );
 }

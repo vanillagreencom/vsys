@@ -16,6 +16,7 @@ import type { KernelLog } from "./kernel-log";
 import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
 import { counted, isReportName, parseScrub, stated } from "./scrub";
+import { missingScrubTimers, type ScrubUnits } from "./scrub-timers";
 import type { CollectionConfig } from "./settings";
 import type { Udisks } from "./udisks";
 
@@ -202,6 +203,11 @@ export class StorageCollector {
      * of the two collectors next reaches a finished report, both see it.
      */
     sharedFinishedScrub?: FinishedScrubMemory,
+    /**
+     * Where the packaged scrub reporter's drop-in and the enabled timers are
+     * read. A collector built without them reads no systemd configuration.
+     */
+    private scrubUnits: ScrubUnits | null = null,
   ) {
     this.finishedScrub = sharedFinishedScrub ?? new FinishedScrubMemory();
   }
@@ -463,6 +469,14 @@ export class StorageCollector {
           countersAvailable: false,
         }),
       });
+    }
+    if (this.scrubUnits) {
+      const missing = await missingScrubTimers(
+        r,
+        this.scrubUnits,
+        storage.volumes,
+      );
+      if (missing !== undefined) storage.missingScrubTimers = missing;
     }
     this.scrubDir = undefined;
     try {

@@ -284,14 +284,15 @@ export function Storage({
     if (name === c.keys.next || name === c.keys.right || name === "right")
       return move((i) => stepToRegion(counts, i, 1));
     // Only a filesystem row carries a command, and only where no reporter
-    // is installed to run a check: the line that installs it. It names no
+    // is installed to run a check, or no timer starts one: the line that
+    // installs the reporter or enables the timers. It names no
     // file, so a pinned sample copies it as a live one does. Every other row
     // copies nothing, which the shell says rather than copying something the
     // reader did not select.
     if (name === c.keys.copy) {
       onCopy(
         items[selected]?.kind === "filesystem"
-          ? reporterOffer(s.capabilities, c, "scrub")?.command
+          ? reporterOffer(s, c, "scrub")?.command
           : undefined,
       );
       return true;
@@ -395,7 +396,7 @@ export function Storage({
   };
   const mapped = totals.devices.some((d) => /^dm-/.test(d.name));
   const smart = s.capabilities.find((cap) => cap.id === "smart");
-  const driveInstall = reporterOffer(s.capabilities, c, "smart");
+  const driveInstall = reporterOffer(s, c, "smart");
   /**
    * One selectable Storage row, whichever kind it is, drawn at its place in
    * `items`. Opening a row is selecting it, so the detail under a row shows
@@ -433,7 +434,7 @@ export function Storage({
    * gets the answer without opening anything.
    */
   const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
-  const install = reporterOffer(s.capabilities, c, "scrub");
+  const install = reporterOffer(s, c, "scrub");
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
     const level = integrityLevel(item.state);
     const counts = damageCounts(item);
@@ -496,7 +497,7 @@ export function Storage({
               <CommandOffer
                 sentence={install.sentence}
                 command={install.command}
-                hint={`${keyLabel(c.keys.copy)} copies the install command.`}
+                hint={`${keyLabel(c.keys.copy)} copies the command.`}
               />
             )}
             {item.logged.length > 0 && (

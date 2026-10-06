@@ -369,7 +369,7 @@ export function Settings({
     }
     // Only a capability row offering a line to supply what is missing has
     // anything to copy: the scrub or drive reports row while it offers its
-    // reporter's install, or a row `capabilityOffer` answers. Every other row copies
+    // reporter's install or the scrub timers, or a row `capabilityOffer` answers. Every other row copies
     // nothing, which the shell says rather than copying something the reader
     // did not select.
     if (name === c.keys.copy) {
@@ -379,7 +379,7 @@ export function Settings({
           : undefined;
       onCopy(
         cap &&
-          (reporterOffer(s.capabilities, c, cap.id)?.command ??
+          (reporterOffer(s, c, cap.id)?.command ??
             capabilityOffer(cap, c)?.command),
       );
       return true;
@@ -614,7 +614,7 @@ export function Settings({
           // cost is cut to the row with its mark and drawn whole in the
           // detail.
           const offer = capabilityOffer(cap, c);
-          const install = reporterOffer(s.capabilities, c, cap.id);
+          const install = reporterOffer(s, c, cap.id);
           const opened = (chosen: boolean) =>
             chosen && (!cap.available || openCap === cap.id);
           return settingRow(
@@ -679,7 +679,7 @@ export function Settings({
                       <CommandOffer
                         sentence={install.sentence}
                         command={install.command}
-                        hint={`${keyLabel(c.keys.copy)} copies the install command.`}
+                        hint={`${keyLabel(c.keys.copy)} copies the command.`}
                       />
                     )}
                   </Detail>

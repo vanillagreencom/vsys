@@ -8,6 +8,7 @@ import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
+import { scrubTimer } from "./scrub-timers";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -709,4 +710,30 @@ test("storage hands the scan the agent directories and keeps the defaults it fou
   } finally {
     ScratchCollector.prototype.collect = original;
   }
+});
+
+test("storage names the scrub timers the packaged reporter lacks, and only where it is given the units", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  mkdirSync(join(f.config.btrfsRoot, "fsid", "devices"), { recursive: true });
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`,
+  );
+  const dropIn = join(f.root, "units", "vsys-report.conf");
+  f.write(dropIn, "[Service]\n");
+  const units = { dropIn, wants: join(f.root, "units", "wants") };
+  const packaged = await new StorageCollector(
+    null,
+    null,
+    undefined,
+    units,
+  ).collect(new Reader(), f.config, 1000);
+  expect(packaged.missingScrubTimers).toEqual([scrubTimer(f.root)]);
+  const unread = await new StorageCollector().collect(
+    new Reader(),
+    f.config,
+    1000,
+  );
+  expect("missingScrubTimers" in unread).toBe(false);
 });
