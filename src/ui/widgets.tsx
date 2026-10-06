@@ -19,7 +19,7 @@ import {
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText, sortedColumns } from "./columns";
-import { levelColor, readingWeight, ui } from "./theme";
+import { levelColor, readingWeight, scrollbar, ui } from "./theme";
 
 /**
  * The colour of the band a selected row is drawn as, while the row is
@@ -292,18 +292,40 @@ export function Nothing({ text, next }: { text: string; next: string }) {
   );
 }
 
-/** A dim label followed by its value on one line. */
+/**
+ * A dim label followed by its value on one line, or, with `wrap`, a value that
+ * wraps under itself rather than losing its end at the edge.
+ */
 export function Field({
   label,
   value,
   width = 12,
   color,
+  wrap = false,
 }: {
   label: string;
   value: string;
   width?: number;
   color?: RGBA;
+  wrap?: boolean;
 }) {
+  if (wrap)
+    return (
+      <box flexDirection="row" flexShrink={0}>
+        <Line width={width} flexShrink={0} attributes={ui.dim}>
+          {fit(label, width)}
+        </Line>
+        <Line
+          flexGrow={1}
+          flexShrink={1}
+          minWidth={0}
+          wrapMode="word"
+          fg={color}
+        >
+          {safe(value)}
+        </Line>
+      </box>
+    );
   return (
     <Line height={1} flexShrink={0} truncate>
       <span attributes={ui.dim}>{fit(label, width)}</span>
@@ -576,6 +598,75 @@ export function Detail({ children }: { children: ReactNode }) {
       paddingLeft={detailIndent - detailRule - 1}
     >
       {children}
+    </box>
+  );
+}
+
+/** The blank columns between a list and the detail beside it. */
+export const sideGap = 3;
+/**
+ * A list and the selected item's detail. Given a panel width, the detail sits
+ * in a panel that wide right of the list, so a row is read against what it
+ * means without the right side of a wide terminal standing blank; the panel
+ * scrolls by itself, because a detail can be taller than the screen. Given
+ * none, the list is drawn alone and the detail where the screen kept it: under
+ * the list with `below`, otherwise under its row, which the screen draws.
+ */
+export function SplitPane({
+  side,
+  detail,
+  below = false,
+  children,
+}: {
+  /** The panel's columns, from `sideWidth`; zero places the detail as narrow. */
+  side: number;
+  /** Nothing to show draws no panel, and the list takes the whole row. */
+  detail: ReactNode;
+  below?: boolean;
+  children: ReactNode;
+}) {
+  const shown = detail !== undefined && detail !== null && detail !== false;
+  if (side <= 0)
+    return (
+      <>
+        {children}
+        {below && shown && (
+          <box
+            id="split-detail"
+            flexDirection="column"
+            flexShrink={0}
+            marginTop={1}
+          >
+            {detail}
+          </box>
+        )}
+      </>
+    );
+  return (
+    <box flexDirection="row" flexGrow={1} minHeight={0} gap={sideGap}>
+      <box
+        id="split-list"
+        flexDirection="column"
+        flexGrow={1}
+        minWidth={0}
+        minHeight={0}
+      >
+        {children}
+      </box>
+      {shown && (
+        <scrollbox
+          id="split-detail"
+          width={side}
+          flexShrink={0}
+          minHeight={0}
+          scrollY
+          scrollbarOptions={scrollbar}
+          contentOptions={{ flexShrink: 0 }}
+        >
+          <Section title="Selected" width={side} marginTop={0} />
+          {detail}
+        </scrollbox>
+      )}
     </box>
   );
 }

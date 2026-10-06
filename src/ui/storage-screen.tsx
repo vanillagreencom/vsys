@@ -21,7 +21,7 @@ import type {
 } from "../model/types";
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
-import { keyLabel, screenPad } from "./chrome";
+import { keyLabel, screenPad, sideWidth } from "./chrome";
 import { columnGap, fit } from "./columns";
 import { age, amount, bytes, gap } from "./format";
 import {
@@ -64,6 +64,8 @@ import {
   ListRow,
   Reading,
   Section,
+  SplitPane,
+  sideGap,
   useKeepInView,
   wheelStep,
 } from "./widgets";
@@ -422,10 +424,24 @@ export function Storage({
   const mapped = totals.devices.some((d) => /^dm-/.test(d.name));
   const smart = s.capabilities.find((cap) => cap.id === "smart");
   const driveInstall = reporterOffer(s.capabilities, c, "smart");
+  // On a wide terminal the selected row's detail sits beside the lists, so the
+  // lists narrow by the panel. This screen is handed the row inside the screen
+  // padding, and the panel is a share of the terminal row.
+  const side = sideWidth(width + screenPad * 2);
+  const listWidth = width - side - (side ? sideGap : 0);
+  // The selected row's detail, taken as the rows are drawn below, for the
+  // panel the lists are drawn beside.
+  let selectedDetail: ReactNode = null;
+  // A detail line that keeps to one row under its row, where it has the width
+  // of the lists, wraps in the narrower panel rather than losing its end.
+  const wrap = side > 0;
+  const detailLine = wrap
+    ? ({ wrapMode: "word" } as const)
+    : ({ height: 1, truncate: true } as const);
   /**
    * One selectable Storage row, whichever kind it is, drawn at its place in
-   * `items`. Opening a row is selecting it, so the detail under a row shows
-   * while it is selected.
+   * `items`. Opening a row is selecting it, so the row's detail shows while it
+   * is selected: under it, or beside the lists where they have a panel.
    */
   const storageRow = (
     i: number,
@@ -433,6 +449,8 @@ export function Storage({
     { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
   ) => {
     const open = i === selected;
+    const detail = open ? under?.() : null;
+    if (side && open) selectedDetail = detail;
     return (
       <ListRow
         key={rowIds[i]}
@@ -440,7 +458,7 @@ export function Storage({
         selected={open}
         color={color}
         onOpen={() => choose(i)}
-        under={open && under?.()}
+        under={!side && detail && <Detail>{detail}</Detail>}
       >
         {line(open)}
       </ListRow>
@@ -475,19 +493,28 @@ export function Storage({
       {
         color: level === "ok" ? undefined : levelColor(level),
         under: () => (
-          <Detail>
+          <>
+            {/* The panel is far from the row, which the lists' narrower
+                width cuts, so the panel states it whole. */}
+            {wrap && (
+              <Line flexShrink={0} wrapMode="word" marginBottom={1}>
+                {safe(integrityLine(item, scrubSource))}
+              </Line>
+            )}
             {/* The headline reading is what the last check found. The
                 lifetime counter is a different quantity and sits below it. */}
             <Field
               label="Blocks found"
               width={16}
               value={blocksText(item, scrubSource)}
+              wrap={wrap}
             />
             {item.cleared && (
               <Field
                 label="Cleared errors"
                 width={16}
                 value={clearedText(item.cleared)}
+                wrap
               />
             )}
             {item.groups.length === 0 && (
@@ -511,7 +538,7 @@ export function Storage({
                 flexShrink={0}
                 marginTop={1}
               >
-                <Line height={1} flexShrink={0} truncate>
+                <Line {...detailLine} flexShrink={0}>
                   <span attributes={ui.dim}>{fit("block", 16)}</span>
                   {`${group.logical}  `}
                   <span fg={group.kind === "none" ? undefined : ui.danger}>
@@ -540,9 +567,8 @@ export function Storage({
                 {item.logged.map((failure) => (
                   <Line
                     key={`${failure.root}/${failure.inode}`}
-                    height={1}
+                    {...detailLine}
                     flexShrink={0}
-                    truncate
                   >
                     {`      ${loggedText(failure, s.time)}`}
                   </Line>
@@ -553,7 +579,12 @@ export function Storage({
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
               {counterSentence}
             </Line>
-            <Field label="Counter" width={16} value={errorText(first)} />
+            <Field
+              label="Counter"
+              width={16}
+              value={errorText(first)}
+              wrap={wrap}
+            />
             {/* The report's own words are a third idea under the counter and
                 the sentence explaining it, so they start after a blank row. */}
             {item.scrub && (
@@ -566,7 +597,7 @@ export function Storage({
                 {safe(item.scrub.text)}
               </Line>
             )}
-          </Detail>
+          </>
         ),
       },
     );
@@ -583,7 +614,7 @@ export function Storage({
               mount take the first 43 cells. */}
           {cause && (
             <Ink color={ui.danger}>
-              {safe(fit(volumeCauseText(cause, c), width - 43))}
+              {safe(fit(volumeCauseText(cause, c), listWidth - 43))}
             </Ink>
           )}
         </>
@@ -591,7 +622,7 @@ export function Storage({
       {
         color: levelColor(volumeLevel(v, c.freeFloor)),
         under: () => (
-          <Detail>
+          <>
             {cause && (
               <Line flexShrink={0} wrapMode="word" fg={ui.danger}>
                 {safe(volumeCauseText(cause, c))}
@@ -600,8 +631,8 @@ export function Storage({
             {/* The device row above names the device and its error counters
                 once for every mount grouped under it, and subvolumes of one
                 filesystem share both. The options are the mount's own. */}
-            <Field label="Options" value={v.options.join(", ")} />
-          </Detail>
+            <Field label="Options" value={v.options.join(", ")} wrap={wrap} />
+          </>
         ),
       },
     );
@@ -647,12 +678,11 @@ export function Storage({
         under: () =>
           !item.session &&
           item.scratch.origin !== null && (
-            <Detail>
-              <Field
-                label="Origin"
-                value={scratchOriginText(item.scratch.origin)}
-              />
-            </Detail>
+            <Field
+              label="Origin"
+              value={scratchOriginText(item.scratch.origin)}
+              wrap={wrap}
+            />
           ),
       },
     );
@@ -719,11 +749,11 @@ export function Storage({
       {
         color: scrub.problem ? ui.danger : undefined,
         under: () => (
-          <Detail>
+          <>
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
               {safe(scrub.text)}
             </Line>
-          </Detail>
+          </>
         ),
       },
     );
@@ -749,7 +779,7 @@ export function Storage({
     items.map((item, i) =>
       regionOf(counts, i) === at ? drawItem(item, i) : null,
     );
-  return (
+  const page = (
     <scrollbox
       ref={scroller}
       flexGrow={1}
@@ -761,10 +791,10 @@ export function Storage({
       <box
         flexDirection="column"
         flexShrink={0}
-        paddingX={screenPad}
+        paddingX={side ? 0 : screenPad}
         onMouseScroll={onWheel}
       >
-        <Section title="Written since boot" width={width} marginTop={0} />
+        <Section title="Written since boot" width={listWidth} marginTop={0} />
         {writeRows(totals.slices, true, "by slice")}
         <box height={1} flexShrink={0} />
         {writeRows(totals.devices, totals.devicesAvailable, "by drive")}
@@ -773,7 +803,7 @@ export function Storage({
             A dm- row repeats the writes of the disk beneath it.
           </Line>
         )}
-        <Section title="Drive lifetime writes" width={width} />
+        <Section title="Drive lifetime writes" width={listWidth} />
         {writeRows(
           totals.lifetime,
           true,
@@ -803,7 +833,7 @@ export function Storage({
         )}
         <Section
           {...heading(0)}
-          width={width}
+          width={listWidth}
           count={st.volumes.length || undefined}
         />
         {st.mountsAvailable === false && (
@@ -815,7 +845,7 @@ export function Storage({
         {inRegion(0)}
         <Section
           {...heading(1)}
-          width={width}
+          width={listWidth}
           count={st.scrubs.length || undefined}
         />
         {!st.scrubs.length && (
@@ -824,12 +854,26 @@ export function Storage({
         {inRegion(1)}
         <Section
           {...heading(2)}
-          width={width}
+          width={listWidth}
           count={`${scratch.state} · quota ${amount(c.scratchQuota, c)}`}
         />
         {scratch.empty !== null && <Empty text={scratch.empty} />}
         {inRegion(2)}
       </box>
     </scrollbox>
+  );
+  // Beside a panel the padding moves out to hold both, so the panel keeps the
+  // margin the lists keep from the terminal edge.
+  return (
+    <box
+      flexDirection="column"
+      flexGrow={1}
+      minHeight={0}
+      paddingX={side ? screenPad : 0}
+    >
+      <SplitPane side={side} detail={selectedDetail}>
+        {page}
+      </SplitPane>
+    </box>
   );
 }

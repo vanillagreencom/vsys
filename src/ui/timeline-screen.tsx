@@ -5,7 +5,7 @@ import type { Snapshot } from "../model/types";
 import type { TimelineEvent } from "../store/events";
 import type { History } from "../store/history";
 import { changed, type Point } from "../store/point";
-import { screenPad } from "./chrome";
+import { screenPad, sideWidth } from "./chrome";
 import { fit } from "./columns";
 import {
   bucketPeaks,
@@ -31,6 +31,8 @@ import {
   Row,
   Section,
   Sparkline,
+  SplitPane,
+  sideGap,
   Tile,
   Tiles,
   tilesHeight,
@@ -273,9 +275,22 @@ export function Timeline({
   // sparkline rows, which the cursor tiles still summarise.
   const short = height < fixed + rows.length + 3;
   const listHeight = Math.max(3, height - (fixed + (short ? 0 : rows.length)));
+  // On a wide terminal the selected change's detail sits beside the list.
+  const side = sideWidth(width);
+  const listWidth = width - side - (side ? sideGap : 0);
   // A change row less its marker, its time and its kind, so a long subject is
   // cut with its mark rather than at the edge.
-  const subjectWidth = width - 4 - 1 - 13 - 13;
+  const subjectWidth = listWidth - 4 - 1 - 13 - 13;
+  const current = changes[row];
+  /**
+   * The unit a change's subject was decoded from, where it differs: the
+   * subject reads as a name, and the unit is the handle a reader needs to
+   * reach the scope itself.
+   */
+  const unitOf = (event: TimelineEvent) =>
+    event.names.unit && event.names.unit !== event.subject
+      ? event.names.unit
+      : undefined;
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <box flexDirection="row" height={1} flexShrink={0}>
@@ -368,45 +383,74 @@ export function Timeline({
           No sample under the cursor.
         </Line>
       )}
-      <Section
-        title="What changed"
-        width={width - 4}
-        count={changes.length ? `${changes.length}, newest first` : undefined}
-      />
-      {/* The shared list, which pages around its own selection. Slicing the
+      {/* The section's margin, outside the pane so the list's heading and
+          the panel's start on one row. */}
+      <box height={1} flexShrink={0} />
+      <SplitPane
+        side={side}
+        detail={
+          current && (
+            <>
+              {/* Whole here, where the row cuts it at the list's edge. */}
+              <Line flexShrink={0} wrapMode="word">
+                {safe(eventParts(current, c).text)}
+              </Line>
+              {unitOf(current) && (
+                <Field
+                  label="Unit"
+                  value={unitOf(current) ?? ""}
+                  width={14}
+                  wrap
+                />
+              )}
+            </>
+          )
+        }
+      >
+        <Section
+          title="What changed"
+          width={listWidth - 4}
+          marginTop={0}
+          count={changes.length ? `${changes.length}, newest first` : undefined}
+        />
+        {/* The shared list, which pages around its own selection. Slicing the
           first rows here instead let the selection walk off the end of what
           was drawn, and Enter then acted on a row the reader could not see. */}
-      <List
-        items={changes}
-        selected={row}
-        height={listHeight}
-        onSelect={choose}
-        empty="Nothing changed in this window: no lane, cgroup or cause moved."
-        render={(event, at, isSelected) => {
-          const e = eventParts(event, c);
-          const unit = event.names.unit;
-          return (
-            // One row per event, so a long subject cannot push the rest out.
-            <box key={eventKey(event)} flexDirection="column" flexShrink={0}>
-              <Row selected={isSelected} onOpen={() => open(at, event)}>
-                <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
-                <Ink
-                  color={levelColor(e.level)}
-                  attributes={e.level === "ok" ? ui.none : ui.bold}
-                >
-                  {fit(e.kind, 13)}
-                </Ink>
-                {fit(safe(e.text), subjectWidth)}
-              </Row>
-              {isSelected && unit && unit !== event.subject && (
-                // The subject reads as a name; the unit it decoded from is the
-                // handle a reader needs to reach the scope itself.
-                <Field label="Unit" value={unit} width={14} />
-              )}
-            </box>
-          );
-        }}
-      />
+        <List
+          items={changes}
+          selected={row}
+          height={listHeight}
+          onSelect={choose}
+          empty="Nothing changed in this window: no lane, cgroup or cause moved."
+          render={(event, at, isSelected) => {
+            const e = eventParts(event, c);
+            const unit = unitOf(event);
+            return (
+              // One row per event, so a long subject cannot push the rest out.
+              <box
+                key={eventKey(event)}
+                id={`change-${at}`}
+                flexDirection="column"
+                flexShrink={0}
+              >
+                <Row selected={isSelected} onOpen={() => open(at, event)}>
+                  <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
+                  <Ink
+                    color={levelColor(e.level)}
+                    attributes={e.level === "ok" ? ui.none : ui.bold}
+                  >
+                    {fit(e.kind, 13)}
+                  </Ink>
+                  {fit(safe(e.text), subjectWidth)}
+                </Row>
+                {isSelected && !side && unit && (
+                  <Field label="Unit" value={unit} width={14} />
+                )}
+              </box>
+            );
+          }}
+        />
+      </SplitPane>
     </box>
   );
 }

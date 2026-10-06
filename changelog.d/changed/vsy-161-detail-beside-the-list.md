@@ -1,0 +1,1 @@
+- On a terminal 150 columns or wider, Resources, Storage and Timeline now show the selected item's detail in a panel to the right of the list, as Agents does. Narrower terminals keep the detail where it was. Storage's cleared errors value now wraps instead of losing its check date, and the Resources Tasks column is no longer cut on terminals narrower than 106 columns.

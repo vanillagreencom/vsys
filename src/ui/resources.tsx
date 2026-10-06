@@ -6,7 +6,7 @@ import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Snapshot } from "../model/types";
 import { type Level, meters } from "../model/verdict";
 import { meterTile } from "./attention";
-import { screenPad } from "./chrome";
+import { screenPad, sideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
   amount,
@@ -27,6 +27,8 @@ import {
   Reading,
   Row,
   Section,
+  SplitPane,
+  sideGap,
   TableHeader,
   Tile,
   Tiles,
@@ -289,9 +291,16 @@ export function Resources({
     memoryColumn,
     tasksColumn,
   ];
+  const side = sideWidth(width);
+  const listWidth = width - side - (side ? sideGap : 0);
+  // The screen padding and the marker take five columns, and the name is
+  // joined to the fixed columns by one more gap.
   const nameColumn: Column = {
     label: "Group",
-    width: Math.max(12, Math.min(44, width - 5 - columnsWidth(fixed))),
+    width: Math.max(
+      12,
+      Math.min(44, listWidth - 5 - columnsWidth(fixed) - columnGap.length),
+    ),
   };
   const groupColumns: Column[] = [nameColumn, ...fixed];
   const inner = width - 4;
@@ -299,9 +308,9 @@ export function Resources({
   const tileCount = tiles.length + 1;
   const tileRows = Math.ceil(tileCount / tilesPerRow(tileCount, inner));
   // Each tile row is three lines and the rows sit one line apart; then the
-  // blank under them, the section with its margin, the table heading, and the
-  // five detail fields with their own margin.
-  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - 6;
+  // blank under them, the section with its margin, the table heading, and,
+  // where the detail is not beside the list, its five fields and their margin.
+  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - (side ? 0 : 6);
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
@@ -326,85 +335,101 @@ export function Resources({
             .join("")}`}
         />
       </Tiles>
-      <box height={1} flexShrink={0} />
-      <Section
-        title="Groups"
-        width={width - 4}
-        count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
-      />
-      <TableHeader columns={groupColumns} />
-      <List
-        items={rows}
-        selected={selected}
-        height={listHeight}
-        onSelect={setSelected}
-        empty="No resource group could be read."
-        render={(g, i, isSelected) => {
-          const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
-          return (
-            <Row
-              key={g.path}
-              selected={isSelected}
-              color={levelColor(groupLevel(g, s, c))}
-              onOpen={() => setSelected(i)}
-            >
-              {safe(cell(nameColumn, name))}
-              {columnGap}
-              <Bar
-                value={g.cpuPercent}
-                max={topCpu}
-                width={cpuBar.width}
-                color={metric.cpu}
+      {/* The blank under the tiles and the section's own margin, outside the
+          pane so the list's heading and the panel's start on one row. */}
+      <box height={2} flexShrink={0} />
+      <SplitPane
+        side={side}
+        below
+        detail={
+          current && (
+            <>
+              <Field label="Unit" value={current.name} wrap={side > 0} />
+              <Field
+                label="Status"
+                value={causeText(currentCause, c)}
+                color={
+                  currentCause ? levelColor(currentCause.level) : undefined
+                }
+                wrap={side > 0}
               />
-              {columnGap}
-              <Reading
-                value={g.cpuPercent}
-                text={cell(cpuColumn, share(g.cpuPercent))}
+              <Field
+                label="Limits"
+                value={`memory high ${limit(current.high)} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${limit(current.swapMax)} · tasks max ${current.tasksMax ?? "none"}`}
+                wrap={side > 0}
               />
-              {columnGap}
-              <Bar
-                value={g.memory}
-                max={topMemory}
-                width={memoryBar.width}
-                color={metric.memory}
+              <Field
+                label="CPU"
+                value={`weight ${current.weight ?? gap} · quota ${current.cpuMax ?? gap} · page cache ${amount(current.cache, c)} · written ${current.writeRate === null ? gap : `${bytes(current.writeRate, c)}/s`}`}
+                wrap={side > 0}
               />
-              {columnGap}
-              <Reading
-                value={g.memory}
-                text={cell(memoryColumn, amount(g.memory, c))}
+              <Field
+                label="Waiting"
+                value={Object.entries(current.pressure)
+                  .map(([kind, p]) => `${kind} ${percent(p?.some)}`)
+                  .join(" · ")}
+                wrap={side > 0}
               />
-              {columnGap}
-              <span attributes={ui.dim}>
-                {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
-              </span>
-            </Row>
-          );
-        }}
-      />
-      {current && (
-        <box flexDirection="column" flexShrink={0} marginTop={1}>
-          <Field label="Unit" value={current.name} />
-          <Field
-            label="Status"
-            value={causeText(currentCause, c)}
-            color={currentCause ? levelColor(currentCause.level) : undefined}
-          />
-          <Field
-            label="Limits"
-            value={`memory high ${limit(current.high)} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${limit(current.swapMax)} · tasks max ${current.tasksMax ?? "none"}`}
-          />
-          <Field
-            label="CPU"
-            value={`weight ${current.weight ?? gap} · quota ${current.cpuMax ?? gap} · page cache ${amount(current.cache, c)} · written ${current.writeRate === null ? gap : `${bytes(current.writeRate, c)}/s`}`}
-          />
-          <Field
-            label="Waiting"
-            value={Object.entries(current.pressure)
-              .map(([kind, p]) => `${kind} ${percent(p?.some)}`)
-              .join(" · ")}
-          />
-        </box>
-      )}
+            </>
+          )
+        }
+      >
+        <Section
+          title="Groups"
+          width={listWidth - 4}
+          marginTop={0}
+          count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
+        />
+        <TableHeader columns={groupColumns} />
+        <List
+          items={rows}
+          selected={selected}
+          height={listHeight}
+          onSelect={setSelected}
+          empty="No resource group could be read."
+          render={(g, i, isSelected) => {
+            const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
+            return (
+              <Row
+                key={g.path}
+                selected={isSelected}
+                color={levelColor(groupLevel(g, s, c))}
+                onOpen={() => setSelected(i)}
+              >
+                {safe(cell(nameColumn, name))}
+                {columnGap}
+                <Bar
+                  value={g.cpuPercent}
+                  max={topCpu}
+                  width={cpuBar.width}
+                  color={metric.cpu}
+                />
+                {columnGap}
+                <Reading
+                  value={g.cpuPercent}
+                  text={cell(cpuColumn, share(g.cpuPercent))}
+                />
+                {columnGap}
+                <Bar
+                  value={g.memory}
+                  max={topMemory}
+                  width={memoryBar.width}
+                  color={metric.memory}
+                />
+                {columnGap}
+                <Reading
+                  value={g.memory}
+                  text={cell(memoryColumn, amount(g.memory, c))}
+                />
+                {columnGap}
+                <span attributes={ui.dim}>
+                  {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
+                </span>
+              </Row>
+            );
+          }}
+        />
+      </SplitPane>
     </box>
   );
 }

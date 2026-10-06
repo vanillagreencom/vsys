@@ -194,7 +194,6 @@ export function AgentSummary({
 }) {
   return (
     <box flexDirection="column" flexShrink={0} minWidth={0}>
-      <Section title="Selected" width={width} marginTop={0} />
       <AgentIdentity lane={lane} snapshot={snapshot} config={c} />
       <box height={1} flexShrink={0} />
       <AgentTiles lane={lane} config={c} width={width} />

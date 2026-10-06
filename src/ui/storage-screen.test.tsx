@@ -265,7 +265,7 @@ test("a filesystem's detail is drawn as a child of its row", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.storage.volumes = [volumeSnapshot("/data", { device: "/dev/sda1" })];
-  const t = await mount(s, c, { width: 160, height: 40 });
+  const t = await mount(s, c, { width: 140, height: 40 });
   try {
     await t.press("5");
     // The filesystem's integrity row is the first of the region; its mount
@@ -661,7 +661,7 @@ test("a damaged filesystem lists every file each damaged address may hold", asyn
   const c = defaults();
   const time = 1_760_000_000_000;
   const s = damagedSnapshot(time);
-  const t = await mount(s, c, { width: 160, height: 60 });
+  const t = await mount(s, c, { width: 140, height: 60 });
   try {
     await t.press("5");
     const frame = t.frame();
@@ -770,9 +770,8 @@ function unreportedSnapshot(
   return s;
 }
 
-test("cleared failures sit under the integrity line, which keeps both its times at width 120", async () => {
-  const c = defaults();
-  const time = 1_760_000_000_000;
+/** A filesystem whose logged failures a later clean check cleared. */
+function clearedSnapshot(time: number): Snapshot {
   const s = emptySnapshot(time);
   s.storage.volumes = [
     volumeSnapshot("/", {
@@ -798,6 +797,12 @@ test("cleared failures sit under the integrity line, which keeps both its times 
   s.storage.csumFailures = {
     fs: [{ root: 5, inode: 9, at: time - 20 * 86400000 }],
   };
+  return s;
+}
+
+test("cleared failures sit under the integrity line, which keeps both its times at width 120", async () => {
+  const c = defaults();
+  const s = clearedSnapshot(1_760_000_000_000);
   const item = present(integrities(s, c)[0], "the root filesystem");
   const cleared = present(item.cleared ?? undefined, "the cleared failures");
   const t = await mount(s, c, { width: 120, height: 40 });
@@ -820,11 +825,52 @@ test("cleared failures sit under the integrity line, which keeps both its times 
   }
 });
 
+test("the cleared errors value wraps at width 80, so its check date is drawn", async () => {
+  const c = defaults();
+  const time = 1_760_000_000_000;
+  const s = clearedSnapshot(time);
+  // Errors over a range of days that starts the year before, so every date
+  // carries its year and the value is longer than the row.
+  s.storage.csumFailures = {
+    fs: [
+      { root: 5, inode: 8, at: time - 300 * 86400000 },
+      { root: 5, inode: 9, at: time - 20 * 86400000 },
+    ],
+  };
+  const item = present(integrities(s, c)[0], "the root filesystem");
+  const cleared = clearedText(
+    present(item.cleared ?? undefined, "the cleared failures"),
+  );
+  const t = await mount(s, c, { width: 80, height: 40 });
+  try {
+    await t.press("5");
+    const lines = t.frame().split("\n");
+    // The value's column is where its first word starts; every row of it
+    // starts there, and the rows under it carry nothing left of that column.
+    const first = cleared.split(" ").slice(0, 3).join(" ");
+    const top = lines.findIndex((line) => line.includes(first));
+    const column = present(lines[top], "the value's first row").indexOf(first);
+    const rows: string[] = [];
+    for (let at = top; at < lines.length; at++) {
+      const line = present(lines[at], `frame row ${at}`);
+      const value = line.slice(column).trim();
+      const left = line.slice(0, column).replace(/[│\s]/g, "");
+      if (!value || (at > top && left)) break;
+      rows.push(value);
+    }
+    // More than one row, and every word of the value, its check date last.
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.join(" ")).toBe(cleared);
+  } finally {
+    await t.close();
+  }
+});
+
 test("a machine with no scrub reporter says so and copies the command that installs one", async () => {
   const c = defaults();
   const time = 1_760_000_000_000;
   const t = await mount(unreportedSnapshot(time, null), c, {
-    width: 160,
+    width: 140,
     height: 60,
   });
   try {
