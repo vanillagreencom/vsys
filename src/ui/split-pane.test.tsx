@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
-import type { BaseRenderable, Renderable } from "@opentui/core";
+import type {
+  BaseRenderable,
+  Renderable,
+  ScrollBoxRenderable,
+} from "@opentui/core";
 import { defaults } from "../config/config";
+import { unitLabel } from "../model/naming";
+import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
-import { everyCauseSnapshot } from "../test/fixture";
-import { mount } from "../test/harness";
+import { everyCauseSnapshot, groupSnapshot } from "../test/fixture";
+import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
 import { screenPad, wideWidth } from "./chrome";
 
@@ -19,40 +25,68 @@ type Narrow =
   | "inline";
 
 /**
+ * Values planted in the fixture, each longer than the panel's own row, so a
+ * panel that cut instead of wrapping loses part of one.
+ */
+const longGroup = `${"a-long-slice-name-".repeat(3)}first.slice`;
+const longOptions = [
+  "rw",
+  "relatime",
+  "compress=zstd:3",
+  "ssd",
+  "discard=async",
+  "space_cache=v2",
+  "subvolid=5",
+  "subvol=/",
+];
+const longUnit = `app-Hyprland-${"averylongterminalname".repeat(2)}-b95bd288.scope`;
+
+/**
  * Each screen on the shared split pane, the key that opens it, and where its
  * detail sits on a narrow terminal. `inline` selects a row that has a detail
  * and answers its block's id, whose second child is the detail drawn under
- * it, and how many rows down from the first it is.
+ * it, and how many rows down from the first it is. `whole` is what the wide
+ * panel draws in full for that row.
  */
 const screens: {
   name: string;
   key: string;
   narrow: Narrow;
   inline?: (t: Mounted) => Promise<{ id: string; downs: number }>;
+  whole: string[];
 }[] = [
-  { name: "Agents", key: "2", narrow: "none" },
-  { name: "Resources", key: "3", narrow: "below" },
+  { name: "Agents", key: "2", narrow: "none", whole: [] },
+  // The planted slice is the first row, which Resources opens on.
+  { name: "Resources", key: "3", narrow: "below", whole: [longGroup] },
   {
     name: "Storage",
     key: "5",
     narrow: "inline",
-    // The first filesystem's integrity row, which Storage opens on.
-    inline: async () => ({ id: "storage-0", downs: 0 }),
+    // The first filesystem's first mount, one row under its integrity row.
+    inline: async (t) => {
+      await t.press("down");
+      return { id: "storage-1", downs: 1 };
+    },
+    whole: [longOptions.join(", ")],
   },
   {
     name: "Timeline",
     key: "6",
     narrow: "inline",
-    // The first change whose block draws anything under its row, walked to
-    // with the arrows: only a change about a cgroup has a unit to draw.
+    // The change about the planted unit, walked to with the arrows: the
+    // marked row is the one naming what the unit decodes to.
     inline: async (t) => {
+      const name = unitLabel(longUnit).slice(0, 20);
       for (let at = 0; at < 30; at++) {
-        if (childCount(t, `change-${at}`) > 1)
+        if (selectedRow(t.frame()).includes(name))
           return { id: `change-${at}`, downs: at };
         await t.press("down");
       }
-      throw new Error("No change draws a detail under its row");
+      throw new Error("No change names the planted unit");
     },
+    // The name the row's subject decodes to, which the row cuts at the list's
+    // edge, and the unit it was decoded from.
+    whole: [longUnit, unitLabel(longUnit)],
   },
 ];
 
@@ -60,16 +94,38 @@ const find = (t: Mounted, id: string): Renderable | undefined =>
   t.ui.renderer.root.findDescendantById(id) as Renderable | undefined;
 const childCount = (t: Mounted, id: string): number =>
   (find(t, id) as BaseRenderable | undefined)?.getChildrenCount() ?? 0;
+/**
+ * The cells a renderable covers on the frame, with every blank dropped, so a
+ * value wrapped over several rows reads as one run of characters.
+ */
+const cells = (t: Mounted, box: Renderable): string =>
+  t
+    .frame()
+    .split("\n")
+    .slice(box.y, box.y + box.height)
+    .map((line) => line.slice(box.x, box.x + box.width))
+    .join("")
+    .replace(/\s/g, "");
+
+function planted(s: Snapshot): Snapshot {
+  // A slice is never hidden as idle, so this one leads the Resources tree.
+  s.groups = [
+    groupSnapshot({ path: "first.slice", parent: ".", name: longGroup }),
+    ...s.groups.map((g) =>
+      g.name === "gnome.scope" ? { ...g, name: longUnit } : g,
+    ),
+  ];
+  s.storage.volumes = s.storage.volumes.map((v) => ({
+    ...v,
+    options: longOptions,
+  }));
+  return s;
+}
 
 async function mounted() {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
   const h = new History(c);
-  const first = everyCauseSnapshot(c);
-  first.groups = first.groups.map((g) =>
-    g.name === "gnome.scope"
-      ? { ...g, name: "app-Hyprland-ghostty-b95bd288.scope" }
-      : g,
-  );
+  const first = planted(everyCauseSnapshot(c));
   h.add(first);
   const latest = { ...first, time: first.time + 1000 };
   h.add(latest);
@@ -103,6 +159,24 @@ test("from wideWidth up the selected item's detail sits right of its list, and b
           expect({ ...at, top: panel.y }).toEqual({ ...at, top: list.y });
           if (row !== undefined)
             expect({ ...at, under }).toEqual({ ...at, under: 1 });
+          // What the selected row stands for, whole in the panel, once the
+          // panel's scroll bar has been measured away on the frame after the
+          // panel's first.
+          await t.settle();
+          // Each value found is taken out of what is left, so a value drawn
+          // inside another counts once, as the other.
+          let drawn = cells(t, panel);
+          for (const value of screen.whole) {
+            const run = value.replace(/\s/g, "");
+            const found = drawn.indexOf(run);
+            if (found >= 0)
+              drawn = drawn.slice(0, found) + drawn.slice(found + run.length);
+            expect({ ...at, value, drawn: found >= 0 }).toEqual({
+              ...at,
+              value,
+              drawn: true,
+            });
+          }
           continue;
         }
         expect({ ...at, list: find(t, "split-list") }).toEqual({
@@ -112,10 +186,20 @@ test("from wideWidth up the selected item's detail sits right of its list, and b
         if (screen.narrow === "below") {
           // Across the screen under the list, where the bottom fields were.
           const panel = present(detail, "the detail under the list");
-          expect({ ...at, x: panel.x, width: panel.width }).toEqual({
+          const marked = t
+            .frame()
+            .split("\n")
+            .findIndex((line) => line.includes("▍"));
+          expect({
+            ...at,
+            x: panel.x,
+            width: panel.width,
+            under: marked >= 0 && panel.y > marked,
+          }).toEqual({
             ...at,
             x: screenPad,
             width: width - screenPad * 2,
+            under: true,
           });
         } else {
           expect({ ...at, detail }).toEqual({ ...at, detail: undefined });
@@ -126,5 +210,33 @@ test("from wideWidth up the selected item's detail sits right of its list, and b
         await t.close();
       }
     }
+  }
+});
+
+test("the panel opens each newly selected item at its top", async () => {
+  const { c, h, latest } = await mounted();
+  // Short enough that every group's detail runs past the panel's bottom, so
+  // the next group's could stay scrolled where the last one was left.
+  const t = await mount(
+    latest,
+    c,
+    { width: wideWidth, height: 14 },
+    { history: h },
+  );
+  try {
+    await t.press("3");
+    await t.settle();
+    const panel = present(
+      find(t, "split-detail") as ScrollBoxRenderable | undefined,
+      "the detail panel",
+    );
+    panel.scrollTop = 2;
+    expect(panel.scrollTop).toBe(2);
+    await t.press("down");
+    await t.settle();
+    expect(panel.scrollHeight - panel.height).toBeGreaterThanOrEqual(2);
+    expect(panel.scrollTop).toBe(0);
+  } finally {
+    await t.close();
   }
 });

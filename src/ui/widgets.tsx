@@ -607,30 +607,42 @@ export const sideGap = 3;
 /**
  * A list and the selected item's detail. Given a panel width, the detail sits
  * in a panel that wide right of the list, so a row is read against what it
- * means without the right side of a wide terminal standing blank; the panel
- * scrolls by itself, because a detail can be taller than the screen. Given
- * none, the list is drawn alone and the detail where the screen kept it: under
- * the list with `below`, otherwise under its row, which the screen draws.
+ * means without the right side of a wide terminal standing blank. The panel
+ * is drawn whenever it has a width, so the list's width never depends on the
+ * row selected, and it scrolls by itself, because a detail can be taller than
+ * the screen. Given none, the list is drawn alone, with the detail under it
+ * where the screen asks for `below`; any other screen draws its detail itself,
+ * under the selected row or not at all.
  */
 export function SplitPane({
   side,
+  item,
   detail,
   below = false,
   children,
 }: {
-  /** The panel's columns, from `sideWidth`; zero places the detail as narrow. */
+  /**
+   * The panel's columns, from `sideWidth`, or zero, which places the detail as
+   * narrow. A screen with nothing selected passes zero, so its list keeps the
+   * whole row rather than standing beside an empty panel.
+   */
   side: number;
-  /** Nothing to show draws no panel, and the list takes the whole row. */
+  /** The selected item's identity: a new item opens its detail at the top. */
+  item: string | undefined;
   detail: ReactNode;
   below?: boolean;
   children: ReactNode;
 }) {
-  const shown = detail !== undefined && detail !== null && detail !== false;
+  const panel = useRef<ScrollBoxRenderable | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new item is the re-run trigger, not a value the effect reads
+  useEffect(() => {
+    if (panel.current) panel.current.scrollTop = 0;
+  }, [item]);
   if (side <= 0)
     return (
       <>
         {children}
-        {below && shown && (
+        {below && detail && (
           <box
             id="split-detail"
             flexDirection="column"
@@ -653,20 +665,19 @@ export function SplitPane({
       >
         {children}
       </box>
-      {shown && (
-        <scrollbox
-          id="split-detail"
-          width={side}
-          flexShrink={0}
-          minHeight={0}
-          scrollY
-          scrollbarOptions={scrollbar}
-          contentOptions={{ flexShrink: 0 }}
-        >
-          <Section title="Selected" width={side} marginTop={0} />
-          {detail}
-        </scrollbox>
-      )}
+      <scrollbox
+        ref={panel}
+        id="split-detail"
+        width={side}
+        flexShrink={0}
+        minHeight={0}
+        scrollY
+        scrollbarOptions={scrollbar}
+        contentOptions={{ flexShrink: 0 }}
+      >
+        <Section title="Selected" width={side} marginTop={0} />
+        {detail}
+      </scrollbox>
     </box>
   );
 }

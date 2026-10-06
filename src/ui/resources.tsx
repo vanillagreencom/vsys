@@ -291,7 +291,7 @@ export function Resources({
     memoryColumn,
     tasksColumn,
   ];
-  const side = sideWidth(width);
+  const side = current ? sideWidth(width) : 0;
   const listWidth = width - side - (side ? sideGap : 0);
   // The screen padding and the marker take five columns, and the name is
   // joined to the fixed columns by one more gap.
@@ -340,6 +340,7 @@ export function Resources({
       <box height={2} flexShrink={0} />
       <SplitPane
         side={side}
+        item={current?.path}
         below
         detail={
           current && (

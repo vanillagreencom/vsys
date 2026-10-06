@@ -427,7 +427,7 @@ export function Storage({
   // On a wide terminal the selected row's detail sits beside the lists, so the
   // lists narrow by the panel. This screen is handed the row inside the screen
   // padding, and the panel is a share of the terminal row.
-  const side = sideWidth(width + screenPad * 2);
+  const side = items.length ? sideWidth(width + screenPad * 2) : 0;
   const listWidth = width - side - (side ? sideGap : 0);
   // The selected row's detail, taken as the rows are drawn below, for the
   // panel the lists are drawn beside.
@@ -871,7 +871,7 @@ export function Storage({
       minHeight={0}
       paddingX={side ? screenPad : 0}
     >
-      <SplitPane side={side} detail={selectedDetail}>
+      <SplitPane side={side} item={rowIds[selected]} detail={selectedDetail}>
         {page}
       </SplitPane>
     </box>

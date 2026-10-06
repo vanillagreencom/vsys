@@ -618,8 +618,11 @@ export function Agents({
     return false;
   });
   // The search box, the column chooser and the table take the whole row, so
-  // the summary sits beside the plain list only.
-  const side = searching || chooser || table ? 0 : sideWidth(width);
+  // the summary sits beside the plain list only, and only with a lane chosen.
+  const side =
+    searching || chooser || table || lanes[selected] === undefined
+      ? 0
+      : sideWidth(width);
   const listWidth = width - side - (side ? sideGap : 0);
   // The program and the wait share leave a narrow list; the name takes
   // whatever the fixed columns leave, and the heading reads the same spec.
@@ -820,6 +823,7 @@ export function Agents({
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <SplitPane
         side={side}
+        item={selectedLane?.id}
         detail={
           selectedLane && (
             <AgentSummary

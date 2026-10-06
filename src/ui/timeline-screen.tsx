@@ -275,13 +275,13 @@ export function Timeline({
   // sparkline rows, which the cursor tiles still summarise.
   const short = height < fixed + rows.length + 3;
   const listHeight = Math.max(3, height - (fixed + (short ? 0 : rows.length)));
+  const current = changes[row];
   // On a wide terminal the selected change's detail sits beside the list.
-  const side = sideWidth(width);
+  const side = current ? sideWidth(width) : 0;
   const listWidth = width - side - (side ? sideGap : 0);
   // A change row less its marker, its time and its kind, so a long subject is
   // cut with its mark rather than at the edge.
   const subjectWidth = listWidth - 4 - 1 - 13 - 13;
-  const current = changes[row];
   /**
    * The unit a change's subject was decoded from, where it differs: the
    * subject reads as a name, and the unit is the handle a reader needs to
@@ -388,6 +388,7 @@ export function Timeline({
       <box height={1} flexShrink={0} />
       <SplitPane
         side={side}
+        item={current && eventKey(current)}
         detail={
           current && (
             <>

@@ -889,9 +889,11 @@ test("a machine with no scrub reporter says so and copies the command that insta
   }
   // A reader who pointed the reports elsewhere runs a reporter of their own,
   // so the shipped one is not offered.
+  // Under the panel's width the line is drawn on one row, which is what the
+  // absence below reads.
   const elsewhere = { ...c, scrubDir: "/srv/checks" };
   const other = await mount(unreportedSnapshot(time, null), elsewhere, {
-    width: 160,
+    width: 140,
     height: 60,
   });
   try {
@@ -929,7 +931,8 @@ test("the install line is offered only where installing fills the gap, and copie
       ? { ...cap, failure: "unreadable" as const, detail: "EACCES" }
       : cap,
   );
-  const t = await mount(unreadable, c, { width: 160, height: 60 });
+  // Under the panel's width, where an offered line is drawn on one row.
+  const t = await mount(unreadable, c, { width: 140, height: 60 });
   try {
     await t.press("5");
     expect(t.frame()).not.toContain(reporterInstall);
