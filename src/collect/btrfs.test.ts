@@ -722,12 +722,10 @@ test("storage names the scrub timers the packaged reporter lacks, and only where
   );
   const dropIn = join(f.root, "units", "vsys-report.conf");
   f.write(dropIn, "[Service]\n");
-  const template = join(f.root, "units", "btrfs-scrub@.timer");
-  f.write(template, "[Timer]\n");
+  // systemd's answer is stubbed: every timer disabled.
   const units = {
     dropIn,
-    templates: [template],
-    wants: join(f.root, "units", "wants"),
+    states: async (names: string[]) => names.map(() => "disabled"),
   };
   const packaged = await new StorageCollector(
     null,
@@ -758,10 +756,14 @@ test("a scrub timer on a mount btrfsMounts leaves out still covers the filesyste
   );
   const dropIn = join(f.root, "units", "vsys-report.conf");
   f.write(dropIn, "[Service]\n");
-  const wants = join(f.root, "units", "wants");
-  const template = join(f.root, "units", "btrfs-scrub@.timer");
-  f.write(template, "[Timer]\n");
-  const units = { dropIn, templates: [template], wants };
+  // systemd's answer is stubbed: the timers it calls enabled, the rest
+  // disabled.
+  const enabled = new Set<string>();
+  const units = {
+    dropIn,
+    states: async (names: string[]) =>
+      names.map((name) => (enabled.has(name) ? "enabled" : "disabled")),
+  };
   const config = { ...f.config, btrfsMounts: [home] };
   const missing = async () =>
     (
@@ -772,6 +774,6 @@ test("a scrub timer on a mount btrfsMounts leaves out still covers the filesyste
       )
     ).missingScrubTimers;
   expect(await missing()).toEqual([scrubTimer(home)]);
-  f.write(join(wants, scrubTimer(f.root)), "");
+  enabled.add(scrubTimer(f.root));
   expect(await missing()).toEqual([]);
 });

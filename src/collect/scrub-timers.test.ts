@@ -1,9 +1,14 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Reader } from "./io";
-import { escapePath, missingScrubTimers, scrubTimer } from "./scrub-timers";
+import {
+  escapePath,
+  missingScrubTimers,
+  type ScrubUnits,
+  scrubTimer,
+} from "./scrub-timers";
 
 test("a mount is escaped as systemd-escape --path writes it", () => {
   expect(
@@ -20,30 +25,36 @@ test("a mount is escaped as systemd-escape --path writes it", () => {
   ]);
 });
 
+const roots: string[] = [];
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true });
+});
 /**
- * A scratch systemd tree: the packaged drop-in, the timer template and the
- * enabled timers.
+ * The packaged drop-in in a scratch directory, and a stub for systemd's
+ * answer: each unit's `is-enabled` word, `disabled` where none is named, so
+ * no test asks the real systemd.
  */
-function units(o: {
-  dropIn: boolean;
-  template?: boolean;
-  enabled?: string[] | "unreadable";
-}) {
+function units(
+  o: {
+    dropIn?: boolean;
+    words?: Record<string, string>;
+    answer?: "none" | "throws";
+  } = {},
+): ScrubUnits & { asked: string[][] } {
   const root = mkdtempSync(join(tmpdir(), "vsys-scrub-timers-"));
+  roots.push(root);
   const dropIn = join(root, "vsys-report.conf");
-  const template = join(root, "btrfs-scrub@.timer");
-  const wants = join(root, "timers.target.wants");
-  if (o.dropIn) writeFileSync(dropIn, "[Service]\n");
-  if (o.template ?? true) writeFileSync(template, "[Timer]\n");
-  // A file where the directory should be is a listing that fails.
-  if (o.enabled === "unreadable") writeFileSync(wants, "");
-  else if (o.enabled) {
-    mkdirSync(wants);
-    for (const unit of o.enabled) writeFileSync(join(wants, unit), "");
-  }
+  if (o.dropIn ?? true) writeFileSync(dropIn, "[Service]\n");
+  const asked: string[][] = [];
   return {
-    root,
-    units: { dropIn, templates: [join(root, "absent.timer"), template], wants },
+    dropIn,
+    asked,
+    states: async (names) => {
+      asked.push(names);
+      if (o.answer === "throws") throw new Error("spawn systemctl ENOENT");
+      if (o.answer === "none") return null;
+      return names.map((name) => o.words?.[name] ?? "disabled");
+    },
   };
 }
 
@@ -53,41 +64,73 @@ const volumes = [
   { mount: "/mnt/data", device: "/dev/b", fsid: "b", watched: true },
 ];
 
-test("each filesystem with no enabled timer on any mount needs one", async () => {
-  for (const [name, enabled, missing] of [
-    ["no timer enabled", undefined, [scrubTimer("/"), scrubTimer("/mnt/data")]],
+test("each filesystem whose timers systemd calls disabled needs one", async () => {
+  for (const [name, words, missing] of [
+    ["none enabled", {}, [scrubTimer("/"), scrubTimer("/mnt/data")]],
     [
       "one mount of a filesystem",
-      [scrubTimer("/home")],
+      { [scrubTimer("/home")]: "enabled" },
       [scrubTimer("/mnt/data")],
     ],
-    ["every filesystem", [scrubTimer("/"), scrubTimer("/mnt/data")], []],
+    [
+      "every filesystem",
+      { [scrubTimer("/")]: "enabled", [scrubTimer("/mnt/data")]: "enabled" },
+      [],
+    ],
   ] as const) {
-    const t = units({ dropIn: true, enabled: enabled && [...enabled] });
     const r = new Reader();
     expect({
       name,
-      missing: await missingScrubTimers(r, t.units, volumes),
+      missing: await missingScrubTimers(r, units({ words }), volumes),
       errors: r.errors.length,
     }).toEqual({ name, missing: [...missing], errors: 0 });
-    rmSync(t.root, { recursive: true });
   }
 });
 
-test("no packaged drop-in is no packaged reporter, whatever is enabled", async () => {
-  const t = units({ dropIn: false, enabled: [] });
-  expect(await missingScrubTimers(new Reader(), t.units, volumes)).toBe(
-    undefined,
-  );
-  rmSync(t.root, { recursive: true });
+test("a timer enabled for this boot only still schedules its filesystem", async () => {
+  const words = { [scrubTimer("/")]: "enabled-runtime" };
+  expect(
+    await missingScrubTimers(new Reader(), units({ words }), volumes),
+  ).toEqual([scrubTimer("/mnt/data")]);
 });
 
-test("timers that cannot be listed stay unknown rather than none", async () => {
-  const t = units({ dropIn: true, enabled: "unreadable" });
-  const r = new Reader();
-  expect(await missingScrubTimers(r, t.units, volumes)).toBe(null);
-  expect(r.errors.map((e) => e.source)).toEqual([t.units.wants]);
-  rmSync(t.root, { recursive: true });
+test("a masked or missing template offers nothing, since systemctl would refuse to enable it", async () => {
+  for (const word of ["masked", "masked-runtime", "not-found"]) {
+    const words = Object.fromEntries(
+      volumes.map((v) => [scrubTimer(v.mount), word]),
+    );
+    expect({
+      word,
+      missing: await missingScrubTimers(
+        new Reader(),
+        units({ words }),
+        volumes,
+      ),
+    }).toEqual({ word, missing: [] });
+  }
+});
+
+test("no packaged drop-in is no packaged reporter, and systemd is not asked", async () => {
+  const systemd = units({ dropIn: false });
+  expect(await missingScrubTimers(new Reader(), systemd, volumes)).toBe(
+    undefined,
+  );
+  expect(systemd.asked).toEqual([]);
+});
+
+test("timers systemd did not answer for stay unknown rather than none", async () => {
+  for (const answer of ["none", "throws"] as const) {
+    const r = new Reader();
+    expect({
+      answer,
+      missing: await missingScrubTimers(r, units({ answer }), volumes),
+      errors: r.errors.map((e) => e.source),
+    }).toEqual({
+      answer,
+      missing: null,
+      errors: answer === "throws" ? ["systemctl"] : [],
+    });
+  }
 });
 
 test("a timer on an unwatched mount covers the filesystem a watched mount shares", async () => {
@@ -96,36 +139,24 @@ test("a timer on an unwatched mount covers the filesystem a watched mount shares
     { mount: "/home", device: "/dev/a", fsid: "a", watched: true },
     { mount: "/mnt/data", device: "/dev/b", fsid: "b", watched: false },
   ];
-  for (const [enabled, missing] of [
-    [[scrubTimer("/")], []],
+  for (const [words, missing] of [
+    [{ [scrubTimer("/")]: "enabled" }, []],
     // Unchecked, the watched filesystem is named for its watched mount, and
     // a filesystem vsys does not watch is offered nothing.
-    [[], [scrubTimer("/home")]],
+    [{}, [scrubTimer("/home")]],
   ] as const) {
-    const t = units({ dropIn: true, enabled: [...enabled] });
-    expect(await missingScrubTimers(new Reader(), t.units, mounts)).toEqual([
-      ...missing,
-    ]);
-    rmSync(t.root, { recursive: true });
+    expect(
+      await missingScrubTimers(new Reader(), units({ words }), mounts),
+    ).toEqual([...missing]);
   }
 });
 
 test("mounts whose filesystem id is unread are one filesystem by their device, as Storage groups them", async () => {
-  const t = units({ dropIn: true });
   const mounts = [
     { mount: "/", device: "/dev/a", fsid: null, watched: true },
     { mount: "/home", device: "/dev/a", fsid: null, watched: true },
   ];
-  expect(await missingScrubTimers(new Reader(), t.units, mounts)).toEqual([
+  expect(await missingScrubTimers(new Reader(), units(), mounts)).toEqual([
     scrubTimer("/"),
   ]);
-  rmSync(t.root, { recursive: true });
-});
-
-test("with no btrfs-scrub timer template, no timer can be enabled and none is offered", async () => {
-  const t = units({ dropIn: true, template: false });
-  const r = new Reader();
-  expect(await missingScrubTimers(r, t.units, volumes)).toBe(null);
-  expect(r.errors).toEqual([]);
-  rmSync(t.root, { recursive: true });
 });
