@@ -1372,6 +1372,23 @@ test("with no report directory, udisks answers in its place or says why it canno
   expect(neitherSmart?.failure).toBe("absent");
   expect(neitherSmart?.source).toBe(f.config.smartDir);
 });
+test("a report directory holding no report still lets udisks answer, as a packaged reporter whose timer is off leaves it", async () => {
+  // The packaged tmpfiles line creates the directory at install, before any
+  // timer runs: the udisks reading must not vanish with it.
+  const f = setup();
+  const calls: string[][] = [];
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  // The hidden name the reporter writes its first report under is no report.
+  f.write(join(f.config.smartDir, ".nvme0n1.tmp"), "");
+  const s = await withUdisks(f, fakeBus([udisksDrive], calls)).sample();
+  expect(s.storage.devices?.map((d) => [d.name, d.source])).toEqual([
+    ["nvme0n1", "udisks"],
+  ]);
+  expect(calls).not.toEqual([]);
+  expect(s.capabilities.find((c) => c.id === "smart")?.source).toBe(
+    "org.freedesktop.UDisks2",
+  );
+});
 test("the smart capability's source drops udisks2 once a report directory starts answering", async () => {
   const f = setup();
   f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");

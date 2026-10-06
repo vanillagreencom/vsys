@@ -1088,6 +1088,25 @@ test("drive lifetime writes name their source, and a machine with neither source
   } finally {
     await elsewhere.close();
   }
+  // A packaged reporter whose timer is off is offered the timer, never the
+  // install, whichever source answers meanwhile.
+  for (const mode of ["absent", "reports"] as const) {
+    const snapshot = lifetimeSnapshot(mode, [unknownDrive], null);
+    snapshot.storage.missingSmartTimers = ["vsys-smart-report.timer"];
+    const packaged = await mount(snapshot, c, { width: 200, height: 60 });
+    try {
+      await packaged.press("5");
+      expect({
+        mode,
+        enable: packaged
+          .frame()
+          .includes("sudo systemctl enable --now vsys-smart-report.timer"),
+        install: packaged.frame().includes(driveReporterInstall),
+      }).toEqual({ mode, enable: true, install: false });
+    } finally {
+      await packaged.close();
+    }
+  }
 });
 
 test("udisksText gives every CapabilityFailure, and the null outcome, its own sentence", () => {

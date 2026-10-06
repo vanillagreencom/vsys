@@ -842,7 +842,7 @@ export function Storage({
           <CommandOffer
             sentence={driveInstall.sentence}
             command={driveInstall.command}
-            hint="The Drive lifetime reports row on Settings copies the install command."
+            hint="The Drive lifetime reports row on Settings copies the command."
           />
         )}
         <Section

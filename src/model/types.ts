@@ -292,6 +292,12 @@ export interface Storage {
    * timers could not be listed. Absent where no packaged reporter is.
    */
   missingScrubTimers?: string[] | null;
+  /**
+   * Where the packaged drive reporter is installed, its timer where systemd
+   * calls it disabled, and null where its state could not be read. Absent
+   * where no packaged reporter is.
+   */
+  missingSmartTimers?: string[] | null;
   scratchTime?: number | null;
   scratchPending?: boolean;
 }

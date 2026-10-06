@@ -14,6 +14,7 @@ import {
   capabilityLoss,
   capabilityOffer,
   capabilityReason,
+  driveReporterInstall,
   reporterInstall,
   reporterOffer,
   settingDisplay,
@@ -432,4 +433,40 @@ test("with the packaged reporter, the scrub offer enables only the missing timer
   expect(
     reporterOffer(s, { ...c, scrubDir: "/elsewhere" }, "scrub"),
   ).toBeUndefined();
+});
+
+test("with the packaged drive reporter, the drive offer enables its timer and never installs", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = capabilitySnapshot().map((cap) =>
+    cap.id === "smart" ? { ...cap, available: false, failure: "absent" } : cap,
+  );
+  // The scrub reporter's timers are not the drive reporter's.
+  s.storage.missingScrubTimers = ["btrfs-scrub@-.timer"];
+  expect(reporterOffer(s, c, "smart")?.command).toBe(driveReporterInstall);
+  s.storage.missingScrubTimers = undefined;
+  const timer = "vsys-smart-report.timer";
+  const enable = shellLine(["sudo", "systemctl", "enable", "--now", timer]);
+  s.storage.missingSmartTimers = [timer];
+  expect(reporterOffer(s, c, "smart")?.command).toBe(enable);
+  // The report directory the tmpfiles line creates answers, and the offer
+  // still stands, since the timer is what is missing.
+  s.capabilities = capabilitySnapshot();
+  expect(reporterOffer(s, c, "smart")?.command).toBe(enable);
+  // The timer enabled, or its state unread: nothing to offer, and never the
+  // install the package already did.
+  for (const missing of [[], null]) {
+    s.storage.missingSmartTimers = missing;
+    expect(reporterOffer(s, c, "smart")).toBeUndefined();
+  }
+  s.storage.missingSmartTimers = [timer];
+  expect(
+    reporterOffer(s, { ...c, smartDir: "/elsewhere" }, "smart"),
+  ).toBeUndefined();
+  // The scrub offer reads only its own timers: with no packaged scrub
+  // reporter, a missing scrub directory still offers its install.
+  s.capabilities = capabilitySnapshot().map((cap) =>
+    cap.id === "scrub" ? { ...cap, available: false, failure: "absent" } : cap,
+  );
+  expect(reporterOffer(s, c, "scrub")?.command).toBe(reporterInstall);
 });

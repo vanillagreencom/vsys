@@ -76,7 +76,7 @@ export function smartReports(
  * Block devices carry the names behind io.stat's device numbers. A report a
  * privileged timer left is read first, because a read-only monitor cannot run
  * smartctl itself; udisks answers only for a drive with no report, and the
- * caller asks it only where no report directory exists.
+ * caller asks it only where no report directory exists or it holds no report.
  */
 export function collectDevices(
   r: Reader,

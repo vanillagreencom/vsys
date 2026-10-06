@@ -43,6 +43,14 @@ probe_error=$(timeout -k 5 -- "$smartctl_timeout" true 2>&1) || {
 	printf 'timeout -k 5 -- "%s" could not run. Check SMARTCTL_TIMEOUT and that timeout, from coreutils, is installed, then run this again.\n' "$smartctl_timeout" >&2
 	exit 1
 }
+# A package installs this reporter with smartmontools only an optional
+# dependency. With no smartctl every report would hold timeout's own error
+# line, and a directory of reports keeps vsys from asking udisks2 instead.
+command -v smartctl >/dev/null 2>&1 || {
+	printf 'vsys-smart-report: command=smartctl missing\n' >&2
+	printf 'This system has no smartctl. Install smartmontools, then run this again.\n' >&2
+	exit 1
+}
 tmp=""
 cleanup() {
 	if [[ -n $tmp ]]; then rm -f -- "${tmp:?}"; fi

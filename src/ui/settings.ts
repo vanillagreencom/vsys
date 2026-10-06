@@ -495,9 +495,10 @@ const reporters = {
  * report directory does not exist, and it is the one the shipped reporter
  * writes to. A reader who pointed the directory elsewhere runs a reporter of
  * their own, and a directory that exists but cannot be read is not fixed by
- * installing anything. Where the vsys package installed the scrub reporter,
- * nothing is left to install, and the line enables the `btrfs-scrub` timers
- * no filesystem has, or is not offered at all.
+ * installing anything. Where the vsys package installed the reporter,
+ * nothing is left to install, and the line enables the timers it lacks: the
+ * `btrfs-scrub` timers no filesystem has, or the drive reporter's own, or is
+ * not offered at all.
  */
 export function reporterOffer(
   s: Pick<Snapshot, "capabilities" | "storage">,
@@ -507,11 +508,17 @@ export function reporterOffer(
   if (id !== "scrub" && id !== "smart") return undefined;
   const reporter = reporters[id];
   if (c[reporter.dir] !== defaults()[reporter.dir]) return undefined;
-  const timers = s.storage.missingScrubTimers;
-  if (id === "scrub" && timers !== undefined)
+  const timers =
+    id === "scrub"
+      ? s.storage.missingScrubTimers
+      : s.storage.missingSmartTimers;
+  if (timers !== undefined)
     return timers?.length
       ? {
-          sentence: `The scrub reporter is installed with vsys and reports each check, but no timer checks ${count(timers.length, "filesystem")}: ${timers.join(", ")}.`,
+          sentence:
+            id === "scrub"
+              ? `The scrub reporter is installed with vsys and reports each check, but no timer checks ${count(timers.length, "filesystem")}: ${timers.join(", ")}.`
+              : `The drive reporter is installed with vsys, but its timer ${timers.join(", ")} is not enabled, so no new smartctl report is written. The reporter needs smartctl, from smartmontools.`,
           command: shellLine([
             "sudo",
             "systemctl",
