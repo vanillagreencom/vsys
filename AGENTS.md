@@ -18,7 +18,7 @@ vsys is a Linux terminal dashboard for agent processes and system health, writte
 - Nothing is appended to a lane name to make it unique. The process id is a column of its own, and prose names a lane through `laneText()`.
 - No screen names a colour value. Colour comes from the role table in `src/ui/theme.ts`.
 - Only `runEffect()` in `src/effect.ts` changes system state for the dashboard, and only from a command `resolveIntent()` rebuilt against the current sample. The optional warden changes process placement outside the dashboard runtime.
-- Docs change in the same commit as the code they describe. Every architecture topic file carries a `Covers:` line, and a claim that something is enforced names the test that enforces it.
+- Docs change in the same commit as the code they describe. Every architecture doc opens with a "Read before" line that names the work it governs, and a claim that something is enforced names the test that enforces it.
 
 ## Read next
 
@@ -26,7 +26,7 @@ vsys is a Linux terminal dashboard for agent processes and system health, writte
 - `docs/architecture/<topic>.md`: the subsystem you are changing.
 - `docs/architecture/warden.md`: before changing the optional process-placement corrector under `warden/`.
 - `docs/decisions/INDEX.md`: before reversing a mechanism; cite a decision by ID rather than restating it.
-- `DEVELOPMENT.md`: the layout, the checks, the test strategy and the benchmarks.
+- `DEVELOPMENT.md`: the commands that run, test, build and benchmark vsys, and where the release procedure is.
 
 ## Code Review Rules
 
