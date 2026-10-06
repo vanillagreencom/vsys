@@ -1,107 +1,38 @@
-# Agent warden
+# The warden corrects outside the dashboard
 
-Covers: warden/agent-confine warden/agent-confine-lineage-capped warden/agent-warden warden/agent_warden_test.py warden/agent_warden_classify_test.py warden/agent_warden_limits_test.py warden/agent_confine_test.py warden/agent_warden_settings_test.py warden/agent_warden_status_test.py warden/agent_warden_testlib.py
+Read before changing what the optional warden under `warden/` moves, leaves alone, caps, reaps or reports.
 
-The agent warden is an optional Python component shipped beside the `vsys` dashboard. The dashboard observes the machine. The warden changes process placement automatically.
+## The approach
 
-[`warden-status.md`](warden-status.md) describes the machine-readable status file that the warden writes for consumers.
+The dashboard observes; the warden corrects. `warden/agent-warden` is a Python oneshot that the timer in `warden/systemd/` runs in `background.slice`. It moves three classes of process into `agents.slice` through pidfds and systemd's `StartTransientUnit`, caps a scope's tasks, reaps orphaned scopes and their scratch directories, and writes `status.json` under `$XDG_RUNTIME_DIR/agent-warden/` for consumers. `warden/agent-confine` is the launcher that starts an agent in the slice and stamps `AGENT_CONFINE=1`. `src/` never imports `warden/`; `src/warden.ts` only dispatches `vsys warden` to the installer. [D004](../decisions/D004-warden-separate-component.md) records the split.
 
-## Boundary
+## Why
 
-- `warden/agent-confine` starts agent harnesses in `agents.slice`, exports `AGENT_CONFINE=1`, exports build caps, and exports `TMPDIR` for scratch discovery.
-- `warden/agent-warden` runs as a Python oneshot from a systemd user timer every 30 s in `background.slice`.
-- `warden/agent-warden` corrects escaped processes with pidfds and systemd `StartTransientUnit`.
-- `warden/agent-warden` never belongs to the dashboard read-only promise. D004 records that split.
-- `src/` does not import `warden/`. vsys can observe the processes and cgroups that the warden creates.
+Importing automatic correction into the dashboard would break its promise to read without changing. The warden keeps working when the dashboard is closed, and it stays Python because it calls pidfd and libsystemd directly.
 
-## What it moves
+## Rules
 
-The warden moves three process classes into `agents.slice`.
+- Do move only the three classes: an escaped launch, which carries `AGENT_CONFINE=1` and runs outside the slice; an unconfined agent or build tool the classification data confirms; and a nested session that shares a scope and needs a CPU share of its own. Re-read identity, cgroup and classification through a pidfd before each move. `warden/agent_warden_test.py` and the `--selftest` mode cover the planning rules.
+- Do leave a contained job unit alone: one matching `AGENT_WARDEN_JOB_UNITS`, or one outside the slice whose own cgroup carries a real memory, swap, CPU, I/O or cpuset limit. `pids.max` alone is not a limit, because systemd sets a default task limit on every unit. `contained_unit()` is the rule.
+- Do confirm an agent's name as [agent-tools.md](agent-tools.md) states, through `Proc.is_agent`, and judge whether a scope holds a live agent through `Proc.is_named_agent`, the name alone.
+- Do reap only an orphaned `.scope` under the slice: every member lost its launcher, no member holds a terminal, none is a live agent, no live external parent holds it, the grace has passed, and `scope_harm()` holds on two ticks. An unread `memory.stat` never makes a scope harmful. `warden/agent_warden_orphan_test.py` holds the rows.
+- Do remove a lane's scratch directory under `AGENT_TMPDIR` only once its scope is gone and no readable process holds the directory. A process whose environment cannot be read keeps every unknown directory while it lives. `warden/agent_warden_scratch_test.py` covers it.
+- Do read every tunable through `env_number()` in `warden/agent-warden`: an empty value is unset, and a value outside its format is logged and the default used, so a bad value never stops a tick. The variables, their defaults and formats are the constants beside it, and `warden/agent_warden_settings_test.py` covers them.
+- Do write `status.json` with numbers and ids only, null for a reading that could not be taken, through a temporary file and a rename. `status_errors()` validates it, the fixtures under `warden/fixtures/` are its shapes, and `warden/agent_warden_status_test.py` holds both.
+- Do send a desktop notice only when no consumer owns them, judged by the heartbeat file under the runtime directory, and send one notice per episode. `warden/agent_warden_notify_test.py` covers the handoff and the episodes.
+- Never kill an individual process, and never stop a live session.
+- Never move a process already inside the slice as a descendant, and never move a desktop app or an excluded helper.
+- Never fail open on the slice's memory counters: an absent slice is empty headroom, so the first move can create it, and an existing slice with unreadable counters stops every move.
+- Never write `status.json` from `--status`, `--selftest` or a restricted `AGENT_WARDEN_ONLY` run.
 
-- Escaped launches carry `AGENT_CONFINE=1` but run outside `agents.slice`.
-- Unconfined agent CLIs or build tools run outside `agents.slice` and match the classification data in `data/agent-tools.json` plus the local overlay.
-- Nested agent sessions share one scope and need a sibling scope so each session gets its own CPU share.
+## The canonical example
 
-Before a move, the warden opens a pidfd for each process. It re-reads identity, cgroup and classification. It then asks the user systemd manager to create one transient scope with those pidfds. `warden/agent_warden_test.py` and `warden/agent-warden --selftest` cover these planning rules.
+`contained_unit()` in `warden/agent-warden`: one function that says whether a unit is left alone, read by the planner and nowhere else. Copy that: one rule, one set of readers.
 
-## What it leaves alone
+## Revisit when
 
-A contained job unit is never a move root and never rides along with a moved tree. The default job-unit pattern is `orch-*.service`.
+A Bun foreign-function interface port can call pidfd and libsystemd with the same safety ([D004](../decisions/D004-warden-separate-component.md)), or the dashboard must own an automatic correction under a new explicit promise.
 
-A unit also counts as contained when it is outside `agents.slice` and its own cgroup directory has a real memory, swap, CPU, I/O or cpuset limit. `pids.max` is not enough, because systemd can set a default task limit on every unit.
+## Not governed
 
-This rule protects transient validation services such as `orch-validate-vsy-50-12345.service`. The service owns its own process group and time limit. Moving it into an `agent-warden-*.scope` would make the [orphan reaper](warden-reaper.md) stop a long validation run after the launcher exits. The job-unit rows in `warden/agent_warden_test.py` and `warden/agent-warden --selftest` cover this regression.
-
-## What it caps
-
-The launcher gives each new scope `CPUWeight=99`, `TasksMax=8192` and `MemoryHigh=64G` by default. The non-default CPU weight enables the CPU controller below `agents.slice`; CPUWeight 100 was measured not to enable it. The default per-scope `MemoryHigh=64G` is not a deliberate nested cap even when `agents.slice` has a higher `MemoryHigh`. The warden also caps a scope under `agents.slice` whose task cap is `max`, or above `AGENT_SCOPE_TASKS_MAX` and at or above a numeric slice `pids.max`, unless `AGENT_SCOPE_TASKS_MAX` is `infinity`. `test_task_cap_tick_rows` covers the cap rule, and `test_task_cap_rows` in `warden/agent_warden_settings_test.py` covers `infinity`. `warden/agent_warden_limits_test.py` covers task-cap report mode and the one journal line that names each unit it would cap, capped and plain lineage rows, the default memory-high baseline, and the CPUWeight value. `warden/agent-warden --selftest` covers contained lineage in planning.
-
-The template `warden/systemd/agents.slice` uses percentages for fleet installs: `MemoryHigh=65%` and `MemoryMax=90%`. The owner workstation can keep its tuned absolute values instead.
-
-## What it reaps
-
-The warden reaps orphaned scopes under `agents.slice` and the scratch directories of scopes that are gone. [warden-reaper.md](warden-reaper.md) states when a scope is an orphan, when it is harmful enough to stop, and when a scratch directory is free to remove.
-
-## Classification data
-
-The shipped classification data is `data/agent-tools.json`. It contains published agent CLI names, mise install directory names, each CLI's install path fragments and executable paths, desktop executable prefixes and bundled CLI suffixes. D010 governs how the warden and the dashboard confirm a name against this data, and why the warden reads a narrower slice of it (a mise install directory, an exact executable path, or a bundled CLI engine under a real, non-`/tmp` desktop prefix, never a `paths` fragment) than the dashboard's display-only match. A tool located only by `paths` fragments is not trusted by name alone: the warden moves it as a bundled CLI engine, by name when its executable cannot be read, or under D010's escaped-launch rule. A mise or exact-executable match under a desktop prefix is the agent, not the desktop app. An unreadable executable keeps the name, because a failed read never hides an escaped agent. The classification rows in `warden/agent_warden_classify_test.py` cover the warden's narrower rule; `src/collect/collector.test.ts` tables the dashboard's own, wider rule.
-
-At startup, the warden first looks beside a checkout at `data/agent-tools.json`. If that file is absent, it looks at `${XDG_DATA_HOME:-$HOME/.local/share}/vsys/agent-tools.json`. If neither file exists, it exits with `agent-tools=missing`.
-
-The local overlay is `$HOME/.config/vsys/agent-tools.json`. It uses the same schema and adds entries. An overlay entry with a name the shipped file lists adds its mise directories to that tool. A missing overlay is normal. A malformed shipped file or overlay exits with `agent-tools=invalid` and names the file. The dashboard reads the same overlay. A diverging hand-written `config.toml` `agentTools` value still replaces the shared list for the dashboard.
-
-D005 records why the dashboard and the warden share this data file. D006 records which Settings saves update the overlay and why they do not pin the layered list.
-
-## Scratch and mise paths
-
-`agent-confine` exports `TMPDIR`; vsys reads it to discover scratch, one root per agent. `AGENT_TMPDIR` overrides the parent path and never changes; default `${XDG_CACHE_HOME:-$HOME/.cache}/agents/tmp`. Each lane gets its own subdirectory under that parent, named after its `--unit` value for `systemd-run --scope`, so deleting one lane's `TMPDIR` cannot reach another's. A non-recursive `mkdir` of mode 700 creates it, only when creating a new scope; an in-use name fails the `mkdir` rather than reusing it. A capped-lineage nested launch, a launch with no user manager, and a failed `mkdir` all keep the inherited `TMPDIR`.
-
-Owners set `AGENT_TMPDIR=$HOME/dev/.scratch/agents` before starting the wrappers, tmux shell or user manager, to keep scratch on the existing subvolume. The warden reads the mise path from `MISE_DATA_DIR`, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/mise`; a systemd unit needs it set in `environment.d` when it differs, since it inherits no shell-only value.
-
-`warden/agent_warden_test.py`'s portability rows cover mise and scratch, and `test_agent_confine_and_warden_scratch_parent_agree` in `warden/agent_confine_test.py` proves the two formulas agree under one environment. Their home-path scan reads only files git tracks under `warden/`, never `__pycache__`, and skips in a copy with no git metadata; `test_portability_scan_reads_only_tracked_files` enforces it.
-
-## Tunables
-
-The launcher and the warden read their limits, grace periods and switches from environment variables. [warden-tunables.md](warden-tunables.md) lists each variable with its consumer, default, accepted value and effect, and states how the warden treats an empty or out-of-format value.
-
-## Notifications
-
-The warden sends desktop notices and retries them per episode for near-cap, headroom and move-failure conditions. [warden-notifications.md](warden-notifications.md) states the heartbeat, episode, logging and `--status` read rules.
-
-## Files and install
-
-`vsys warden install` writes the systemd user units and copies the shared agent-tool list. [warden-install.md](warden-install.md) states the installer rules, the warden directory lookup and the owner workstation migration.
-
-On a fresh install, `agents.slice` can be absent until the first scope enters it. The warden treats an absent slice as empty headroom so the first move can create it. It still fails closed when the slice exists but its memory counters are missing or unparsable.
-
-## Requirements
-
-- Linux with cgroup v2.
-- A systemd user manager with CPU, memory and pids delegated below `user@.service`.
-- Python 3.9 or newer.
-- `libsystemd.so.0`.
-- Kernel pidfd support.
-
-## History
-
-The import came from dotfiles commit `a0a3569`.
-
-Dotfiles commits read for the import history:
-
-- `8efd4a8`: `feat: route scratchpad links and confine agents`.
-- `29ef1f5`: `sched: drop sched_ext for in-kernel EEVDF; agents cpuset -> CPUWeight`.
-- `19d7e04`: `agents: exec shell = bash (SHELL=/bin/bash via agent-confine), skip aliases under CLAUDECODE`.
-- `88942a5`: `agents.slice memory caps + client config churn`.
-- `9741e20`: `tmux owns its own server; agent scratch off RAM-backed /tmp`.
-- `cbf42b0`: `agents: one shim for every CLI, kept ahead of mise on PATH`.
-- `e6e99aa`: `build: cache Rust compilation, and own the tmux server without racing a window`.
-- `a36e8f4`: `agents: confine by placement, correct by observation, one share per session`.
-- `1bc0874`: `agents: bound each lane so one runaway cannot take the fleet down`.
-- `5cabb55`: `local-bin: keep Python bytecode out of the stow package`.
-- `5069516`: `lane ls: local-time resets, Fable, resets available, cloud credit, --sort reset`.
-
-## Verification
-
-- `python3 warden/agent-warden --selftest` covers classification, planning, job units, orphan rules and scope harm with injected records.
-- `python3 -m unittest discover -s warden -p '*_test.py'` covers module loading, classification data lookup, the owner overlay, portability, mutant controls, launcher scratch creation, the job-unit regression and the user installer in `warden/install_test.py`.
-- `python3 scripts/ci.py` runs the `warden/` suites, the selftest among them as `test_selftest_subprocess_exits_zero`, before the Bun checks. A missing `warden/` fails the run; `test_missing_input_fails` in `scripts/ci_test.py` covers it.
+How the warden is installed: [warden-install.md](warden-install.md). The shared data file's shape: [agent-tools.md](agent-tools.md).

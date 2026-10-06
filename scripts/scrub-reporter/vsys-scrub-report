@@ -7,7 +7,7 @@
 # vsys-report.conf drop-in, and it writes DIR/<escaped MOUNT>.result: a summary
 # line, then `btrfs scrub status`, then the files the scrub found damaged.
 # Naming those files needs root, which is why vsys cannot do it itself.
-# docs/architecture/scrub-reporter.md holds the format vsys parses.
+# docs/architecture/reporters.md holds the format vsys parses.
 #
 # Environment:
 #   BTRFS_SCRUB_MAX_ADDRESSES  Damaged addresses resolved to files (default 64).

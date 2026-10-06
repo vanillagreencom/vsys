@@ -1,28 +1,33 @@
-# Build work
+# Build work is counted from one classification
 
-Covers: src/model/builds.ts src/model/builds.test.ts src/collect/builds.ts src/collect/sccache.ts src/collect/sccache.test.ts src/ui/builds-screen.tsx
+Read before changing how compile and link work, the build cache or the make token pools are counted.
 
-Compile and link work is counted machine wide and per lane from one classification, so the Builds screen and the Home build tile cannot disagree. The build cache and the make token pools are read alongside it.
+## The approach
 
-## Boundaries
+`compileOrLink()` in `src/collect/builds.ts` is the one predicate behind every build slot total, machine wide and per lane, so the Builds screen and the Home build tile cannot disagree. The configured compiler, linker and cache names are the only such lists. `SccacheCollector` in `src/collect/sccache.ts` queries the build cache through an injected runner, rate limited between samples and with a deadline of its own. A make token pool is read from the configured environment variable alone.
 
-- `compileOrLink()` in `src/collect/builds.ts` is the one predicate behind every build slot total. The per-process classification stays broader: cargo, a running test binary and a build script runner are builds that hold no slot.
-- The configured compiler, linker and cache names are the only such lists, and the configured variable is the only place a token pool is read from.
-- `SccacheCollector` queries the cache server through an injected runner, so a collector given none spawns nothing and no test starts a server. The query is rate limited between samples and carries its own deadline, so a wedged server cannot hold the sample the dashboard awaits.
-- A jobserver FIFO is never opened, because reading it would take a token from the build. The pool is read from the environment variable alone.
+## Why
 
-## Invariants
+Two classifications let a tile and a table disagree about one machine. A jobserver FIFO hands out tokens, so opening it would take one from the build vsys is watching.
 
-1. A configured wrapper name holds a build slot wherever slots are counted. `src/model/builds.test.ts` checks a wrapper through the classifier, the slot predicate, the fleet total and the lane rows.
-2. A supervising cargo is not a build slot beside the compilers it runs. `src/model/builds.test.ts` checks a cargo parent with two compiler children.
-3. The per-lane rows sum to the fleet total the meter shows, with build processes in no lane forming one more row. `src/model/builds.test.ts` checks the sum including work outside every lane.
-4. Only a build process with an empty compiler wrapper in a readable environment bypasses the build cache. `src/model/builds.test.ts` checks a set wrapper and an unreadable environment.
-5. A cache that served nothing has no hit rate, and an unstated pool size is not reported as an unreadable one. `src/model/builds.test.ts` and `src/ui/builds-screen.test.ts` check both.
-6. The token pool variable is inherited, so only the outermost build process holding each pool counts its tokens, and a pool whose flags omit a job count has an unknown total. `src/model/builds.test.ts` checks a linker under its compiler, sibling compilers under one make, and a pool without a job count.
-7. Qualified cache lines are subsets of the totals and never add to them. `src/collect/sccache.test.ts` checks the parser.
-8. Cache counters are compared with the latest reading, so a server restarted at any point rebases rather than producing a negative delta. `src/collect/sccache.test.ts` checks a restart after the counters grew.
-9. A missing cache binary is an absent feature rather than a source error, and a query that does not answer in time is a source error with a failed reading. `src/collect/sccache.test.ts` checks the missing binary, a failing query and one that never answers.
-10. A failed query stays a source error on every sample until a query reads the counters or finds no sccache, including the samples the rate limit skips. `src/collect/sccache.test.ts` checks a failure followed by skipped samples, and both ways it clears.
-11. The Cache hits tile names a failed query apart from a missing program and warns on the failed query alone, and a stored reading that cannot tell the two apart claims neither. `src/ui/builds-screen.test.ts` checks the tile and `src/store/history.test.ts` checks the stored reading.
-12. A settings change replaces the collector and carries the cache reader over, so the counts stay measured since vsys started. `src/runtime.test.ts` checks the handover and `src/collect/collector.test.ts` checks the continued delta.
-13. A build process's own environment supplies its compiler wrapper and its make token pool. `src/collect/collector.test.ts` checks both fields against the unselected variables.
+## Rules
+
+- Do classify a process once. A supervising cargo, a running test binary and a build script runner are builds that hold no slot. `src/model/builds.test.ts` checks a cargo parent with two compiler children and requires the per-lane rows to sum to the fleet total.
+- Do count a token pool once, on the outermost process holding it, since the variable is inherited. A pool whose flags omit a job count has an unknown total.
+- Do give a collector in a test no runner, so no test starts a cache server.
+- Do carry the cache reader over to a replaced collector, so counts stay measured since vsys started ([settings.md](settings.md)).
+- Do keep a missing cache binary an absent feature and a failed or late query a source error with a null reading ([unknown-readings.md](unknown-readings.md)). The Cache hits tile names the two apart.
+- Never open a jobserver FIFO.
+- Never let a counter that went backwards produce a negative delta. A restarted cache server rebases, and `src/collect/sccache.test.ts` checks a restart.
+
+## The canonical example
+
+`compileOrLink()` and its callers: the per-lane rows, the fleet total and the slot predicate all call it. Copy that for a new kind of build work.
+
+## Revisit when
+
+A build system hands out work through something other than process names and an environment variable.
+
+## Not governed
+
+Which processes are agents: [agent-tools.md](agent-tools.md).

@@ -1,22 +1,35 @@
-# Agent recognition
+# A configured name is a candidate; an install location confirms it
 
-Covers: src/collect/builds.ts src/collect/builds.test.ts src/config/agent-tools.ts src/config/agent-tools.test.ts data/agent-tools.json data/owner-agent-tools.json data/agent-tools-rejected.json
+Read before changing which processes count as agent tools, the shared agent-tool data, or how the dashboard and the warden read it.
 
-The collector decides which processes are agent tools. Lanes, alerts and the escaped-agent decision in [lanes.md](lanes.md) read that one decision.
+## The approach
 
-## Boundaries
+`data/agent-tools.json` holds the shipped tool names, each tool's install locations (`mise` directories, `paths` fragments and whole `executables` paths), the desktop executable prefixes and the bundled CLI suffixes. The dashboard and the warden both read it, with the machine overlay `~/.config/vsys/agent-tools.json` merged in. `toolName()` in `src/collect/builds.ts` is the one rule that makes a process an agent in the dashboard, and `Proc.is_agent` in `warden/agent-warden` is the warden's. Both treat a configured name as a candidate and confirm it by where the executable lies.
 
-- `data/agent-tools.json` owns shipped agent tool names and path signals. `src/config/agent-tools.ts` validates it, merges the machine overlay, and gives `src/config/config.ts` the default `agentTools` list. An overlay entry that names a listed tool adds its install locations to that tool. Where one install method puts a tool in several places, the shipped fragment names the directory those places share rather than one of them: `/claude-code/` covers the Code engine of every Claude Desktop profile, not one profile's path. [D005](../decisions/D005-shared-agent-tool-data.md) records why the dashboard and the warden share this file. [D006](../decisions/D006-settings-save-writes-only-changed-keys.md) records why Settings saves do not pin the layered list.
-- `toolSignals()` in `src/collect/builds.ts` builds each tool's install locations once per collector: its `paths` fragments, its whole `executables` paths, and each `mise` name as `/installs/<name>/` wherever the version manager keeps its data.
-- `toolName()` in `src/collect/builds.ts` is the only rule that makes a process an agent, and `src/collect/procs.ts` only calls it. A configured name is a candidate. A process's own name or `argv[0]` is confirmed where its executable lies in one of that tool's install locations or a bundled CLI suffix, and a script an interpreter runs where it lies in one of them, with its links resolved against the process's working directory. Such a match holds even under a desktop prefix, so a location a reader adds is never vetoed. Short of it, a desktop app's own binary is never an agent: its executable sits under a desktop prefix. Otherwise the name stands for a Node or Bun runtime whose program replaced its title with the name. A tool with no install location is one a reader named in Settings or `config.toml` without saying where it lives, so its executable name alone matches and a script never does. An executable or script path that could not be read keeps the name. [D010](../decisions/D010-agent-names-confirmed-by-install-location.md) records the choice.
-- A configured name the install locations reject is not lost: the process carries it as `unconfirmedTool`, alongside the one path that was tested as `unconfirmedPath` and which of the two checks tested it as `unconfirmedMatch`, `"name"` for the executable in a name match or `"script"` for the script in a scripted match. `unconfirmedPath` is null where that path could not be read, which happens only for a scripted match against a tool with no install location at all, since every other path `toolName()` tests is already read earlier in the function; a failed read there never drops the process, the name, or the sample, matching every other unreadable-path case in `toolName()`. The `--once` snapshot shows all three fields, and the cause ladder in [verdict.md](verdict.md) turns them into a Home card naming the process, the tool and that path, pointing a name match at the Settings overlay's `executables` entry and a scripted match at its paths fragment, because an `executables` entry names one whole path where a paths fragment would over-match other processes sharing the same bin directory.
+## Why
 
-## Invariants
+A name alone matches anyone's program: `pi` or `dsh` can be any script. An install location is a second signal a coincidence does not carry. One data file keeps the two components agreeing on which names exist, because a copied list drifts ([D005](../decisions/D005-shared-agent-tool-data.md)). [D010](../decisions/D010-agent-names-confirmed-by-install-location.md) records the confirmation rule.
 
-1. An excluded argv pattern matches an executable name or a whole flag, never prompt text. A pattern ending in `=` matches that option with any value. `src/collect/collector.test.ts` checks a prompt naming a language server, `--type=` against five Chromium helper types, a plain pattern against a longer flag, and that exclusion hides a helper but never an agent lane.
-2. The dashboard default agent tools come from `data/agent-tools.json`, not an inline list. `src/config/agent-tools.test.ts` reads the JSON file independently and fails if a shipped name appears as a quoted string in non-test `src/config/` sources.
-3. A tool under a desktop prefix is an agent only where a bundled CLI suffix or the tool's own install location names it, even once deleted, and an unreadable executable keeps it one. `src/collect/collector.test.ts` checks Claude Desktop's processes, bundled engines live and deleted, an unreadable executable, an overlay prefix, and a package under `/opt` with and without an overlay location.
-4. A name with an install location, shipped or from the overlay, matches only inside one of its locations or a bundled CLI suffix, or as a Node or Bun runtime its program retitled with the name, unless the path could not be read, so `bash pi.sh` and an unrelated `dsh` are no lanes. `src/collect/collector.test.ts` tables every shipped CLI in at least one install shape against scripts and programs that only share a name, an overlay that extends a shipped tool, and the owner's machine with `data/owner-agent-tools.json`, both Claude Desktop profiles' Code engines and the AppImage's own binary among them. `src/config/agent-tools.test.ts` fails if a shipped tool names no install location.
-5. The dashboard and the warden refuse the same malformed agent-tool documents. `src/config/agent-tools.test.ts` and `warden/agent_warden_classify_test.py` both read the rejected documents in `data/agent-tools-rejected.json`.
-6. An unconfirmed match's path is the one `toolName()` actually tested: the executable for a name match, the script for a scripted match, never the other, and `matchedBy` records which. `src/collect/builds.test.ts` checks both match kinds, that each carries its own `matchedBy`, and that a scripted match's path is the script, not the interpreter's own executable.
-7. A script `toolName()` cannot read, for a name with no install location, carries a null path rather than throwing, so `src/collect/procs.ts`'s per-process read still pushes that process instead of dropping it whole on an error its own catch does not expect. `src/collect/builds.test.ts` checks that this case returns `path: null` and not a throw.
+## Rules
+
+- Do add a shipped tool to `data/agent-tools.json` with at least one install location. `src/config/agent-tools.test.ts` fails a shipped tool with none, and fails a shipped name quoted in non-test `src/config/` source.
+- Do add a machine-local tool, or another location for a shipped name, to the overlay; Settings writes it there. An overlay adds locations and never removes a shipped name.
+- Do carry a rejected name on the process as `unconfirmedTool`, with the one path tested and which check tested it, so a missed install layout shows in the snapshot and on a Home card rather than vanishing.
+- Do keep the name where a path could not be read. A failed read never hides an escaped agent.
+- Do keep both parsers refusing the same malformed documents: `src/config/agent-tools.test.ts` and `warden/agent_warden_classify_test.py` both read `data/agent-tools-rejected.json`.
+- Do confirm a match under a desktop prefix where the tool's own location or a bundled CLI suffix names it; a location a reader adds is never vetoed by the prefix.
+- Never match on prompt arguments: `bash -c claude` is not claude. An excluded argv pattern matches an executable name or a whole flag.
+- Never call a desktop app's own binary an agent. An executable under a desktop prefix is an agent only where a bundled CLI suffix or the tool's install location names it.
+- Never let the warden move a process confirmed only by a `paths` fragment. A fragment is a substring any same-uid process can reproduce under a writable directory, so the warden confirms by mise directory, exact executable path, or a bundled CLI engine under a desktop prefix outside `/tmp`, while the dashboard's display match reads fragments too. `Proc.is_named_agent`, the name alone, decides whether a scope holds a live agent for reaping, so a paths-only install is still protected. `warden/agent_warden_classify_test.py` and `warden/agent_warden_orphan_test.py` hold both rules.
+
+## The canonical example
+
+The `codex` entry in `data/agent-tools.json`: a name, its `mise` directory and the `paths` fragments its package installs put it under. Copy its shape for a new tool, adding `executables` where a package installs into a shared directory such as `/usr/bin`.
+
+## Revisit when
+
+An agent ships an install layout no fragment, executable path or mise directory describes ([D010](../decisions/D010-agent-names-confirmed-by-install-location.md)), or packaging generates per-component data from a richer schema ([D005](../decisions/D005-shared-agent-tool-data.md)).
+
+## Not governed
+
+What the warden does with a confirmed agent: [warden.md](warden.md). The compiler, linker and cache names: [builds.md](builds.md).
