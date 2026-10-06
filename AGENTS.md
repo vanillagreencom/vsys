@@ -22,8 +22,8 @@ vsys is a Linux terminal dashboard for agent processes and system health, writte
 
 ## Read next
 
-- `docs/architecture/overview.md`: before structural work, and for the layer boundaries.
-- `docs/architecture/<topic>.md`: the subsystem you are changing. The overview indexes them.
+- `docs/architecture/layers.md`: before structural work, and for the layer boundaries.
+- `docs/architecture/<topic>.md`: the subsystem you are changing.
 - `docs/architecture/warden.md`: before changing the optional process-placement corrector under `warden/`.
 - `docs/decisions/INDEX.md`: before reversing a mechanism; cite a decision by ID rather than restating it.
 - `DEVELOPMENT.md`: the layout, the checks, the test strategy and the benchmarks.
