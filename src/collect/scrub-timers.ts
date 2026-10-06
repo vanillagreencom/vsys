@@ -7,7 +7,6 @@
  */
 
 import { readdir, stat } from "node:fs/promises";
-import type { Volume } from "../model/types";
 import type { Reader } from "./io";
 
 /** Where the packaged drop-in and the enabled system timers are found. */
@@ -19,6 +18,13 @@ export const packagedScrubUnits: ScrubUnits = {
   dropIn: "/usr/lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf",
   wants: "/etc/systemd/system/timers.target.wants",
 };
+
+/** A Btrfs mount, its filesystem where known, and whether vsys watches it. */
+export interface ScrubMount {
+  mount: string;
+  fsid: string | null;
+  watched: boolean;
+}
 
 /** A path as `systemd-escape --path` writes it into an instance name. */
 export function escapePath(path: string): string {
@@ -37,15 +43,16 @@ export const scrubTimer = (mount: string): string =>
   `btrfs-scrub@${escapePath(mount)}.timer`;
 
 /**
- * One timer per filesystem with no enabled scrub timer on any of its mounts,
- * named for its first mount: a scrub of one mount checks the whole
- * filesystem. Undefined where the packaged drop-in is not installed, and null
- * where the enabled timers could not be listed, which is not a list of none.
+ * One timer per watched filesystem with no enabled scrub timer on any of its
+ * mounts, watched or not, named for its first watched mount: a scrub of one
+ * mount checks the whole filesystem. Undefined where the packaged drop-in is
+ * not installed, and null where the enabled timers could not be listed, which
+ * is not a list of none.
  */
 export async function missingScrubTimers(
   r: Reader,
   units: ScrubUnits,
-  volumes: Volume[],
+  mounts: ScrubMount[],
 ): Promise<string[] | null | undefined> {
   try {
     await stat(units.dropIn);
@@ -64,14 +71,17 @@ export async function missingScrubTimers(
     }
     enabled = new Set();
   }
-  const filesystems = new Map<string, string[]>();
-  for (const volume of volumes) {
-    const key = volume.fsid ?? volume.mount;
-    filesystems.set(key, [...(filesystems.get(key) ?? []), volume.mount]);
+  const filesystems = new Map<string, ScrubMount[]>();
+  for (const mount of mounts) {
+    const key = mount.fsid ?? mount.mount;
+    filesystems.set(key, [...(filesystems.get(key) ?? []), mount]);
   }
-  return [...filesystems.values()].flatMap((mounts) =>
-    mounts.some((mount) => enabled.has(scrubTimer(mount)))
+  return [...filesystems.values()].flatMap((shared) =>
+    shared.some((m) => enabled.has(scrubTimer(m.mount)))
       ? []
-      : mounts.slice(0, 1).map(scrubTimer),
+      : shared
+          .filter((m) => m.watched)
+          .slice(0, 1)
+          .map((m) => scrubTimer(m.mount)),
   );
 }

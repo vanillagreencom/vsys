@@ -737,3 +737,33 @@ test("storage names the scrub timers the packaged reporter lacks, and only where
   );
   expect("missingScrubTimers" in unread).toBe(false);
 });
+
+test("a scrub timer on a mount btrfsMounts leaves out still covers the filesystem it shares", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const devices = join(f.config.btrfsRoot, "fsid", "devices");
+  mkdirSync(devices, { recursive: true });
+  symlinkSync("/sys/devices/test", join(devices, "test"));
+  const home = join(f.root, "home");
+  mkdirSync(home);
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw\n2 0 0:1 /home ${home} rw - btrfs /dev/test rw`,
+  );
+  const dropIn = join(f.root, "units", "vsys-report.conf");
+  f.write(dropIn, "[Service]\n");
+  const wants = join(f.root, "units", "wants");
+  const units = { dropIn, wants };
+  const config = { ...f.config, btrfsMounts: [home] };
+  const missing = async () =>
+    (
+      await new StorageCollector(null, null, undefined, units).collect(
+        new Reader(),
+        config,
+        1000,
+      )
+    ).missingScrubTimers;
+  expect(await missing()).toEqual([scrubTimer(home)]);
+  f.write(join(wants, scrubTimer(f.root)), "");
+  expect(await missing()).toEqual([]);
+});

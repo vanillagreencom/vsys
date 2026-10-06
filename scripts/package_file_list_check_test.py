@@ -127,13 +127,24 @@ class PackageFileListCheck(unittest.TestCase):
                 manifest.write_text(original.replace(rows[0], ""))
                 self.assertEqual(self.refusal(self.run_check(), prose=False), f"manifest=missing-required path={path}")
 
-    def test_scrub_drop_in_must_run_the_packaged_script(self) -> None:
+    def test_scrub_drop_in_must_run_the_packaged_reporter_with_its_arguments(self) -> None:
         drop_in = self.repo / PAYLOAD[SCRUB_DROP_IN][1]
-        drop_in.write_text((ROOT / "scripts" / "scrub-reporter" / "vsys-report.conf").read_text())
-        self.assertEqual(
-            self.refusal(self.run_check(), prose=False).split()[0:2],
-            ["drop-in=unpackaged-script", f"path={SCRUB_DROP_IN}"],
-        )
+        original = drop_in.read_text()
+        command = "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report %f /var/lib/btrfs-scrub"
+        self.assertEqual(original.count(command), 1)
+        for name, wrong in (
+            ("unpackaged script", "/usr/local/bin/vsys-scrub-report %f /var/lib/btrfs-scrub"),
+            ("another packaged executable", "/usr/lib/vsys/warden/agent-warden %f /var/lib/btrfs-scrub"),
+            ("a payload file that is not executable", "/usr/lib/vsys/data/agent-tools.json %f /var/lib/btrfs-scrub"),
+            ("the reporter without arguments", "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report"),
+            ("the reporter without its report directory", "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report %f"),
+        ):
+            with self.subTest(name):
+                drop_in.write_text(original.replace(command, wrong))
+                self.assertEqual(
+                    self.refusal(self.run_check(), prose=False).split()[0:2],
+                    ["drop-in=wrong-command", f"path={SCRUB_DROP_IN}"],
+                )
 
     def test_extra_manifest_row_passes(self) -> None:
         (self.repo / "data" / "extra.json").write_text("{}\n")

@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { volumeSnapshot } from "../test/fixture";
 import { Reader } from "./io";
 import { escapePath, missingScrubTimers, scrubTimer } from "./scrub-timers";
 
@@ -37,9 +36,9 @@ function units(o: { dropIn: boolean; enabled?: string[] | "unreadable" }) {
 }
 
 const volumes = [
-  volumeSnapshot("/", { fsid: "a" }),
-  volumeSnapshot("/home", { fsid: "a" }),
-  volumeSnapshot("/mnt/data", { fsid: "b" }),
+  { mount: "/", fsid: "a", watched: true },
+  { mount: "/home", fsid: "a", watched: true },
+  { mount: "/mnt/data", fsid: "b", watched: true },
 ];
 
 test("each filesystem with no enabled timer on any mount needs one", async () => {
@@ -77,4 +76,24 @@ test("timers that cannot be listed stay unknown rather than none", async () => {
   expect(await missingScrubTimers(r, t.units, volumes)).toBe(null);
   expect(r.errors.map((e) => e.source)).toEqual([t.units.wants]);
   rmSync(t.root, { recursive: true });
+});
+
+test("a timer on an unwatched mount covers the filesystem a watched mount shares", async () => {
+  const mounts = [
+    { mount: "/", fsid: "a", watched: false },
+    { mount: "/home", fsid: "a", watched: true },
+    { mount: "/mnt/data", fsid: "b", watched: false },
+  ];
+  for (const [enabled, missing] of [
+    [[scrubTimer("/")], []],
+    // Unchecked, the watched filesystem is named for its watched mount, and
+    // a filesystem vsys does not watch is offered nothing.
+    [[], [scrubTimer("/home")]],
+  ] as const) {
+    const t = units({ dropIn: true, enabled: [...enabled] });
+    expect(await missingScrubTimers(new Reader(), t.units, mounts)).toEqual([
+      ...missing,
+    ]);
+    rmSync(t.root, { recursive: true });
+  }
 });

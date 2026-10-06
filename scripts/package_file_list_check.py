@@ -22,7 +22,11 @@ from refusal import Refusal, refuse, report
 # The scrub reporter is one owned set: its drop-in runs the report script
 # after every btrfs scrub, and its tmpfiles line creates the report directory
 # whose absence Storage reads as no reporter. The manifest may ship more.
+SCRUB_REPORTER = "lib/vsys/scripts/scrub-reporter/vsys-scrub-report"
 SCRUB_DROP_IN = "lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf"
+# The one command the packaged drop-in may run: the packaged reporter, given
+# the scrubbed mount (%f) and the report directory vsys's scrubDir names.
+SCRUB_COMMAND = f"/usr/{SCRUB_REPORTER} %f /var/lib/btrfs-scrub"
 REQUIRED_MODES = {
     "lib/vsys/warden/install": 0o755,
     "lib/vsys/warden/agent-warden": 0o755,
@@ -32,7 +36,7 @@ REQUIRED_MODES = {
     "lib/vsys/warden/systemd/agent-warden.timer": 0o644,
     "lib/vsys/warden/systemd/agents.slice": 0o644,
     "lib/vsys/data/agent-tools.json": 0o644,
-    "lib/vsys/scripts/scrub-reporter/vsys-scrub-report": 0o755,
+    SCRUB_REPORTER: 0o755,
     SCRUB_DROP_IN: 0o644,
     "lib/tmpfiles.d/vsys-scrub.conf": 0o644,
 }
@@ -91,12 +95,14 @@ def parse_manifest(repo: Path) -> dict[str, tuple[int, str]]:
 
 
 def check_scrub_drop_in(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
-    """The packaged drop-in must run the script the package ships, at the
-    path pacman installs it to, or every scrub ends with no report."""
+    """The packaged drop-in must run the reporter the package ships, at the
+    path pacman installs it to and with the mount and report directory it
+    needs, or every scrub ends with no report. Any other packaged file, or the
+    reporter without its arguments, passes a path check and reports nothing."""
     text = read_text(repo / rows[SCRUB_DROP_IN][1])
-    commands = re.findall(r"^ExecStopPost=(\S+)", text, flags=re.MULTILINE)
-    if len(commands) != 1 or not commands[0].startswith("/usr/") or commands[0].removeprefix("/usr/") not in rows:
-        refuse(f"drop-in=unpackaged-script path={SCRUB_DROP_IN} value={','.join(commands)}")
+    commands = [line.strip() for line in re.findall(r"^ExecStopPost=(.*)$", text, flags=re.MULTILINE)]
+    if commands != [SCRUB_COMMAND]:
+        refuse(f"drop-in=wrong-command path={SCRUB_DROP_IN} value={'|'.join(commands)}")
 
 
 def read_bytes(path: Path) -> bytes:
