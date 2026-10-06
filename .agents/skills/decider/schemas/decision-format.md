@@ -33,6 +33,8 @@ File name `[DECISION_ID]-kebab-case-descriptor.md` — `D001-session-caching.md`
 
 Optional metadata lines, each one line: `**Supersedes**:` or `**Refines**:` naming the earlier decision and the scope taken from it, and `**Applies to**:` for a scoped decision. Nothing else: no summary, context, design, verification, impact or appendix section. A measurement, a test name or a run order belongs to the issue, the test or the code.
 
+Each `**Key**: value` line, metadata included, is its own paragraph, with one blank line before the next: `../templates/decision-entry.md`.
+
 ## Status values
 
 | Value | Meaning |
