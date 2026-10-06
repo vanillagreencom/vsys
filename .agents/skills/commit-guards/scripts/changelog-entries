@@ -61,6 +61,10 @@ source "$SCRIPT_DIR/lib/commit-parent.sh"
 # shellcheck source=lib/atomic-install.sh
 source "$SCRIPT_DIR/lib/atomic-install.sh"
 
+# The version a COMMIT_GUARDS_CHANGELOG_VERSION_PATHS file states: read_version
+# reads it and --unversion drops it, through this one jq path.
+VERSION_FIELD='.version'
+
 # The sections a fragment's directory may name, and the test for membership
 # in them, are lib/changelog-grammar.sh's GG_SECTIONS and gg_is_section: the
 # collator writes each fragment beneath the heading its directory names, and
@@ -70,6 +74,8 @@ usage() {
   gg_message usage changelog-entries 'Available options follow.'
   cat <<'EOF'
 usage: changelog-entries [--collate | --staged | --base REF | --against REF]
+       changelog-entries --classify PATH...
+       changelog-entries --unversion < FILE
 
 Checks changelog fragments. --collate also validates its destination.
 
@@ -136,11 +142,32 @@ COMMIT_GUARDS_CHANGELOG_COLLATE=1 authorizes --collate and lets commit-msg
 count the release record as its required changelog change. Ordinary fragment
 validation does not require it.
 
+--classify judges nothing and reads no fragment: it prints, for each PATH in
+argument order, one line of what these settings make it, a tab, then the path:
+  record    the configured record, or the CHANGELOG.md a package.json version
+            file reads its entries from
+  fragment  a path COMMIT_GUARDS_CHANGELOG_PATHS matches
+  version   a JSON version file COMMIT_GUARDS_CHANGELOG_VERSION_PATHS selects
+  package   a package file COMMIT_GUARDS_CHANGELOG_PACKAGE_PATHS declares
+  render    a path the staged render inventory, .kendex-generated.json, lists
+  none      anything else
+The first that applies wins. orch's restack-skip asks it what each
+conflicted file is.
+
+--unversion judges nothing either: it prints the JSON version file on stdin,
+as jq prints it, less the top-level version the version-bump check reads. A
+nested "version", such as an npm scripts.version, is kept. Input that is not
+JSON jq can delete that field from exits 2. orch's restack-skip compares two
+sides of a version file through it.
+
 Exit codes: 0 clean; 1 violations; 2 usage/config/collection error.
 EOF
 }
 
 COLLATE=0
+CLASSIFY=0
+CLASSIFY_PATHS=()
+UNVERSION=0
 MODE=staged
 BASE_REF=""
 SCOPE_FLAGS=0
@@ -151,6 +178,14 @@ while [ $# -gt 0 ]; do
       exit 0
       ;;
     --collate) COLLATE=1 ;;
+    --classify)
+      shift
+      [ $# -ge 1 ] || gg_fail argument-missing --classify "--classify requires at least one path"
+      CLASSIFY=1
+      CLASSIFY_PATHS=("$@")
+      break
+      ;;
+    --unversion) UNVERSION=1 ;;
     --staged) MODE=staged; SCOPE_FLAGS=$((SCOPE_FLAGS + 1)) ;;
     --base | --against)
       [ $# -ge 2 ] || gg_fail argument-missing "$1" "$1 requires a ref"
@@ -164,7 +199,15 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ "$SCOPE_FLAGS" -le 1 ] && { [ "$COLLATE" -eq 0 ] || [ "$SCOPE_FLAGS" -eq 0 ]; } \
-  || gg_fail scope-conflict "$SCOPE_FLAGS:$COLLATE" "Use one scope or --collate, not both."
+  && { [ "$CLASSIFY" -eq 0 ] || [ $((SCOPE_FLAGS + COLLATE)) -eq 0 ]; } \
+  && { [ "$UNVERSION" -eq 0 ] || [ $((SCOPE_FLAGS + COLLATE + CLASSIFY)) -eq 0 ]; } \
+  || gg_fail scope-conflict "$SCOPE_FLAGS:$COLLATE:$CLASSIFY:$UNVERSION" "Use one scope, --collate, --classify or --unversion, not two."
+
+if [ "$UNVERSION" -eq 1 ]; then
+  jq -e "del($VERSION_FIELD)" \
+    || gg_fail unversion-read stdin "Expected a JSON version file whose top-level version jq can delete."
+  exit 0
+fi
 
 gg_repo_root_cd
 
@@ -175,6 +218,46 @@ gg_changelog_scopes || exit 2
 PATTERNS="$GG_CHANGELOG_PATTERNS"
 PATTERNS_SHOWN="$GG_CHANGELOG_SHOWN"
 RECORD="$GG_CHANGELOG_RECORD"
+
+# Release manifests already expose their version through jq. Opt-in discovery
+# keeps this catalog lane independent of any repo layout.
+version_paths="$(gg_setting COMMIT_GUARDS_CHANGELOG_VERSION_PATHS "")" || exit 2
+version_paths="$(gg_config_path_list "$version_paths" changelog-version)" || exit 2
+
+# A package.json beside the configured record is the app's version file,
+# judged like any other; elsewhere it is a package with its own record.
+package_record_of() { # VERSION_FILE — that package's CHANGELOG.md on stdout; 1 where it reads the configured record
+  local version_dir=. record_dir=.
+  case "$1" in */*) version_dir="${1%/*}" ;; esac
+  case "$RECORD" in */*) record_dir="${RECORD%/*}" ;; esac
+  [ "${1##*/}" = package.json ] && { [ -z "$RECORD" ] || [ "$version_dir" != "$record_dir" ]; } || return 1
+  printf '%s' "${1%package.json}CHANGELOG.md"
+}
+
+if [ "$CLASSIFY" -eq 1 ]; then
+  gg_load_render_inventory
+  for f in "${CLASSIFY_PATHS[@]}"; do
+    kind=none
+    package_json="${f%CHANGELOG.md}package.json"
+    # shellcheck disable=SC2086 # the configured globs are the patterns
+    if [ -n "$RECORD" ] && [ "$f" = "$RECORD" ]; then
+      kind=record
+    elif [ "${f##*/}" = CHANGELOG.md ] && gg_path_matches "$package_json" $version_paths \
+      && package_record_of "$package_json" >/dev/null; then
+      kind=record
+    elif gg_matches_path_glob "$f"; then
+      kind=fragment
+    elif gg_path_matches "$f" $version_paths; then
+      kind=version
+    elif gg_path_placer "$f" $GG_CHANGELOG_PACKAGES; then
+      kind=package
+    elif generated_path_contains "$f"; then
+      kind=render
+    fi
+    printf '%s\t%s\n' "$kind" "$f"
+  done
+  exit 0
+fi
 
 gg_tmpdir
 # Every accepted fragment in index order, four NUL-terminated fields a row:
@@ -308,14 +391,9 @@ while IFS= read -r -d '' rec; do
     || gg_fail breaking-read "$(gg_shown "$f")" "Could not read the release entry."
 done <"$GG_TMP/files.z"
 
-# Release manifests already expose their version through jq. Opt-in discovery
-# keeps this catalog lane independent of any repo layout.
-version_paths="$(gg_setting COMMIT_GUARDS_CHANGELOG_VERSION_PATHS "")" || exit 2
-version_paths="$(gg_config_path_list "$version_paths" changelog-version)" || exit 2
-
 read_version() { # SHA PATH -> version, refusing unreadable or malformed manifests
   gg_read_blob "$1" "$2" version
-  jq -er --arg re "$GG_VERSION_RE" '.version | select(type == "string") | select(test($re))' \
+  jq -er --arg re "$GG_VERSION_RE" "$VERSION_FIELD"' | select(type == "string") | select(test($re))' \
     "$GG_TMP/blob" 2>"$GG_TMP/dependency.err" \
     || gg_fail_cause version-read "$(gg_shown "$2")" "$GG_TMP/dependency.err" "Expected a JSON string version in major.minor.patch form."
 }
@@ -452,11 +530,8 @@ fi
 
 if [ -n "$version_paths" ]; then
   while IFS= read -r -d '' meta && IFS= read -r -d '' f; do
-    selected=0
-    for pattern in $version_paths; do
-      case "$f" in $pattern) selected=1; break ;; esac
-    done
-    [ "$selected" -eq 1 ] || continue
+    # shellcheck disable=SC2086 # the configured globs are the patterns
+    gg_path_matches "$f" $version_paths || continue
     # --raw emits srcmode dstmode srcsha dstsha status, followed by the path.
     read -r srcmode dstmode srcsha dstsha status <<<"${meta#:}"
     [ "$status" != D ] || continue
@@ -466,13 +541,9 @@ if [ -n "$version_paths" ]; then
     gg_mode_is_regular "$srcmode" || gg_fail version-mode "$(gg_shown "$f"):$srcmode" "The prior version file must be regular JSON."
     old="$(read_version "$srcsha" "$f")" || exit 2
     release_bump "$old" "$new" "$f" || continue
-    version_dir=.; case "$f" in */*) version_dir="${f%/*}" ;; esac
-    record_dir=.; case "$RECORD" in */*) record_dir="${RECORD%/*}" ;; esac
-    # A package.json beside the configured record is the app's version file,
-    # judged like any other; elsewhere it is a package with its own record.
-    if [ "${f##*/}" = package.json ] && { [ -z "$RECORD" ] || [ "$version_dir" != "$record_dir" ]; }; then
+    if package_record="$(package_record_of "$f")"; then
       : >"$GG_TMP/evidence"
-      record_entries "${f%package.json}CHANGELOG.md" 3 "$new"
+      record_entries "$package_record" 3 "$new"
     else
       cp -- "$GG_TMP/fragment-entries" "$GG_TMP/evidence" \
         || gg_fail evidence-copy "$(gg_shown "$f")" "Could not collect the fragment entries."
