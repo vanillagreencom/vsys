@@ -18,7 +18,7 @@ kendex add vanillagreencom/kendex --skill linear
 
 ## How it works
 
-You configure credentials and the target team. Each command sends its reads and writes to Linear's GraphQL API and keeps nothing on disk. A read follows every page of each collection it asks for. A rate-limited request reports the time the request quota refills.
+You configure credentials and the target team. Each command sends its reads and writes to Linear's GraphQL API and keeps no tracker data on disk. Client-pair authentication keeps its OAuth token in a per-user cache file, described under § Settings. A read follows every page of each collection it asks for. A rate-limited request reports the time the request quota refills.
 
 ## Setup
 
@@ -32,12 +32,12 @@ Set non-secret keys in committed `kendex.settings.toml` under `[env]`; the key l
 | `LINEAR_CLIENT_ID` | OAuth application client ID, in the project's private env file |
 | `LINEAR_CLIENT_SECRET` | OAuth application client secret, in the project's private env file |
 | `LINEAR_API_KEY` | Personal API key fallback, in the project's private env file |
-| `LINEAR_TEAM` | Team target for creates and writes that do not address an issue; existing-issue writes use the issue's team |
+| `LINEAR_TEAM` | Team target for creates and writes that do not address an issue, and the one team whose issues `linear.sh` creates or changes; [SKILL.md § Team Target](SKILL.md#team-target) |
 | `LINEAR_TEAM_PREFIX` | Issue identifier prefix used in examples |
 | `LINEAR_AGENT_LABELS` | Agent-routing labels an `issues create` must carry one of; under a declared label taxonomy, the agent labels it declares |
 | `LINEAR_REQUIRE_REACH` | Enforces the `Reached by:` and `Symptom:` lines at create; on when unset, off when empty |
 | `LINEAR_FORMAT` | Default read format: `safe`, `table`, `ids`, `raw` |
-| `LINEAR_RETRY_BASE_DELAY` | Seconds before the first retry of a rate-limited, 5xx or unanswered call, doubling after |
+| `LINEAR_RETRY_BASE_DELAY` | Seconds before the first retry of a rate-limited call, or of a query or attachment download answered 5xx or not at all, doubling after |
 | `KENDEX_USER_EMAIL` | Your email address, in the project's private env file; `issues activate` assigns an unassigned issue to the Linear user with that address |
 
 Set application credentials in `.env.local` unless `KENDEX_ENV_FILE` names another private file. Enable client credentials tokens in the application's Linear settings. Credential precedence is `LINEAR_APP_TOKEN`, then the client pair, then `LINEAR_API_KEY`. Without a token, a partial pair refuses instead of changing actors. Application values use process environment precedence over project files. The personal key keeps its project-file precedence over inherited keys.

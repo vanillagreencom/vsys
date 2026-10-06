@@ -17,14 +17,16 @@ Comment leaders: `//`, `#`, `;`, `/*`, `<!--`. A marker immediately preceded by 
 
 ## byte-ceiling
 
-A tracked file a change puts over `COMMIT_GUARDS_BYTE_CEILING_KB` (KB = 1024 bytes) fails; size is the blob's object size. An existing file already over the ceiling may stay the same size or shrink, but may not grow. Exempt: every file whose basename ends `.md`, at any depth, from the ceiling and the `near-ceiling` notice alike, and by exact basename `Cargo.lock`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `flake.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `go.sum`, `gradle.lockfile`, `packages.lock.json`, `Package.resolved`, `.kendex-lock.json`. Asset trees go in `COMMIT_GUARDS_BYTE_EXCLUDES`, overridden by `--excludes FILE`.
+A tracked binary or non-text file a change puts over `COMMIT_GUARDS_BYTE_CEILING_KB` (KB = 1024 bytes) fails; size is the blob's object size. An existing file already over the ceiling may stay the same size or shrink, but may not grow. Exempt by exact basename: `Cargo.lock`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lock`, `bun.lockb`, `flake.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`, `go.sum`, `gradle.lockfile`, `packages.lock.json`, `Package.resolved`, `.kendex-lock.json`. Asset trees go in `COMMIT_GUARDS_BYTE_EXCLUDES`, overridden by `--excludes FILE`.
 
-A file not over the ceiling but at or above `COMMIT_GUARDS_BYTE_WARN_PCT` percent of it prints `near-ceiling` naming the path, its bytes, the ceiling in bytes and the percent reached, and does not fail: the round that comes within reach of the wall is the one that can still plan the split cheaply. The percent must be 1-100; above 100 the threshold would sit past the ceiling and switch the notice off silently, so it is a configuration error like any other.
+Text and source files have no ceiling. The shared Git binary classifier checks content rather than names or attributes.
+
+A binary file not over the ceiling but at or above `COMMIT_GUARDS_BYTE_WARN_PCT` percent of it prints `near-ceiling` naming the path, its bytes, the ceiling in bytes and the percent reached, and does not fail. The percent must be 1-100; above 100 the threshold would sit past the ceiling and switch the notice off silently, so it is a configuration error like any other.
 
 - `--staged` (default): files added, modified or type-changed in the staged diff, renames held to exact content.
 - `--base REF`: files added, modified or type-changed since the merge-base with REF — three dots, so the baseline is the blob REF and HEAD share.
 - `--against REF`: the same files between REF's own tree and HEAD — two dots, so the baseline is REF's own blob. Where REF is an ancestor of HEAD the two scopes agree. Where they have diverged they do not, and only this one measures what landing HEAD at REF would do to REF: a file over the ceiling at the shared ancestor, smaller at REF and larger at HEAD, is a shrink to `--base` and growth to `--against`.
-- `--all`: every tracked file. A sweep has no source blob, so an oversized file's prior is its row in `COMMIT_GUARDS_BYTE_BASELINE` (`path<TAB>bytes`, read from the index), overridden by `--baseline FILE`. A file at its row passes, one past its row fails as growth, and one with no row fails as oversized. A row larger than its file fails `baseline-loose`, and a row naming no oversized file the sweep judges fails `baseline-stale`, so the baseline only tightens.
+- `--all`: every tracked file. A sweep has no source blob, so an oversized file's prior is its row in `COMMIT_GUARDS_BYTE_BASELINE` (`path<TAB>bytes`, read from the index), overridden by `--baseline FILE`. A file at its row passes, one past its row fails as growth, and one with no row fails as oversized. Rows naming text files are ignored. Every other row larger than its file fails `baseline-loose`, and every other row naming no oversized binary file the sweep judges fails `baseline-stale`, so the binary baseline only tightens.
 
 The batch names the scope: `commit-guards all` hands the lane `--all`, `all --base REF` hands `--base REF`, `all --against REF` hands `--against REF`, `all --staged` hands `--staged`. byte-ceiling takes a range under every setting, since it is ratcheted and the range is the question it answers. The two range scopes also reach md-format and md-refs, on the same dot conventions, but only where `COMMIT_GUARDS_MD_SCOPE` is `touched`; under `all` those lanes are handed `--all` instead, because a range is narrower than the sweep that setting asks for. A copy is an addition; symlinks and gitlinks are not sized.
 
@@ -60,7 +62,7 @@ Every tracked path `COMMIT_GUARDS_CHANGELOG_PATHS` matches must be:
 
 - a real text file (a symlink, gitlink or binary blob is refused);
 - placed by a pattern: a pattern is `<root...>/<section>/<name>`, its last two segments say where the section sits and its depth which paths it places, and the section directory is one of `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`. `changelog.d/*/*.md` matches a deeper path but places only one at its own depth;
-- exactly one Markdown list item: the first non-blank line opens with a hyphen and a space and says something, and every later non-blank line indents under it.
+- exactly one Markdown list item: the first non-blank line opens with a hyphen and a space and says something, and every later non-blank line indents under it. Fragments have no length limit.
 
 A pattern's root is its leading run of glob-free directories (`changelog.d/*/*.md` roots at `changelog.d`); a glob-free pattern names one file and roots nowhere. Every tracked path under a root that no pattern matches is a violation, except a `README.md` directly under a root and the configured record. No matching file is a clean pass; switch the check off by dropping it from `COMMIT_GUARDS_CHECKS`.
 
@@ -99,6 +101,8 @@ A repository that releases chooses each version by this rule. Where `COMMIT_GUAR
 - [`tests/changelog-entries.test.sh`](https://github.com/vanillagreencom/kendex/blob/main/skills/commit-guards/tests/changelog-entries.test.sh) pins each refusal against a passing control: a major with and without a named Breaking entry, a minor with a Breaking or an Added entry, a patch with an Added, Breaking, Changed or Fixed entry, a 0.x patch, a patch whose own release section leaves an added fragment pending under `--against` and refuses it otherwise, a patch refused under `--base` for a pending record Added entry beside its own release section, and a major whose own release section holds no Breaking entry beside a Breaking fragment, and a `package.json` judged as the app's version file beside a root or nested record and as a package with the record off.
 
 ## prose
+
+This audit runs only when selected through `COMMIT_GUARDS_CHECKS`. The default chain excludes it.
 
 A calendar date (`20YY-MM-DD`) or a three- or four-digit issue number after `#` in a scanned markdown file fails. Ordinary words do not trigger this check. The issue-number shape takes no leading boundary (`<file>.md#1204` fires), and the character after the digits must be neither a digit nor a hex letter (`#12345`, `#1234ab`, `#0088cc` pass). A decision ID (`D042`) carries no `#` and never fires.
 

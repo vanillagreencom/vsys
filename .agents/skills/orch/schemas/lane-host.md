@@ -11,14 +11,14 @@ Every place a lane runs is a host kind. `lane-host capabilities` prints the kind
 | `kind` | `local`, `ssh`, `claude-cloud`, `codex-cloud` | `open-terminal` writes it into the lane record |
 | `launch` | `window`, `ssh`, `cloud-session`, `cloud-task` | `open-terminal`; `lanes pick`, for repository access |
 | `channel` | `mailbox`, `session`, `task` | `lane-mail send`, the `oversee-watch` mail pass |
-| `files` | `local`, `verb`, `none` | `oversee-watch` status-file, workflow-state and mailbox reads |
+| `files` | `local`, `verb`, `none` | `oversee-watch` status-file, workflow-state and mailbox reads; `lib/lane-gitfile.sh` `lane_item_state`, which reads no state for `none`, for `oversee-cycle record` and `oversee-report` |
 | `status` | `pane`, `verb`, `task`, `none` | `oversee-watch` lane judgement |
 | `stop` | `window`, `verb`, `none` | `lane-close` |
 | `relaunch` | `resume`, `fresh` | read by no caller in this build |
 | `park` | `verb`, `none` | read by no caller until the Daytona provider declares its line; `lane-close --park` keeps its `stop-sandbox --check` read |
 | `accounts` | `verb`, `none` | read by no caller until then; `lanes` keeps its exit-2 read of `accounts` |
 | `pool` | `plan`, `cloud-credit` | `lanes pick`, the tier of its expires-first rule |
-| `land` | `lane`, `handoff` | read by no caller in this build |
+| `land` | `lane`, `handoff` | the overseer's `pr-watch` `disarmed` rule in [oversee-events.md](../references/oversee-events.md), which launches a landing lane for a `handoff` lane |
 
 | Kind | `launch` | `channel` | `files` | `status` | `stop` | `relaunch` | `park` | `accounts` | `pool` | `land` |
 |---|---|---|---|---|---|---|---|---|---|---|

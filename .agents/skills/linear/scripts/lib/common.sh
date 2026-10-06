@@ -231,25 +231,38 @@ linear_rate_limited() {
 }
 
 # Whether a request is sent again after an answer, every Linear request and
-# attachment download deciding alike: a rate-limited answer (HTTP 429), a 5xx
-# or no answer at all (curl reached no server, code 000) may succeed when sent
-# again, twice at most. A 4xx such as a scope or validation refusal answers
-# the same way every time. The wait doubles from LINEAR_RETRY_BASE_DELAY, or
-# is the answer's Retry-After when that names more whole seconds; a
-# Retry-After over 60 seconds makes the answer final, since a request sent
-# sooner would be refused again and a caller is better served by the failure
-# than by a minute-long hang. ATTEMPT counts the answers so far.
+# attachment download deciding alike, twice at most. A rate-limited answer
+# (HTTP 429) is a refusal of a request Linear did not run, so it is sent again
+# whatever the request does. A 5xx, or no answer at all (curl reached no
+# server or lost the reply, code 000), may follow a request Linear already
+# ran: it is sent again only for a `read`, since a `write` sent twice can
+# create a second issue or comment, and a `write` left so prints one
+# `linear-http: write=unconfirmed` line on stderr. A 4xx such as a scope or
+# validation refusal answers the same way every time. The wait doubles from
+# LINEAR_RETRY_BASE_DELAY, or is the answer's Retry-After when that names more
+# whole seconds; a Retry-After over 60 seconds makes the answer final, since a
+# request sent sooner would be refused again and a caller is better served by
+# the failure than by a minute-long hang. KIND is `read` when sending the
+# request twice has the effect of sending it once, else `write`, and any other
+# value is taken as a `write`, the side that never sends twice. ATTEMPT counts
+# the answers so far.
 # Returns 0 once the wait is over, 1 when the answer is final.
-# Usage: linear_retry_wait <code> <attempt> "$headers"
+# Usage: linear_retry_wait <kind> <code> <attempt> "$headers"
 linear_retry_wait() {
-    local code="$1" attempt="$2" delay after
+    local kind="$1" code="$2" attempt="$3" delay after
     case "$code" in
-    429 | 5?? | 000) ;;
+    429) ;;
+    5?? | 000)
+        if [[ "$kind" != read ]]; then
+            printf 'linear-http: write=unconfirmed code=%s\nLinear may have applied this write; read its result before sending it again.\n' "$code" >&2
+            return 1
+        fi
+        ;;
     *) return 1 ;;
     esac
     ((attempt < 3)) || return 1
     delay=$((LINEAR_RETRY_BASE_DELAY << (attempt - 1)))
-    after=$(linear_header_value retry-after "$3") || return 1
+    after=$(linear_header_value retry-after "$4") || return 1
     if [[ "$after" =~ ^[0-9]{1,9}$ ]]; then
         after=$((10#$after))
         ((after <= 60)) || return 1
@@ -264,10 +277,11 @@ linear_retry_wait() {
 # A rate-limited final answer is reported by linear_rate_limited and
 # returns 1.
 # Otherwise prints the final status on the first line and the body after it.
-# CONFIG is the curl config lines naming the request.
-# Usage: reply=$(linear_http_post "$config") || return 1
+# CONFIG is the curl config lines naming the request; KIND is its
+# linear_retry_wait kind.
+# Usage: reply=$(linear_http_post "$config" read) || return 1
 linear_http_post() {
-    local config="$1" attempt=1 raw code body headers
+    local config="$1" kind="$2" attempt=1 raw code body headers
     local delimiter="___HTTP_CODE___"
     while true; do
         headers=''
@@ -287,7 +301,7 @@ linear_http_post() {
         if jq -e '[.errors[]? | select(.extensions.code == "RATELIMITED")] | length > 0' >/dev/null 2>&1 <<<"$body"; then
             code=429
         fi
-        if linear_retry_wait "$code" "$attempt" "$headers"; then
+        if linear_retry_wait "$kind" "$code" "$attempt" "$headers"; then
             attempt=$((attempt + 1))
             continue
         fi
@@ -301,7 +315,9 @@ linear_http_post() {
 }
 
 # One GraphQL request, as the transport every read and write goes through.
-# linear_http_post owns which answers are sent again; an app pair's token is
+# linear_http_post owns which answers are sent again; a document that opens
+# with the `query` keyword is its `read`, and every other document, a mutation
+# or the `{ ... }` shorthand, its `write`. An app pair's token is
 # renewed once on an HTTP 401. Returns 2 when Linear answers that the entity
 # the request names does not exist for this actor ("Entity not found: Issue",
 # under HTTP 200), and 1 on every other failure, so a caller can tell "no
@@ -314,7 +330,11 @@ graphql_request() {
     if [ -z "$variables" ]; then
         variables='{}'
     fi
-    local authorization auth_renewed=0 payload reply http_code response
+    local authorization auth_renewed=0 payload reply http_code response kind=write
+    local read_pattern='^[[:space:]]*query[^_[:alnum:]]'
+    if [[ "$query" =~ $read_pattern ]]; then
+        kind=read
+    fi
 
     check_api_key || return 1
     authorization=$(linear_authorization) || return 1
@@ -334,7 +354,7 @@ graphql_request() {
             'request = "POST"' \
             "header = $(curl_config_quote "Content-Type: application/json")" \
             "header = $(curl_config_quote "Authorization: $authorization")" \
-            "data = $(curl_config_quote "$payload")")") || return 1
+            "data = $(curl_config_quote "$payload")")" "$kind") || return 1
         http_code="${reply%%$'\n'*}"
         response="${reply#*$'\n'}"
 
@@ -816,6 +836,103 @@ linear_guard_write_action() {
     linear_require_team_target
 }
 
+# Cross-team guard
+# -----------------------------------------------------------------------------
+# Every lane writes with one app token, and Linear lets an app token write in
+# every public team whatever team access the app's settings name, so no
+# credential keeps a lane out of another team's issues. These guards do: an
+# issue create, a change to an existing issue's fields, an archive and a trash
+# land only in this checkout's own team (LINEAR_TEAM). Reads, comments and
+# relations are not
+# guarded. No setting turns the guards off; with no LINEAR_TEAM they say they
+# are inactive and let the write through.
+
+# This checkout's team as a {id, key, name} node, read once per invocation into
+# LINEAR_OWN_TEAM. Call it in the command's own shell, not `$(...)`.
+LINEAR_OWN_TEAM=""
+linear_own_team() {
+    [[ -n "$LINEAR_OWN_TEAM" ]] && return 0
+    LINEAR_OWN_TEAM=$(resolve_team_node "$DEFAULT_TEAM") || {
+        LINEAR_OWN_TEAM=""
+        return 1
+    }
+}
+
+linear_cross_team_inactive() {
+    echo "linear: cross-team-guard=inactive action=$1 cause=no-team" >&2
+}
+
+# The refusal: one keyed line naming what was refused, both teams and the
+# route, then where cross-team work goes.
+# Usage: linear_cross_team_refusal ACTION TEAM_KEY [ISSUE]
+linear_cross_team_refusal() {
+    local action="$1" team="$2" issue="${3:-}" own
+    own=$(jq -r '.key' <<<"$LINEAR_OWN_TEAM")
+    echo "linear: refused=cross-team action=$action${issue:+ issue=$issue} team=$team own-team=$own route=peer-mail" >&2
+    echo "fix=Nothing was written. Give the work to the overseer of the repository that tracks $team with lane-mail peer send --repo [REPO]." >&2
+}
+
+# Refs this invocation's guard has let through, each followed by a space. A
+# verb judges its issue, then update_issue judges it again in a `$(...)`
+# subshell; the subshell inherits this and skips the second read and the
+# second inactive line.
+LINEAR_TEAM_PASSED=" "
+
+# Refuse, before any write, a write to an issue outside this checkout's team.
+# An identifier's team is its prefix, judged with no request; any other
+# reference (a UUID) is read for its team. LINEAR_TEAM is always resolved to
+# its key, even when it equals the prefix: one team's key can be another
+# team's name, and only resolve_team_node refuses that ambiguity.
+# Usage: linear_guard_issue_team ACTION REF... || return 1
+linear_guard_issue_team() {
+    local action="$1" ref team vars result refs=()
+    shift
+    for ref in "$@"; do
+        [[ "$LINEAR_TEAM_PASSED" == *" $ref "* ]] || refs+=("$ref")
+    done
+    [[ ${#refs[@]} -gt 0 ]] || return 0
+    if [[ -z "$DEFAULT_TEAM" ]]; then
+        linear_cross_team_inactive "$action"
+        LINEAR_TEAM_PASSED+="${refs[*]} "
+        return 0
+    fi
+    for ref in "${refs[@]}"; do
+        if [[ "$ref" =~ ^[A-Za-z0-9]+-[0-9]+$ ]]; then
+            team=$(tr '[:lower:]' '[:upper:]' <<<"${ref%-*}")
+        else
+            vars=$(jq -cn --arg id "$ref" '{id: $id}')
+            if ! result=$(graphql_query 'query IssueTeam($id: String!) { issue(id: $id) { team { key } } }' "$vars") \
+                || ! team=$(jq -er '.issue.team.key | strings | select(length > 0)' <<<"$result"); then
+                echo "linear: refused=cross-team-unread action=$action issue=$ref" >&2
+                echo "The issue's team could not be read (see the previous error), so nothing was written." >&2
+                return 1
+            fi
+        fi
+        linear_own_team || return 1
+        if [[ "$team" != "$(jq -r '.key' <<<"$LINEAR_OWN_TEAM")" ]]; then
+            linear_cross_team_refusal "$action" "$team" "$ref"
+            return 1
+        fi
+        LINEAR_TEAM_PASSED+="$ref "
+    done
+}
+
+# Refuse an issue create whose --team names another team than LINEAR_TEAM.
+# Usage: linear_guard_create_team "$explicit_team" || return 1
+linear_guard_create_team() {
+    local explicit="$1" target
+    [[ -n "$explicit" && "$explicit" != "$DEFAULT_TEAM" ]] || return 0
+    if [[ -z "$DEFAULT_TEAM" ]]; then
+        linear_cross_team_inactive create
+        return 0
+    fi
+    target=$(resolve_team_node "$explicit") || return 1
+    linear_own_team || return 1
+    [[ "$(jq -r '.id' <<<"$target")" == "$(jq -r '.id' <<<"$LINEAR_OWN_TEAM")" ]] && return 0
+    linear_cross_team_refusal create "$(jq -r '.key' <<<"$target")"
+    return 1
+}
+
 # Resolve project name or UUID to UUID
 # Usage: resolve_project_id "Project name" or resolve_project_id "uuid-here"
 #
@@ -873,7 +990,7 @@ resolve_project_id() {
 # key and another team's name is refused as ambiguous, naming both.
 # Usage: resolve_team_id "$LINEAR_TEAM_TARGET"
 resolve_team_id() {
-    local team_ref="$1"
+    local team_ref="$1" node
 
     # Check if it's already a UUID
     if [[ "$team_ref" =~ $LINEAR_UUID_PATTERN ]]; then
@@ -881,10 +998,22 @@ resolve_team_id() {
         return 0
     fi
 
-    # Look up by key or name. A FAILED query must propagate as the API
-    # failure it is (rate limit, outage) — "Team not found" is only true for
-    # a successful lookup that returned no match.
+    node=$(resolve_team_node "$team_ref") || return 1
+    jq -r '.id' <<<"$node"
+}
+
+# Resolve a team UUID, key or name to its {id, key, name} node, refusing an
+# unknown or ambiguous reference as resolve_team_id does.
+# Usage: node=$(resolve_team_node "$LINEAR_TEAM")
+resolve_team_node() {
+    local team_ref="$1"
+
+    # Look up by key or name, or by id for a UUID. A FAILED query must
+    # propagate as the API failure it is (rate limit, outage) — "Team not
+    # found" is only true for a successful lookup that returned no match.
     local query='query GetTeam($name: String!, $after: String) { teams(filter: {or: [{key: {eq: $name}}, {name: {eq: $name}}]}, after: $after) { pageInfo { hasNextPage endCursor } nodes { id key name } } }'
+    [[ ! "$team_ref" =~ $LINEAR_UUID_PATTERN ]] \
+        || query='query GetTeamById($name: ID!, $after: String) { teams(filter: {id: {eq: $name}}, after: $after) { pageInfo { hasNextPage endCursor } nodes { id key name } } }'
     # Build variables and diagnostics with jq: a team name containing a
     # quote or backslash must neither break the request JSON nor the error.
     local vars result
@@ -904,7 +1033,7 @@ resolve_team_id() {
             return 1
             ;;
         1)
-            jq -r '.[0].id' <<<"$teams"
+            jq -c '.[0]' <<<"$teams"
             ;;
         *)
             jq -c --arg team "$team_ref" \

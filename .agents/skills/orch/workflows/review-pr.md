@@ -22,13 +22,15 @@ git -C [WORKTREE_PATH] diff "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]"...HEAD 
 
 A non-empty `status --porcelain` stops the review. Managed with a `dev_agent`: re-delegate to commit or revert the leftovers, then re-enter § 1. Standalone: report the dirty files and ask the user to commit, revert, or run `orch review all` for an ad-hoc uncommitted review. No committed diff after that check → report "No committed changes to review" and **END**.
 
-**Trivial diffs skip review by rule, not by asking.** Trivial is the shared classifier's class for the whole branch, which `item-tier` reads:
+**Trivial diffs skip review by rule, not by asking.** Trivial is the shared CI classifier's class for the whole branch:
+
+Bind `[REVIEW_BASE_CHECKOUT]` per [Gate-mode routing](../references/gates.md#gate-mode-routing). Use that checkout's classifier against `[WORKTREE_PATH]`:
 
 ```bash
-.agents/skills/orch/scripts/item-tier --base origin/[BASE_BRANCH] --head HEAD --repo [WORKTREE_PATH]
+"[REVIEW_BASE_CHECKOUT]/.agents/skills/harness-ci/scripts/change-class" --event pull_request --base origin/[BASE_BRANCH] --head HEAD --repo [WORKTREE_PATH] --output /dev/null
 ```
 
-An answer ending `cause=classifier class=trivial`, a measured trivial branch, goes straight to § 9 with verdict `pass`. Any other answer, a failure included, runs the review.
+An answer `change_class=trivial` with `measured=true` in the classifier diagnostic goes straight to § 9 with verdict `pass`. Any other answer, a failure included, runs the review.
 
 ### 1.1 Decision Context
 
@@ -54,14 +56,6 @@ A failed check omits the path and carries `- decision index lookup failed for [D
 `cycles > 0` fills the "previous review cycle" block of the delegation from `fixed_items`, `escalated_items` and `declined_items`.
 
 ## 2. Prepare Reviewers
-
-Refresh the size report for the current `HEAD` on each entry to this section:
-
-```bash
-.agents/skills/orch/scripts/branch-size-check --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --json
-```
-
-On a nonzero exit, report the failure and stop. Read the resulting `pr.size_check` report. Its verdict and counts inform the reviewer's or orchestrator's cut decision under [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow). They do not gate review.
 
 `[AGENTS]` is the caller's `agents` context when provided. Otherwise it is the first-cycle panel: the reviewers this harness exposes whose domains the whole diff, `origin/[BASE_BRANCH]...HEAD`, or the issue's Done-when touches, by [§ 4's scoped-panel rule](#bounded-re-review). Read the Done-when first: `linear.sh issues get [ISSUE_ID]` `.description` for Linear, `gh issue view [N] --repo [OWNER/REPO] --json body --jq .body` for GitHub. A failed read, or a `pr-N` key, selects from the diff alone, and `[PANEL_REASON]` says so. On a § 1 entry, record the panel before any spawn, `[PANEL_REASON]` naming the domains touched, or `caller panel` for a caller's `agents`:
 
@@ -355,10 +349,10 @@ Then decide the QA routing. The inputs, in precedence order:
 2. **Diff scan** — deterministic checks on the round's full diff:
 
 ```bash
-git -C [WORKTREE_PATH] diff --quiet -G'unsafe |Ordering::|Atomic(U|I|Bool|Ptr)' "origin/[BASE_BRANCH]"...HEAD
+git -C [WORKTREE_PATH] diff --exit-code -G'unsafe |Ordering::|Atomic(U|I|Bool|Ptr)' "origin/[BASE_BRANCH]"...HEAD >/dev/null
 ```
 
-   `[BASE_BRANCH]` is the § 1 `resolve-base-branch` output. Exit **1** means a matching change exists and adds `needs-safety-audit`; **0** means no signal; any other exit is an error. When the repo sets `QA_PERF_PATHS` (space-separated path globs), any changed file matching one adds `needs-perf-test`:
+   `[BASE_BRANCH]` is the § 1 `resolve-base-branch` output. Exit **1** means a matching change exists and adds `needs-safety-audit`; **0** means no signal; any other exit is a failed scan, which never reads as no signal: it adds `needs-safety-audit`, and the `qa_decision` rationale names the exit. Never use `--quiet` here: with `-G` it can exit 0 on a range holding a matching change. When the repo sets `QA_PERF_PATHS` (space-separated path globs), any changed file matching one adds `needs-perf-test`:
 
 ```bash
 .agents/skills/orch/scripts/orch-env QA_PERF_PATHS ""
