@@ -148,6 +148,15 @@ class PackageFileListCheck(unittest.TestCase):
                     ["drop-in=wrong-command", f"path={SCRUB_DROP_IN}"],
                 )
 
+    def test_manifest_source_the_aur_workflow_does_not_watch_fails(self) -> None:
+        (self.repo / "packaging" / "extra.json").write_text("{}\n")
+        manifest = self.repo / MANIFEST
+        manifest.write_text(manifest.read_text() + "644 lib/tmpfiles.d/extra.json packaging/extra.json\n")
+        self.assertEqual(
+            self.refusal(self.run_check(), prose=False),
+            "aur-git-workflow=path-missing value=packaging/extra.json",
+        )
+
     def test_extra_manifest_row_passes(self) -> None:
         (self.repo / "data" / "extra.json").write_text("{}\n")
         manifest = self.repo / MANIFEST

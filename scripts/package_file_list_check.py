@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 from pathlib import Path
 import re
 import shutil
@@ -160,10 +161,14 @@ def check_release_workflow(repo: Path) -> None:
         refuse("release-workflow=archive-without-lib", "The release workflow archive does not include lib.")
 
 
-def check_aur_git_workflow(repo: Path) -> None:
+def check_aur_git_workflow(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
+    # vsys-git ships every manifest source, so a change to any one of them, or
+    # to the staging route itself, must publish a new pkgver.
     text = read_text(repo / ".github" / "workflows" / "aur-git.yml")
-    for required in ('"warden/**"', '"packaging/stage-runtime-files.sh"', '"packaging/vsys-runtime-files.txt"'):
-        if required not in text:
+    filters = re.findall(r'^\s+- "([^"]+)"$', text, flags=re.MULTILINE)
+    staged = {source for _mode, source in rows.values()}
+    for required in sorted(staged | {"packaging/stage-runtime-files.sh", "packaging/vsys-runtime-files.txt"}):
+        if not any(fnmatch.fnmatchcase(required, pattern) for pattern in filters):
             refuse(f"aur-git-workflow=path-missing value={required}")
 
 
@@ -234,7 +239,7 @@ def run(repo: Path, installed_root: Path | None) -> None:
     check_scrub_drop_in(repo, rows)
     check_stage_script(repo, rows)
     check_release_workflow(repo)
-    check_aur_git_workflow(repo)
+    check_aur_git_workflow(repo, rows)
     check_ci_workflow(repo)
     check_pkgbuild(repo, "vsys", release=True)
     check_pkgbuild(repo, "vsys-git", release=False)
