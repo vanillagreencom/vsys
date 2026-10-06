@@ -722,7 +722,13 @@ test("storage names the scrub timers the packaged reporter lacks, and only where
   );
   const dropIn = join(f.root, "units", "vsys-report.conf");
   f.write(dropIn, "[Service]\n");
-  const units = { dropIn, wants: join(f.root, "units", "wants") };
+  const template = join(f.root, "units", "btrfs-scrub@.timer");
+  f.write(template, "[Timer]\n");
+  const units = {
+    dropIn,
+    templates: [template],
+    wants: join(f.root, "units", "wants"),
+  };
   const packaged = await new StorageCollector(
     null,
     null,
@@ -753,7 +759,9 @@ test("a scrub timer on a mount btrfsMounts leaves out still covers the filesyste
   const dropIn = join(f.root, "units", "vsys-report.conf");
   f.write(dropIn, "[Service]\n");
   const wants = join(f.root, "units", "wants");
-  const units = { dropIn, wants };
+  const template = join(f.root, "units", "btrfs-scrub@.timer");
+  f.write(template, "[Timer]\n");
+  const units = { dropIn, templates: [template], wants };
   const config = { ...f.config, btrfsMounts: [home] };
   const missing = async () =>
     (

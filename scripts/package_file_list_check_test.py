@@ -138,6 +138,8 @@ class PackageFileListCheck(unittest.TestCase):
             ("a payload file that is not executable", "/usr/lib/vsys/data/agent-tools.json %f /var/lib/btrfs-scrub"),
             ("the reporter without arguments", "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report"),
             ("the reporter without its report directory", "/usr/lib/vsys/scripts/scrub-reporter/vsys-scrub-report %f"),
+            # systemd reads an empty assignment as a reset of every earlier one.
+            ("a later reset", command + "\nExecStopPost="),
         ):
             with self.subTest(name):
                 drop_in.write_text(original.replace(command, wrong))

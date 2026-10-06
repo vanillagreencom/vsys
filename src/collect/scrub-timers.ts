@@ -7,21 +7,31 @@
  */
 
 import { readdir, stat } from "node:fs/promises";
+import { filesystemKey } from "../model/integrity";
 import type { Reader } from "./io";
 
-/** Where the packaged drop-in and the enabled system timers are found. */
+/**
+ * Where the packaged drop-in, the `btrfs-scrub@.timer` template the timers
+ * are instances of, and the enabled system timers are found.
+ */
 export interface ScrubUnits {
   dropIn: string;
+  templates: string[];
   wants: string;
 }
 export const packagedScrubUnits: ScrubUnits = {
   dropIn: "/usr/lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf",
+  templates: [
+    "/etc/systemd/system/btrfs-scrub@.timer",
+    "/usr/lib/systemd/system/btrfs-scrub@.timer",
+  ],
   wants: "/etc/systemd/system/timers.target.wants",
 };
 
 /** A Btrfs mount, its filesystem where known, and whether vsys watches it. */
 export interface ScrubMount {
   mount: string;
+  device: string;
   fsid: string | null;
   watched: boolean;
 }
@@ -45,9 +55,11 @@ export const scrubTimer = (mount: string): string =>
 /**
  * One timer per watched filesystem with no enabled scrub timer on any of its
  * mounts, watched or not, named for its first watched mount: a scrub of one
- * mount checks the whole filesystem. Undefined where the packaged drop-in is
- * not installed, and null where the enabled timers could not be listed, which
- * is not a list of none.
+ * mount checks the whole filesystem, which `filesystemKey` identifies as
+ * Storage does. Undefined where the packaged drop-in is not installed. Null
+ * where the enabled timers could not be listed, which is not a list of none,
+ * and where no `btrfs-scrub@.timer` template exists, since btrfs-progs is
+ * optional and no instance of a missing template can be enabled.
  */
 export async function missingScrubTimers(
   r: Reader,
@@ -61,6 +73,18 @@ export async function missingScrubTimers(
       r.error(units.dropIn, e);
     return undefined;
   }
+  const templates = await Promise.all(
+    units.templates.map((path) =>
+      stat(path).then(
+        () => true,
+        (e: NodeJS.ErrnoException) => {
+          if (e.code !== "ENOENT") r.error(path, e);
+          return false;
+        },
+      ),
+    ),
+  );
+  if (!templates.includes(true)) return null;
   let enabled: Set<string>;
   try {
     enabled = new Set(await readdir(units.wants));
@@ -73,7 +97,7 @@ export async function missingScrubTimers(
   }
   const filesystems = new Map<string, ScrubMount[]>();
   for (const mount of mounts) {
-    const key = mount.fsid ?? mount.mount;
+    const key = filesystemKey(mount);
     filesystems.set(key, [...(filesystems.get(key) ?? []), mount]);
   }
   return [...filesystems.values()].flatMap((shared) =>

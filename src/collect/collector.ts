@@ -22,7 +22,7 @@ import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
 import { SccacheCollector } from "./sccache";
 import { agentScratchDirs } from "./scratch";
-import { packagedScrubUnits, type ScrubUnits } from "./scrub-timers";
+import type { ScrubUnits } from "./scrub-timers";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
@@ -377,6 +377,11 @@ export async function createCollector(
   toolsPath = agentToolsPath,
   /** Injected so no test reads this machine's journal. */
   kernelLogProbe: () => Outcome = probeKernelLog,
+  /**
+   * Absent unless the program supplies them, so no test reads this machine's
+   * systemd units: the program passes `packagedScrubUnits`.
+   */
+  scrubUnits?: ScrubUnits,
 ): Promise<Collector> {
   const read = async (name: string) => {
     const child = Bun.spawn(["getconf", name], {
@@ -416,6 +421,6 @@ export async function createCollector(
     },
     new Udisks(),
     previous?.lastFinishedScrub,
-    packagedScrubUnits,
+    scrubUnits,
   );
 }

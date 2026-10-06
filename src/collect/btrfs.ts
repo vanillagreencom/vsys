@@ -444,7 +444,7 @@ export class StorageCollector {
           if (watched) r.error(mount.device, error);
         }
       }
-      scrubMounts.push({ mount: mount.mount, fsid, watched });
+      scrubMounts.push({ ...mount, fsid, watched });
       if (!watched) continue;
       if (!fsid)
         r.error(

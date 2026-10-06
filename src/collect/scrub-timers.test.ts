@@ -20,25 +20,37 @@ test("a mount is escaped as systemd-escape --path writes it", () => {
   ]);
 });
 
-/** A scratch systemd tree: the packaged drop-in and the enabled timers. */
-function units(o: { dropIn: boolean; enabled?: string[] | "unreadable" }) {
+/**
+ * A scratch systemd tree: the packaged drop-in, the timer template and the
+ * enabled timers.
+ */
+function units(o: {
+  dropIn: boolean;
+  template?: boolean;
+  enabled?: string[] | "unreadable";
+}) {
   const root = mkdtempSync(join(tmpdir(), "vsys-scrub-timers-"));
   const dropIn = join(root, "vsys-report.conf");
+  const template = join(root, "btrfs-scrub@.timer");
   const wants = join(root, "timers.target.wants");
   if (o.dropIn) writeFileSync(dropIn, "[Service]\n");
+  if (o.template ?? true) writeFileSync(template, "[Timer]\n");
   // A file where the directory should be is a listing that fails.
   if (o.enabled === "unreadable") writeFileSync(wants, "");
   else if (o.enabled) {
     mkdirSync(wants);
     for (const unit of o.enabled) writeFileSync(join(wants, unit), "");
   }
-  return { root, units: { dropIn, wants } };
+  return {
+    root,
+    units: { dropIn, templates: [join(root, "absent.timer"), template], wants },
+  };
 }
 
 const volumes = [
-  { mount: "/", fsid: "a", watched: true },
-  { mount: "/home", fsid: "a", watched: true },
-  { mount: "/mnt/data", fsid: "b", watched: true },
+  { mount: "/", device: "/dev/a", fsid: "a", watched: true },
+  { mount: "/home", device: "/dev/a", fsid: "a", watched: true },
+  { mount: "/mnt/data", device: "/dev/b", fsid: "b", watched: true },
 ];
 
 test("each filesystem with no enabled timer on any mount needs one", async () => {
@@ -80,9 +92,9 @@ test("timers that cannot be listed stay unknown rather than none", async () => {
 
 test("a timer on an unwatched mount covers the filesystem a watched mount shares", async () => {
   const mounts = [
-    { mount: "/", fsid: "a", watched: false },
-    { mount: "/home", fsid: "a", watched: true },
-    { mount: "/mnt/data", fsid: "b", watched: false },
+    { mount: "/", device: "/dev/a", fsid: "a", watched: false },
+    { mount: "/home", device: "/dev/a", fsid: "a", watched: true },
+    { mount: "/mnt/data", device: "/dev/b", fsid: "b", watched: false },
   ];
   for (const [enabled, missing] of [
     [[scrubTimer("/")], []],
@@ -96,4 +108,24 @@ test("a timer on an unwatched mount covers the filesystem a watched mount shares
     ]);
     rmSync(t.root, { recursive: true });
   }
+});
+
+test("mounts whose filesystem id is unread are one filesystem by their device, as Storage groups them", async () => {
+  const t = units({ dropIn: true });
+  const mounts = [
+    { mount: "/", device: "/dev/a", fsid: null, watched: true },
+    { mount: "/home", device: "/dev/a", fsid: null, watched: true },
+  ];
+  expect(await missingScrubTimers(new Reader(), t.units, mounts)).toEqual([
+    scrubTimer("/"),
+  ]);
+  rmSync(t.root, { recursive: true });
+});
+
+test("with no btrfs-scrub timer template, no timer can be enabled and none is offered", async () => {
+  const t = units({ dropIn: true, template: false });
+  const r = new Reader();
+  expect(await missingScrubTimers(r, t.units, volumes)).toBe(null);
+  expect(r.errors).toEqual([]);
+  rmSync(t.root, { recursive: true });
 });
