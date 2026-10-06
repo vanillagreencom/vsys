@@ -84,6 +84,20 @@ Codex starts no turn for output that arrives after a turn ended, from a detached
 
 Each call is one simple command, as orch's one-simple-command rule asks ([../SKILL.md](../SKILL.md) § Harness-Safe Shell).
 
+## Validation wait
+
+A dev agent holds its `dev-validate-run` inside the turn with the same tools, under the limits of § Standing watch. Codex starts no turn when the run ends, and the wake refuses a hosted Codex lane (§ Lane mailbox).
+
+Start and Resume each return an `exit_code` once the command ended inside their yield, or a `session_id` while it still runs. A return that carries an `exit_code` ended the command: read its lines and do not poll. Only a return that carries a `session_id` takes the Wait step, repeated until a return carries an `exit_code`.
+
+| Step | Call | Return |
+|------|------|--------|
+| Start | `exec_command`, `cmd` `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH]`, `yield_time_ms` 30000 | The output so far. The start prints its `state=started` line only once it has classified the change and launched the run, which nothing bounds to this call, so the line can come on a Wait return. Keep its `run-dir=` value. The start then blocks until the verdict and never exits 3. |
+| Wait | `write_stdin` on the `session_id` a Start or Resume returned, empty `chars`, `yield_time_ms` 300000, repeated in the same turn | The output since the previous return. |
+| Resume | `exec_command`, `cmd` `.agents/skills/orch/scripts/dev-validate-run --wait --run-dir [RUN_DIR]`, `yield_time_ms` 30000 | Taken only for a run whose `state=started` line was read: when its session ended with no verdict line and no refusal line, or when a `--wait` session exits 3 with `state=running`, which `--wait` prints once its per-call budget runs out. |
+
+A session that exits 2 with a `dev-validate-run: [REASON]` line was refused and is never resumed: `run-live` routes as its line names, and any other reason is a validation failure, both by the dev skill's [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate). Once a `state=started` line is read, never end the turn while that run has printed no `state=done`, `state=timeout` or `state=lost` line. What each line means is the dev skill's SKILL.md § Long-Running Validation.
+
 ## Lane mailbox
 
 A Codex lane arms no mailbox monitor ([watch-delivery.md § Lane mailbox monitor](watch-delivery.md#lane-mailbox-monitor)): a lane idle at its prompt holds no turn, and Codex starts none for a monitor's output. The overseer follows each `lane-mail send` to a Codex lane with `open-terminal --wake` ([oversee-lanes.md § Talking to a lane](oversee-lanes.md#talking-to-a-lane)), which resumes the lane's newest session in print mode with one line that runs `lane-mail inbox`. Codex publishes no idle signal, so the wake refuses a lane whose Codex process still runs, as `working` or `unjudged` ([lane-reach.md § Wake refusals](lane-reach.md#wake-refusals)). The wake refuses a hosted Codex lane as `wake-invalid`. Mail to a Codex lane the wake refuses takes [lane-reach.md § Mail the wake cannot deliver](lane-reach.md#mail-the-wake-cannot-deliver).
