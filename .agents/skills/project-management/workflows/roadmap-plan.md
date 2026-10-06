@@ -44,7 +44,7 @@ Plan a roadmap: research gate, specialist consultation, TPM analysis, architectu
 
 With no match, ask the user:
 
-- **Research inline (recommended)** — gather what the plan needs now (code, vendor docs, web), write findings to `tmp/plans/[FEATURE]-research.md`, and continue with it as `RESEARCH_PATH`. No tracker issue; the file reaches the issues the plan creates as an attachment under § Planning artifacts.
+- **Research inline (recommended)** — gather what the plan needs now (code, vendor docs, web), write findings to `tmp/plans/[FEATURE]-research.md`, and continue with it as `RESEARCH_PATH`. No tracker issue; the file reaches the issues the plan creates under § Planning artifacts.
 - **Delegate a research spike** — standalone tracked research. Run `⤵ workflows/research-spike.md [FEATURE] § 1-4` passing `auto_execute` explicitly: `true` has the researcher run it now, `false` leaves the issue ready for later pickup — never omit the value. Capture the returned `RESEARCH_ISSUE_ID` and re-run `roadmap plan [FEATURE] @[RESEARCH_OUTPUT_PATH] --source-issue [RESEARCH_ISSUE_ID]` once findings exist.
 - **Skip research** — set `RESEARCH_PATH` = null → § 2.
 
@@ -204,12 +204,12 @@ Ask: `Approve` | `Adjust` | `Cancel`. `Cancel` discards the plan and ends the wo
 
 ## 6. Save the Plan
 
-Write both files. When publishing research/spec inputs with the plan to an origin issue, set `context.research_source_issue` to that issue before saving; otherwise preserve the analysis source.
+Write both files. Keep a set `context.research_source_issue`: the research/spec input already sits on that issue. When the plan is published to an origin issue and the field is null, the input is uploaded there with the plan: set the field to the origin issue before saving.
 
 - `tmp/roadmaps/roadmap-[FEATURE].json` — the TPM JSON with § 5 adjustments applied and `context.plan_path` set to the markdown path.
 - `tmp/roadmaps/roadmap-[FEATURE].md` — the § 5 report, plus a `**Plan data**: tmp/roadmaps/roadmap-[FEATURE].json` line and the creation date.
 
-Set `CREATE_COMMAND` to `roadmap create @tmp/roadmaps/roadmap-[FEATURE].md`. Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) to both files and the research/spec inputs. With an origin issue, reconcile and publish there; only after success, append `--source-issue [ORIGIN_ISSUE.id]`. Without one, carry the repository files and command into roadmap-create for publication to its issues. Return `CREATE_COMMAND` unchanged in the report and to the managed caller.
+Set `CREATE_COMMAND` to `roadmap create @tmp/roadmaps/roadmap-[FEATURE].md`. Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) to both files and the research/spec inputs. With an origin issue, reconcile and publish both files there, uploading a research/spec input only when its `context.research_source_issue` was null and otherwise linking the `url` that [linear SKILL.md § Resolve a cited artifact](../../linear/SKILL.md#resolve-a-cited-artifact) selects for its path on its source issue; only after success, append `--source-issue [ORIGIN_ISSUE.id]`. Without one, carry the repository files and command into roadmap-create, whose § 5 publishes them. Return `CREATE_COMMAND` unchanged in the report and to the managed caller.
 
 <output_format>
 

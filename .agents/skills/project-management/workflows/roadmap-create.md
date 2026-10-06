@@ -145,7 +145,7 @@ Use `blocked_by` for a real dependency and `related` for an informational link. 
 
 Confirm every issue landed in the project, the parent/child structure matches the plan, dependencies are set, and project relations exist. Report discrepancies; do not auto-fix them.
 
-Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) to every issue created or updated by this workflow, including § 2 actions. Verify that the plan markdown, its JSON, and cited research/spec inputs are attached. Keep the repository files at their cited paths; moving them would break the plan's companion-file reference.
+This section is the run's one publisher under [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts); audit-issues § 7 skips publication for a `roadmap-create` input. The plan's source issue is the one [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) selects; an invocation `--source-issue` already holds the plan markdown and its JSON from roadmap-plan § 6, and any other source issue receives both now. A research/spec input whose `context.research_source_issue` is set already sits on that issue and is uploaded nowhere; its link takes the `url` that [linear SKILL.md § Resolve a cited artifact](../../linear/SKILL.md#resolve-a-cited-artifact) selects for its path on `[RESEARCH_SOURCE_ISSUE]`. An input with a null `context.research_source_issue`, an inline or local-only file, is uploaded to the plan's source issue with the plan. Every issue this workflow created or updated, § 2 actions included, carries an `**Artifacts**` link to each of these files. Verify the attachments on each source issue and the links on every other issue.
 
 <output_format>
 
@@ -165,7 +165,7 @@ Apply [SKILL.md § Planning artifacts](../SKILL.md#planning-artifacts) to every 
 | Issue | Expected | Actual |
 |-------|----------|--------|
 
-**Plan attached**: [ISSUE_IDS]
+**Plan attached**: [SOURCE_ISSUE_ID or "unpublished"] · **Linked from**: [ISSUE_IDS]
 </output_format>
 
 ## 6. Return State
