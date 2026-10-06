@@ -10,7 +10,9 @@
 # to adopt; without it, the templates the refresh below renders.
 # Output records: refresh-state=current pr=none class=none, or
 # refresh-state=unchanged|pushed pr=NUMBER class=CLASS, or
-# refresh-state=deferred reason=queued|merged|closed|branch-gone.
+# refresh-state=deferred reason=queued|merged|closed|branch-gone. A consumer
+# whose render did not run also gets
+# refresh-render=skipped package=bot-instructions cause=absent|unconfigured|engine.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 templates=""
@@ -114,7 +116,15 @@ fi
 git checkout -B kendex/refresh "$base"
 export KENDEX_UI=plain
 refresh_status=0
-refresh_output="$(kendex refresh --scope project --yes --leave 2>&1)" || refresh_status=$?
+# --prune takes what the catalog retired; a plain refresh keeps it. kendex
+# 1.11.0 adds the flag, and the latest release this runs under can predate
+# it, so it is passed where the installed kendex lists it; 1.12.0 drops the
+# probe.
+refresh_help="$(kendex help refresh 2>/dev/null || true)"
+case "$refresh_help" in
+  *--prune*) refresh_output="$(kendex refresh --scope project --yes --leave --prune 2>&1)" || refresh_status=$? ;;
+  *) refresh_output="$(kendex refresh --scope project --yes --leave 2>&1)" || refresh_status=$? ;;
+esac
 printf '%s\n' "$refresh_output"
 if [ "$refresh_status" -ne 0 ]; then
   printf 'refresh-error=refresh value=%s\n' "$refresh_status" >&2
@@ -123,9 +133,8 @@ fi
 # refresh has no JSON report. Fall back to blocked.rs's plain conflicts
 # section and holds.rs's records; verify cannot report discarded edits.
 # ledger.rs counts distinct kind/name items, not rows or harnesses.
-# setting_notes collects the refresh lines and the change-class lines that
-# name a consumer setting; a run with no render change runs no classifier
-# and reports only the refresh lines.
+# setting_notes collects the change-class lines that name a consumer
+# setting; a run with no render change runs no classifier and reports none.
 setting_notes=()
 held_items=""
 held_keys=$'\n'
@@ -161,10 +170,6 @@ while IFS= read -r line; do
     *) conflict_section=no ;;
   esac
   case "$line" in
-    # refresh names a retired [hooks] entry on one bare line with this prefix
-    # and exits 0; the consumer's maintainer deletes the entry, so the line
-    # reaches the pull request body. No other refresh line is forwarded.
-    'doc-drift-check: '*) setting_notes+=("$line") ;;
     *' · skipped '*' on conflict'*)
       if [ -n "$conflict_count" ] || ! [[ "$line" =~ $ledger_pattern ]]; then
         printf 'refresh-error=conflict-ledger value=%s\n' "$line" >&2
@@ -191,6 +196,48 @@ apply_status=0
 kendex apply --scope project --yes --leave || apply_status=$?
 if [ "$apply_status" -ne 0 ]; then
   printf 'refresh-error=apply value=%s\n' "$apply_status" >&2
+  exit 1
+fi
+# The refresh above skips the bot-instructions render: the arming record that
+# licenses it lives in a git directory, and this fresh checkout's has none.
+# The consumer's check judges the pull request with the refreshed package, so
+# this run asks kendex to render once, which locates the package wherever the
+# install put it and writes no record. The invocation is the licence, spent
+# in a checkout this run discards, and it runs with no credential. The
+# package refuses a manifest with no [bot-instructions] table as
+# unconfigured, which leaves that consumer unrendered. The refresh is staged
+# first because the render reads the index for the tree's subtrees; the
+# later git add -A takes what it writes and removes.
+git add -A
+render_status=0
+render_output=""
+render_skip=""
+# The inline template installs the latest stable kendex, and every release
+# through 1.10.1 lacks the verb: it reads the name as a source to add and
+# refuses. Such an engine keeps the outcome it had before the verb, an
+# unrendered refresh. Remove the probe once the latest stable release
+# carries the verb.
+probe_status=0
+env -i PATH="$PATH" HOME="$HOME" KENDEX_UI=plain kendex help bot-instructions-render >/dev/null 2>&1 || probe_status=$?
+case "$probe_status" in
+  0)
+    render_output="$(env -i PATH="$PATH" HOME="$HOME" KENDEX_UI=plain kendex bot-instructions-render 2>&1)" || render_status=$?
+    printf '%s\n' "$render_output"
+    case "$render_status" in
+      0) if grep -qxF 'bot-instructions-render=absent' <<<"$render_output"; then render_skip=absent; fi ;;
+      2) if grep -qx 'bot-instructions: unconfigured=.*' <<<"$render_output"; then render_skip=unconfigured; fi ;;
+    esac
+    ;;
+  2) render_skip=engine ;;
+  *)
+    printf 'refresh-error=bot-instructions-probe value=%s\n' "$probe_status" >&2
+    exit 1
+    ;;
+esac
+if [ -n "$render_skip" ]; then
+  printf 'refresh-render=skipped package=bot-instructions cause=%s\n' "$render_skip"
+elif [ "$render_status" -ne 0 ]; then
+  printf 'refresh-error=bot-instructions-render value=%s\n' "$render_status" >&2
   exit 1
 fi
 "$SCRIPT_DIR/adopt-refresh.sh" --templates-dir "$templates"

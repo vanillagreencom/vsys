@@ -166,7 +166,7 @@ One owner also settles the isolation the § Controls rule needs. Two validators 
 
 ## `orphan`
 
-**Silent failure.** A `[[bot-instructions.surface]]` is removed from the TOML, or a bot capability is switched off. The generator writes nothing for it and deletes nothing, so the file it wrote is still there and the bot still loads it. The repo's source says one thing and its bots read another, and no render will ever touch that file again.
+**Silent failure.** A `[[bot-instructions.surface]]` is removed from the TOML, or a bot capability is switched off. Until a render runs, the file it wrote is still there and the bot still loads it. The repo's source says one thing and its bots read another.
 
 **Rejects.** Anything carrying this package's marker that the current TOML does not produce. One rule, and the marker is the whole of it: this package wrote every marked byte, so a marked file the TOML no longer accounts for is one it abandoned.
 
@@ -174,9 +174,9 @@ That covers a retired surface's `.instructions.md` and `correctness/*.md`, the r
 
 **Unmarked files are not judged here, whatever the flags say.** A repo with `qodo_review_md = false` and its own hand-written `REVIEW.md`, or `copilot = false` and an existing `.github/copilot-instructions.md`, is a repo that owns those files; this package never wrote them and does not get to call them stale. That is also the state every incoming repo is in before `adopt` runs. Taking one over is `adopt`'s job and needs the capability on.
 
-**Retiring one is delete-then-render.** `render` runs this before the write and fails on what it finds, so the render that would create the orphan never completes; the deletion has to come first, in the same commit. `check` is what catches a retirement that skipped the render, not the ordinary route. The generator reports rather than deletes because removing a file is a decision the commit's author makes, and sometimes the fix is not a deletion at all: another check in the repo may require the file, in which case what that check reads moves first: retiring `[bot-instructions.bots] copilot` in a repo whose own gate reads `.github/copilot-instructions.md` is move the pointer, delete the file, then render.
+**Retiring one is a render.** `render` removes every marked file this rule names after its writes and the region splice succeed, rereading the marker at the moment of removal, so a write that fails leaves each orphan for the next render, and prints `removed PATH` for each, `would remove PATH` under `--dry-run`. A package version that retires a default surface therefore needs no hand step in any repo that renders. `check` reports the files, because it writes nothing. A repo whose own gate reads a file a retirement removes moves what that gate reads first: retiring `[bot-instructions.bots] copilot` in a repo whose gate reads `.github/copilot-instructions.md` is move the pointer, then render.
 
-**De-orphaning the `AGENTS.md` region** is not a deletion of the file. The heading is the repo's and has to survive; what goes is the marker and the body below it, leaving the section for the repo to fill or leave empty. Until that happens `render` fails, the same as for any other orphan.
+**De-orphaning the `AGENTS.md` region** is not a deletion of the file. The heading is the repo's and has to survive; what goes is the marker and the body below it, leaving the section for the repo to fill or leave empty. `render` removes no region, so until that happens it fails on this one.
 
 ## `drift`
 
@@ -210,15 +210,16 @@ So they read the repo:
 
 | Validator or clause | `render` | `check` |
 |---------------------|----------|---------|
-| `orphan` | the repo, before the write | the repo |
+| `orphan`, the region clause | the repo, before the write | the repo |
+| `orphan`, the file clause | skipped, and named as skipped; the files are removed after the write | the repo |
 | `agents-section`, every clause | the repo, before the write | the repo |
 | `drift`, the `AGENTS.md` owned region included | skipped, and named as skipped | the repo |
 | `exclusion-consistency`, dead-exclusion clause | the repo, before the write | the repo |
 
-`orphan` runs before the write because that is the render that creates the orphan: retiring a `[[bot-instructions.surface]]` or flipping a bot flag is what leaves the file behind, and a render that reports a clean pass and then does it is the fail-open shape this package exists to remove.
+`orphan`'s region clause runs before the write because that is the render that creates the orphan: retiring a `[[bot-instructions.surface]]` or flipping a bot flag is what leaves the file behind, so the render refuses on a marked region before it writes, removes the files after, and never reports a clean pass over an orphan it left.
 
 `agents-section` runs before the write for the same reason from the other direction. The write-phase splice fails when the owned region cannot be located, and by then other outputs have been replaced — a partial render, against SKILL.md's promise that a validator failure leaves the repo untouched. Checking the heading before the write is what makes that failure unreachable. Every clause it has is structural, so none of them compares against a render and none needs skipping; the region's bytes belong to `drift`, which is skipped.
 
-The one skip is not a vacuous check left running; it is a check with no question to answer at render time, and the run says so rather than counting it as passed. A render exists to change the bytes `drift` compares, so at render time `drift` would red on its own purpose — the `AGENTS.md` region most of all, where the repo holds the last render and any doctrine, TOML or tracker change makes the bytes differ by design. It has force in `check`, against a committed tree that has moved on since someone last rendered, which is the question it was written for.
+A skipped row is not a vacuous check left running; it is a check with no question to answer at render time, and the run says so rather than counting it as passed. `orphan`'s file clause names the files the same render removes after its writes, so it has force in `check`, against a marked file a retirement left without a render. A render exists to change the bytes `drift` compares, so at render time `drift` would red on its own purpose — the `AGENTS.md` region most of all, where the repo holds the last render and any doctrine, TOML or tracker change makes the bytes differ by design. It has force in `check`, against a committed tree that has moved on since someone last rendered, which is the question it was written for.
 
 A repo wires `check` into whatever runs its other repo guards. This package ships no hook of its own, because a repo that already has a commit chain does not need a second one.

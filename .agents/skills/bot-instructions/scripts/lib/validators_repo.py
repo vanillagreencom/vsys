@@ -64,28 +64,56 @@ def _nested_agents_files(ctx):
     return [p for p in tracked if p.endswith("/AGENTS.md")]
 
 
-def orphan(ctx, out):
+def _retired(ctx, path):
+    """A path this package may have written that the current TOML does not
+    produce: one of ROOT_OUTPUTS, or a file under one of SCANNED_TREES."""
+    return path not in ctx.build.files and (
+        path in ROOT_OUTPUTS or any(path.startswith(tree + "/") for tree in SCANNED_TREES))
+
+
+def orphan_files(ctx):
+    """Every marked file the current TOML does not produce, sorted."""
+    return [path for path in sorted(set(ROOT_OUTPUTS) | _scanned(ctx))
+            if _retired(ctx, path) and marker.carries_marker(ctx.read(path))]
+
+
+def removed_orphans(ctx, index):
+    """Marked files the TOML does not produce that the index still tracks and
+    the working tree no longer holds, sorted.
+
+    An earlier render removed them and the deletion is not staged yet. A
+    render names them beside its own removals, so a caller that builds its
+    commit from what the render reports, after the render that removed them
+    has come and gone, still stages the deletion `check --staged` asks for.
+    `index` reads the staged blobs, the one place their marker still is.
+    """
+    return [path for path in sorted(ctx.tracked_paths())
+            if _retired(ctx, path) and ctx.read(path) is None
+            and marker.carries_marker(index.read(path))]
+
+
+def orphan_file(ctx, out):
     """A retired surface's file is still there and the bot still loads it."""
-    v = "orphan"
-    produced = set(ctx.build.files)
-    for path in sorted(set(ROOT_OUTPUTS) | _scanned(ctx)):
-        if path in produced:
-            continue
-        text = ctx.read(path)
-        if marker.carries_marker(text):
-            out.append(Finding(v, "carries this package's marker and the current TOML does "
-                                  "not produce it. Retiring one is delete-then-render, in "
-                                  "that order", path))
+    for path in orphan_files(ctx):
+        out.append(Finding("orphan", "carries this package's marker and the current TOML does "
+                                     "not produce it. A render removes it", path))
+
+
+def orphan_region(ctx, out):
+    """The owned `AGENTS.md` region outlived the `codex` flag that writes it.
+
+    No render removes a region, so this half refuses on both verbs.
+    """
     if ctx.config.bots["codex"] or ctx.build.region_body is not None:
         return
     text = ctx.read("AGENTS.md")
     if text is not None:
         region = render.region_of(text)
         if marker.owns("AGENTS.md", region):
-            out.append(Finding(v, "the `## Code Review Rules` region carries the marker and "
-                                  "[bot-instructions.bots] codex is false. De-orphaning it is not a deletion "
-                                  "of the file: the heading is the repo's and has to "
-                                  "survive; what goes is the marker and the body below it",
+            out.append(Finding("orphan", "the `## Code Review Rules` region carries the marker and "
+                                         "[bot-instructions.bots] codex is false. De-orphaning it is not a deletion "
+                                         "of the file: the heading is the repo's and has to "
+                                         "survive; what goes is the marker and the body below it",
                                "AGENTS.md"))
 
 
