@@ -4,6 +4,7 @@ import type {
   Renderable,
   ScrollBoxRenderable,
 } from "@opentui/core";
+import { act } from "react";
 import { defaults } from "../config/config";
 import { unitLabel } from "../model/naming";
 import type { Snapshot } from "../model/types";
@@ -179,10 +180,6 @@ test("from wideWidth up the selected item's detail sits right of its list, and b
           }
           continue;
         }
-        expect({ ...at, list: find(t, "split-list") }).toEqual({
-          ...at,
-          list: undefined,
-        });
         if (screen.narrow === "below") {
           // Across the screen under the list, where the bottom fields were.
           const panel = present(detail, "the detail under the list");
@@ -202,7 +199,10 @@ test("from wideWidth up the selected item's detail sits right of its list, and b
             under: true,
           });
         } else {
-          expect({ ...at, detail }).toEqual({ ...at, detail: undefined });
+          expect({ ...at, panel: detail !== undefined }).toEqual({
+            ...at,
+            panel: false,
+          });
           if (screen.narrow === "inline")
             expect({ ...at, under: under > 1 }).toEqual({ ...at, under: true });
         }
@@ -236,6 +236,78 @@ test("the panel opens each newly selected item at its top", async () => {
     await t.settle();
     expect(panel.scrollHeight - panel.height).toBeGreaterThanOrEqual(2);
     expect(panel.scrollTop).toBe(0);
+  } finally {
+    await t.close();
+  }
+});
+
+/** A Storage screen with more scratch roots than a short terminal shows. */
+function manyRoots(c: ReturnType<typeof defaults>): Snapshot {
+  const s = everyCauseSnapshot(c);
+  s.storage.scratch = Array.from({ length: 30 }, (_, i) => ({
+    path: `/scratch/root-${String(i).padStart(2, "0")}`,
+    bytes: 1024,
+    age: 60,
+    error: null,
+    origin: "configured" as const,
+  }));
+  return s;
+}
+
+test("a terminal resized across wideWidth keeps the selected Storage row in view", async () => {
+  const c = defaults();
+  const t = await mount(manyRoots(c), c, { width: wideWidth, height: 20 });
+  const resize = async (width: number) => {
+    await act(async () => {
+      t.ui.resize(width, 20);
+    });
+    await t.ui.renderOnce();
+    await t.settle();
+  };
+  try {
+    await t.press("5");
+    // The last root, far below the first screenful, so the list has scrolled.
+    await t.press(c.keys.scratch);
+    for (let down = 0; down < 29; down++) await t.press("down");
+    await t.settle();
+    const chosen = selectedRow(t.frame()).match(/\/scratch\/root-\d+/)?.[0];
+    expect(chosen).toBe("/scratch/root-29");
+    // The list's own scroll box, which holds the scroll position: the same one
+    // at both widths, not a fresh one scrolled back to the top.
+    const scroller = () =>
+      (find(t, "split-list") as BaseRenderable | undefined)?.getChildren()[0];
+    const mounted = scroller();
+    expect(mounted === undefined).toBe(false);
+    for (const width of [wideWidth - 1, wideWidth]) {
+      await resize(width);
+      expect({ width, same: scroller() === mounted }).toEqual({
+        width,
+        same: true,
+      });
+      expect({
+        width,
+        row: selectedRow(t.frame()).includes(chosen ?? ""),
+      }).toEqual({ width, row: true });
+    }
+  } finally {
+    await t.close();
+  }
+});
+
+test("the panel draws a selected scratch root's failure whole, with no origin known", async () => {
+  const c = defaults();
+  const s = everyCauseSnapshot(c);
+  const error = `Scratch path is not a directory: /tmp/${"a-scratch-root-".repeat(4)}end`;
+  s.storage.scratch = [
+    { path: "/tmp/scratch", bytes: null, age: null, error, origin: null },
+  ];
+  const t = await mount(s, c, { width: wideWidth, height: 44 });
+  try {
+    await t.press("5");
+    await t.press(c.keys.scratch);
+    await t.settle();
+    const panel = present(find(t, "split-detail"), "the detail panel");
+    expect(cells(t, panel).includes(error.replace(/\s/g, ""))).toBe(true);
   } finally {
     await t.close();
   }

@@ -612,7 +612,10 @@ export const sideGap = 3;
  * row selected, and it scrolls by itself, because a detail can be taller than
  * the screen. Given none, the list is drawn alone, with the detail under it
  * where the screen asks for `below`; any other screen draws its detail itself,
- * under the selected row or not at all.
+ * under the selected row or not at all. The list sits at one place in the tree
+ * at every width, and the panel is added or dropped beside it, so a terminal
+ * resized across `wideWidth` keeps the list mounted, its scroll position and
+ * its selected row with it.
  */
 export function SplitPane({
   side,
@@ -638,22 +641,6 @@ export function SplitPane({
   useEffect(() => {
     if (panel.current) panel.current.scrollTop = 0;
   }, [item]);
-  if (side <= 0)
-    return (
-      <>
-        {children}
-        {below && detail && (
-          <box
-            id="split-detail"
-            flexDirection="column"
-            flexShrink={0}
-            marginTop={1}
-          >
-            {detail}
-          </box>
-        )}
-      </>
-    );
   return (
     <box flexDirection="row" flexGrow={1} minHeight={0} gap={sideGap}>
       <box
@@ -664,20 +651,32 @@ export function SplitPane({
         minHeight={0}
       >
         {children}
+        {side <= 0 && below && detail && (
+          <box
+            id="split-detail"
+            flexDirection="column"
+            flexShrink={0}
+            marginTop={1}
+          >
+            {detail}
+          </box>
+        )}
       </box>
-      <scrollbox
-        ref={panel}
-        id="split-detail"
-        width={side}
-        flexShrink={0}
-        minHeight={0}
-        scrollY
-        scrollbarOptions={scrollbar}
-        contentOptions={{ flexShrink: 0 }}
-      >
-        <Section title="Selected" width={side} marginTop={0} />
-        {detail}
-      </scrollbox>
+      {side > 0 && (
+        <scrollbox
+          ref={panel}
+          id="split-detail"
+          width={side}
+          flexShrink={0}
+          minHeight={0}
+          scrollY
+          scrollbarOptions={scrollbar}
+          contentOptions={{ flexShrink: 0 }}
+        >
+          <Section title="Selected" width={side} marginTop={0} />
+          {detail}
+        </scrollbox>
+      )}
     </box>
   );
 }

@@ -674,16 +674,29 @@ export function Storage({
       {
         color: over ? ui.warn : undefined,
         // The origin sits under the row rather than after its columns, where
-        // a narrow terminal cuts it and pushes the error out.
-        under: () =>
-          !item.session &&
-          item.scratch.origin !== null && (
-            <Field
-              label="Origin"
-              value={scratchOriginText(item.scratch.origin)}
-              wrap={wrap}
-            />
-          ),
+        // a narrow terminal cuts it and pushes the error out. The panel's
+        // narrower lists cut the error too, so the panel states it whole.
+        under: () => {
+          const error = wrap ? x.error : null;
+          const origin = item.session ? null : item.scratch.origin;
+          if (error === null && origin === null) return null;
+          return (
+            <>
+              {error !== null && (
+                <Line flexShrink={0} wrapMode="word" fg={ui.warn}>
+                  {safe(error)}
+                </Line>
+              )}
+              {origin !== null && (
+                <Field
+                  label="Origin"
+                  value={scratchOriginText(origin)}
+                  wrap={wrap}
+                />
+              )}
+            </>
+          );
+        },
       },
     );
   };
