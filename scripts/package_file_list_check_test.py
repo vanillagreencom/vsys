@@ -20,9 +20,19 @@ MANIFEST = "packaging/vsys-runtime-files.txt"
 
 sys.path.insert(0, str(CHECK.parent))
 
-from package_file_list_check import PAYLOAD_PREFIX, SCRUB_DROP_IN, parse_manifest  # noqa: E402
+from package_file_list_check import PAYLOAD_PREFIX, SCRUB_DROP_IN, SMART_SERVICE, parse_manifest  # noqa: E402
 
 PAYLOAD = parse_manifest(ROOT)
+# The scrub and drive reporters' rows outside the warden payload.
+REPORTER_ROWS = (
+    "lib/vsys/scripts/scrub-reporter/vsys-scrub-report",
+    SCRUB_DROP_IN,
+    "lib/tmpfiles.d/vsys-scrub.conf",
+    "lib/vsys/scripts/smart-reporter/vsys-smart-report",
+    SMART_SERVICE,
+    "lib/systemd/system/vsys-smart-report.timer",
+    "lib/tmpfiles.d/vsys-smart.conf",
+)
 
 
 class PackageFileListCheck(unittest.TestCase):
@@ -41,6 +51,7 @@ class PackageFileListCheck(unittest.TestCase):
             "packaging/vsys/PKGBUILD",
             "packaging/vsys-git/PKGBUILD",
             "install.sh",
+            "scripts/smart-reporter/vsys-smart-report.service",
             *(source for _mode, source in PAYLOAD.values()),
         ):
             source = ROOT / path
@@ -113,14 +124,10 @@ class PackageFileListCheck(unittest.TestCase):
                     manifest.write_text(text)
                 self.assertEqual(self.refusal(self.run_check(), prose), expected)
 
-    def test_scrub_reporter_rows_are_required(self) -> None:
+    def test_reporter_rows_are_required(self) -> None:
         manifest = self.repo / MANIFEST
         original = manifest.read_text()
-        for path in (
-            "lib/vsys/scripts/scrub-reporter/vsys-scrub-report",
-            SCRUB_DROP_IN,
-            "lib/tmpfiles.d/vsys-scrub.conf",
-        ):
+        for path in REPORTER_ROWS:
             with self.subTest(path):
                 rows = [line for line in original.splitlines(keepends=True) if f" {path} " in line]
                 self.assertEqual(len(rows), 1)
@@ -146,6 +153,25 @@ class PackageFileListCheck(unittest.TestCase):
                 self.assertEqual(
                     self.refusal(self.run_check(), prose=False).split()[0:2],
                     ["drop-in=wrong-command", f"path={SCRUB_DROP_IN}"],
+                )
+
+    def test_smart_service_is_the_installer_service_running_the_packaged_reporter(self) -> None:
+        service = self.repo / PAYLOAD[SMART_SERVICE][1]
+        original = service.read_text()
+        command = "ExecStart=/usr/lib/vsys/scripts/smart-reporter/vsys-smart-report /run/smartctl\n"
+        self.assertEqual(original.count(command), 1)
+        for name, old, new in (
+            ("unpackaged script", command, "ExecStart=/usr/local/bin/vsys-smart-report /run/smartctl\n"),
+            ("the reporter without its report directory", command, command.replace(" /run/smartctl", "")),
+            ("a timeout edited in one copy", "TimeoutStartSec=900\n", "TimeoutStartSec=90\n"),
+            ("a sandbox line dropped from one copy", "ProtectSystem=full\n", ""),
+        ):
+            with self.subTest(name):
+                self.assertEqual(original.count(old), 1)
+                service.write_text(original.replace(old, new))
+                self.assertEqual(
+                    self.refusal(self.run_check(), prose=False),
+                    f"smart-service=differs path={SMART_SERVICE}",
                 )
 
     def test_manifest_source_the_aur_workflow_does_not_watch_fails(self) -> None:
@@ -251,20 +277,20 @@ class PackageFunctions(unittest.TestCase):
         subprocess.run(["bash", "-euc", script], cwd=cwd, env=env, check=True)
         return pkgdir / "usr"
 
-    def assert_scrub_reporter(self, usr: Path) -> None:
-        for path in ("lib/vsys/scripts/scrub-reporter/vsys-scrub-report", SCRUB_DROP_IN, "lib/tmpfiles.d/vsys-scrub.conf"):
+    def assert_reporters(self, usr: Path) -> None:
+        for path in REPORTER_ROWS:
             mode, source = PAYLOAD[path]
             self.assertEqual((usr / path).stat().st_mode & 0o777, mode, path)
             self.assertEqual((usr / path).read_bytes(), (ROOT / source).read_bytes(), path)
 
-    def test_release_package_ships_scrub_reporter(self) -> None:
+    def test_release_package_ships_reporters(self) -> None:
         srcdir = self.root / "src"
         subprocess.run([str(ROOT / "packaging" / "stage-runtime-files.sh"), str(srcdir)], check=True)
         for name in ("vsys", "LICENSE", "README.md"):
             (srcdir / name).write_text("fixture\n")
-        self.assert_scrub_reporter(self.package("vsys", srcdir, srcdir))
+        self.assert_reporters(self.package("vsys", srcdir, srcdir))
 
-    def test_git_package_ships_scrub_reporter(self) -> None:
+    def test_git_package_ships_reporters(self) -> None:
         srcdir = self.root / "src"
         checkout = srcdir / "vsys-git"
         for path in (MANIFEST, "packaging/stage-runtime-files.sh", *(source for _mode, source in PAYLOAD.values())):
@@ -272,7 +298,7 @@ class PackageFunctions(unittest.TestCase):
             shutil.copy2(ROOT / path, checkout / path)
         for name in ("vsys", "LICENSE", "README.md"):
             (checkout / name).write_text("fixture\n")
-        self.assert_scrub_reporter(self.package("vsys-git", srcdir, srcdir))
+        self.assert_reporters(self.package("vsys-git", srcdir, srcdir))
 
 
 class InstallScript(unittest.TestCase):

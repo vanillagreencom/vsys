@@ -1,0 +1,1 @@
+- The vsys and vsys-git packages now install the drive reporter, and Storage and Settings offer to enable its timer instead of the `curl` installer, while udisks2 still answers until the timer writes a report.

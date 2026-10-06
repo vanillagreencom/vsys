@@ -31,6 +31,9 @@
 | `lib/vsys/scripts/scrub-reporter/vsys-scrub-report` | The scrub reporter, which the packaged drop-in runs as root after each Btrfs scrub. |
 | `lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf` | The drop-in that runs it. Only the packages install it; `install.sh` does not. |
 | `lib/tmpfiles.d/vsys-scrub.conf` | The tmpfiles line that creates `/var/lib/btrfs-scrub`. Only the packages install it. |
+| `lib/vsys/scripts/smart-reporter/vsys-smart-report` | The drive reporter, which the packaged service runs as root. |
+| `lib/systemd/system/vsys-smart-report.service`, `lib/systemd/system/vsys-smart-report.timer` | The service that runs it and the hourly timer, which no package enables. Only the packages install them. |
+| `lib/tmpfiles.d/vsys-smart.conf` | The tmpfiles line that creates `/run/smartctl`. Only the packages install it. |
 
 ## Secrets
 
@@ -46,7 +49,7 @@ Running the publish script by hand takes `AUR_SSH_KEY_FILE` instead, the path to
 
 `packaging/vsys-git/PKGBUILD` builds from `main` with Bun and stages the same `lib/` files from the checkout. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when `main` or the warden files move.
 
-Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`, and vsys and the warden run the systemd tools. Feature programs are optional dependencies; [warden install](architecture/warden-install.md) lists them. They install no systemd user units and enable no timer. They do install the scrub reporter's `btrfs-scrub@.service` drop-in and tmpfiles line, which act only when a `btrfs-scrub@` timer the reader enabled runs a scrub. The user runs `vsys warden install` to write units into the user's config directory.
+Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`, and vsys and the warden run the systemd tools. Feature programs are optional dependencies; [warden install](architecture/warden-install.md) lists them. They install no systemd user units and enable no timer. They do install the scrub reporter's `btrfs-scrub@.service` drop-in and tmpfiles line, which act only when a `btrfs-scrub@` timer the reader enabled runs a scrub, and the drive reporter's service, timer and tmpfiles line, which report only once the reader enables `vsys-smart-report.timer`. The user runs `vsys warden install` to write units into the user's config directory.
 
 Both AUR packages disable makepkg strip and debug splitting, because stripping a Bun compiled binary removes its appended program bundle.
 

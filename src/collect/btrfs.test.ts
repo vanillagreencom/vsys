@@ -8,7 +8,7 @@ import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { scrubTimer } from "./scrub-timers";
+import { scrubTimer, smartTimer } from "./scrub-timers";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -725,6 +725,7 @@ test("storage names the scrub timers the packaged reporter lacks, and only where
   // systemd's answer is stubbed: every timer disabled.
   const units = {
     dropIn,
+    smartTimer: join(f.root, "units", "vsys-smart-report.timer"),
     states: async (names: string[]) => names.map(() => "disabled"),
   };
   const packaged = await new StorageCollector(
@@ -740,6 +741,27 @@ test("storage names the scrub timers the packaged reporter lacks, and only where
     1000,
   );
   expect("missingScrubTimers" in unread).toBe(false);
+});
+
+test("storage names the packaged drive reporter's timer where systemd calls it disabled, and only where it is given the units", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const timer = join(f.root, "units", "vsys-smart-report.timer");
+  const units = {
+    dropIn: join(f.root, "units", "vsys-report.conf"),
+    smartTimer: timer,
+    states: async (names: string[]) => names.map(() => "disabled"),
+  };
+  const collect = (given: typeof units | null) =>
+    new StorageCollector(null, null, undefined, given).collect(
+      new Reader(),
+      f.config,
+      1000,
+    );
+  expect("missingSmartTimers" in (await collect(units))).toBe(false);
+  f.write(timer, "[Timer]\n");
+  expect((await collect(units)).missingSmartTimers).toEqual([smartTimer]);
+  expect("missingSmartTimers" in (await collect(null))).toBe(false);
 });
 
 test("a scrub timer on a mount btrfsMounts leaves out still covers the filesystem it shares", async () => {
@@ -761,6 +783,7 @@ test("a scrub timer on a mount btrfsMounts leaves out still covers the filesyste
   const enabled = new Set<string>();
   const units = {
     dropIn,
+    smartTimer: join(f.root, "units", "vsys-smart-report.timer"),
     states: async (names: string[]) =>
       names.map((name) => (enabled.has(name) ? "enabled" : "disabled")),
   };

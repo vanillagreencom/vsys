@@ -22,12 +22,16 @@ from refusal import Refusal, refuse, report
 # links agent-confine, which runs agent-confine-lineage-capped beside it.
 # The scrub reporter is one owned set: its drop-in runs the report script
 # after every btrfs scrub, and its tmpfiles line creates the report directory
-# whose absence Storage reads as no reporter. The manifest may ship more.
+# whose absence Storage reads as no reporter. The drive reporter is another:
+# its timer runs its service, which runs its script, into the directory its
+# tmpfiles line creates. The manifest may ship more.
 SCRUB_REPORTER = "lib/vsys/scripts/scrub-reporter/vsys-scrub-report"
 SCRUB_DROP_IN = "lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf"
 # The one command the packaged drop-in may run: the packaged reporter, given
 # the scrubbed mount (%f) and the report directory vsys's scrubDir names.
 SCRUB_COMMAND = f"/usr/{SCRUB_REPORTER} %f /var/lib/btrfs-scrub"
+SMART_REPORTER = "lib/vsys/scripts/smart-reporter/vsys-smart-report"
+SMART_SERVICE = "lib/systemd/system/vsys-smart-report.service"
 REQUIRED_MODES = {
     "lib/vsys/warden/install": 0o755,
     "lib/vsys/warden/agent-warden": 0o755,
@@ -40,6 +44,10 @@ REQUIRED_MODES = {
     SCRUB_REPORTER: 0o755,
     SCRUB_DROP_IN: 0o644,
     "lib/tmpfiles.d/vsys-scrub.conf": 0o644,
+    SMART_REPORTER: 0o755,
+    SMART_SERVICE: 0o644,
+    "lib/systemd/system/vsys-smart-report.timer": 0o644,
+    "lib/tmpfiles.d/vsys-smart.conf": 0o644,
 }
 # Every row ships its source at PAYLOAD_PREFIX + source path. warden/install
 # finds ../data/agent-tools.json and systemd/ beside itself, so the installed
@@ -104,6 +112,22 @@ def check_scrub_drop_in(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
     commands = [line.strip() for line in re.findall(r"^ExecStopPost=(.*)$", text, flags=re.MULTILINE)]
     if commands != [SCRUB_COMMAND]:
         refuse(f"drop-in=wrong-command path={SCRUB_DROP_IN} value={'|'.join(commands)}")
+
+
+def check_smart_service(repo: Path, rows: dict[str, tuple[int, str]]) -> None:
+    """The packaged service is the installer's service with one line changed:
+    it runs the reporter the package ships, at the path pacman installs it to.
+    Any other difference, such as a timeout or a sandbox line edited in one
+    copy only, would make a packaged reporter run unlike an installed one."""
+    installed = read_text(repo / "scripts" / "smart-reporter" / "vsys-smart-report.service")
+    expected = re.sub(
+        r"^ExecStart=.*$",
+        lambda _match: f"ExecStart=/usr/{SMART_REPORTER} /run/smartctl",
+        installed,
+        flags=re.MULTILINE,
+    )
+    if read_text(repo / rows[SMART_SERVICE][1]) != expected:
+        refuse(f"smart-service=differs path={SMART_SERVICE}")
 
 
 def read_bytes(path: Path) -> bytes:
@@ -237,6 +261,7 @@ def check_installed_root(root: Path, rows: dict[str, tuple[int, str]]) -> None:
 def run(repo: Path, installed_root: Path | None) -> None:
     rows = parse_manifest(repo)
     check_scrub_drop_in(repo, rows)
+    check_smart_service(repo, rows)
     check_stage_script(repo, rows)
     check_release_workflow(repo)
     check_aur_git_workflow(repo, rows)

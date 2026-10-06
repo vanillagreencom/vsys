@@ -10,3 +10,7 @@
 755 lib/vsys/scripts/scrub-reporter/vsys-scrub-report scripts/scrub-reporter/vsys-scrub-report
 644 lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf packaging/scrub-reporter/vsys-report.conf
 644 lib/tmpfiles.d/vsys-scrub.conf scripts/scrub-reporter/vsys-scrub.conf
+755 lib/vsys/scripts/smart-reporter/vsys-smart-report scripts/smart-reporter/vsys-smart-report
+644 lib/systemd/system/vsys-smart-report.service packaging/smart-reporter/vsys-smart-report.service
+644 lib/systemd/system/vsys-smart-report.timer scripts/smart-reporter/vsys-smart-report.timer
+644 lib/tmpfiles.d/vsys-smart.conf scripts/smart-reporter/vsys-smart.conf

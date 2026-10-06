@@ -18,6 +18,7 @@ import { ScratchCollector } from "./scratch";
 import { counted, isReportName, parseScrub, stated } from "./scrub";
 import {
   missingScrubTimers,
+  missingSmartTimer,
   type ScrubMount,
   type ScrubUnits,
 } from "./scrub-timers";
@@ -287,9 +288,13 @@ export class StorageCollector {
     const smart = smartReports(r, c);
     this.smartDir = smart.outcome;
     // The author's timer leaves its reports where `smartDir` points, so a
-    // listing that answers keeps udisks out of the reading entirely.
+    // listing that holds a report keeps udisks out of the reading entirely.
+    // An empty one is a reporter that has not run, or a packaged one whose
+    // timer is not enabled, and udisks still answers for it.
     const udisks =
-      smart.outcome !== null && this.udisks ? await this.udisks.read() : null;
+      (smart.outcome !== null || !smart.reports.size) && this.udisks
+        ? await this.udisks.read()
+        : null;
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
       devices: collectDevices(r, c, smart.reports, udisks?.drives ?? null),
@@ -486,6 +491,8 @@ export class StorageCollector {
         mountInfo && scrubMounts,
       );
       if (missing !== undefined) storage.missingScrubTimers = missing;
+      const smartTimer = await missingSmartTimer(r, this.scrubUnits);
+      if (smartTimer !== undefined) storage.missingSmartTimers = smartTimer;
     }
     this.scrubDir = undefined;
     try {

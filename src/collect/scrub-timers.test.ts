@@ -6,8 +6,10 @@ import { Reader } from "./io";
 import {
   escapePath,
   missingScrubTimers,
+  missingSmartTimer,
   type ScrubUnits,
   scrubTimer,
+  smartTimer,
 } from "./scrub-timers";
 
 test("a mount is escaped as systemd-escape --path writes it", () => {
@@ -30,13 +32,14 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true });
 });
 /**
- * The packaged drop-in in a scratch directory, and a stub for systemd's
- * answer: each unit's `is-enabled` word, `disabled` where none is named, so
- * no test asks the real systemd.
+ * The packaged drop-in and drive reporter timer in a scratch directory, and a
+ * stub for systemd's answer: each unit's `is-enabled` word, `disabled` where
+ * none is named, so no test asks the real systemd.
  */
 function units(
   o: {
     dropIn?: boolean;
+    smartTimer?: boolean;
     words?: Record<string, string>;
     answer?: "none" | "throws";
   } = {},
@@ -45,9 +48,12 @@ function units(
   roots.push(root);
   const dropIn = join(root, "vsys-report.conf");
   if (o.dropIn ?? true) writeFileSync(dropIn, "[Service]\n");
+  const timer = join(root, smartTimer);
+  if (o.smartTimer ?? true) writeFileSync(timer, "[Timer]\n");
   const asked: string[][] = [];
   return {
     dropIn,
+    smartTimer: timer,
     asked,
     states: async (names) => {
       asked.push(names);
@@ -179,4 +185,60 @@ test("a drop-in or mount list that could not be read leaves the reporter unknown
   const unread = units();
   expect(await missingScrubTimers(new Reader(), unread, null)).toBe(null);
   expect(unread.asked).toEqual([]);
+});
+
+test("the packaged drive reporter's timer is offered only where systemd calls it disabled", async () => {
+  for (const [word, missing] of [
+    ["disabled", [smartTimer]],
+    ["enabled", []],
+    ["enabled-runtime", []],
+    ["masked", []],
+    ["not-found", []],
+    ["a word vsys does not know", []],
+  ] as const) {
+    const r = new Reader();
+    const systemd = units({ words: { [smartTimer]: word } });
+    expect({
+      word,
+      missing: await missingSmartTimer(r, systemd),
+      asked: systemd.asked,
+      errors: r.errors.length,
+    }).toEqual({
+      word,
+      missing: [...missing],
+      asked: [[smartTimer]],
+      errors: 0,
+    });
+  }
+});
+
+test("no packaged drive reporter timer is no packaged reporter, and systemd is not asked", async () => {
+  const systemd = units({ smartTimer: false });
+  expect(await missingSmartTimer(new Reader(), systemd)).toBe(undefined);
+  expect(systemd.asked).toEqual([]);
+});
+
+test("a drive reporter timer that could not be read, or that systemd did not answer for, stays unknown", async () => {
+  for (const answer of ["none", "throws"] as const) {
+    const r = new Reader();
+    expect({
+      answer,
+      missing: await missingSmartTimer(r, units({ answer })),
+      errors: r.errors.map((e) => e.source),
+    }).toEqual({
+      answer,
+      missing: null,
+      errors: answer === "throws" ? ["systemctl"] : [],
+    });
+  }
+  // A timer path whose parent is a file cannot be stat'ed for a reason
+  // other than its absence.
+  const blocked = units();
+  const r = new Reader();
+  const child = join(blocked.smartTimer, "child");
+  expect(await missingSmartTimer(r, { ...blocked, smartTimer: child })).toBe(
+    null,
+  );
+  expect(r.errors.map((e) => e.source)).toEqual([child]);
+  expect(blocked.asked).toEqual([]);
 });
