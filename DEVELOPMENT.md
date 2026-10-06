@@ -25,7 +25,7 @@ A maintainer works on the collector that reads the machine, the model that decid
 - Scratch traversal and process reads each run in a worker, and Bun's bundler does not follow a worker's URL. A new worker goes into the entry list in `scripts/build.ts` and the `ARTIFACTS` in `scripts/ci.py`, or a shipped build cannot start it; [process collection](docs/architecture/processes.md) states the whole chain and the checks that enforce it.
 - The traversal's processor bound lives in a timer on a worker thread, where a unit test stages the clock and no test can see the wait. `bun run bench:scratch` measures it, and the Benchmarks section below says what it proves and what it refuses.
 - `tsconfig.json` sets `noUncheckedIndexedAccess`. An indexed read is guarded, or restructured so the compiler sees it present, never asserted with `!` or cast. A test that depends on an element being there reads it through `present()` in `src/test/present.ts`, which fails at the read and names what was missing.
-- Docs change in the same commit as the code they describe. The `doc-drift-check` hook reads the `Covers:` line of each file in `docs/architecture/` and shows a notice when covered code changed without them.
+- Docs change in the same commit as the code they describe.
 
 ## Run and debug
 

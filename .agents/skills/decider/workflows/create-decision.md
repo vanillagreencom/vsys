@@ -18,13 +18,13 @@ Derive a 2-5 word kebab-case descriptor from the summary — "Use Redis for sess
 
 ## 2. Write the decision file
 
-Create `[DECISIONS_DIR]/[DECISION_ID]-[DESCRIPTOR].md` from `templates/decision-entry.md`, sized to scope. Required: today's date, `**Status**: Active`, the research ref or `—`, what was chosen, why, and the revisit conditions. Keep it tight.
+Create `[DECISIONS_DIR]/[DECISION_ID]-[DESCRIPTOR].md` from `templates/decision-entry.md`. Required: today's date, `**Status**: Active`, the issue or evidence link or `—`, what was chosen, why, the main rejected alternative, and the revisit condition. Nothing longer: the bar and the body are the skill's `SKILL.md` § What warrants a decision record, and why.
 
 Link related decisions as `[DECISION_ID](DECISION_ID-descriptor.md)`, and add `**Refines**:` when this extends prior work.
 
 ## 3. Add the INDEX row
 
-Append a row per `templates/index-row.md` at the end of the table, before the `---` separator. Cells are 5-15 word summaries; the Link cell names the file just written.
+Append a row per `templates/index-row.md` at the end of the table, before the `---` separator. Each cell holds what that template names; the Link cell names the file just written.
 
 ## 4. Restate partially superseded decisions
 
@@ -32,7 +32,7 @@ Skip when no existing decision is affected. Otherwise, for each active decision 
 
 ## 5. Mark the code
 
-Skip when no existing code is affected. At each implementation point tied to this decision:
+Skip when no existing code is affected. At each implementation point that carries out this decision, and nowhere else:
 
 ```
 // REVISIT([DECISION_ID]): [what would change]

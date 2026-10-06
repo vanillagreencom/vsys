@@ -79,7 +79,7 @@ Route `<command> [args]` to its workflow and follow [Workflow Execution](#workfl
 | `pr-view-json` | PR view JSON; `status=no_pr` exits 0 and routes to PR creation, not an error |
 | `resolve-base-branch` | Print a worktree's base branch; exits 1 rather than guess |
 | `sync-base` | Resolve, fetch, and fast-forward the checkout that owns the base branch; prints the branch name |
-| `container-close` | Serialize a Linear container close across linked checkouts; prints `closed` or `deferred`, with closed diagnostics on stderr |
+| `container-close` | Serialize a Linear container close across linked checkouts; prints `closed`, `deferred` or a rate-limit `held`, with closed diagnostics on stderr |
 | `base-freshness` | Gate the review cycle on a current base, or on a clean merge onto a merge-queue base; unverifiable = stale |
 | `review-artifact-check` | Validate a reviewer's JSON artifact, the sole reviewer completion condition |
 | `dev-return-write` | Write a dev agent's round-scoped completion artifact; never hand-author the JSON |
@@ -121,7 +121,7 @@ Every script takes `--help` bar `pr-view-json` and `resolve-base-branch`, whose 
 
 ## Configuration
 
-Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Settings; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `python3` 3.8+ for lane-mail and the SSH host provider; `flock` and `setsid` (util-linux); `timeout` or `gtimeout` (coreutils) for `dev-validate-run`, and `perl` for its `--attached`. Optional: `systemd-run` with a user manager, which the orch job runner's jobs are contained in; a launch with no `--cap` (the fleet watch, the waiters and the succession's helper) also needs it to linger (`loginctl enable-linger`) ([references/job-units.md](references/job-units.md)); `setsid` stays the fallback elsewhere.
+Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Setup; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `python3` 3.8+ for lane-mail and the SSH host provider; `flock` and `setsid` (util-linux); `timeout` or `gtimeout` (coreutils) for `dev-validate-run`, and `perl` for its `--attached`. Optional: `systemd-run` with a user manager, which the orch job runner's jobs are contained in; a launch with no `--cap` (the fleet watch, the waiters and the succession's helper) also needs it to linger (`loginctl enable-linger`) ([references/job-units.md](references/job-units.md)); `setsid` stays the fallback elsewhere.
 
 ---
 
