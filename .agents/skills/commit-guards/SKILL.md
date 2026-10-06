@@ -50,10 +50,10 @@ repo-effects:
 | Check | Verdict |
 |---|---|
 | **todo-ban** | Any work marker (TODO, FIXME, HACK, XXX in comment-marker shapes) in a tracked, non-excluded file fails. No baseline. |
-| **byte-ceiling** | A new tracked file over the configured ceiling fails; an existing oversized file may hold or shrink but may not grow; lockfiles are exempt. |
+| **byte-ceiling** | A new tracked file over the configured ceiling fails; an existing oversized file may hold or shrink but may not grow; Markdown files and lockfiles are exempt. |
 | **suppression-ban** | Blanket lint suppressions fail; reasonless Rust dead or unused allows may only tighten against the baseline. |
 | **conflict-markers** | An unresolved merge-conflict marker in a tracked, non-excluded file fails. |
-| **changelog-entries** | Each `COMMIT_GUARDS_CHANGELOG_PATHS` fragment is one Markdown list item in a Keep a Changelog section and at most `COMMIT_GUARDS_CHANGELOG_CAP` characters. |
+| **changelog-entries** | Each `COMMIT_GUARDS_CHANGELOG_PATHS` fragment is one Markdown list item in a Keep a Changelog section. |
 | **prose** | A history reference in Markdown named by `COMMIT_GUARDS_PROSE_PATHS` fails; `COMMIT_GUARDS_CHECKS` controls whether the lane runs. |
 | **md-format** | A hard-wrapped paragraph or list item, a missing blank line around a heading, fence or list, or a trailing-double-space break in Markdown named by `COMMIT_GUARDS_MD_PATHS` fails; `md-reflow` is the remedy. |
 | **md-refs** | Dead references in consumer-authored citing files fail; lock-listed citing files warn unless `--strict` is set. Skipped sources are one count per reason on the summary line, with a path named only where a judged reference lands on it. `COMMIT_GUARDS_MD_REFS_PATHS` selects documents; `COMMIT_GUARDS_MD_REFS_SOURCE_PATHS` selects source comments and TOML strings for `§` citations. The supported forms are in [CHECKS.md § md-refs](CHECKS.md#md-refs). |
@@ -100,7 +100,6 @@ Exclude immutable first-party sources, including applied SQL migrations, from th
 | `COMMIT_GUARDS_SUPPRESSION_BASELINE` | `tools/suppression-baseline.tsv` | Bare-allow ratchet baseline. |
 | `COMMIT_GUARDS_CONFLICT_EXCLUDES` | `tools/conflict-markers-excludes` | conflict-markers exclusion list. |
 | `COMMIT_GUARDS_SECRETS_EXCLUDES` | `tools/secrets-excludes` | secrets exclusion list, the lane's only allowlist. |
-| `COMMIT_GUARDS_CHANGELOG_CAP` | `200` | Characters per changelog entry. |
 | `COMMIT_GUARDS_CHANGELOG_PATHS` | `changelog.d/*/*.md` | Space-separated globs naming the changelog fragments, matched against the full repo-relative path (`*` crosses `/`). |
 | `COMMIT_GUARDS_CHANGELOG_RECORD` | `CHANGELOG.md` | The collation destination; empty disables collation. |
 | `COMMIT_GUARDS_CHANGELOG_VERSION_PATHS` | *(empty)* | JSON version-file globs for the [version-bump check](CHECKS.md#version-bumps); empty disables it. |
@@ -121,7 +120,7 @@ Exclude immutable first-party sources, including applied SQL migrations, from th
 | `COMMIT_GUARDS_PRE_COMMIT_LOCAL_PATHS` | *(empty)* | Space-separated globs naming the paths the repo-local entry reads, matched against the full repo-relative path (`*` crosses `/`). The entry runs only for a commit that touches a matching path; empty runs it on every commit. |
 | `COMMAND_SAFETY_DENY_PATTERN` | a `systemd-run` memory cap in K or M | Command text the `command-safety` hook refuses, a POSIX extended regular expression the hook reads through this skill's loader where the `command-safety` bundle installs it; the hook applies the default with no setting, and `^$` turns matching off. |
 
-Settings follow [README.md § Settings](README.md#settings). `COMMIT_GUARDS_SETTINGS_FILE=/dev/null` skips file sources; `COMMIT_GUARDS_CHANGELOG_COLLATE=1` is environment-only, authorizes `--collate` on a clean index and working tree, and lets `commit-msg` count a record change as the release changelog entry.
+Settings follow [README.md § Setup](README.md#setup). `COMMIT_GUARDS_SETTINGS_FILE=/dev/null` skips file sources; `COMMIT_GUARDS_CHANGELOG_COLLATE=1` is environment-only, authorizes `--collate` on a clean index and working tree, and lets `commit-msg` count a record change as the release changelog entry.
 
 **Excludes format.** `pattern<TAB>reason` per line (shell glob against the full repo-relative path; `*` crosses `/`); a pattern without a reason is a config error. A pattern opening with `!` carves its matches back into the scanned set, and wins over every exclusion row whatever the order. To exclude a path that literally begins with `!`, escape it: `\!foo`. **Baseline format.** `path<TAB>N`, `LC_ALL=C` sorted, unique paths, N a positive integer: a count for suppression-ban, an object size in bytes for byte-ceiling. Initial suppression baseline: [CHECKS.md § suppression-ban](CHECKS.md#suppression-ban). Hook install and removal details: [DEVELOPMENT.md](https://github.com/vanillagreencom/kendex/blob/main/skills/commit-guards/DEVELOPMENT.md).
 

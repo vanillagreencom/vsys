@@ -135,9 +135,6 @@ source = "kendex"
 [hooks.command-safety]
 source = "kendex"
 
-[hooks.doc-drift-check]
-source = "kendex"
-
 [hooks.pre-commit-check]
 source = "kendex"
 

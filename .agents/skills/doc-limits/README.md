@@ -1,6 +1,14 @@
 # doc-limits
 
-A byte-size check for repository documents. It limits the Markdown that agents read and HTML references under `docs/`, and reports documents that exceed their path class.
+A byte-size check for the Markdown documents a coding harness loads at every turn. It reports each document that exceeds its path class.
+
+## Features
+
+- Check document sizes against byte limits.
+- Apply project limits by path pattern.
+- Exclude generated files through the render inventory and other exceptions through reasoned rows.
+- Check staged documents with staged policy.
+- Fail the check for a document over its limit.
 
 ## Install
 
@@ -8,25 +16,20 @@ A byte-size check for repository documents. It limits the Markdown that agents r
 kendex add vanillagreencom/kendex --skill doc-limits
 ```
 
-Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3.2 is supported. kendex also installs docs-writing, whose per-file-type rules each over-limit finding names. The commit-guards pre-commit and pre-push hooks run the installed check.
-
-## Features
-
-- Check document sizes against byte limits.
-- Name the docs-writing rule that decides how an over-limit document may change.
-- Apply project limits by path pattern.
-- Exclude generated files through the render inventory and other exceptions through reasoned rows.
-- Check staged documents with staged policy.
-- Fail the check for an `AGENTS.md` or `SKILL.md` over its limit, and warn for any other document over its limit.
-
 ## How it works
 
-The checker selects tracked Markdown documents and HTML files under `docs/`. It selects each document's first matching size class. It compares the byte count with that limit and reports every oversized document. The check leaves the files and index unchanged.
-
-## Settings
-
-Set project values in `kendex.settings.toml` under `[env]`. Local overrides use `.kendex/settings.toml` or `.env.local`. Process values have priority. `doc-limits --help` lists the settings and flags.
+The checker measures every tracked `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and `SKILL.md`, each under its first matching class. It compares the byte count with that limit and reports every oversized document. The check leaves the files and index unchanged.
 
 ## Path classes
 
-Set `DOC_LIMITS_CLASSES` to override document limits. Each entry uses `pattern=Nk`, with semicolons between entries. The `k` suffix means 1024 bytes. [references/policy.md](references/policy.md) defines class selection and reasoned exclusions.
+Set `DOC_LIMITS_CLASSES` to override the limit of a measured file. Each entry uses `pattern=Nk`, with semicolons between entries. The `k` suffix means 1024 bytes. [references/policy.md](references/policy.md) defines class selection and reasoned exclusions.
+
+## Setup
+
+Requires Git, Bash, jq, the commit-guards skill and standard POSIX tools. Bash 3.2 is supported. The commit-guards pre-commit and pre-push hooks run the installed check.
+
+Set project values in `kendex.settings.toml` under `[env]`. Local overrides use `.kendex/settings.toml` or `.env.local`. Process values have priority. `doc-limits --help` lists the settings and flags.
+
+## Licence
+
+MIT, in the repository's LICENSE file.
