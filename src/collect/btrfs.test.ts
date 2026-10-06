@@ -8,7 +8,7 @@ import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { scrubTimer, smartTimer } from "./scrub-timers";
+import { type ScrubUnits, scrubTimer, smartTimer } from "./scrub-timers";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -747,12 +747,12 @@ test("storage names the packaged drive reporter's timer where systemd calls it d
   const f = fixture();
   fixtures.push(f);
   const timer = join(f.root, "units", "vsys-smart-report.timer");
-  const units = {
+  const units: ScrubUnits = {
     dropIn: join(f.root, "units", "vsys-report.conf"),
     smartTimer: timer,
     states: async (names: string[]) => names.map(() => "disabled"),
   };
-  const collect = (given: typeof units | null) =>
+  const collect = (given: ScrubUnits | null) =>
     new StorageCollector(null, null, undefined, given).collect(
       new Reader(),
       f.config,
@@ -761,6 +761,10 @@ test("storage names the packaged drive reporter's timer where systemd calls it d
   expect("missingSmartTimers" in (await collect(units))).toBe(false);
   f.write(timer, "[Timer]\n");
   expect((await collect(units)).missingSmartTimers).toEqual([smartTimer]);
+  // systemd that does not answer leaves the timer unknown, not enabled.
+  expect(
+    (await collect({ ...units, states: async () => null })).missingSmartTimers,
+  ).toBe(null);
   expect("missingSmartTimers" in (await collect(null))).toBe(false);
 });
 

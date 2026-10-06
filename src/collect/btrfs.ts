@@ -197,7 +197,8 @@ export class StorageCollector {
     private kernelLog: KernelLog | null = null,
     /**
      * udisks, asked for lifetime writes where no drive report directory can
-     * be listed. A collector built without one never asks the system bus.
+     * be listed or the one listed holds no report. A collector built without
+     * one never asks the system bus.
      */
     private udisks: Udisks | null = null,
     /**
@@ -209,8 +210,9 @@ export class StorageCollector {
      */
     sharedFinishedScrub?: FinishedScrubMemory,
     /**
-     * Where the packaged scrub reporter's drop-in and the enabled timers are
-     * read. A collector built without them reads no systemd configuration.
+     * Where the packaged scrub reporter's drop-in, the drive reporter's
+     * timer and the enabled timers are read. A collector built without them
+     * reads no systemd configuration.
      */
     private scrubUnits: ScrubUnits | null = null,
   ) {
@@ -290,11 +292,10 @@ export class StorageCollector {
     // The author's timer leaves its reports where `smartDir` points, so a
     // listing that holds a report keeps udisks out of the reading entirely.
     // An empty one is a reporter that has not run, or a packaged one whose
-    // timer is not enabled, and udisks still answers for it.
-    const udisks =
-      (smart.outcome !== null || !smart.reports.size) && this.udisks
-        ? await this.udisks.read()
-        : null;
+    // timer is not enabled, and udisks still answers for it; so does one
+    // holding only the hidden file a first report is written under.
+    const reported = [...smart.reports.keys()].some(isReportName);
+    const udisks = !reported && this.udisks ? await this.udisks.read() : null;
     const storage: Storage = {
       mountsAvailable: mountInfo !== null,
       devices: collectDevices(r, c, smart.reports, udisks?.drives ?? null),

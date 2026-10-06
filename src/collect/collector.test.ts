@@ -1378,7 +1378,8 @@ test("a report directory holding no report still lets udisks answer, as a packag
   const f = setup();
   const calls: string[][] = [];
   f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
-  mkdirSync(f.config.smartDir, { recursive: true });
+  // The hidden name the reporter writes its first report under is no report.
+  f.write(join(f.config.smartDir, ".nvme0n1.tmp"), "");
   const s = await withUdisks(f, fakeBus([udisksDrive], calls)).sample();
   expect(s.storage.devices?.map((d) => [d.name, d.source])).toEqual([
     ["nvme0n1", "udisks"],

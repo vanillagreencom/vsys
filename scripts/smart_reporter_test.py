@@ -290,6 +290,34 @@ esac
             self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=timeout misconfigured")
             self.assertFalse(reports.exists(), "a missing timeout must refuse before any report directory is made")
 
+    def test_a_missing_smartctl_fails_loudly_and_writes_no_report(self) -> None:
+        with scratch() as tmp:
+            base = Path(tmp)
+            # A PATH holding the reporter's other commands and no smartctl, as
+            # a package installed without smartmontools leaves it: a report of
+            # timeout's own error line would keep udisks2 from answering.
+            restricted = base / "restricted"
+            restricted.mkdir()
+            for name in ("timeout", "true", "mkdir", "mv", "rm"):
+                found = shutil.which(name)
+                if found is None:
+                    raise AssertionError(f"{name}=missing: the reporter needs it")
+                (restricted / name).symlink_to(found)
+            sys_block = base / "block"
+            (sys_block / "nvme0n1").mkdir(parents=True)
+            (sys_block / "nvme0n1" / "device").mkdir()
+            reports = base / "reports"
+            done = subprocess.run(
+                [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                env={"PATH": str(restricted), "LC_ALL": "C", "SYS_BLOCK": str(sys_block)},
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 1)
+            self.assertEqual(done.stderr.splitlines()[0], "vsys-smart-report: command=smartctl missing")
+            self.assertFalse(reports.exists())
+
     def test_an_invalid_smartctl_timeout_fails_loudly_instead_of_every_drive_going_unknown(self) -> None:
         with scratch() as tmp:
             base = Path(tmp)

@@ -441,7 +441,10 @@ test("with the packaged drive reporter, the drive offer enables its timer and ne
   s.capabilities = capabilitySnapshot().map((cap) =>
     cap.id === "smart" ? { ...cap, available: false, failure: "absent" } : cap,
   );
+  // The scrub reporter's timers are not the drive reporter's.
+  s.storage.missingScrubTimers = ["btrfs-scrub@-.timer"];
   expect(reporterOffer(s, c, "smart")?.command).toBe(driveReporterInstall);
+  s.storage.missingScrubTimers = undefined;
   const timer = "vsys-smart-report.timer";
   const enable = shellLine(["sudo", "systemctl", "enable", "--now", timer]);
   s.storage.missingSmartTimers = [timer];

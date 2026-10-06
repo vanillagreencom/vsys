@@ -518,7 +518,7 @@ export function reporterOffer(
           sentence:
             id === "scrub"
               ? `The scrub reporter is installed with vsys and reports each check, but no timer checks ${count(timers.length, "filesystem")}: ${timers.join(", ")}.`
-              : `The drive reporter is installed with vsys, but its timer ${timers.join(", ")} is not enabled, so no smartctl report reaches vsys. The reporter needs smartctl, from smartmontools.`,
+              : `The drive reporter is installed with vsys, but its timer ${timers.join(", ")} is not enabled, so no new smartctl report is written. The reporter needs smartctl, from smartmontools.`,
           command: shellLine([
             "sudo",
             "systemctl",
