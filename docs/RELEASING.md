@@ -3,7 +3,7 @@
 ## Procedure
 
 1. From a clean index and working tree, set `COMMIT_GUARDS_CHANGELOG_COLLATE=1` and run `.agents/skills/commit-guards/scripts/changelog-entries --collate`. It folds the `changelog.d` fragments into the `[Unreleased]` section of `CHANGELOG.md` and deletes them. A nonzero exit halts the release.
-2. Set `version` in `package.json` to the tag without its leading `v`.
+2. Set `version` in `package.json` to the release's version, picked by [the commit-guards release-version rule](../.agents/skills/commit-guards/CHECKS.md#release-versions).
 3. Move the collated entries under a new `## [<version>] - <date>` heading in `CHANGELOG.md`, leaving an empty `## [Unreleased]` above it. Confirm every breaking change carries its **Breaking** call-out and its migration note.
 4. Commit with `COMMIT_GUARDS_CHANGELOG_COLLATE=1` set. That declaration is what lets the `commit-msg` lane count the `CHANGELOG.md` change as the entry the version bump owes.
 5. Tag `v<version>` and push the tag.
