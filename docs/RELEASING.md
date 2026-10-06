@@ -14,9 +14,10 @@
 
 | Job | Runner | Output |
 | --- | --- | --- |
+| `create` | `ubuntu-latest` | A draft GitHub Release for the tag |
+| `reporter` | `ubuntu-latest` | `scrub-reporter.sha256` and `smart-reporter.sha256`, uploaded to the release |
 | `build` | `ubuntu-latest`, `ubuntu-24.04-arm` | `vsys-<tag>-linux-<arch>.tar.gz`, each holding `vsys`, `LICENSE`, `README.md` and `lib/` |
-| `reporter` | `ubuntu-latest` | `scrub-reporter.sha256` and `smart-reporter.sha256`, uploaded to the release and folded into `SHA256SUMS` |
-| `release` | `ubuntu-latest` | A GitHub Release carrying both archives and `SHA256SUMS` |
+| `publish` | `ubuntu-latest` | `SHA256SUMS` combined from every checksum file, then the release published |
 | `aur` | `ubuntu-latest` | The `vsys` AUR package, updated to the new `pkgver` and checksums |
 
 `install.sh` reads the latest release tag, downloads the archive for the running architecture, checks it against `SHA256SUMS`, and refuses to install when either is missing. It installs the warden tree beside the binary at `<prefix>/lib/vsys/warden`, so `vsys warden install` can find the installer.
@@ -47,9 +48,9 @@ Running the publish script by hand takes `AUR_SSH_KEY_FILE` instead, the path to
 
 `packaging/vsys/PKGBUILD` installs the released binary and the `lib/` tree from the release archive. Its `pkgver` and `sha256sums_*` are rewritten by the release job.
 
-`packaging/vsys-git/PKGBUILD` builds from `main` with Bun and stages the same `lib/` files from the checkout. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when `main` or the warden files move.
+`packaging/vsys-git/PKGBUILD` builds from `main` with Bun and stages the same `lib/` files from the checkout. Its `pkgver()` derives a version from `git describe`, so it needs no edit per release. `.github/workflows/aur-git.yml` pushes it when a push to `main` changes the source, the data, the warden, its PKGBUILD or a reporter's files.
 
-Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`, and vsys and the warden run the systemd tools. Feature programs are optional dependencies; [warden install](architecture/warden-install.md) lists them. They install no systemd user units and enable no timer. They do install the scrub reporter's `btrfs-scrub@.service` drop-in and tmpfiles line, which act only when a `btrfs-scrub@` timer the reader enabled runs a scrub, and the drive reporter's service, timer and tmpfiles line, which report only once the reader enables `vsys-smart-report.timer`. The user runs `vsys warden install` to write units into the user's config directory.
+Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`, and vsys and the warden run the systemd tools. Feature programs are optional dependencies; `packaging/vsys/PKGBUILD` lists them. They install no systemd user units and enable no timer. They do install the scrub reporter's `btrfs-scrub@.service` drop-in and tmpfiles line, which act only when a `btrfs-scrub@` timer the reader enabled runs a scrub, and the drive reporter's service, timer and tmpfiles line, which report only once the reader enables `vsys-smart-report.timer`. The user runs `vsys warden install` to write units into the user's config directory.
 
 Both AUR packages disable makepkg strip and debug splitting, because stripping a Bun compiled binary removes its appended program bundle.
 

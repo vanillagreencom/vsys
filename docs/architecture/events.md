@@ -1,33 +1,33 @@
-# Timeline events
+# An event is a change between two samples, derived once
 
-Covers: src/store/events.ts src/ui/timeline.ts src/ui/timeline-screen.tsx src/store/events.test.ts
+Read before changing what the timeline records, when an alert opens or closes, or what a stored event holds.
 
-An event is one change between two consecutive samples, held as data: a lane starting or stopping, a process moving between cgroups, an alert opening or closing, or a new verdict. `EventLog` derives every event from successive snapshots and the one cause ladder, so an alert is a cause opening and closing rather than a second detection of the same problem.
+## The approach
 
-## Boundaries
+`EventLog` in `src/store/events.ts` derives every event from successive snapshots and the cause ladder: a lane starting or stopping, a process moving between cgroups, an alert opening or closing, a new verdict. An alert is one cause opening and closing on one subject, never a second detection. The store records a sample's events on that sample's history point, and `src/ui/timeline.ts` writes every word.
 
-- The store owns the derivation and records a sample's events on that sample's history point. Nothing else derives them.
-- An event carries data: the cause, the subject with its identity, the names and the numbers. Every word, duration and byte count belongs to `src/ui/timeline.ts`.
-- A subject that is a cgroup is named through `consumerName()`, and the raw unit stays beside it so the Timeline row can show the handle under the selection.
-- An event records the thresholds it was measured against, so a later settings change cannot restate what an older line crossed.
+## Why
 
-## Invariants
+Deriving events where the samples meet keeps the Timeline and Home in agreement about what happened and when. A detection repeated in the timeline would drift from the ladder the moment either changed, and a word in an event would be stored for the life of the history.
 
-1. The first sample records the state it observes and reports no change. `src/store/events.test.ts` checks it.
-2. A lane start or stop names its account and its slice. Its line states only what that sample read, the tool in the lane and its age, because a lane can sit outside every watched slice, hold no process, and stop while its processes run on. A lane that held no readable member records no age, and its stop line says the age is not available. `src/store/events.test.ts` checks the names and the stop of a lane with no readable member, and `src/ui/timeline.test.ts` checks both lines and the stop line with no age.
-3. A process moves cgroups only when its PID keeps its start time, so a reused PID is not a move. `src/store/events.test.ts` checks a reused PID and a process that stayed put.
-4. A move between two slices outside the agent slice is not a confinement change, and neither is any move on a sample whose probe found no agent slice, nor a move by a process the earlier sample read as no agent. Both ends of a move are judged against that one sample's probe. `src/store/events.test.ts` and `src/ui/timeline.test.ts` check it against a move that leaves the agent slice, and `src/store/events.test.ts` checks that move with the slice absent, by a process that became an agent, and a move made while the slice appeared between the two samples.
-5. An alert is one cause on one subject, so two lanes hitting one cause are two alerts with two durations. `src/store/events.test.ts` checks two lanes escaping at once and a second subject opening and closing on its own.
-6. A level cause must hold for `pressureHoldSeconds` without a gap before it opens, and every cause must stay away that long before it closes, so a value alternating across a threshold records nothing. An event cause, whose evidence is itself a change, opens on the sample that shows it, because a counter delta is gone by the next sample. `causeEvidence` in `src/model/verdict.ts` says which each cause is. `src/store/events.test.ts` checks alternating samples against held ones, and a device error increment seen for one sample. A cause whose input could not be read is not away: `unjudged()` in `src/model/verdict.ts` names the subjects it could not judge, an open alert on one of them stays open and its verdict holds while it goes unread, a pending one ends as on a gap, and the close waits a full hold from the last unread sample, so the input must read below its threshold for the whole hold. A host cause judges every subject on its host reading alone, so only a failed host reading holds its alerts. A subject the sample no longer holds is gone, not unread, and closes after the normal hold, a desktop slice with no root in the sample included. `src/store/events.test.ts` checks host CPU pressure, one lane's stall and the desktop swap of a slice root at the cgroup root, each unread past the hold; a stall whose crossing resource alone goes unread; two stalling lanes of which one goes unread; a pending stall broken by an unread sample; and a lane, a lane under unread host CPU, a scratch path, a group and the desktop slice that disappear. Four known limits follow. While a lane's own pressure is unread under a host cause that fired, the lane leaves that cause's subjects, so its host-cause alert can close and an alert on the host subject open in its place. A desktop swap holder whose own swap reads null drops out of `topSwapHolder()` in `src/model/verdict.ts` while the slice root total still fires, so its desktop-swap alert can close after the hold and an alert on the next scope holding swap, or on the host subject when none does, open in its place. A desktop slice root the collector omitted reads as absent when it was the only one and as a partial swap total beside another instance, so the swap alert can close while a group inside the slice still holds swap. `free-space` and `memory-cap` judge an unread input as absent: a failed `statfs()` leaves a volume's free space null and `leastFree()` skips it, and a failed `memory.max` read drops that group's cap from `dangerousCap()` in `src/model/lanes.ts` and leaves the lane's `memoryMaxKnown` false, so a free-space alert on that volume, or a memory-cap alert the unread group's cap raised, can close after the hold while its input goes unread.
-7. An alert closes with the time the cause was observed, and a settings change does not restart that clock. `src/store/events.test.ts` checks the duration across a reconfigure.
-8. An alert reports the numbers of its own subject, never the worst or largest across the subjects its cause grouped. `src/store/events.test.ts` checks two over-quota paths and two stalling lanes.
-9. An alert's subject and unit are the ones the sample that opened it read, so a scope becoming a lane during the hold renames a watch that has not opened and never one that has. `src/store/events.test.ts` checks a scope that becomes a lane mid-hold.
-10. A cause naming one thing twice opens one alert, and that alert carries the unit. `src/store/events.test.ts` checks it.
-11. The verdict follows the alerts that opened, including one waiting out its close, so a cause that steps away for a sample cannot flip it. Severity ranks them and the cause order table breaks a tie. `src/store/events.test.ts` checks the verdict across a close hold and against a cause of equal severity.
-12. A verdict is a cause and its level, so a cause turning from a warning into danger is a new verdict. `src/store/events.test.ts` checks a lane stalling harder.
-13. A housekeeping cause is an event but never a verdict change. `src/store/events.test.ts` checks it.
-14. An event carries the identity of its subject as well as its name, since two lanes can show one name. A cause that names no subject of its own is one alert for the host, whose identity is empty and is never a lane name, a lane id, or the scope its `at` points at, so host CPU pressure stays one alert while the busiest lane changes and host memory pressure stays one alert while the swap holder changes. `src/store/events.test.ts` and `src/ui/timeline.test.ts` check two lanes named alike, and `src/store/events.test.ts` checks host CPU pressure while two lanes, named alike or told apart by their PID, trade the busiest spot, and host memory pressure across a swap holder that changes identity partway through and across two scopes trading the top swap spot every sample.
-15. A point marks the timeline strip when it recorded an event, so an alert still inside its hold marks nothing. `src/store/point.test.ts` and `src/ui/timeline-screen.test.tsx` check an empty list against a missing one.
-16. Every event renders as one line that states its cause. `src/ui/timeline.test.ts` checks each kind, the swap numbers and an escalating verdict.
-17. The Timeline change list is a list: the arrows and the wheel move the selection, Enter moves the time cursor to the selected change, and the selected row shows the raw unit its subject decoded from. `src/ui/timeline-screen.test.tsx` drives it from the keyboard alone, and turns the wheel over it.
-18. The change list takes one row per event and stops at the rows the viewport has, and a shorter window leaves the selection on a row that exists. `src/ui/timeline-screen.test.tsx` checks a short terminal and a shortened window.
+## Rules
+
+- Do open a level cause only after it holds for `pressureHoldSeconds` without a gap, and close every cause only after it stays away that long. An event cause opens on the sample that shows it, because a counter delta is gone by the next sample. `causeEvidence` in `src/model/verdict.ts` says which each is, and `src/store/events.test.ts` checks alternating samples against held ones.
+- Do keep an alert open while its subject's input is unread, through `unjudged()`, and close an alert whose subject the sample no longer holds after the normal hold.
+- Do record on the event the thresholds it was measured against and the identity of its subject beside its name. Two lanes can share a name, and a host cause has an empty identity, so host CPU pressure stays one alert while the busiest lane changes.
+- Do judge a cgroup move by process id with start time, so a reused id is not a move, and judge both ends of a move against that one sample's slice probe.
+- Do report the numbers of the alert's own subject, never the worst across the subjects its cause grouped.
+- Never derive an event anywhere but the store, and never let a settings change restart an alert's clock or restate what an older event crossed.
+- Never put a word in an event. The Timeline line is written in `src/ui/timeline.ts`, and `src/ui/timeline.test.ts` renders each kind.
+
+## The canonical example
+
+The lane-stop event: the store records the account, the slice, the tool and the age the sample read, and null for the age of a lane with no readable member; `src/ui/timeline.ts` turns the null into the line that says the age is not available. Copy the pair, data in the store and words in the UI.
+
+## Revisit when
+
+A cause needs a hold rule that is neither a level nor an event, or the timeline must record something that is not a change between two samples.
+
+## Not governed
+
+What a cause is: [verdict.md](verdict.md). How events are stored and replayed: [history.md](history.md).

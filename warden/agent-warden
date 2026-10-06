@@ -1034,7 +1034,7 @@ def reap_scratch_dirs(correct, procs, failed):
     so this pass -- which already enumerates agents.slice scopes via
     scope_units() for enforce_task_caps -- is the only thing that can clean
     these up. Without the warden installed the directories stay until
-    removed by hand (docs/architecture/warden-reaper.md). failed holds the
+    removed by hand (docs/architecture/warden.md). failed holds the
     names whose removal failure is already logged, kept in the state file so a
     folder that keeps failing is logged once, not at every sweep; it is updated
     in place. Returns the directory names removed."""

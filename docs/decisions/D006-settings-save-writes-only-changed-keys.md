@@ -6,20 +6,12 @@
 
 **Status**: Active
 
-**Research**: VSY-57
+**Research**: [VSY-57](https://linear.app/vanillagreen/issue/VSY-57)
 
-**Context**: The Settings screen used to save the resolved configuration. That copied derived defaults into `config.toml`. For `agentTools`, the copy froze the dashboard on one agent list while the warden kept reading the shipped data and the machine overlay.
+**Decision**: A Settings save writes only the settings that differ from the layered defaults. A Settings edit to the agent tools goes to `~/.config/vsys/agent-tools.json`, never to `config.toml`, and is refused while a hand-written `agentTools` pin omits a shipped name.
 
-**Decision**: Save only settings that differ from the layered defaults. Save Settings edits to `agentTools` in `~/.config/vsys/agent-tools.json`, not in `config.toml`. Keep a hand-written `config.toml` `agentTools` list only when it differs from both the shipped list and the layered list. Refuse a Settings edit to that list when the hand-written pin omits a shipped name.
+**Why**: A save must not turn a derived default into user intent. The overlay is the one machine-local file both the dashboard and the warden read, and it can add names but not remove shipped ones, so a list that removes one stays a dashboard-only override.
 
-**Rationale**:
+**Rejected**: Saving the resolved configuration. It froze the dashboard on one agent list while the warden kept reading the shipped data and the overlay.
 
-- A Settings save should not turn a derived default into user intent.
-- The overlay is the one machine-local file that both the dashboard and the warden read.
-- The overlay can add tool names but cannot remove shipped names, so a hand-written list that removes a shipped name must stay a dashboard-only override.
-
-**Revisit When**: The shared agent-tool schema can record removals.
-
-**Verification**: `src/config/config.test.ts` checks changed-key saves, unpinned `agentTools` saves, pinned-list controls and migration. `src/runtime.test.ts` checks pinned and unpinned Settings writes preserve the overlay, unrelated saves keep a diverging pin, pinned shipped-name removals are refused and the warden loader matches.
-
-**References**: [D005](D005-shared-agent-tool-data.md)
+**Revisit when**: The shared agent-tool schema can record removals.
