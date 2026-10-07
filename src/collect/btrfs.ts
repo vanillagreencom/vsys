@@ -170,7 +170,7 @@ export function corruptionTotal(
  */
 export class FinishedScrubMemory {
   private byFsid: Map<string, FinishedScrub>;
-  private reportFsids = new Map<string, string>();
+  private reports = new Map<string, Pick<Scrub, "fsid" | "startedAt">>();
   constructor(seed?: Record<string, FinishedScrub>) {
     this.byFsid = new Map(Object.entries(seed ?? {}));
   }
@@ -185,10 +185,13 @@ export class FinishedScrubMemory {
   snapshot(): Record<string, FinishedScrub> {
     return Object.fromEntries(this.byFsid);
   }
-  /** Keep a report's filesystem identity when its latest contents are unread. */
-  identifyReport(path: string, fsid: string | null): string | null {
-    if (fsid !== null) this.reportFsids.set(path, fsid);
-    return fsid ?? this.reportFsids.get(path) ?? null;
+  /** Keep identity and order together so a failed read cannot select an older report. */
+  identifyReport(
+    path: string,
+    report?: Pick<Scrub, "fsid" | "startedAt">,
+  ): Pick<Scrub, "fsid" | "startedAt"> | undefined {
+    if (report !== undefined) this.reports.set(path, report);
+    return this.reports.get(path);
   }
 }
 
@@ -231,7 +234,7 @@ export class StorageCollector {
   private memoryPath = "";
   /**
    * Carried across samples because the reporter keeps one report per
-   * filesystem and a check that stops early overwrites it; this process's
+   * mount and a check that stops early overwrites it; this process's
    * own memory of the last one that finished, outcome included, is otherwise
    * lost.
    */
@@ -520,14 +523,14 @@ export class StorageCollector {
         // with no sign that a check had run at all. `r.text` has already
         // recorded why the read failed.
         if (text === null) {
-          const fsid = this.finishedScrub.identifyReport(path, null);
+          const report = this.finishedScrub.identifyReport(path);
           storage.scrubs.push({
             path,
             text: "",
             readable: false,
             problem: true,
-            fsid,
-            startedAt: null,
+            fsid: report?.fsid ?? null,
+            startedAt: report?.startedAt ?? null,
             status: null,
             duration: null,
             uncorrectable: null,
@@ -538,7 +541,10 @@ export class StorageCollector {
           continue;
         }
         const report = parseScrub(text);
-        this.finishedScrub.identifyReport(path, report.uuid);
+        this.finishedScrub.identifyReport(path, {
+          fsid: report.uuid,
+          startedAt: report.startedAt,
+        });
         // A path the report named can be gone: the reader removed or rebuilt
         // the file since the check. Only what is still on disk is listed, so
         // the list empties as the reader restores what it held.
@@ -566,7 +572,7 @@ export class StorageCollector {
         try {
           const problem = scrubProblem(text);
           storage.scrubs.push({ ...found, readable: true, problem });
-          // The reporter keeps one report per filesystem, so a later scrub
+          // The reporter keeps one report per mount, so a later scrub
           // that stops early overwrites the very report that proved this one
           // sound, outcome included. Only a finished reading ever moves this
           // memory, and `advance` never moves it backward: a stopped-early

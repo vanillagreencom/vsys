@@ -23,14 +23,40 @@ afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
 });
 for (const row of [
-  { before: "healthy", after: "unknown", uncorrectable: 0 },
-  { before: "damaged", after: "damaged", uncorrectable: 1 },
+  {
+    name: "clean check",
+    before: "healthy",
+    after: "unknown",
+    uncorrectable: 0,
+  },
+  {
+    name: "damaged check",
+    before: "damaged",
+    after: "damaged",
+    uncorrectable: 1,
+  },
+  {
+    name: "newest check",
+    before: "healthy",
+    after: "unknown",
+    uncorrectable: 0,
+    otherStarted: "2026-09-10T13:25:54Z",
+  },
+  {
+    name: "older check",
+    before: "healthy",
+    after: "healthy",
+    uncorrectable: 0,
+    otherStarted: "2026-09-11T13:25:55Z",
+  },
 ] satisfies {
+  name: string;
   before: IntegrityState;
   after: IntegrityState;
   uncorrectable: number;
+  otherStarted?: string;
 }[]) {
-  test(`an unreadable report preserves the evidence from a ${row.before} check`, async () => {
+  test(`an unreadable report preserves the evidence from the ${row.name}`, async () => {
     const f = fixture();
     fixtures.push(f);
     const fsid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
@@ -44,11 +70,17 @@ for (const row of [
     mkdirSync(f.config.smartDir);
     const path = join(f.config.scrubDir, "root.result");
     const started = "2026-09-11T13:25:54Z";
-    const time = Date.parse(started) + 1000;
+    const time = Date.parse(started) + 2000;
     f.write(
       path,
       `UUID: ${fsid}\nScrub started: ${started}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: ${row.uncorrectable}\n`,
     );
+    const otherPath = join(f.config.scrubDir, "home.result");
+    if (row.otherStarted !== undefined)
+      f.write(
+        otherPath,
+        `UUID: ${fsid}\nScrub started: ${row.otherStarted}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: 0\nDamaged files: 0\n`,
+      );
     const mounts = parseMounts(`1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`);
     const collector = new StorageCollector();
     const reader = new Reader();
@@ -97,9 +129,11 @@ for (const row of [
               true,
             );
             expect(reader.errors.map((error) => error.source)).toContain(path);
-            expect(present(second.scrubs[0], "failed report").readable).toBe(
-              false,
+            const failed = present(
+              second.scrubs.find((scrub) => scrub.path === path),
+              "failed report",
             );
+            expect(failed.readable).toBe(false);
             expect(
               present(second.volumes[0], "second volume").countersAvailable,
             ).toBe(true);
@@ -110,13 +144,24 @@ for (const row of [
               f.config,
             );
             expect(item.state).toBe(row.after);
-            expect(item.blocks).toBeNull();
+            expect(item.scrub?.path).toBe(
+              row.after === "healthy" ? otherPath : path,
+            );
+            expect(failed).toMatchObject({
+              fsid,
+              startedAt: Date.parse(started),
+              addresses: null,
+              uncorrectable: null,
+              corrected: null,
+              csum: null,
+            });
+            expect(item.blocks).toBe(row.after === "healthy" ? 0 : null);
             expect(item.groups).toEqual([]);
             expect(damageCounts(item)).toEqual({
-              files: null,
-              free: null,
-              unresolved: null,
-              unnamed: null,
+              files: row.after === "healthy" ? 0 : null,
+              free: row.after === "healthy" ? 0 : null,
+              unresolved: row.after === "healthy" ? 0 : null,
+              unnamed: row.after === "healthy" ? 0 : null,
             });
             if (row.after === "damaged")
               expect(integrityLevel(item.state)).toBe("danger");
@@ -126,6 +171,90 @@ for (const row of [
         }
       } finally {
         hook.mockRestore();
+      }
+    } finally {
+      collector.close();
+    }
+  });
+}
+for (const row of [
+  {
+    name: "a different filesystem and older start",
+    fsid: "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f7",
+    started: "2026-09-10T13:25:54Z",
+  },
+  {
+    name: "a different filesystem without a start",
+    fsid: "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f7",
+    started: null,
+  },
+  {
+    name: "a missing filesystem identity",
+    fsid: null,
+    started: "2026-09-10T13:25:54Z",
+  },
+  {
+    name: "the same filesystem without a start",
+    fsid: "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6",
+    started: null,
+  },
+]) {
+  test(`an unreadable report retains only the latest metadata for ${row.name}`, async () => {
+    const f = fixture();
+    fixtures.push(f);
+    const path = join(f.config.scrubDir, "root.result");
+    f.write(
+      path,
+      "UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nScrub started: 2026-09-11T13:25:54Z\nStatus: running\n",
+    );
+    const collector = new StorageCollector();
+    const reader = new Reader();
+    try {
+      await collector.collect(reader, f.config, 1000, [], true, true);
+      f.write(
+        path,
+        `${row.fsid === null ? "" : `UUID: ${row.fsid}\n`}${row.started === null ? "" : `Scrub started: ${row.started}\n`}Status: running\n`,
+      );
+      await collector.collect(reader, f.config, 2000, [], true, true);
+      const successor = new StorageCollector(
+        null,
+        null,
+        collector.finishedScrubMemory(),
+      );
+      const exact = reader.exact.bind(reader);
+      const hook = spyOn(reader, "exact").mockImplementation(
+        (file, optional) => {
+          if (file !== path) return exact(file, optional);
+          reader.error(
+            file,
+            Object.assign(new Error("EACCES"), { code: "EACCES" }),
+          );
+          return null;
+        },
+      );
+      try {
+        for (const active of [collector, successor]) {
+          const storage = await active.collect(
+            reader,
+            f.config,
+            3000,
+            [],
+            true,
+            true,
+          );
+          expect(present(storage.scrubs[0], "failed report")).toMatchObject({
+            fsid: row.fsid,
+            startedAt: row.started === null ? null : Date.parse(row.started),
+            readable: false,
+            addresses: null,
+            uncorrectable: null,
+            corrected: null,
+            csum: null,
+          });
+        }
+      } finally {
+        hook.mockRestore();
+        successor.close();
       }
     } finally {
       collector.close();
