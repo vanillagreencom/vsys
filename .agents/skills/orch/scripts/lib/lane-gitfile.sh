@@ -7,8 +7,9 @@
 # directory it names. Both would otherwise spell the same
 # shape, and a lane whose marker lands anywhere else is handed no mail at all.
 
-source "$(dirname -- "${BASH_SOURCE[0]}")/lane-host-slots.sh"
-source "$(dirname -- "${BASH_SOURCE[0]}")/lane-capabilities.sh"
+LANE_GITFILE_LIB="$(dirname -- "${BASH_SOURCE[0]}")"
+source "$LANE_GITFILE_LIB/lane-host-slots.sh"
+source "$LANE_GITFILE_LIB/lane-capabilities.sh"
 
 # Print the absolute worktree git directory a worktree's `.git` file names.
 # Returns 1 on any other content, including a `.git` directory's own bytes and
@@ -101,14 +102,135 @@ lane_hosted_state_path() {
   LANE_HOSTED_STATE_PATH="$remote/workflow-state-$3.json"
 }
 
-# lane_item_state WORKFLOW_STATE LANE_HOST_CLI STATE_DIR ITEM HOST ROOT SCRATCH
+# lane_hosted_state_dir LANE_HOST_CLI ITEM ROOT SCRATCH — sets
+# LANE_HOSTED_STATE_DIR to the state directory the hosted lane at ROOT
+# resolves for itself, as workflow-state resolves it there: ORCH_STATE_DIR
+# from ROOT's kendex.settings.toml, then .kendex/settings.toml, then its
+# private env file, .env.local unless those name another as KENDEX_ENV_FILE,
+# the later winning, else tmp. A hosted launch sets no ORCH_STATE_DIR, and the
+# caller's own names a directory on the caller's machine, never the lane's.
+# Each settings file is read as data, in a subshell, as `workflow-state
+# --no-private-env` reads another checkout's. The private env file is shell
+# the lane sources and this machine never runs, so only a literal
+# `ORCH_STATE_DIR=VALUE`, `export` before it allowed, is read from it; any
+# other line naming the key leaves the directory unread. 0 read; 2 a read
+# failed or a file did not parse, SCRATCH/state.err saying why; 4 lane-host
+# refused a call at its cap.
+LANE_HOSTED_STATE_DIR=""
+LANE_PRIVATE_STATE_RE='^[[:space:]]*(export[[:space:]]+)?ORCH_STATE_DIR=("[^"$`\\]*"|'"'"'[^'"'"']*'"'"'|[^[:space:]"'"'"'$`\&<>();|]*)[[:space:]]*$'
+lane_hosted_state_dir() {
+  local file setting line value private=.env.local rc
+  LANE_HOSTED_STATE_DIR=tmp
+  for file in kendex.settings.toml .kendex/settings.toml; do
+    rc=0
+    lane_host_fetch "$1" "$2" "$3/$file" "$4/settings.toml" "$4/state.err" || rc=$?
+    case "$rc" in 0) ;; 1) continue ;; *) return "$rc" ;; esac
+    if ! setting="$(
+      source "$LANE_GITFILE_LIB/kendex-env.sh" || exit 1
+      unset ORCH_STATE_DIR KENDEX_ENV_FILE
+      kendex_load_settings_file "$4/settings.toml" || exit 1
+      [[ -z "${ORCH_STATE_DIR+set}" ]] || printf 's=%s\n' "$ORCH_STATE_DIR"
+      [[ -z "${KENDEX_ENV_FILE+set}" ]] || printf 'e=%s\n' "$KENDEX_ENV_FILE"
+    )" 2>"$4/state.err"; then
+      printf 'settings-unread path=%s\n' "$3/$file" >>"$4/state.err"
+      return 2
+    fi
+    while IFS= read -r line; do
+      case "$line" in
+        s=*) LANE_HOSTED_STATE_DIR="${line#s=}" ;;
+        e=*) private="${line#e=}" ;;
+      esac
+    done <<<"$setting"
+  done
+  private="${private:-.env.local}"
+  case "$private" in
+    /* | *:* | *\\* | .. | ../* | */../* | */..)
+      printf 'private-env-path path=%s\n' "$private" >"$4/state.err"; return 2 ;;
+  esac
+  rc=0
+  lane_host_fetch "$1" "$2" "$3/$private" "$4/private.env" "$4/state.err" || rc=$?
+  case "$rc" in 0) ;; 1) private="" ;; *) return "$rc" ;; esac
+  if [[ -n "$private" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      case "$line" in *ORCH_STATE_DIR*) ;; *) continue ;; esac
+      [[ ! "$line" =~ ^[[:space:]]*# ]] || continue
+      if [[ ! "$line" =~ $LANE_PRIVATE_STATE_RE ]]; then
+        printf 'private-env-unread path=%s key=ORCH_STATE_DIR\n' "$3/$private" >"$4/state.err"
+        return 2
+      fi
+      value="${BASH_REMATCH[2]}"
+      case "$value" in \"*\" | \'*\') value="${value:1:${#value}-2}" ;; esac
+      LANE_HOSTED_STATE_DIR="$value"
+    done <"$4/private.env"
+  fi
+  # An empty setting is tmp, as workflow-state reads it.
+  LANE_HOSTED_STATE_DIR="${LANE_HOSTED_STATE_DIR:-tmp}"
+}
+
+# lane_archived_state ITEM ARCHIVE SCRATCH ROOT — sets LANE_ITEM_STATE to the
+# item's workflow state in ARCHIVE, the `kept=` archive lane-host close wrote
+# of the clone's and the worktree's tmp, empty where it holds none. Its
+# `lane-host-state` member names the state file's member, the one the lane
+# resolved, or is an empty line where the lane wrote none, so no other copy of
+# the same name is read. An archive with no such member, written before close
+# recorded it, holds the two tmp trees alone, and its copy outside the
+# worktree at ROOT, the clone's, is read before the worktree's, the first in
+# name order where several are. LANE_ARCHIVE_READER reads the archive as a
+# stream and writes none of it to disk, since this runs on the control host,
+# and reads member names raw, never from `tar -t`, which escapes a name the
+# locale cannot print. 0 read; 2 the archive did not read, or names a member
+# it does not hold, SCRATCH/state.err saying why.
+LANE_ARCHIVE_READER='
+import os, sys, tarfile
+path, item, root = sys.argv[1:]
+# A file tar archived twice, through a symlinked tmp or a clone path whose
+# physical spelling differs, is a hard-link entry the second time, read as
+# the file it names.
+readable = lambda m: m.isfile() or m.islnk()
+try:
+    with tarfile.open(path, "r:gz") as tar:
+        members = {m.name: m for m in tar.getmembers()}
+        if "lane-host-state" in members:
+            raw = tar.extractfile(members["lane-host-state"]).read().split(b"\n", 1)[0]
+            if not raw:
+                sys.exit(0)
+            name = raw.decode(tar.encoding, "surrogateescape")
+            found = members.get(name)
+            if found is None or not readable(found):
+                print(f"archive-member-missing path={path} member={name}", file=sys.stderr)
+                sys.exit(2)
+        else:
+            files = sorted((m for m in members.values()
+                            if readable(m) and os.path.basename(m.name) == f"workflow-state-{item}.json"),
+                           key=lambda m: (m.name.startswith(root + "/"), m.name))
+            if not files:
+                sys.exit(0)
+            found = files[0]
+        sys.stdout.buffer.write(tar.extractfile(found).read())
+except (tarfile.TarError, OSError, EOFError) as error:
+    print(f"archive-unread path={path} cause={type(error).__name__}", file=sys.stderr)
+    sys.exit(2)
+'
+lane_archived_state() {
+  LANE_ITEM_STATE=""
+  [[ -f "$2" ]] || { printf 'archive-missing path=%s\n' "$2" >"$3/state.err"; return 2; }
+  LANE_ITEM_STATE="$(python3 -I -c "$LANE_ARCHIVE_READER" "$2" "$1" "${4#/}" 2>"$3/state.err" \
+    | jq -c . 2>>"$3/state.err")" || { LANE_ITEM_STATE=""; return 2; }
+}
+
+# lane_item_state WORKFLOW_STATE LANE_HOST_CLI STATE_DIR ITEM HOST ROOT SCRATCH [ARCHIVE]
 # — sets LANE_ITEM_STATE to the item's own workflow-state JSON, empty where
 # the lane has written none. A local lane's, HOST empty, is under the project
 # state directory of its own checkout, ROOT, where ROOT is a directory, so a
 # lane of another repository reads from that repository, and of the caller's
-# checkout where ROOT is gone or unrecorded; a hosted lane's is in its clone
-# at ROOT, read
-# through the probe above with ORCH_LANE_HOST set to HOST. A hosted worktree
+# checkout where ROOT is gone or unrecorded; a hosted lane's is in the state
+# directory lane_hosted_state_dir reads for ROOT, joined to its clone, read
+# through the probe above with ORCH_LANE_HOST set to HOST; STATE_DIR is the
+# local lane's alone. ARCHIVE, where given, is the `kept=` archive of a
+# hosted lane's close: where the host answers that the lane's worktree is
+# gone, the state is read there instead. A read that fails keeps its
+# status, never answered from an archive an earlier run of the item may have
+# left. A hosted worktree
 # already gone, which ../../workflows/merge-pr.md § 5 leaves behind a merged
 # lane until lane-close runs, has no state either, and nor has a lane whose
 # host kind declares files=none, a Claude cloud session, which keeps none this
@@ -133,21 +255,32 @@ lane_item_state() {
   lane_capabilities_read "$2" "$5" 2>"$7/state.err" || return 2
   lane_capability files files
   [[ "$files" != none ]] || return 0
-  ORCH_LANE_HOST="$5" lane_hosted_clone "$2" "$4" "$6" "$7/gitfile" "$7/state.err" || rc=$?
+  ORCH_LANE_HOST="$5" lane_hosted_item_state "$2" "$4" "$6" "$7" || rc=$?
+  [[ "$rc" -eq 0 && "$LANE_HOSTED_GONE" == 1 && -n "${8:-}" ]] || return "$rc"
+  lane_archived_state "$4" "$8" "$7" "$6"
+}
+
+# lane_hosted_item_state LANE_HOST_CLI ITEM ROOT SCRATCH — lane_item_state's
+# live read of a hosted lane, under the caller's ORCH_LANE_HOST, with its
+# statuses; LANE_HOSTED_GONE is 1 where the host answered that the worktree
+# is gone.
+LANE_HOSTED_GONE=0
+lane_hosted_item_state() {
+  local rc=0
+  LANE_HOSTED_GONE=0
+  lane_hosted_clone "$1" "$2" "$3" "$4/gitfile" "$4/state.err" || rc=$?
   case "$rc" in
     0) ;;
-    1) return 0 ;;
-    3) printf '%s\n' "$6/.git: ${LANE_HOSTED_GITLINE:-<empty>}" >"$7/state.err"; return 2 ;;
-    4) return 4 ;;
-    *) return 2 ;;
+    1) LANE_HOSTED_GONE=1; return 0 ;;
+    3) printf '%s\n' "$3/.git: ${LANE_HOSTED_GITLINE:-<empty>}" >"$4/state.err"; return 2 ;;
+    *) return "$rc" ;;
   esac
-  lane_hosted_state_path "$LANE_HOSTED_CLONE" "$3" "$4"
-  ORCH_LANE_HOST="$5" lane_host_fetch "$2" "$4" "$LANE_HOSTED_STATE_PATH" \
-    "$7/item-state.json" "$7/state.err" || rc=$?
+  lane_hosted_state_dir "$1" "$2" "$3" "$4" || return $?
+  lane_hosted_state_path "$LANE_HOSTED_CLONE" "$LANE_HOSTED_STATE_DIR" "$2"
+  lane_host_fetch "$1" "$2" "$LANE_HOSTED_STATE_PATH" "$4/item-state.json" "$4/state.err" || rc=$?
   case "$rc" in
-    0) LANE_ITEM_STATE="$(jq -c . -- "$7/item-state.json" 2>"$7/state.err")" || return 2 ;;
+    0) LANE_ITEM_STATE="$(jq -c . -- "$4/item-state.json" 2>"$4/state.err")" || return 2 ;;
     1) ;;
-    4) return 4 ;;
-    *) return 2 ;;
+    *) return "$rc" ;;
   esac
 }
