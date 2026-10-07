@@ -2,7 +2,7 @@ import { compileOrLink } from "../collect/builds";
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
-import { inSlice, lanePressure, sliceCompared } from "./lanes";
+import { coveringGroup, inSlice, lanePressure, sliceCompared } from "./lanes";
 import { laneText, unitLabel } from "./naming";
 import type { Group, Lane, Proc, ScratchRoot, Snapshot, Volume } from "./types";
 
@@ -160,17 +160,22 @@ export function worstKind(l: Lane): Kind | null {
   const best = r.filter(([, v]) => v !== null);
   return best.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0]?.[0] ?? null;
 }
+function covers(group: Group, path: string): boolean {
+  return (
+    group.path === "." ||
+    group.path === path ||
+    path.startsWith(`${group.path}/`)
+  );
+}
+/** Cgroup counters include descendants, so only outer groups contribute. */
+function groupRoots(groups: Group[]): Group[] {
+  return groups.filter(
+    (g) => !groups.some((parent) => parent !== g && covers(parent, g.path)),
+  );
+}
 /** A slice name can appear at more than one path; nested copies are not summed. */
 export function sliceRoots(groups: Group[], name: string): Group[] {
-  const matching = groups.filter((g) => g.name === name);
-  return matching.filter(
-    (g) =>
-      !matching.some(
-        (parent) =>
-          parent !== g &&
-          (parent.path === "." || g.path.startsWith(`${parent.path}/`)),
-      ),
-  );
+  return groupRoots(groups.filter((g) => g.name === name));
 }
 /** A slice total is unknown unless every root reports the counter. */
 export function sliceSum(
@@ -190,8 +195,9 @@ export function agentLanes(lanes: Lane[]): Lane[] {
 /**
  * What agents use of one reading. Where the agent slice is compared it holds
  * every agent, so its own counter is the total. Where the probe found no slice
- * the agent lanes' own figures are summed instead, and the total is unknown
- * unless every one of them reported. A process the sample could not read may
+ * measured agent groups contribute once per subtree. Uncovered lanes contribute
+ * their own process sums, and an uncovered unknown keeps the total unknown.
+ * A process the sample could not read may
  * have been an agent, so any such process leaves the total unknown rather than
  * short by an agent nobody can see.
  */
@@ -206,8 +212,19 @@ export function agentTotal(
     );
   if (s.processRead !== "complete") return null;
   const agents = agentLanes(s.lanes);
-  return agents.every((l) => l[reading] !== null)
-    ? agents.reduce((sum, l) => sum + (l[reading] ?? 0), 0)
+  const groups = new Map(s.groups.map((g) => [g.path, g]));
+  const pick = (g: Group) => (reading === "cpu" ? g.cpuPercent : g.cache);
+  const paths = new Set(agents.map((l) => l.cgroup));
+  const measured = groupRoots(
+    s.groups.filter((g) => paths.has(g.path) && pick(g) !== null),
+  );
+  const uncovered = agents.filter((l) => {
+    const group = groups.get(l.cgroup) ?? coveringGroup(s.groups, l.cgroup);
+    return !group || !measured.some((root) => covers(root, group.path));
+  });
+  return uncovered.every((l) => l[reading] !== null)
+    ? measured.reduce((sum, g) => sum + (pick(g) ?? 0), 0) +
+        uncovered.reduce((sum, l) => sum + (l[reading] ?? 0), 0)
     : null;
 }
 /** The scope that wrote most since the previous sample, never its parent slice. */
