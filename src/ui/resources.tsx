@@ -362,7 +362,7 @@ export function Resources({
               />
               <Field
                 label="Limits"
-                value={`memory high ${limit(current.high)} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${limit(current.swapMax)} · tasks max ${current.tasksMax ?? "none"}`}
+                value={`memory high ${current.highRead ? limit(current.high) : gap} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${current.swapMaxRead ? limit(current.swapMax) : gap} · tasks max ${current.tasksMaxRead ? (current.tasksMax ?? "none") : gap}`}
                 wrap={side > 0}
               />
               <Field

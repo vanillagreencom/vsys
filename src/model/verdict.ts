@@ -237,7 +237,9 @@ export function leastFree(volumes: Volume[]): Volume | undefined {
 export function buildLoad(
   s: Snapshot,
   c: Config,
-): { builds: number; linkers: number; lanes: number } {
+): { builds: number | null; linkers: number | null; lanes: number | null } {
+  if (s.errors.some((e) => omittedProcess(e.source, c.procRoot)))
+    return { builds: null, linkers: null, lanes: null };
   const building = s.procs.filter((p) =>
     compileOrLink(p.build, c.compilerNames, c.linkerNames),
   );

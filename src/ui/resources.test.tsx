@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import { collectGroups } from "../collect/cgroups";
@@ -17,6 +17,7 @@ import {
 import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
 import { meterTile } from "./attention";
+import { gap } from "./format";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
   type GroupCause,
@@ -59,6 +60,65 @@ test.each([
     }
   },
 );
+
+test("Resources shows an unknown limit for each unread limit file", async () => {
+  const f = fixture();
+  const root = join(f.config.cgroupRoot, "agents.slice");
+  const files = ["memory.high", "memory.swap.max", "pids.max"];
+  class DeniedLimits extends Reader {
+    constructor(private readonly denied: string[]) {
+      super();
+    }
+    override exact(path: string, optional = false): string | null {
+      if (this.denied.includes(basename(path))) {
+        this.error(path, new Error("EACCES"));
+        return null;
+      }
+      return super.exact(path, optional);
+    }
+  }
+  let t: Awaited<ReturnType<typeof mount>> | undefined;
+  try {
+    const s = emptySnapshot();
+    s.groups = collectGroups(new Reader(), root, [], 0);
+    expect(present(s.groups[0], "the unlimited group")).toMatchObject({
+      high: null,
+      highRead: true,
+      swapMax: null,
+      swapMaxRead: true,
+      tasksMax: null,
+      tasksMaxRead: true,
+    });
+    t = await mount(
+      s,
+      { ...f.config, cgroupRoot: root },
+      { width: 140, height: 40 },
+    );
+    await t.press("3");
+    const gaps = (frame: string) => frame.split(gap).length - 1;
+    const baseline = gaps(t.frame());
+    // Readable max files contain no limit. Denied files must each add a gap.
+    for (const denied of files.map((file) => [file]).concat([files])) {
+      const r = new DeniedLimits(denied);
+      const groups = collectGroups(r, root, [], 0);
+      expect(r.errors.map((error) => basename(error.source))).toEqual(denied);
+      expect(present(groups[0], "the readable group").path).toBe(".");
+      expect(present(groups[0], "the limit readings")).toMatchObject({
+        highRead: !denied.includes("memory.high"),
+        swapMaxRead: !denied.includes("memory.swap.max"),
+        tasksMaxRead: !denied.includes("pids.max"),
+      });
+      await t.update({ ...s, groups, errors: r.errors });
+      expect({ denied, addedGaps: gaps(t.frame()) - baseline }).toEqual({
+        denied,
+        addedGaps: denied.length,
+      });
+    }
+  } finally {
+    await t?.close();
+    f.cleanup();
+  }
+});
 
 test("a leaf with no work and little memory is idle; slices and the root never are", () => {
   const mib = 1024 * 1024;

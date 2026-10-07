@@ -9,7 +9,7 @@ export interface Pressure {
   full: number | null;
   total: number;
 }
-/** Cgroup v2 limits use null for the kernel's unlimited value. */
+/** Cgroup v2 limits use null for unlimited or unread; read flags distinguish them. */
 export interface Group {
   path: string;
   kernelPath?: string;
@@ -22,13 +22,16 @@ export interface Group {
   cpuMax: string | null;
   memory: number | null;
   high: number | null;
+  highRead: boolean;
   /** memory.max is null for the word max; maxRead separates that from an unread file. */
   max: number | null;
   maxRead: boolean;
   swap: number | null;
   swapMax: number | null;
+  swapMaxRead: boolean;
   tasks: number | null;
   tasksMax: number | null;
+  tasksMaxRead: boolean;
   /** Page cache from memory.stat; io.stat totals since boot and their rates. */
   cache: number | null;
   ioRead: number | null;

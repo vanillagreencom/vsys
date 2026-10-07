@@ -103,7 +103,10 @@ export function collectGroups(
         const file = r
           .text(join(path, "memory.stat"), true)
           ?.match(/^file (\d+)$/m)?.[1];
+        const memoryHigh = r.limit(join(path, "memory.high"), true);
         const memoryMax = r.limit(join(path, "memory.max"), true);
+        const swapMax = r.limit(join(path, "memory.swap.max"), true);
+        const tasksMax = r.limit(join(path, "pids.max"), true);
         const members = pids ? pids.split(/\s+/).map(Number) : [];
         if (members.some((p) => !Number.isInteger(p) || p <= 0))
           throw new Error("Invalid cgroup process ID");
@@ -123,13 +126,16 @@ export function collectGroups(
           weight: r.number(join(path, "cpu.weight"), true),
           cpuMax: r.text(join(path, "cpu.max"), true),
           memory: r.number(join(path, "memory.current"), true),
-          high: r.number(join(path, "memory.high"), true),
+          high: memoryHigh.value,
+          highRead: memoryHigh.read,
           max: memoryMax.value,
           maxRead: memoryMax.read,
           swap: r.number(join(path, "memory.swap.current"), true),
-          swapMax: r.number(join(path, "memory.swap.max"), true),
+          swapMax: swapMax.value,
+          swapMaxRead: swapMax.read,
           tasks: r.number(join(path, "pids.current"), true),
-          tasksMax: r.number(join(path, "pids.max"), true),
+          tasksMax: tasksMax.value,
+          tasksMaxRead: tasksMax.read,
           cache: file === undefined ? null : Number(file),
           ioRead: io ? io.read : null,
           ioWrite: io ? io.write : null,

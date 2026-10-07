@@ -11,7 +11,7 @@ import {
   processTree,
   sliceCompared,
 } from "./lanes";
-import type { Capability, Lane } from "./types";
+import type { Capability, Group, Lane, Proc } from "./types";
 
 /** What one tmux read gave, defaulting to a vsys that draws in no pane. */
 const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
@@ -254,6 +254,74 @@ test("a scope with no readable member reads unknown CPU, swap, memory and age", 
     null,
     null,
   ]);
+});
+
+test("lane totals require every reported member, while group counters remain measured", () => {
+  const c = defaults();
+  const group = groupSnapshot({
+    pids: [40, 41],
+    cpuPercent: null,
+    swap: null,
+    tasks: null,
+  });
+  const a = processSnapshot({
+    pid: 40,
+    rss: 1024,
+    cpuPercent: 10,
+    swap: 20,
+    threads: 2,
+  });
+  const b = processSnapshot({
+    pid: 41,
+    rss: 2048,
+    cpuPercent: 15,
+    swap: 30,
+    threads: 3,
+  });
+  const rows: [string, Group[], Proc[], (number | null)[]][] = [
+    ["complete", [group], [a, b], [3072, 25, 50, 5]],
+    ["one unread member", [group], [a], [null, null, null, null]],
+    ["all unread", [group], [], [null, null, null, null]],
+    [
+      "no reported member",
+      [{ ...group, pids: [] }],
+      [],
+      [null, null, null, null],
+    ],
+    [
+      "group counters",
+      [{ ...group, cpuPercent: 0, swap: 0, tasks: 0 }],
+      [a],
+      [null, 0, 0, 0],
+    ],
+    [
+      "unread child member",
+      [
+        { ...group, pids: [40] },
+        groupSnapshot({
+          path: `${group.path}/child`,
+          name: "child",
+          pids: [41],
+        }),
+      ],
+      [a],
+      [null, null, null, null],
+    ],
+    [
+      "a member moved after the group read",
+      [{ ...group, kernelPath: "/agents.slice/a.scope" }],
+      [a, { ...b, group: "/app.slice/b.scope", tool: null }],
+      [1024, 10, 20, 2],
+    ],
+  ];
+  // collectGroups reports member IDs even when collectProcesses cannot read them.
+  for (const [name, groups, procs, totals] of rows) {
+    const lane = present(lanes(groups, procs, c)[0], name);
+    expect({
+      name,
+      totals: [lane.rss, lane.cpu, lane.swap, lane.tasks],
+    }).toEqual({ name, totals });
+  }
 });
 
 test("an unread cgroup tree leaves the memory cap unknown rather than unlimited", () => {

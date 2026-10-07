@@ -195,7 +195,7 @@ export function lanes(
   const agentLane = (p: Proc) =>
     escaped(p, c, capabilities) || (!compared && p.tool !== null);
   const byPid = new Map(procs.map((p) => [p.pid, p]));
-  function lane(id: string, members: Proc[], group?: Group) {
+  function lane(id: string, members: Proc[], group?: Group, complete = true) {
     if (!members.length && !group) return;
     const memberIndex = new Map(members.map((p) => [p.pid, p]));
     const main =
@@ -235,7 +235,9 @@ export function lanes(
     const cgroup = group?.path ?? main?.group ?? id;
     const cpu =
       group?.cpuPercent ??
-      (members.length > 0 && members.every((p) => p.cpuPercent !== null)
+      (complete &&
+      members.length > 0 &&
+      members.every((p) => p.cpuPercent !== null)
         ? members.reduce((n, p) => n + (p.cpuPercent ?? 0), 0)
         : null);
     const builds: Record<string, number> = {};
@@ -309,16 +311,23 @@ export function lanes(
       pressure: group?.pressure.cpu?.some ?? null,
       memoryPressure,
       ioPressure,
-      rss: members.length ? members.reduce((n, p) => n + p.rss, 0) : null,
+      rss:
+        complete && members.length
+          ? members.reduce((n, p) => n + p.rss, 0)
+          : null,
       cache: group?.cache ?? null,
       swap:
         group?.swap ??
-        (members.length > 0 && members.every((p) => p.swap !== null)
+        (complete && members.length > 0 && members.every((p) => p.swap !== null)
           ? members.reduce((n, p) => n + (p.swap ?? 0), 0)
           : null),
       readRate: group?.readRate ?? null,
       writeRate: group?.writeRate ?? null,
-      tasks: group?.tasks ?? members.reduce((n, p) => n + p.threads, 0),
+      tasks:
+        group?.tasks ??
+        (complete && members.length
+          ? members.reduce((n, p) => n + p.threads, 0)
+          : null),
       rustc: builds.rustc ?? 0,
       cargo: builds.cargo ?? 0,
       tests: builds.test ?? 0,
@@ -373,7 +382,12 @@ export function lanes(
       dangerousCap(group, groups, c.memoryFloor) ||
       members.some(agentLane)
     )
-      lane(group.path, members, group);
+      lane(
+        group.path,
+        members,
+        group,
+        [...pids].every((pid) => byPid.has(pid)),
+      );
   }
   for (const proc of procs.filter((p) => agentLane(p) && !covered.has(p.pid))) {
     if (covered.has(proc.pid)) continue;

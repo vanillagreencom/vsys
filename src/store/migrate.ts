@@ -91,6 +91,12 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     // A build older than the capability probe recorded no capabilities. An
     // empty list is the unknown value: no reading claims a missing interface.
     capabilities: s.capabilities ?? [],
+    groups: s.groups.map((group) => ({
+      ...group,
+      highRead: group.highRead ?? false,
+      swapMaxRead: group.swapMaxRead ?? false,
+      tasksMaxRead: group.tasksMaxRead ?? false,
+    })),
     lanes: (s.lanes ?? []).map(normalizeLane),
     storage: {
       ...s.storage,

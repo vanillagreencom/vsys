@@ -9,6 +9,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { present } from "../test/present";
+import { summarySnapshot } from "./export";
 import { type IntegrityState, integrities } from "./integrity";
 import type { Group, Lane, Scrub, Snapshot, Volume } from "./types";
 import {
@@ -297,6 +298,40 @@ test("build load counts configured linkers separately and per lane", () => {
   expect(laneLinkers(s, laneSnapshot({ pids: [1, 2] }), c)).toBe(1);
   // The linker list is configuration, so a shorter list counts fewer linkers.
   expect(buildLoad(s, { ...c, linkerNames: ["mold"] }).linkers).toBe(1);
+});
+
+test("build counts stay unknown when process collection omits a process or cannot list them", () => {
+  const c = defaults();
+  const rows: [string, string[], number | null][] = [
+    ["readable empty directory", [], 0],
+    ["unread directory", [c.procRoot], null],
+    ["unread process", [`${c.procRoot}/77`], null],
+    ["unread optional field", [`${c.procRoot}/77/environ`], 0],
+  ];
+  // Reader.names and collectProcesses record these two kinds of omitted reads.
+  for (const [name, sources, count] of rows) {
+    const s = emptySnapshot();
+    s.errors = sources.map((source) => ({ source, message: "EACCES" }));
+    for (const procRoot of [c.procRoot, `${c.procRoot}/`]) {
+      const config = { ...c, procRoot };
+      expect({ name, ...buildLoad(s, config) }).toEqual({
+        name,
+        builds: count,
+        linkers: count,
+        lanes: count,
+      });
+      expect(meterOf(s, config, "builds")).toMatchObject({
+        level: count === null ? "warn" : "ok",
+        values: { builds: count, linkers: count, lanes: count },
+      });
+      expect(
+        present(
+          summarySnapshot(s, config).meters.find((m) => m.id === "builds"),
+          name,
+        ).value,
+      ).toBe(count);
+    }
+  }
 });
 
 test("the cause order table is the ladder's own tie order", () => {

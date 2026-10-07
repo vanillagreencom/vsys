@@ -14,6 +14,7 @@ import { defaults } from "../config/config";
 import {
   emptySnapshot,
   fixture,
+  groupSnapshot,
   laneSnapshot,
   processSnapshot,
 } from "../test/fixture";
@@ -279,6 +280,42 @@ test("a stored snapshot written before the capability probe loads with none", ()
   cleanup.push(() => reopened.close());
   expect(reopened.at(now)?.capabilities).toEqual([]);
 });
+test("stored group limits without read flags load as unknown and keep measured flags", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  const measured = groupSnapshot({
+    highRead: true,
+    swapMaxRead: false,
+    tasksMaxRead: true,
+  });
+  s.groups = [measured];
+  first.add(s);
+  first.close();
+  const { highRead, swapMaxRead, tasksMaxRead, ...legacy } = measured;
+  expect([highRead, swapMaxRead, tasksMaxRead]).toEqual([true, false, true]);
+  const stored = { ...s, groups: [legacy, measured] };
+  const db = new Database(f.config.sqlitePath);
+  db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+    Bun.gzipSync(JSON.stringify(stored)),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(
+    reopened
+      .at(now)
+      ?.groups.map((g) => [g.highRead, g.swapMaxRead, g.tasksMaxRead]),
+  ).toEqual([
+    [false, false, false],
+    [true, false, true],
+  ]);
+});
+
 test("a stored scratch row written before root origins loads with an unknown origin", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
