@@ -98,10 +98,10 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
         with:
           bun-version-file: .bun-version
-      # Setting the version is a manual step of docs/RELEASING.md before the
-      # tag. A tag pushed on a commit that skipped it would ship archives and
-      # an AUR package built from a tree whose package.json names another
-      # release.
+      # Setting the version is a manual step of the release procedure in
+      # DEVELOPMENT.md, before the tag. A tag pushed on a commit that skipped
+      # it would ship archives and an AUR package built from a tree whose
+      # package.json names another release.
       - name: Check that package.json matches the tag
         run: |
           want="${TAG#v}"
