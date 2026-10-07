@@ -17,6 +17,7 @@ import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
 import { counted, isReportName, parseScrub, stated } from "./scrub";
 import {
+  escapePath,
   missingScrubTimers,
   missingSmartTimer,
   type ScrubMount,
@@ -170,7 +171,10 @@ export function corruptionTotal(
  */
 export class FinishedScrubMemory {
   private byFsid: Map<string, FinishedScrub>;
-  private reports = new Map<string, Pick<Scrub, "fsid" | "startedAt">>();
+  private reports = new Map<
+    string,
+    { version: string; fsid: string | null; startedAt: number | null }
+  >();
   constructor(seed?: Record<string, FinishedScrub>) {
     this.byFsid = new Map(Object.entries(seed ?? {}));
   }
@@ -185,13 +189,16 @@ export class FinishedScrubMemory {
   snapshot(): Record<string, FinishedScrub> {
     return Object.fromEntries(this.byFsid);
   }
-  /** Keep identity and order together so a failed read cannot select an older report. */
+  /** Retain identity and order only for the file version that supplied them. */
   identifyReport(
     path: string,
-    report?: Pick<Scrub, "fsid" | "startedAt">,
-  ): Pick<Scrub, "fsid" | "startedAt"> | undefined {
-    if (report !== undefined) this.reports.set(path, report);
-    return this.reports.get(path);
+    version: string | null,
+    report?: { fsid: string | null; startedAt: number | null },
+  ): { fsid: string | null; startedAt: number | null } | undefined {
+    if (version === null) return undefined;
+    if (report !== undefined) this.reports.set(path, { version, ...report });
+    const remembered = this.reports.get(path);
+    return remembered?.version === version ? remembered : undefined;
   }
 }
 
@@ -505,6 +512,12 @@ export class StorageCollector {
       if (smartTimer !== undefined) storage.missingSmartTimers = smartTimer;
     }
     this.scrubDir = undefined;
+    const reportMounts = new Map(
+      scrubMounts.map((mount) => [
+        `${escapePath(mount.mount)}.result`,
+        mount.fsid,
+      ]),
+    );
     try {
       let entries: Dirent[];
       try {
@@ -517,19 +530,22 @@ export class StorageCollector {
       for (const entry of entries) {
         if (!entry.isFile() || !isReportName(entry.name)) continue;
         const path = join(c.scrubDir, entry.name);
-        const text = r.exact(path);
+        const source = r.scrubReport(path);
         // A report vsys cannot read is not a report that is not there. Losing
         // the row would take its problem card with it and leave the reader
-        // with no sign that a check had run at all. `r.text` has already
+        // with no sign that a check had run at all. The Reader has already
         // recorded why the read failed.
-        if (text === null) {
-          const report = this.finishedScrub.identifyReport(path);
+        if (source.kind === "unread") {
+          const report = this.finishedScrub.identifyReport(
+            path,
+            source.version,
+          );
           storage.scrubs.push({
             path,
             text: "",
             readable: false,
             problem: true,
-            fsid: report?.fsid ?? null,
+            fsid: report?.fsid ?? reportMounts.get(entry.name) ?? null,
             startedAt: report?.startedAt ?? null,
             status: null,
             duration: null,
@@ -540,8 +556,9 @@ export class StorageCollector {
           });
           continue;
         }
+        const text = source.text;
         const report = parseScrub(text);
-        this.finishedScrub.identifyReport(path, {
+        this.finishedScrub.identifyReport(path, source.version, {
           fsid: report.uuid,
           startedAt: report.startedAt,
         });

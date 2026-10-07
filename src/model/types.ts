@@ -175,7 +175,7 @@ export interface Scrub {
   problem: boolean;
   /** False where the output could not be read, which is never a clean result. */
   readable?: boolean;
-  /** The filesystem the report names, matched to a Btrfs filesystem id. */
+  /** The report's filesystem, or its current mount's filesystem while unreadable. Null leaves association unknown. */
   fsid?: string | null;
   startedAt?: number | null;
   status?: string | null;

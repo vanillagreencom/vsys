@@ -1,5 +1,22 @@
-import { readdirSync, readFileSync, readlinkSync } from "node:fs";
+import {
+  type BigIntStats,
+  closeSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+} from "node:fs";
 import type { Pressure, SourceError } from "../model/types";
+
+type ScrubText =
+  | { kind: "read"; text: string; version: string }
+  | { kind: "unread"; version: string | null };
+
+function reportVersion(file: BigIntStats): string {
+  return `${file.dev}:${file.ino}:${file.size}:${file.mtimeNs}:${file.ctimeNs}`;
+}
 
 /** Source access is read-only. Optional kernel interfaces may be absent. */
 export class Reader {
@@ -24,6 +41,34 @@ export class Reader {
       if (!(optional && (e as NodeJS.ErrnoException).code === "ENOENT"))
         this.error(path, e);
       return null;
+    }
+  }
+  /** Bind scrub text to its opened file, because the reporter replaces paths by rename. */
+  scrubReport(path: string): ScrubText {
+    let descriptor: number | undefined;
+    let version: string | null = null;
+    try {
+      descriptor = openSync(path, "r");
+      version = reportVersion(fstatSync(descriptor, { bigint: true }));
+      const text = readFileSync(descriptor, "utf8");
+      return { kind: "read", text, version };
+    } catch (error) {
+      this.error(path, error);
+      // A permission failure can still identify the current file, without
+      // giving an unreadable replacement the previous file's metadata.
+      try {
+        version = reportVersion(statSync(path, { bigint: true }));
+      } catch {
+        version = null;
+      }
+      return { kind: "unread", version };
+    } finally {
+      if (descriptor !== undefined)
+        try {
+          closeSync(descriptor);
+        } catch (error) {
+          this.error(path, error);
+        }
     }
   }
   /** SCSI VPD pages carry a binary header before the drive's identity. */

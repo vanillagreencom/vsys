@@ -177,18 +177,32 @@ const level: Record<IntegrityState, Level> = {
 export function integrityLevel(state: IntegrityState): Level {
   return level[state];
 }
-/** The newest report naming this filesystem, or none where no report does. */
-function reportFor(id: string, scrubs: Scrub[]): Scrub | null {
+/** Current report evidence and independent readable evidence for this filesystem. */
+function reportFor(
+  id: string,
+  scrubs: Scrub[],
+): { current: Scrub | null; readable: Scrub | null } {
   // A filesystem id is a UUID, and a report writing it in capitals names the
   // same filesystem. Matching on the spelling would read as never checked.
   const key = id.toLowerCase();
-  const matching = scrubs.filter(
-    (scrub) => scrub.fsid && scrub.fsid.toLowerCase() === key,
+  // An unreadable report with no known owner may belong to any filesystem.
+  const matching = scrubs.filter((scrub) =>
+    scrub.fsid ? scrub.fsid.toLowerCase() === key : scrub.readable === false,
   );
-  return (
-    [...matching].sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0] ??
-    null
-  );
+  const ordered = [...matching].sort((a, b) => {
+    // Unknown order and equal starts cannot prove an unreadable report older.
+    const aUnknown = a.readable === false && a.startedAt == null;
+    const bUnknown = b.readable === false && b.startedAt == null;
+    if (aUnknown !== bUnknown) return aUnknown ? -1 : 1;
+    return (
+      (b.startedAt ?? 0) - (a.startedAt ?? 0) ||
+      Number(b.readable === false) - Number(a.readable === false)
+    );
+  });
+  return {
+    current: ordered[0] ?? null,
+    readable: ordered.find((scrub) => scrub.readable !== false) ?? null,
+  };
 }
 /**
  * The state of one filesystem. The order below is the priority order: damage
@@ -201,7 +215,8 @@ export function integrity(
   time: number,
   c: Config,
 ): Integrity {
-  const scrub = reportFor(group.id, storage.scrubs);
+  const reports = reportFor(group.id, storage.scrubs);
+  const scrub = reports.current;
   // Output vsys could not read names no file it can stand behind. An address
   // parsed out of otherwise unreadable text cannot identify damaged files,
   // even where another source confirms damage.
@@ -211,6 +226,17 @@ export function integrity(
   // older report, must not outrank it below.
   const remembered =
     storage.lastFinishedScrub?.[group.id.toLowerCase()] ?? null;
+  const known = reports.readable;
+  const confirmedDamage =
+    known?.status === "finished" &&
+    (remembered === null ||
+      known.startedAt == null ||
+      known.startedAt >= remembered.at) &&
+    scrubFoundDamage({
+      addressCount: known.addresses?.length ?? 0,
+      uncorrectable: known.uncorrectable,
+      problem: known.problem,
+    });
   // Only a finished check has a result, and only the newest one speaks for
   // it: a report that finished but started before the remembered finished
   // check is still itself finished, but it is not the authoritative, newer
@@ -328,12 +354,13 @@ export function integrity(
   const since = (at: number | null) =>
     at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
-    finished &&
-    scrubFoundDamage({
-      addressCount: groups.length,
-      uncorrectable: scrub?.uncorrectable,
-      problem: scrub?.problem ?? false,
-    })
+    (!readable && confirmedDamage) ||
+    (finished &&
+      scrubFoundDamage({
+        addressCount: groups.length,
+        uncorrectable: scrub?.uncorrectable,
+        problem: scrub?.problem ?? false,
+      }))
       ? "damaged"
       : // The current report does not speak for itself, either unfinished
         // or finished but older than the remembered check, while a

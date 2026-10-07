@@ -1,6 +1,14 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
+import { summarySnapshot } from "../model/export";
 import {
   damageCounts,
   type IntegrityState,
@@ -16,12 +24,142 @@ import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { type ScrubUnits, scrubTimer, smartTimer } from "./scrub-timers";
+import {
+  escapePath,
+  type ScrubUnits,
+  scrubTimer,
+  smartTimer,
+} from "./scrub-timers";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
 });
+for (const phase of ["startup", "replacement"] as const) {
+  test(`an unreadable shipped report with unknown order prevents Healthy at ${phase}`, async () => {
+    const f = fixture();
+    fixtures.push(f);
+    const fsid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+    const root = join(f.config.btrfsRoot, fsid);
+    mkdirSync(join(root, "devices"), { recursive: true });
+    symlinkSync("/sys/devices/test", join(root, "devices/test"));
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0\n",
+    );
+    const home = join(f.root, "home");
+    mkdirSync(home);
+    const changing = join(f.config.scrubDir, `${escapePath(f.root)}.result`);
+    const steady = join(f.config.scrubDir, `${escapePath(home)}.result`);
+    const report = (at: string, damaged = 0) =>
+      `UUID: ${fsid}\nScrub started: ${at}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: ${damaged}\nDamaged files: 0\n`;
+    f.write(
+      changing,
+      report(
+        phase === "startup" ? "2026-09-12T13:25:54Z" : "2026-09-10T13:25:54Z",
+      ),
+    );
+    f.write(steady, report("2026-09-11T13:25:54Z"));
+    const mounts = parseMounts(
+      `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw\n2 0 0:1 /home ${home} rw - btrfs /dev/test rw`,
+    );
+    const time = Date.parse("2026-09-12T13:25:54Z") + 2000;
+    const collector = new StorageCollector();
+    const reader = new Reader();
+    try {
+      if (phase === "replacement") {
+        const first = await collector.collect(
+          reader,
+          f.config,
+          time,
+          mounts,
+          true,
+          true,
+        );
+        expect(
+          integrity(
+            present(volumesByDevice(first.volumes)[0], "filesystem"),
+            first,
+            time,
+            f.config,
+          ).state,
+        ).toBe("healthy");
+        const before = statSync(changing).ino;
+        const hidden = join(f.config.scrubDir, ".replacement.tmp");
+        f.write(hidden, report("2026-09-12T13:25:54Z", 1));
+        renameSync(hidden, changing);
+        expect(statSync(changing).ino).not.toBe(before);
+      }
+      chmodSync(changing, 0o000);
+      const successor = new StorageCollector(
+        null,
+        null,
+        collector.finishedScrubMemory(),
+      );
+      try {
+        for (const active of [collector, successor]) {
+          const storage = await active.collect(
+            reader,
+            f.config,
+            time,
+            mounts,
+            true,
+            true,
+          );
+          const item = integrity(
+            present(volumesByDevice(storage.volumes)[0], "filesystem"),
+            storage,
+            time,
+            f.config,
+          );
+          expect(item.state).toBe("unknown");
+          expect(item.scrub?.path).toBe(changing);
+          expect(item.scrub?.startedAt).toBeNull();
+          expect(item.blocks).toBeNull();
+          const snapshot = emptySnapshot();
+          snapshot.time = time;
+          snapshot.storage = storage;
+          expect(
+            summarySnapshot(snapshot, f.config).verdict.some(
+              (cause) => cause.cause === "integrity-unknown",
+            ),
+          ).toBe(true);
+          expect(damageCounts(item)).toEqual({
+            files: null,
+            free: null,
+            unresolved: null,
+            unnamed: null,
+          });
+          expect(reader.errors.map((error) => error.source)).toContain(
+            changing,
+          );
+        }
+        chmodSync(changing, 0o600);
+        const restored = await successor.collect(
+          reader,
+          f.config,
+          time,
+          mounts,
+          true,
+          true,
+        );
+        expect(
+          integrity(
+            present(volumesByDevice(restored.volumes)[0], "filesystem"),
+            restored,
+            time,
+            f.config,
+          ).state,
+        ).toBe(phase === "replacement" ? "damaged" : "healthy");
+      } finally {
+        chmodSync(changing, 0o600);
+        successor.close();
+      }
+    } finally {
+      collector.close();
+    }
+  });
+}
 for (const row of [
   {
     name: "clean check",
@@ -101,17 +239,16 @@ for (const row of [
           f.config,
         ).state,
       ).toBe(row.before);
-      const exact = reader.exact.bind(reader);
-      const hook = spyOn(reader, "exact").mockImplementation(
-        (file, optional) => {
-          if (file !== path) return exact(file, optional);
-          reader.error(
-            file,
-            Object.assign(new Error("EACCES"), { code: "EACCES" }),
-          );
-          return null;
-        },
-      );
+      const read = reader.scrubReport.bind(reader);
+      const hook = spyOn(reader, "scrubReport").mockImplementation((file) => {
+        const source = read(file);
+        if (file !== path) return source;
+        reader.error(
+          file,
+          Object.assign(new Error("EACCES"), { code: "EACCES" }),
+        );
+        return { kind: "unread", version: source.version };
+      });
       try {
         const successor = new StorageCollector(
           null,
@@ -221,17 +358,16 @@ for (const row of [
         null,
         collector.finishedScrubMemory(),
       );
-      const exact = reader.exact.bind(reader);
-      const hook = spyOn(reader, "exact").mockImplementation(
-        (file, optional) => {
-          if (file !== path) return exact(file, optional);
-          reader.error(
-            file,
-            Object.assign(new Error("EACCES"), { code: "EACCES" }),
-          );
-          return null;
-        },
-      );
+      const read = reader.scrubReport.bind(reader);
+      const hook = spyOn(reader, "scrubReport").mockImplementation((file) => {
+        const source = read(file);
+        if (file !== path) return source;
+        reader.error(
+          file,
+          Object.assign(new Error("EACCES"), { code: "EACCES" }),
+        );
+        return { kind: "unread", version: source.version };
+      });
       try {
         for (const active of [collector, successor]) {
           const storage = await active.collect(

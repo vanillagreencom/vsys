@@ -1,5 +1,40 @@
 import { expect, test } from "bun:test";
-import { spawnText } from "./io";
+import { chmodSync, renameSync } from "node:fs";
+import { join } from "node:path";
+import { fixture } from "../test/fixture";
+import { Reader, spawnText } from "./io";
+
+test("a scrub read binds exact text to its file version and records unavailable versions", () => {
+  const f = fixture();
+  const path = join(f.config.scrubDir, "root.result");
+  const reader = new Reader();
+  try {
+    f.write(path, "Status: finished\n  file with end space ");
+    const before = reader.scrubReport(path);
+    expect(before.kind).toBe("read");
+    if (before.kind !== "read") throw new Error("Readable report required");
+    expect(before.text).toBe("Status: finished\n  file with end space ");
+    expect(reader.scrubReport(path)).toEqual(before);
+    const hidden = join(f.config.scrubDir, ".next");
+    f.write(hidden, "Status: finished\n  file with end space ");
+    renameSync(hidden, path);
+    const replaced = reader.scrubReport(path);
+    expect(replaced.kind).toBe("read");
+    expect(replaced.version).not.toBe(before.version);
+    chmodSync(path, 0o000);
+    const failed = reader.scrubReport(path);
+    expect(failed.kind).toBe("unread");
+    expect(failed.version).not.toBeNull();
+    expect(reader.errors.map((error) => error.source)).toContain(path);
+    expect(reader.scrubReport(join(f.root, "absent"))).toEqual({
+      kind: "unread",
+      version: null,
+    });
+  } finally {
+    chmodSync(path, 0o600);
+    f.cleanup();
+  }
+});
 
 test("a child that exits before its deadline returns normally, with no leftover timer", async () => {
   const started = Date.now();

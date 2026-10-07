@@ -411,61 +411,6 @@ test("a remembered finished check speaks when its current report is unavailable"
   );
 });
 
-test("an unreadable report that cannot be matched to a filesystem is not read as a gone report", () => {
-  // readdir succeeded (the scrub directory capability stays available), but
-  // this filesystem's own report file could not be read, so the collector
-  // pushes it with fsid: null and readable: false. reportFor() matches by
-  // fsid, so a null-fsid entry attaches to no filesystem, and item.scrub
-  // stays null exactly as if no report had ever been written. vsys has not
-  // established that the report is gone -- it may exist on disk right now,
-  // just unreadable and unmatched -- so the remembered-check sentence must
-  // say "unavailable", never "gone".
-  const unreadableFsidNull: Scrub = {
-    path: "/run/btrfs-scrub/root.result",
-    text: "",
-    readable: false,
-    problem: true,
-    fsid: null,
-    startedAt: null,
-    status: null,
-    uncorrectable: null,
-    corrected: null,
-    addresses: null,
-  };
-  const item = integrity(
-    present(
-      volumesByDevice([
-        volumeSnapshot("/", {
-          fsid: "fs",
-          errors: { "1/corruption_errs": 0 },
-          countersAvailable: true,
-        }),
-      ])[0],
-      "root device",
-    ),
-    {
-      scrubs: [unreadableFsidNull],
-      lastFinishedScrub: { fs: { at: now - 2 * day, damaged: true } },
-    },
-    now,
-    c,
-  );
-  const available: Capability = {
-    id: "scrub",
-    available: true,
-    failure: null,
-    source: "/run/btrfs-scrub",
-    detail: "",
-  };
-  expect(item.scrub).toBeNull();
-  expect(blocksText(item, available)).toBe(
-    "not available: a remembered finished check found damage, but its current report is unavailable, so no count was kept",
-  );
-  expect(noDamageText(item, available)).toBe(
-    "A remembered finished check found damage, but its current report is unavailable, so no file is named for it.",
-  );
-});
-
 test("a failed directory read is never read as a report that is gone", () => {
   // The directory listing itself failed this sample (or has never run), so
   // storage.scrubs is empty for a reason that has nothing to do with whether
