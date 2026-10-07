@@ -23,6 +23,23 @@ test.each([{ failed: false }, { failed: true }])(
       expect(heading).toBeGreaterThan(-1);
       const emptyState = lines.slice(heading + 1, -2).join("\n");
       expect(emptyState.includes(gap)).toBe(failed);
+      const tiles = lines.findIndex((line) =>
+        line.includes("Compile and link"),
+      );
+      expect(tiles).toBeGreaterThan(-1);
+      const start = present(lines[tiles], "tile headings").indexOf(
+        "Compile and link",
+      );
+      const end = present(lines[tiles], "tile headings").indexOf("Cache hits");
+      expect(end).toBeGreaterThan(start);
+      const value = present(lines[tiles + 1], "build count")
+        .slice(start, end)
+        .trim();
+      const detail = present(lines[tiles + 2], "build detail")
+        .slice(start, end)
+        .trim();
+      expect(value).toBe(`${failed ? gap : "0"} of ${s.system.cores} cores`);
+      expect(detail).toBe(failed ? `${gap} · ${gap}` : "0 linkers · 0 lanes");
     } finally {
       await t.close();
     }

@@ -32,6 +32,7 @@ import {
 } from "./chrome";
 import { osc52 } from "./clipboard";
 import { wrapLines } from "./columns";
+import { gap } from "./format";
 import type { HomeItem } from "./home";
 import { homeItems, homeTarget, recentChanges } from "./home";
 import { homeRegions } from "./regions";
@@ -284,6 +285,35 @@ test("Home opens with the most urgent row selected", async () => {
     await changed.close();
   }
 });
+
+test.each([{ failed: false }, { failed: true }])(
+  "Home build tile preserves process read failure: $failed",
+  async ({ failed }) => {
+    const c = defaults();
+    const s = emptySnapshot();
+    if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    const t = await mount(s, c, { width: 220, height: 30 });
+    try {
+      await t.press("1");
+      const lines = t.frame().split("\n");
+      const heading = lines.findIndex(
+        (line) => line.includes("CPU wait") && line.includes("Builds"),
+      );
+      expect(heading).toBeGreaterThan(-1);
+      const start = present(lines[heading], "tile headings").indexOf("Builds");
+      const value = present(lines[heading + 1], "build count")
+        .slice(start)
+        .trim();
+      const detail = present(lines[heading + 3], "build detail")
+        .slice(start)
+        .trim();
+      expect(value).toBe(`${failed ? gap : "0"} of ${s.system.cores} cores`);
+      expect(detail).toBe(failed ? `${gap} · ${gap}` : "0 linkers · 0 lanes");
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 test("the arrow keys reach the tiles and open the screen behind one", async () => {
   const c = defaults();
