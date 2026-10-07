@@ -36,9 +36,8 @@ export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
  * process in the reading with a field unknown.
  */
 export function omittedProcess(source: string, procRoot: string): boolean {
-  // Sources are built with join, which drops the trailing slash a configured
-  // root may carry.
   const root = resolve(procRoot);
+  source = resolve(source);
   return (
     source === root ||
     (dirname(source) === root && /^\d+$/.test(basename(source)))

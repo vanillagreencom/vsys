@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { type Config, defaults } from "../config/config";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProcessCollector } from "../collect/procs";
+import { type Config, defaults, validate } from "../config/config";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -9,6 +13,7 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { present } from "../test/present";
+import { buildsSummary } from "./builds";
 import { summarySnapshot } from "./export";
 import { type IntegrityState, integrities } from "./integrity";
 import type { Group, Lane, Scrub, Snapshot, Volume } from "./types";
@@ -302,35 +307,53 @@ test("build load counts configured linkers separately and per lane", () => {
 
 test("build counts stay unknown when process collection omits a process or cannot list them", () => {
   const c = defaults();
-  const rows: [string, string[], number | null][] = [
-    ["readable empty directory", [], 0],
-    ["unread directory", [c.procRoot], null],
-    ["unread process", [`${c.procRoot}/77`], null],
-    ["unread optional field", [`${c.procRoot}/77/environ`], 0],
-  ];
-  // Reader.names and collectProcesses record these two kinds of omitted reads.
-  for (const [name, sources, count] of rows) {
-    const s = emptySnapshot();
-    s.errors = sources.map((source) => ({ source, message: "EACCES" }));
-    for (const procRoot of [c.procRoot, `${c.procRoot}/`]) {
-      const config = { ...c, procRoot };
-      expect({ name, ...buildLoad(s, config) }).toEqual({
-        name,
-        builds: count,
-        linkers: count,
-        lanes: count,
-      });
-      expect(meterOf(s, config, "builds")).toMatchObject({
-        level: count === null ? "warn" : "ok",
-        values: { builds: count, linkers: count, lanes: count },
-      });
-      expect(
-        present(
-          summarySnapshot(s, config).meters.find((m) => m.id === "builds"),
-          name,
-        ).value,
-      ).toBe(count);
+  const root = mkdtempSync(join(tmpdir(), "vsys-build-counts-"));
+  try {
+    const rows: [string, string, string[] | null, number | null][] = [
+      ["readable empty directory", root, null, 0],
+      ["unread directory", join(root, "unread"), null, null],
+      ["unread process", root, [join(root, "77")], null],
+      ["unread optional field", root, [join(root, "77", "environ")], 0],
+    ];
+    for (const [name, directory, sources, count] of rows) {
+      for (const procRoot of [directory, `${directory}/`]) {
+        const config = validate({ procRoot }, c);
+        const s = emptySnapshot();
+        if (sources === null) {
+          const reading = new ProcessCollector(config, 100, 4096).read({
+            time: s.time,
+            uptime: 0,
+            groups: [],
+          });
+          expect(reading.procs).toEqual([]);
+          expect(reading.errors.map((error) => error.source)).toEqual(
+            count === null ? [procRoot] : [],
+          );
+          s.procs = reading.procs;
+          s.errors = reading.errors;
+        } else {
+          s.errors = sources.map((source) => ({ source, message: "EACCES" }));
+        }
+        const counts = { builds: count, linkers: count, lanes: count };
+        expect({ name, ...buildLoad(s, config) }).toEqual({ name, ...counts });
+        expect(buildsSummary(s, config)).toMatchObject(counts);
+        expect(meterOf(s, config, "builds")).toMatchObject({
+          level: count === null ? "warn" : "ok",
+          values: counts,
+        });
+        expect(
+          present(
+            summarySnapshot(s, config).meters.find((m) => m.id === "builds"),
+            name,
+          ),
+        ).toMatchObject({
+          level: count === null ? "warn" : "ok",
+          value: count,
+        });
+      }
     }
+  } finally {
+    rmSync(root, { recursive: true });
   }
 });
 
@@ -702,7 +725,7 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
       [`${c.procRoot}/77/environ`],
       [30, 30, 150, 150],
     ],
-    // Configuration accepts a trailing slash; the reader's sources carry none.
+    // Process directory paths use join, which removes the root's trailing slash.
     [
       "a process that could not be read, under a root written with a slash",
       [...agents, desktop],
