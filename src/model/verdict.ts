@@ -344,6 +344,7 @@ interface Judgments {
   host: Record<HostCause, Judged>;
   stalls: Judgment<Lane>[];
   "memory-high": Judgment<Group>[];
+  "free-space": Judgment<Volume>[];
   scratch: Judgment<ScratchRoot>[];
 }
 function judgments(s: Snapshot, c: Config): Judgments {
@@ -379,6 +380,10 @@ function judgments(s: Snapshot, c: Config): Judgments {
       ),
     })),
     "memory-high": memoryHighJudgments(s.groups),
+    "free-space": s.storage.volumes.map((volume) => ({
+      subject: volume,
+      judged: judge([volume.free], (n) => n < c.freeFloor),
+    })),
     scratch: s.storage.scratch.map((root) => ({
       subject: root,
       judged: judge([root.bytes], (n) => n > c.scratchQuota),
@@ -390,12 +395,12 @@ const where = <T>(rows: Judgment<T>[], judged: Judged): T[] =>
 /**
  * The subjects each cause could not judge this sample, by the identifier an
  * alert about it carries: the host as the empty id, a lane id, a group path
- * or a scratch path. A host cause whose reading failed covers every subject
+ * or a storage path. A host cause whose reading failed covers every subject
  * the sample holds, and a lane listed under one is judged by that reading
- * alone. A subject the sample no longer holds is never here: it is gone, not
- * unread.
+ * alone. An unread mount list leaves every free-space subject unjudged;
+ * a readable list can establish that a filesystem is gone.
  */
-export type Unjudged = Partial<Record<CauseId, ReadonlySet<string>>>;
+export type Unjudged = Partial<Record<CauseId, ReadonlySet<string> | "all">>;
 export function unjudged(s: Snapshot, c: Config): Unjudged {
   const j = judgments(s, c);
   const held = [
@@ -406,12 +411,14 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
   const subjects: [CauseId, string[]][] = [
     ["stalls", where(j.stalls, "unjudged").map((lane) => lane.id)],
     ["memory-high", where(j["memory-high"], "unjudged").map((g) => g.path)],
+    ["free-space", where(j["free-space"], "unjudged").map((v) => v.mount)],
     ["scratch", where(j.scratch, "unjudged").map((root) => root.path)],
   ];
   for (const id of hostCauses)
     if (j.host[id] === "unjudged") subjects.push([id, held]);
   const out: Unjudged = {};
   for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
+  if (s.storage.mountsAvailable === false) out["free-space"] = "all";
   return out;
 }
 /**
@@ -581,10 +588,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         cache: agentTotal(s, c, "cache"),
       },
     });
-  const free = leastFree(s.storage.volumes);
-  if (free && (free.free ?? 0) < c.freeFloor)
+  const low = where(j["free-space"], "fired");
+  const free = leastFree(low);
+  if (free)
     add("free-space", "danger", {
-      paths: [free.mount],
+      paths: low.map((volume) => volume.mount),
       consumer: free.mount,
       values: { free: free.free, total: free.total },
     });

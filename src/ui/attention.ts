@@ -543,19 +543,26 @@ function copy(
         target: group,
       };
     }
-    case "free-space":
+    case "free-space": {
+      const minimum = `${cause.consumer} has ${b(v.free)} free of ${b(v.total)}`;
       return {
         word: "Danger",
-        title: `${cause.consumer} has ${b(v.free)} free of ${b(v.total)}`,
+        title:
+          paths > 1
+            ? `${paths} filesystems have low free space: ${mounts}`
+            : minimum,
         ways: [
-          `Free space is below the configured floor of ${b(c.freeFloor)}.`,
+          paths > 1
+            ? `${minimum}. Free space on ${cause.paths.join(", ")} is below the configured floor of ${b(c.freeFloor)}.`
+            : `Free space is below the configured floor of ${b(c.freeFloor)}.`,
         ],
-        next: "Open Storage and remove build output or scratch data from that filesystem.",
+        next: `Open Storage and remove build output or scratch data from ${p(paths, "that filesystem", "each of these filesystems")}.`,
         view: "Storage",
         target: cause.consumer
           ? { kind: "path", path: cause.consumer }
           : undefined,
       };
+    }
     case "memory-cap":
       return {
         word: "Danger",

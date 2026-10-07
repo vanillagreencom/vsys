@@ -83,6 +83,14 @@ function subjectValues(
       ...cause.values,
       bytes: s.storage.scratch.find((x) => x.path === id)?.bytes ?? null,
     };
+  if (cause.id === "free-space") {
+    const volume = s.storage.volumes.find((v) => v.mount === id);
+    return {
+      ...cause.values,
+      free: volume?.free ?? null,
+      total: volume?.total ?? null,
+    };
+  }
   if (cause.id === "stalls") {
     const lane = cause.lanes.find((l) => l.id === id);
     return { ...cause.values, worst: lane ? lanePressure(lane) : null };
@@ -302,7 +310,8 @@ export class EventLog {
         this.watching.delete(key);
         continue;
       }
-      if (unread[watch.cause]?.has(watch.subjectId)) {
+      const subjects = unread[watch.cause];
+      if (subjects === "all" || subjects?.has(watch.subjectId)) {
         watch.closeFrom = s.time;
         continue;
       }

@@ -224,6 +224,110 @@ test("desktop swap crossing the floor opens and closes one event", () => {
     .filter((e) => e.cause === "desktop-swap" && e.kind === "alert-close");
   expect(close).toHaveLength(1);
 });
+test("unread free space keeps an open alert until measured recovery or removal", () => {
+  const held = { ...defaults(), pressureHoldSeconds: 1 };
+  const sample = (time: number, free: number | null): Snapshot => {
+    const s = emptySnapshot(time);
+    s.storage.volumes = [volumeSnapshot("/full", { free })];
+    if (free === null)
+      s.errors = [{ source: "/full", message: "EACCES: statfs" }];
+    return s;
+  };
+  for (const ending of ["recovery", "removal"] as const) {
+    const log = new EventLog();
+    log.advance(sample(1000, 1), held);
+    const opened = log
+      .advance(sample(2000, 1), held)
+      .filter((e) => e.cause === "free-space");
+    expect(opened.filter((e) => e.kind === "alert-open")).toMatchObject([
+      { cause: "free-space", subjectId: "/full", values: { free: 1 } },
+    ]);
+    for (const time of [3000, 5000]) {
+      const unread = log
+        .advance(sample(time, null), held)
+        .filter((e) => e.cause === "free-space");
+      expect(unread.filter((e) => e.kind === "alert-close")).toEqual([]);
+      expect(unread.filter((e) => e.kind === "verdict")).toEqual([]);
+    }
+    const back = log
+      .advance(sample(6000, 1), held)
+      .filter((e) => e.cause === "free-space");
+    expect(back.filter((e) => e.kind === "alert-open")).toEqual([]);
+    const cleared = (time: number) =>
+      ending === "recovery"
+        ? sample(time, held.freeFloor)
+        : emptySnapshot(time);
+    expect(
+      log
+        .advance(cleared(6500), held)
+        .filter((e) => e.kind === "alert-close" && e.cause === "free-space"),
+    ).toEqual([]);
+    expect(
+      log
+        .advance(cleared(7000), held)
+        .filter((e) => e.kind === "alert-close" && e.cause === "free-space"),
+    ).toMatchObject([{ cause: "free-space", subjectId: "/full" }]);
+  }
+});
+test("an unread mount list keeps every open free-space alert", () => {
+  const held = { ...defaults(), pressureHoldSeconds: 1 };
+  const sample = (time: number, mountsAvailable: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    s.storage.mountsAvailable = mountsAvailable;
+    s.storage.volumes = mountsAvailable
+      ? [volumeSnapshot("/a", { free: 1 }), volumeSnapshot("/b", { free: 2 })]
+      : [];
+    return s;
+  };
+  const log = new EventLog();
+  log.advance(sample(1000, true), held);
+  expect(
+    log
+      .advance(sample(2000, true), held)
+      .filter((e) => e.kind === "alert-open" && e.cause === "free-space"),
+  ).toMatchObject([{ subjectId: "/a" }, { subjectId: "/b" }]);
+  // StorageCollector drops the volumes when /proc/self/mountinfo is unreadable.
+  for (const time of [3000, 5000]) {
+    expect(
+      log
+        .advance(sample(time, false), held)
+        .filter((e) => e.kind === "alert-close" && e.cause === "free-space"),
+    ).toEqual([]);
+  }
+});
+test("each low filesystem keeps its alert and its own free-space readings", () => {
+  const held = { ...defaults(), pressureHoldSeconds: 1 };
+  const sample = (time: number, a: number, b: number): Snapshot => {
+    const s = emptySnapshot(time);
+    s.storage.volumes = [
+      volumeSnapshot("/a", { free: a, total: 100 }),
+      volumeSnapshot("/b", { free: b, total: 200 }),
+    ];
+    return s;
+  };
+  const log = new EventLog();
+  log.advance(sample(1000, 1, 2), held);
+  expect(
+    log
+      .advance(sample(2000, 1, 2), held)
+      .filter((e) => e.kind === "alert-open" && e.cause === "free-space"),
+  ).toMatchObject([
+    { cause: "free-space", subjectId: "/a", values: { free: 1, total: 100 } },
+    { cause: "free-space", subjectId: "/b", values: { free: 2, total: 200 } },
+  ]);
+  for (const time of [3000, 5000]) {
+    const changed = log
+      .advance(sample(time, 2, 1), held)
+      .filter((e) => e.cause === "free-space");
+    expect(changed.filter((e) => e.kind === "alert-close")).toEqual([]);
+    expect(changed.filter((e) => e.kind === "alert-open")).toEqual([]);
+  }
+  expect(
+    log
+      .advance(sample(6000, held.freeFloor, 1), held)
+      .filter((e) => e.kind === "alert-close" && e.cause === "free-space"),
+  ).toMatchObject([{ cause: "free-space", subjectId: "/a" }]);
+});
 test("a verdict change names the cause it replaces", () => {
   const log = started();
   const firing = emptySnapshot(2000);
