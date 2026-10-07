@@ -26,6 +26,16 @@ export class Reader {
       return null;
     }
   }
+  /** SCSI VPD pages carry a binary header before the drive's identity. */
+  bytes(path: string, optional = false): Buffer | null {
+    try {
+      return readFileSync(path);
+    } catch (e) {
+      if (!(optional && (e as NodeJS.ErrnoException).code === "ENOENT"))
+        this.error(path, e);
+      return null;
+    }
+  }
   dirs(path: string, optional = false): string[] {
     try {
       return readdirSync(path, { withFileTypes: true })

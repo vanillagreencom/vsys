@@ -55,6 +55,51 @@ test("restoring the boot ID recovers a failure read without a mount message", as
   expect(asked).toEqual([null, null, "after-failure"]);
 });
 
+test("replaying a retained cursor keeps earlier failures separate from later device reuse", async () => {
+  const asked: (string | null)[] = [];
+  const prefix = [
+    entry(earlier, 100, mounted("sda", fsA)),
+    "-- cursor: before-reuse",
+  ].join("\n");
+  const reused = [
+    // The mount for this old device name is no longer in the journal.
+    entry(earlier, 200, failed("sdb", 5, 7)),
+    // sdb is mounted later, and sda changes filesystems in the same boot.
+    entry(earlier, 300, mounted("sdb", fsB)),
+    entry(earlier, 310, failed("sda", 5, 8)),
+    entry(earlier, 320, mounted("sda", fsB)),
+    entry(earlier, 330, failed("sdb", 5, 9)),
+    "-- cursor: after-reuse",
+  ].join("\n");
+  const log = new KernelLog(async (cursor) => {
+    asked.push(cursor);
+    if (cursor === null) return prefix;
+    if (cursor === "before-reuse") return reused;
+    return [entry(earlier, 400, failed("sda", 5, 10)), "-- cursor: final"].join(
+      "\n",
+    );
+  });
+  expect(await log.read(new Map(), currentDashed)).toEqual({});
+  const expected = {
+    [fsA]: [{ root: 5, inode: 8, at: 310_000 }],
+    [fsB]: [{ root: 5, inode: 9, at: 330_000 }],
+  };
+  expect(await log.read(new Map(), null)).toEqual(expected);
+  expect(await log.read(new Map(), null)).toEqual(expected);
+  expect(await log.read(new Map(), currentDashed)).toEqual(expected);
+  expect(await log.read(new Map(), currentDashed)).toEqual({
+    [fsA]: expected[fsA],
+    [fsB]: [{ root: 5, inode: 10, at: 400_000 }, ...expected[fsB]],
+  });
+  expect(asked).toEqual([
+    null,
+    "before-reuse",
+    "before-reuse",
+    "before-reuse",
+    "after-reuse",
+  ]);
+});
+
 test("a failure is matched to the filesystem its own boot mounted on that device", async () => {
   // The earlier boot mounted fsA on nvme0n1p2. This boot enumerated the drives
   // in another order, and nvme0n1p2 is fsB now. The old failure is fsA's.

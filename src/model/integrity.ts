@@ -203,9 +203,9 @@ export function integrity(
 ): Integrity {
   const scrub = reportFor(group.id, storage.scrubs);
   // Output vsys could not read names no file it can stand behind. An address
-  // parsed out of otherwise unreadable text would list damaged files under a
-  // headline saying the state is unknown, which is two claims at once.
-  const readable = !scrub || scrub.readable !== false;
+  // parsed out of otherwise unreadable text cannot identify damaged files,
+  // even where another source confirms damage.
+  const readable = scrub?.readable !== false;
   // The collector's own memory of the last finished check, read here because
   // a report that finished but moved backward in time, such as a restored
   // older report, must not outrank it below.
@@ -328,25 +328,25 @@ export function integrity(
   const since = (at: number | null) =>
     at === null ? null : Math.max(0, time - at) / 1000;
   const state: IntegrityState =
-    scrub && scrub.readable === false
-      ? "unknown"
-      : finished &&
-          scrubFoundDamage({
-            addressCount: groups.length,
-            uncorrectable: scrub?.uncorrectable,
-            problem: scrub?.problem ?? false,
-          })
+    finished &&
+    scrubFoundDamage({
+      addressCount: groups.length,
+      uncorrectable: scrub?.uncorrectable,
+      problem: scrub?.problem ?? false,
+    })
+      ? "damaged"
+      : // The current report does not speak for itself, either unfinished
+        // or finished but older than the remembered check, while a
+        // remembered finished one found damage: that memory must stand
+        // until a later finished report says otherwise, never silently
+        // read as sound because the report naming it is gone or moved
+        // backward in time.
+        !finished && remembered?.damaged
         ? "damaged"
-        : // The current report does not speak for itself, either unfinished
-          // or finished but older than the remembered check, while a
-          // remembered finished one found damage: that memory must stand
-          // until a later finished report says otherwise, never silently
-          // read as sound because the report naming it is gone or moved
-          // backward in time.
-          !finished && remembered?.damaged
-          ? "damaged"
-          : growthNew || loggedNew
-            ? "new-errors"
+        : growthNew || loggedNew
+          ? "new-errors"
+          : !readable
+            ? "unknown"
             : running
               ? "checking"
               : !hasFinishedRecord

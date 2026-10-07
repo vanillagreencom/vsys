@@ -1,1 +1,1 @@
-- Storage leaves filesystem health unknown when its latest scrub report cannot be read. It rejects saved drive figures when serial numbers do not match. It recovers checksum failures after access to the boot ID returns.
+- Storage keeps confirmed damage and new errors when a scrub report cannot be read. It leaves other filesystem health unknown. Saved drive figures require matching current serial numbers, including SATA and SCSI drives. Restored boot ID access recovers checksum failures without assigning old failures to later-mounted filesystems.

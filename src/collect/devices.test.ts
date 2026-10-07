@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
 import { present } from "../test/present";
@@ -72,6 +72,90 @@ test("a saved drive total requires matching nonempty serial numbers", () => {
     expect(reader.errors).toEqual([]);
   }
 });
+test("SATA and SCSI reports require the current unit serial from a complete VPD page", () => {
+  const vpd = (serial: string) => {
+    const body = Buffer.from(serial, "ascii");
+    const header = Buffer.from([0, 0x80, 0, 0]);
+    header.writeUInt16BE(body.length, 2);
+    return Buffer.concat([header, body]);
+  };
+  const rows = [
+    { name: "matching", page: vpd("SN-1"), accepted: true, error: false },
+    { name: "padded", page: vpd("  SN-1  "), accepted: true, error: false },
+    { name: "replacement", page: vpd("SN-2"), accepted: false, error: false },
+    { name: "missing", page: null, accepted: false, error: false },
+    { name: "unreadable", page: "directory", accepted: false, error: true },
+    { name: "empty", page: vpd(""), accepted: false, error: false },
+    { name: "blank", page: vpd("  "), accepted: false, error: false },
+    {
+      name: "short header",
+      page: Buffer.from([0, 0x80, 0]),
+      accepted: false,
+      error: true,
+    },
+    {
+      name: "wrong page",
+      page: Buffer.from([0, 0x83, 0, 4, 83, 78, 45, 49]),
+      accepted: false,
+      error: true,
+    },
+    {
+      name: "truncated",
+      page: Buffer.from([0, 0x80, 0, 5, 83, 78, 45, 49]),
+      accepted: false,
+      error: true,
+    },
+    {
+      name: "extra bytes",
+      page: Buffer.from([0, 0x80, 0, 3, 83, 78, 45, 49]),
+      accepted: false,
+      error: true,
+    },
+    {
+      name: "non-ASCII",
+      page: Buffer.from([0, 0x80, 0, 4, 83, 78, 45, 0xb1]),
+      accepted: false,
+      error: true,
+    },
+  ];
+  for (const row of rows) {
+    const f = fixture();
+    fixtures.push(f);
+    f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
+    const devicePath = join(f.config.sysBlockRoot, "sda/device");
+    const path = join(devicePath, "vpd_pg80");
+    if (row.page === "directory") mkdirSync(path, { recursive: true });
+    else if (row.page !== null) {
+      mkdirSync(devicePath, { recursive: true });
+      writeFileSync(path, row.page);
+    }
+    const reportPath = join(f.config.smartDir, "sda.txt");
+    f.write(
+      reportPath,
+      "Device Model: Same model\nSerial number: SN-1\n241 Total_LBAs_Written 0x0032 099 099 000 Old_age Always - 2000000\n",
+    );
+    const reader = new Reader();
+    const device = present(
+      collectDevices(reader, f.config, new Map([["sda", reportPath]]))[0],
+      row.name,
+    );
+    expect({
+      name: row.name,
+      model: device.model,
+      written: device.lifetimeWritten,
+      source: device.source,
+    }).toEqual({
+      name: row.name,
+      model: row.accepted ? "Same model" : null,
+      written: row.accepted ? 1_024_000_000 : null,
+      source: row.accepted ? "smartctl" : null,
+    });
+    expect(reader.errors.map((error) => error.source)).toEqual(
+      row.error ? [path] : [],
+    );
+  }
+});
+
 const nvme = `smartctl 7.4 2023-08-01 r5530 [x86_64-linux] (local build)
 
 === START OF SMART DATA SECTION ===

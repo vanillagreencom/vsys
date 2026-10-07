@@ -44,6 +44,38 @@ function report(overrides: Partial<Scrub> = {}): Scrub {
   };
 }
 
+test("an unreadable report leaves confirmed new errors ahead of unknown", () => {
+  const rows = [
+    { source: "none", growth: null, logged: [], state: "unknown" },
+    { source: "counter", growth: now - 1000, logged: [], state: "new-errors" },
+    {
+      source: "kernel-log",
+      growth: null,
+      logged: [{ root: 5, inode: 7, at: now - 1000 }],
+      state: "new-errors",
+    },
+  ];
+  for (const row of rows) {
+    const item = integrity(
+      filesystem({ lastErrorAt: row.growth }),
+      {
+        scrubs: [report({ readable: false, status: null, startedAt: null })],
+        lastFinishedScrub: { fs: { at: now - day, damaged: false } },
+        csumFailures: { fs: row.logged },
+      },
+      now,
+      defaults(),
+    );
+    expect({ source: row.source, state: item.state }).toEqual({
+      source: row.source,
+      state: row.state,
+    });
+    expect(item.errorSource).toBe(row.source === "none" ? null : row.source);
+    expect(item.blocks).toBeNull();
+    expect(item.groups).toEqual([]);
+  }
+});
+
 test("an address names its files, free space, or damage it could not name", () => {
   const c = defaults();
   const item = integrity(
