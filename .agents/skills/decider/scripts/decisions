@@ -56,7 +56,12 @@ Actions:
                        and an ID this INDEX.md records for a different
                        document than the base branch's INDEX.md does. The
                        base is read at its fetched tip, not at the merge
-                       base. It also refuses an INDEX row, here or on the
+                       base. A renamed record inherited from the shared
+                       history passes when either side renames it, the old
+                       file is gone on that side, and its INDEX points at
+                       the new file. Unavailable shared
+                       history refuses the rename (error=rename-unverified).
+                       It also refuses an INDEX row, here or on the
                        base, that it could not parse
                        (error=index-row-invalid). How a base that could not
                        be read is judged: DECISIONS_BASE_REF. Exits 0 with
@@ -249,10 +254,10 @@ regex_valid() { # REGEX
 # backticked or bare `.md` filename so an index written from an older row
 # template still resolves its documents instead of silently reporting none.
 #
-# Each row also carries its INDEX line number and its link cell as written,
-# which the duplicate and base checks name and compare. The link, not the whole
-# row, is a record's identity across branches: a status edit on a branch keeps
-# the record it edits.
+# Each row also carries its INDEX line number and the filename its link cell
+# resolves to, which the duplicate and base checks name and compare. That
+# resolved filename identifies edits and removals across branches. A changed
+# filename also needs the shared history and file checks in cmd_check.
 parse_index() {
   if [[ -z "$INDEX_FILE" || ! -f "$INDEX_FILE" ]]; then
     echo '[]'
@@ -795,6 +800,23 @@ row_fields() { # ROWS_JSON — the rows= and paths= fields naming each row
   jq -r '"rows=\(map(.line | tostring) | join(",")) paths=\(map(.path) | join(","))"' <<<"$1"
 }
 
+shared_index() {
+  local ancestor text
+  if ! ancestor="$(git -C "$DECISIONS_DIR" merge-base HEAD "$BASE_REF")"; then
+    emit_error rename-unverified "ref=$BASE_REF reason=ancestor-unresolved" "The shared history could not be read, so a changed filename cannot establish a rename."
+    return 1
+  fi
+  if ! git -C "$DECISIONS_DIR" rev-parse --verify --quiet "$ancestor:$BASE_PATH" >/dev/null; then
+    printf '[]\n'
+    return 0
+  fi
+  if ! text="$(git_remote show "$ancestor:$BASE_PATH" 2>/dev/null)"; then
+    emit_error rename-unverified "ref=$ancestor reason=index-unreadable" "The shared history's INDEX could not be read, so a changed filename cannot establish a rename."
+    return 1
+  fi
+  parse_rows "$text" "$ancestor:$BASE_PATH" "$ancestor:${BASE_PATH%INDEX.md}"
+}
+
 cmd_check() {
   if [[ "$DECISIONS_DIR_ABSENT" -eq 1 ]]; then
     note_missing_decisions_dir
@@ -830,20 +852,51 @@ cmd_check() {
     fi
   done <<<"$ids"
 
-  # A row the base records under the same link is the same record, edited or
-  # not. The same ID under another link is a second decision.
+  # Independently allocated IDs can have identical row text. A filename change
+  # is a rename only when both sides inherited one record and each renamed
+  # side replaces its original document; a removed number stays reserved.
   read_base_index
   report_base check || found=1
   [[ "$BASE_ROWS_SKIPPED" -eq 0 ]] || found=1
-  local collisions collision
+  local collisions collision ancestor_rows='[]' old_link old_path path link base_link base_old_path
   collisions="$(jq -c --argjson base "$BASE_ROWS" '
     .[] | . as $row
     | [$base[] | select(.id == $row.id)] as $held
     | select(($held | length) > 0 and ($held | map(.link) | index($row.link)) == null)
-    | {id: $row.id, path: $row.path, base: ($held | map(.path) | join(","))}
-  ' <<<"$rows")"
+    | {id: $row.id, link: $row.link, path: $row.path, status: $row.status,
+       base: ($held | map(.path) | join(",")),
+       base_links: ($held | map(.link)), base_statuses: ($held | map(.status))}
+  ' <<<"$rows")" || return 1
+  if [[ -n "$collisions" && -z "$BASE_REASON" ]]; then
+    ancestor_rows="$(shared_index)" || return 1
+  fi
+  collisions="$(jq -c --argjson ancestor "$ancestor_rows" '
+    . as $row | [$ancestor[] | select(.id == $row.id)] as $history
+    | .ancestor = (if (.base_links | length) == 1 and ($history | length) == 1
+                   then $history[0] else null end)
+    | if .ancestor.status == "Removed"
+         and ((.link != .ancestor.link and .status != "Removed")
+              or (.base_links[0] != .ancestor.link and .base_statuses[0] != "Removed"))
+      then .ancestor = null else . end
+  ' <<<"$collisions")" || return 1
   while IFS= read -r collision; do
     [[ -n "$collision" ]] || continue
+    old_link="$(jq -r '.ancestor.link // ""' <<<"$collision")" || return 1
+    old_path="$(jq -r '.ancestor.path // ""' <<<"$collision")" || return 1
+    path="$(jq -r '.path' <<<"$collision")" || return 1
+    link="$(jq -r '.link' <<<"$collision")" || return 1
+    base_link="$(jq -r '.base_links[0]' <<<"$collision")" || return 1
+    base_old_path=""
+    if [[ -n "$old_link" ]]; then
+      base_old_path="$(git -C "$DECISIONS_DIR" ls-tree -r --name-only --full-tree "$BASE_REF" -- "${BASE_PATH%INDEX.md}$old_link")" || return 1
+    fi
+    if [[ -n "$old_link"
+          && ( "$link" == "$old_link" || ( -f "$path" && ! -e "$DECISIONS_DIR/$old_link" && ! -L "$DECISIONS_DIR/$old_link" ) ) ]] \
+       && git -C "$DECISIONS_DIR" rev-parse --verify --quiet "$old_path" >/dev/null \
+       && { [[ "$base_link" == "$old_link" ]] || { [[ -z "$base_old_path" ]] \
+            && git -C "$DECISIONS_DIR" rev-parse --verify --quiet "$BASE_REF:${BASE_PATH%INDEX.md}$base_link" >/dev/null; }; }; then
+      continue
+    fi
     fields="$(jq -r '"id=\(.id) path=\(.path) base=\(.base)"' <<<"$collision")"
     emit_error id-collision "$fields" "The base branch already records this ID for another decision. The base keeps the number; renumber this branch's record (workflows/create-decision.md § Renumber a record)."
     found=1

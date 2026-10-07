@@ -11,7 +11,6 @@ metadata:
   source: kendex
   repository: "https://github.com/vanillagreencom/kendex"
   bugs: "https://github.com/vanillagreencom/kendex/issues"
-  version: "1.0.0"
 tags: [review]
 ---
 
@@ -52,7 +51,7 @@ Integrate through the system's documented interface. Read its current documentat
 
 ## Prove Your Guards
 
-A new or modified production guard ships with one must-fail control per independent rule. Plant a defect that reaches that rule and observe the guard reject it. Rows for the same rule share a control; a defect for one rule cannot prove another. Mutate a disposable copy, never the tracked source. Keep the matched text when removing behavior: deleting the code under test only proves the assertion runs. Reject assertions that also match skip notes, fixtures that never reach the guarded bound or claimed workload, and harness code that keeps alive what the implementation should.
+A new or modified production guard ships with one must-fail control per independent rule. Plant a defect that reaches that rule and observe the guard reject it. Rows for the same rule share a control; a defect for one rule cannot prove another. Mutate a disposable copy, never the tracked source. Put the disposable copy in a `mktemp -d` directory outside the worktree and remove that directory after the control runs. Build compiled controls there with their own target directory under that root's `tmp/`; for cargo, set `CARGO_TARGET_DIR` for the control's build and test commands only, never export it into the lane's environment. Keep the matched text when removing behavior: deleting the code under test only proves the assertion runs. Reject assertions that also match skip notes, fixtures that never reach the guarded bound or claimed workload, and harness code that keeps alive what the implementation should.
 
 - An automated text edit asserts its match count and that the file changed, or uses an edit tool that refuses no match. Resolve or refuse symlinks before replacing a path.
 - An inventory check discovers members from the artifact under test, not a second list. A coverage floor detects a broken extractor. Under-inclusion also needs a required member; over-inclusion needs a forbidden member. State which direction remains unproved. Behavior tests keep expected values independent of the implementation.
@@ -75,8 +74,12 @@ A new or modified production guard ships with one must-fail control per independ
 - Select local and CI checks through the same existing suite entry point from direct and indirect inputs: source, dependencies, fixtures, generated inputs, configuration and build settings. That entry point may map build metadata to checks; add no parallel selector, cache, runner, workflow or hand-kept dependency table. Missing or unreadable selection evidence runs every check in the requested area.
 - With no build graph, an entry point, assertion library or shared-fixture change runs the whole suite. Otherwise select by the test's own path, its named surface and input notes in its file. This applies only when those identify every repository file the test or surface consumes. A test without that evidence runs on every change. No separate list or mandatory-note check is added. Full and release runs run every test.
 - Read selected-run wall time from the existing test output and review recurring validation delays periodically, not as per-change limits or merge gates. Optimize demonstrated waste or feedback delays while preserving protection against real failures; do not narrow dependency inputs or split suites merely to meet a time target.
+- A roster, aggregate or platform-watcher entry point runs every member; when any member fails, it exits non-zero and names each failed member.
 - Put variations of one input contract in one visible table and run the same assertions for each row.
 - Inject time for clock-dependent logic. Use barriers or acknowledgements to prove concurrency order and producer progress. A sleep with a reason proves neither. Bound potentially blocking code with a parent-process deadline; an executor timeout cannot interrupt code that never yields. Real elapsed time is for timer-wiring or performance tests, with their limited claim stated.
+- A text file a test parses or compares byte for byte is pinned `text eol=lf` in `.gitattributes`. A binary fixture, such as an image or an archive, is marked `binary` instead, and a text fixture whose CRLF bytes are the input under test is marked `-text`. A parser of checked-out text normalizes CRLF or refuses it by name.
+- Test process-id parsing and mapping as pure functions with synthetic ids. Test liveness only against a process the test started and still holds, never against an invented id or a reaped child's id.
+- Do not assume POSIX unlink of a file another process holds open. A delete or replace of such a file accepts only success or the platform's held-file error, a Windows sharing violation (winerror 32, which MSYS `rm` prints as "Device or resource busy"), asserts the guarantee of the branch it took, and fails on any other error. Reap owned processes before removing their scratch root.
 - A collection-driven check proves discovery completed and enforces its coverage floor. Failed or partial discovery never reports a valid empty set. Cover empty application input when its contract permits it.
 - Shared fixtures define a neutral world. Keep a planted defect private to its case.
 - Place tests beside code only where the runtime neither loads nor snapshots them. Otherwise use a separate test tree. Name tests for their contract. Split large files at contract boundaries; size alone does not establish that a boundary exists.
@@ -88,6 +91,7 @@ Load only the references for the code being changed:
 - Rust, Cargo or Rust benchmarks: [references/rust.md](references/rust.md).
 - Bash or shell suites: [references/bash.md](references/bash.md).
 - TypeScript or JavaScript: [references/typescript.md](references/typescript.md).
+- A view, layout, styling or UI copy, in any stack: [references/ui.md](references/ui.md).
 
 ## Comments and Prose
 

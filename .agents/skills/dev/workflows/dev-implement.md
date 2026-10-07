@@ -132,6 +132,8 @@ Your return states the blocker, the domain and labels for the new issue, and tha
 
 `git branch --show-current` must report `[BRANCH_NAME]` — the parent's branch when bundled.
 
+Record `git -C [WORKTREE_PATH] rev-parse HEAD` as `[ROUND_BASE]` before implementation. A fix round uses its delegated record's `base_sha` instead.
+
 ### 4.2 Implement
 
 Implement per your domain expertise and run quality gates before completion.
@@ -178,7 +180,9 @@ A start `dev-validate-run` refuses as `run-live`, with exit 2 and the line `dev-
 
 For a test-only PR whose validation runs longer than 30 minutes and fails, run the failed target alone once under load. Record both results in `--validate-note` with the prefix `Test-only validation ceiling:`. Report the result and do not extend validation.
 
-Any other validation failure ends the round. Record the failing result in the artifact and return it without another validation run.
+A `dev-validate-run` verdict of `validate=FAILING` permits one correction inside this round only when the run log names the cause and every failing check names files, all added or changed in `git -C [WORKTREE_PATH] diff --cached --no-renames --name-only --diff-filter=AM [ROUND_BASE]`. Name the first failing check and cause in `--validate-note`. Apply one correction, stage it, and run the same validation command once more on the final contents. Record that single rerun and its verdict in the same note. Then proceed to the artifact with that verdict. This permission applies before the artifact is written and needs no recovery round.
+
+A failure outside that diff, a failure after the single rerun, or an infrastructure result (`no-verdict`, `state=timeout` or `state=lost`) permits no further validation run. The existing `no-verdict` scoped-suite route above still applies. Any other validation failure ends the round. Record the failing result in the artifact and return it without another validation run.
 
 Run no proof, rerun, receipt, isolation step, or approval step outside this list. If an agent believes the list misses a rule, it records the proposal once under `### Proposed Rules` in the completion summary and in the matching return line. The orchestrator puts it once in the PR body. Neither role performs the proposed rule.
 
@@ -229,6 +233,9 @@ Based on the FINAL validated code, decide which extra QA passes the change needs
 | Unsafe code, atomics, lock-free | `needs-safety-audit` |
 | Hot path, latency-sensitive, or shared/main-build perf risk | `needs-perf-test` |
 | New module, public API | `needs-review` |
+| Changed view, layout, styling or UI copy | `needs-ui-review` |
+
+A round that raises `needs-ui-review`, or changes a file a `QA_UI_PATHS` glob matches (`.agents/skills/orch/scripts/orch-env QA_UI_PATHS ""`), builds each changed view to the polish bar in [code-quality references/ui.md](../../code-quality/references/ui.md) and the design-system doc `QA_UI_DESIGN_DOC` names (`.agents/skills/orch/scripts/orch-env QA_UI_DESIGN_DOC ""`), and captures its screenshot set by [code-quality references/ui.md § Screenshots](../../code-quality/references/ui.md#screenshots), listed in § 9.1's Screenshots section. The `needs-ui-review` QA pass judges each view from that set.
 
 Work isolated behind a development-only feature gate does not take `needs-perf-test`: run the feature-gated checks locally and signal only if shared or feature-off paths are affected.
 
@@ -240,7 +247,7 @@ A signal is never silently dropped: every triggered row appears in the artifact 
 
 ### 9.1 Completion Comment
 
-Always required. Linear posts it to the issue you implemented: write `tmp/completion-summary-[ISSUE_ID].md`, then `linear.sh comments create [ISSUE_ID] --body-file tmp/completion-summary-[ISSUE_ID].md`. GitHub and ad-hoc rounds return the same content to the orchestrator instead and ALSO carry it in the artifact via `--summary-file` (§ 10).
+Always required. Linear posts it to the issue you implemented: write `tmp/completion-summary-[ISSUE_ID].md`, then `linear.sh comments create [ISSUE_ID] --body-file tmp/completion-summary-[ISSUE_ID].md`, with one `--attach` per screenshot § 8 captured. GitHub and ad-hoc rounds return the same content to the orchestrator instead and ALSO carry it in the artifact via `--summary-file` (§ 10).
 
 ```markdown
 ## Completion Summary
@@ -259,6 +266,9 @@ Always required. Linear posts it to the issue you implemented: write `tmp/comple
 
 ### Domain Metrics
 [Agent-specific: frame time, latency, etc.]
+
+### Screenshots
+- `tmp/ui-shots/[FILE]` - [View], [before|after], [THEME]
 
 ### Discovered Work
 - [Type]: Description (estimate: N)
@@ -325,7 +335,7 @@ Summary: [ISSUE_ID] ✓
 
 1. **Aggregate QA signals across sub-issues** (including nested ones) into the bundle artifact's `--qa-label` flags — the union of every sub-issue's § 8 signals. No tracker mutation. The near-ceiling lines need no union: the writer's probe measures the whole branch, every sub-issue's commits included.
 
-2. **Post the parent summary** (Linear only): write `tmp/bundle-summary-[PARENT_ID].md`, then `linear.sh comments create [PARENT_ID] --body-file tmp/bundle-summary-[PARENT_ID].md`.
+2. **Post the parent summary** (Linear only): write `tmp/bundle-summary-[PARENT_ID].md`, then `linear.sh comments create [PARENT_ID] --body-file tmp/bundle-summary-[PARENT_ID].md`, with one `--attach` per screenshot. Its Screenshots section is the union of the sub-issues' lists.
 
    ```markdown
    ## Bundle Complete
@@ -336,6 +346,9 @@ Summary: [ISSUE_ID] ✓
    ↳ [SUB_ISSUE_2] ✓ | blocked by: [SUB_ISSUE_1]
       ↳ [SUB_ISSUE_3] ✓  ← nested
    Files: N | Commits: N | QA: [LABELS]
+
+   ### Screenshots
+   - `tmp/ui-shots/[FILE]` - [SUB_ISSUE], [View], [before|after], [THEME]
 
    ### Proposed Rules
    - [Rule the validation list is missing]

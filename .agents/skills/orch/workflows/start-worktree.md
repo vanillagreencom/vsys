@@ -1,6 +1,6 @@
 # Start Session Workflow (Worktree)
 
-The full session from inside a worktree: implement → review → submit → finalize.
+The full session from inside a worktree: implement → review → submit → finalize. On a private repository the pull request opens between implement and review (§ 2.1).
 
 | Command | Flow |
 |---------|------|
@@ -85,13 +85,44 @@ The full session from inside a worktree: implement → review → submit → fin
 3. § 3 requires committed clean work: `HEAD` advanced from the pre-dev SHA, the returned commit in `HEAD` history, and `git status --porcelain` empty. Any failure re-delegates the exact missing step under [Delegation](../references/skill-rules.md#delegation). Never review or submit a dirty worktree.
 4. Dev persistence for § 3 fix cycles follows [Agent Lifecycle](../references/skill-rules.md#agent-lifecycle). § 5.4 retires the remaining agent.
 
+### 2.1 Open Early
+
+Read when this repository opens its pull request, from GitHub's visibility of it (`pr-order --help`):
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-order [WORKTREE_PATH]
+```
+
+Record the order its `pr-order=` field names, `review-first` on a non-zero exit:
+
+```bash
+.agents/skills/orch/scripts/workflow-state set [ISSUE_ID] pr_order [ORDER]
+```
+
+Both rows end at the caller's review step: § 3 here, or [small.md](small.md) § 3 when small.md runs this section.
+
+- `review-first` → the review step. A non-zero exit takes this row and reports its `pr-order-error:` line once: the early order is a trial the owner holds to private repositories, so a visibility the lane cannot read keeps the order every repository ran before it.
+- `open-first` → `⤵ workflows/submit-pr.md § 1-2` with context `worktree`, `lifecycle: "managed"`, `issue_id`. It pushes the commit § 2 validated and opens a pull request, not a draft, so Copilot reviews it while the review step runs; the `open-first` recorded above keeps its § 2 step 5 from arming it. Then confirm the pull request exists:
+
+  ```bash
+  env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-view-json [WORKTREE_PATH] --json number,state
+  ```
+
+  An open pull request → the review step, which reviews the pushed head; its fix round commits stay local until § 4 pushes them. A failed submit return, a `no_pr` status or a read error opened nothing to review on. Record the review-first order:
+
+  ```bash
+  .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] pr_order review-first
+  ```
+
+  Then report once that the early open failed, with the line submit-pr or this read printed, and take the `review-first` row.
+
 ## 3. Review
 
 **Run Workflow**: `⤵ workflows/review-pr.md § 1-9 → § 4` with context `worktree`, `lifecycle: "managed"`, `dev_agent` from § 2, `issue_id`.
 
 ## 4. Submit
 
-**Run Workflow**: `⤵ workflows/submit-pr.md § 1-7 → § 5` with context `worktree`, `lifecycle: "managed"`, `issue_id`.
+**Run Workflow**: `⤵ workflows/submit-pr.md § 1-7 → § 5` with context `worktree`, `lifecycle: "managed"`, `issue_id`. After an `open-first` § 2.1 this pass updates the open pull request: its § 2 step 1 pushes § 3's fix round with the fixes for Copilot's threads in one push, then writes § 3's verdict line and routes the pushed head, and its step 5 arms the head once § 3 has returned.
 
 ## 5. Finalize
 
