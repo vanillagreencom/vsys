@@ -67,10 +67,21 @@ gg_project_rel() { # VAR SCRIPT_DIR WORKTREE -> sets VAR to the prefix
   esac
 }
 
-# What a SKILL.md declares: its frontmatter's `name` and its `metadata:`
-# block's `version`, each value on its own line, double or single quotes
-# taken off. Nonzero when the frontmatter or either value is missing, so an
-# unreadable package never compares equal to another.
+# What a SKILL.md declares: its frontmatter's `name`, then its `metadata:`
+# block's `version` on a second line where it states one, double or single
+# quotes taken off. Nonzero when the frontmatter or the name is missing, so
+# an unreadable package never compares equal to another.
+#
+# This reads one spelling: `metadata:` then an indented `version: X`. A
+# package reads as versionless only when no frontmatter line holds a
+# version key in any spelling: at a line's start or after a flow mapping's
+# `{` or `,`, quoted or not, with space before its colon or none. A version
+# key where this reads no non-empty metadata.version is nonzero, never a
+# package that states no version, which the changelog check would let
+# change without a raise; a version key outside `metadata:` beside one this
+# reads is ignored. The word in a value, `bumps the version`, is no key. A
+# YAML comment holds no key: a comment line neither ends the metadata block
+# nor counts, and the `metadata:` line may carry one.
 gg_skill_id() { # FILE
   LC_ALL=C awk '
     function value(l) {
@@ -81,9 +92,11 @@ gg_skill_id() { # FILE
     { sub(/\r$/, "") }
     NR == 1 { if ($0 != "---") { bad = 1; exit } next }
     $0 == "---" { closed = 1; exit }
-    /^[^ \t]/ { meta = ($0 ~ /^metadata:[ \t]*$/) }
+    /^[ \t]*#/ { next }
+    /^[^ \t]/ { meta = ($0 ~ /^metadata:[ \t]*($|[ \t]#)/) }
     /^name:/ { name = value($0) }
+    /(^[ \t]*|[{,][ \t]*)["\047]?version["\047]?[ \t]*:/ { has = 1 }
     meta && /^[ \t]+version:/ { version = value($0) }
-    END { if (bad || !closed || name == "" || version == "") exit 1; print name; print version }
+    END { if (bad || !closed || name == "" || (has && version == "")) exit 1; print name; if (has) print version }
   ' "$1"
 }

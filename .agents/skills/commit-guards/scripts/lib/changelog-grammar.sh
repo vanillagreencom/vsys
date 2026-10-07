@@ -104,12 +104,16 @@ GG_VERSION_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]
 
 # The version a package file states, on stdout: its frontmatter
 # metadata.version, read by lib/skill-roots.sh's gg_skill_id, which the
-# caller sources. A file this reads without one is a collection error.
+# caller sources. A SKILL.md whose frontmatter holds no version key prints
+# nothing: it declares a versionless package. A file this reads without a
+# name, or with a version key in any spelling and no non-empty
+# metadata.version that reader takes, is a collection error.
 gg_package_version() { # MODE SHA PATH
   local id
   gg_mode_is_regular "$1" || gg_fail version-mode "$(gg_shown "$3"):$1" "A package file must be a regular file."
   gg_read_blob "$2" "$3" version
-  id="$(gg_skill_id "$GG_TMP/blob")" || gg_fail version-read "$(gg_shown "$3")" "Expected frontmatter with a name and a metadata.version."
+  id="$(gg_skill_id "$GG_TMP/blob")" || gg_fail version-read "$(gg_shown "$3")" "Expected frontmatter with a name, and either no version key or a non-empty version stated as metadata: then an indented version: X line."
+  case "$id" in *"$GG_NL"*) ;; *) return 0 ;; esac
   jq -enr --arg v "${id#*"$GG_NL"}" --arg re "$GG_VERSION_RE" '$v | select(test($re))' 2>"$GG_TMP/dependency.err" \
     || gg_fail_cause version-read "$(gg_shown "$3")" "$GG_TMP/dependency.err" "Expected frontmatter metadata.version in major.minor.patch form."
 }
@@ -243,17 +247,19 @@ gg_is_section() { # NAME — 0 when NAME is exactly one of the sections
 #
 # entry_query=1 is the version check's read instead: one "KIND<TAB>line" row
 # per release entry it judges, in file order. KIND is breaking for an item
-# opening with a named call-out, and added for an item under the release's
-# `### Added` heading, a heading only a level-2 record carries. With
-# release_alone=1, a record holding the new version's own section answers
-# with that section alone, after a "released<TAB>heading" row: those are the
-# entries the release publishes, and pending ones wait for the next release.
+# opening with a named call-out, `**Breaking:**` or `**Breaking**:`, the
+# spelling the Pi package records write, and added for an item under the
+# release's `### Added` heading, a heading only a level-2 record carries.
+# With release_alone=1, a record holding the new version's own section
+# answers with that section alone, after a "released<TAB>heading" row:
+# those are the entries the release publishes, and pending ones wait for
+# the next release.
 # With whole_entry=1 the input is one fragment, whose entry_section names its
 # directory. packages_part, GG_PACKAGES_PART, names the part whose entries
 # are no release entry of the record's own version.
 GG_UNRELEASED_AWK='
 BEGIN { if (!release_level) release_level = 2 }
-function named_breaking(l) { return l ~ /^- \*\*Breaking:\*\*[ \t]+[^ \t]/ }
+function named_breaking(l) { return l ~ /^- \*\*Breaking(:\*\*|\*\*:)[ \t]+[^ \t]/ }
 function lead(l,   i) { i = 0; while (i < 3 && substr(l, i + 1, 1) == " ") i++; return i }
 function heading_level(l,   i, n, c) {
   i = lead(l)

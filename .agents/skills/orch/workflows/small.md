@@ -1,6 +1,10 @@
 # Small Workflow
 
-The tier for a change inside one subsystem and within the `small` ceiling in [references/narrow-change.conf](../references/narrow-change.conf). It runs [start-worktree.md](start-worktree.md)'s session, dev implementation, review, submit and merge, under the bounds in § 3. [oversee.md](oversee.md) § Item Tier picks the tier; a `micro` item runs [micro.md](micro.md) and every other item runs [start.md](start.md).
+The tier for a change inside one subsystem and within the `small` ceiling in [references/narrow-change.conf](../references/narrow-change.conf).
+
+**A subsystem** is what the harness-ci skill's `scripts/change-class` counts as one for the `small` class; its `--help` `small` entry is the definition. The filing rule, the project-management skill's [SKILL.md](../../project-management/SKILL.md) § Disposition **One landing per subsystem**, and the launch read, [oversee.md](oversee.md) § Lane directive step 2, apply it to an item's Location paths before a diff exists.
+
+It runs [start-worktree.md](start-worktree.md)'s session, dev implementation, review, submit and merge, under the bounds in § 3. [oversee.md](oversee.md) § Item Tier picks the tier; a `micro` item runs [micro.md](micro.md) and every other item runs [start.md](start.md).
 
 | Command | Flow |
 |---------|------|
@@ -22,20 +26,20 @@ Run [start-worktree.md](start-worktree.md) § 1, which records the tier as `stan
 
 ## 2. Implement
 
-Run [start-worktree.md](start-worktree.md) § 2. Then check the branch against its class:
+Run [start-worktree.md](start-worktree.md) § 2 through its step 4. Then check the branch against its class:
 
 ```bash
 .agents/skills/orch/scripts/item-tier --floor small --base origin/[BASE_BRANCH] --head HEAD --repo [WORKTREE_PATH]
 ```
 
-`[BASE_BRANCH]` is `resolve-base-branch [WORKTREE_PATH]`. `tier=small` continues. Any other answer, or a non-zero exit, escapes (§ Escape).
+`[BASE_BRANCH]` is `resolve-base-branch [WORKTREE_PATH]`. `tier=small` runs [start-worktree.md](start-worktree.md) § 2.1, which opens a private repository's pull request before review under this tier too, then continues at § 3 below. Any other answer, or a non-zero exit, escapes (§ Escape).
 
 ## 3. Review
 
 Run [start-worktree.md](start-worktree.md) § 3 under these bounds:
 
 - **Panel.** The first-cycle panel is the domains the diff touches, by [review-pr.md](review-pr.md) § 2 Prepare Reviewers, and holds three reviewers at most. The external lane counts as one of the three: its findings enter the fix set like any reviewer's. Resolve review-pr.md § 2.1 before writing a panel, and record its answer as `"external": true` or `false` beside `agents`, so with the lane requested two domain reviewers remain. `workflow-state` refuses a `first_panel`, `rereview_panel` or `verification_panel` with no `external` marker as `panel-external`, and a larger one as `panel-bound`. Trim a larger panel in this order: `reviewer-error` where review-pr.md § 2 always carries it, then the reviewers whose findings the pass verifies, then the domains with the most changed production lines. The same trim applies to the verification panel [review-pr-comments.md](review-pr-comments.md) writes.
-- **QA.** [review-pr.md](review-pr.md) § 5 drops `needs-review` when the change is not visible in the UI or in the CLI output, recording `qa_decision` with the rationale `small tier: nothing visible`. `needs-safety-audit` and `needs-perf-test` follow review-pr.md § 5 unchanged.
+- **QA.** [review-pr.md](review-pr.md) § 5 drops `needs-review` when the change is not visible in the UI or in the CLI output, recording `qa_decision` with the rationale `small tier: nothing visible`. `needs-safety-audit`, `needs-perf-test` and `needs-ui-review` follow review-pr.md § 5 unchanged.
 - **Fix rounds.** [review-pr.md § At The Cap](review-pr.md#at-the-cap) states the default bound. For this item `workflow-state cap REVIEW_MAX_CYCLES --issue [ISSUE_ID]` holds it at 1 even where a project setting raises it, and holds a setting of 0 as set. A QA fix round follows review-pr.md § 7 Converged unchanged; this bound does not count it.
 - **Findings.** A wording, naming or index finding is answered by reply and starts no fix push: [finding-disposition.md § Decision flow](../references/finding-disposition.md#decision-flow).
 - **Validation.** The implement round runs the full `DEV_VALIDATE_CMD` once. A fix round validates its own range, as [dev-fix.md](dev-fix.md) delegates it. No step reruns a green battery on an unchanged tree.

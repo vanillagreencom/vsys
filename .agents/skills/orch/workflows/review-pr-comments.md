@@ -226,7 +226,13 @@ It prints `below [COUNT]/[CAP]` or `at-cap [COUNT]/[CAP]`, counting `pr_comment_
 .agents/skills/orch/scripts/workflow-state set-git-head [ISSUE_ID] pre_delegate_sha [WORKTREE_PATH]
 ```
 
-Group the `fix set` by `agent`, then stamp the round per group as separate tool calls immediately before delegating, the round-start prune between the two stamps, arming the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
+Group the `fix set` by `agent`. Before stamping each group's round, read the target PR and bind `[PR_OPEN]` by [dev-fix.md § 2](dev-fix.md#2-delegate) step 4:
+
+```bash
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-view-json [WORKTREE_PATH] [PR_NUMBER] --json state
+```
+
+Then stamp the round as separate tool calls immediately before delegating, the round-start prune between the two stamps, arming the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
 
 ```bash
 .agents/skills/orch/scripts/workflow-state new-round-id [ISSUE_ID] dev_round_id
@@ -247,7 +253,7 @@ Decide whether this fix round may add protected files. [`../schemas/dev-round.md
 When the list is non-empty, pass those exact repository-relative paths to the writer as one blank-separated `--adds` value, and render the same list after `Adds:` in the delegation — one path is `Adds: tools/one-helper.sh`, several are `Adds: tools/one-helper.sh skills/x/scripts/check`. A blank or tab separates, so a path containing whitespace is read as two paths and cannot be authorized as one — check for that before you write the line.
 
 ```bash
-.agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json --source pr-comments [--adds "[REPO_RELATIVE_PATHS]"]
+.agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json --source pr-comments --pr-open [PR_OPEN] [--adds "[REPO_RELATIVE_PATHS]"]
 ```
 
 A chosen cut follows [`dev-fix.md` § 2](dev-fix.md) step 4 with `[SOURCE]` bound to `pr-comments`. A nonzero exit names a usage or environment failure. Report it and stop.
@@ -317,6 +323,8 @@ Before every push, run `env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/
 ```bash
 git -C "[WORKTREE_PATH]" push origin HEAD
 ```
+
+With workflow state `pr_order` reading `open-first-returned`, publish through `.agents/skills/orch/scripts/worktree-push --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID]` in place of that command, routing its exit code and `sha-reconcile:` line by `worktree-push --help`, so [submit-pr.md](submit-pr.md) § 2 step 1 pushes next and GitHub receives one combined head. That push may rebase this round's fix commits, whose SHAs come from the dev return and sit in no record it rewrites: resolve each through workflow state's `.rebase_map`, following the chain until no key matches, before § 6.3's `Fixed in` reply and § 8's `pr_comment_review.fixes` entry use it, and a chain ending in `dropped` puts no SHA in the reply and the `dropped:[COMMIT_SHA]` marker in the entry.
 
 **A round ends with the description matching its head.** The PR body describes the commits actually on the PR head and names every issue § 6.2 filed this round; nothing else regenerates it after round one, so rebuild it per [`submit-pr.md` § 2](submit-pr.md) step 3 and post it with `pr-edit-body` until both hold.
 
@@ -388,7 +396,7 @@ Auto-resolve every thread where a reply was posted; keep open only threads await
 
 ### 7.2 Copilot Head Route
 
-**Skip if** no thread this triage answered is Copilot's and the body check below, run now, exits `0`; any other exit runs this step. Copilot's review overview opens with one of three labels. It submits `Approved` as an `APPROVED` review. It submits `Changes recommended` and `Needs a closer look` as `COMMENTED`. It re-reads a head only on a review request, so a head its review left `COMMENTED` stays unapproved after the answers until one of the two routes below runs. Bind `[REVIEW_BASE_CHECKOUT]` per [Gate-mode routing](../references/gates.md#gate-mode-routing). Resolve through that consumer base:
+**Skip if** no thread this triage answered is Copilot's and the body check below, run now, exits `0`; any other exit runs this step. **Skip if** workflow state `pr_order` reads `open-first-returned`, with no notice and no request: on a PR [start-worktree.md](start-worktree.md) § 2.1 opened, the lane's `Review:` line still reads pending, and [submit-pr.md](submit-pr.md) § 2 step 1 routes the head once its push lands. Copilot's review overview opens with one of three labels. It submits `Approved` as an `APPROVED` review. It submits `Changes recommended` and `Needs a closer look` as `COMMENTED`. It re-reads a head only on a review request, so a head its review left `COMMENTED` stays unapproved after the answers until one of the two routes below runs. Bind `[REVIEW_BASE_CHECKOUT]` per [Gate-mode routing](../references/gates.md#gate-mode-routing). Resolve through that consumer base:
 
 ```bash
 env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --resolve-mode --base-checkout [REVIEW_BASE_CHECKOUT]
@@ -406,7 +414,7 @@ A non-zero exit, which is reported, ends this step. Otherwise read every review 
 env -u GH_REPO -u GITHUB_REPOSITORY gh api --paginate 'repos/{owner}/{repo}/pulls/[PR_NUMBER]/reviews' --jq '.[] | [.id, .user.login, .commit_id, .state] | @tsv'
 ```
 
-A line whose `commit_id` is `[HEAD_SHA]` and whose `state` is `APPROVED` ends this step: the head is already approved. Every Copilot thread is answered and resolved by now. The route is whether the head moved since the `commit_id` of the last `copilot-pull-request-reviewer[bot]` line, the last head Copilot read:
+A line whose `commit_id` is `[HEAD_SHA]` and whose `state` is `APPROVED` runs the body check below, and its exit `0` ends this step: the head is already approved. Every Copilot thread is answered and resolved by now. The route is whether the head moved since the `commit_id` of the last `copilot-pull-request-reviewer[bot]` line, the last head Copilot read:
 
 - **Head unmoved.** Copilot read this head, so each answer stands on code it saw. Send the notice below, first line `copilot-declined-unchanged PR #[PR_NUMBER] head [HEAD_SHA]`. Under it, one line per thread `github.sh pr-threads [PR_NUMBER]` lists with `author` `copilot-pull-request-reviewer` gives its `id`, its location and the reply that answered it, a decline's reason included. Request no Copilot re-review. The overseer approves the head under [copilot-head-notices.md](../references/copilot-head-notices.md).
 - **Head moved**, by a push for any reviewer's thread. Unless the head already equals `pr_approval.copilot_rerequest_head`, request one Copilot re-review, record that head, then wait on it through [Waiter launch](../references/waiter-launch.md). A head already recorded gets no second request, no wait and no notice: the overseer's `awaiting-stale` rule decides it.
@@ -430,19 +438,19 @@ A line whose `commit_id` is `[HEAD_SHA]` and whose `state` is `APPROVED` ends th
   | Answer | Copilot's review at `[HEAD_SHA]` | Then |
   |--------|----------------------------------|------|
   | `comments` | any | Update the baseline and loop to § 1 for the new thread as § 6.3 does; this section then routes the head again |
-  | `approved` | `APPROVED` | Notice `copilot-approved-on-rerequest PR #[PR_NUMBER] head [HEAD_SHA]` |
+  | `approved` | `APPROVED` | Run the body check below; on its exit `0`, notice `copilot-approved-on-rerequest PR #[PR_NUMBER] head [HEAD_SHA]` |
   | `approved` | none or not `APPROVED` | No notice: another reviewer approved the head |
   | `timeout` | present, not `APPROVED` | Copilot read the head again and left no open thread. Notice `copilot-fallback PR #[PR_NUMBER] head [HEAD_SHA]`, which asks for the overseer's fallback approval |
   | `timeout` | none | No notice: the overseer's `awaiting-stale` rule decides the head |
   | any other | any | No notice: the caller's own approval wait routes it |
 
-**Body findings.** Copilot writes a finding on code the diff left unchanged only in its review body, under `Previously missed` or `Suppressed comments`, and no thread carries it. Before a `copilot-declined-unchanged` or `copilot-fallback` notice, run the one reader of those bodies:
+**Body findings.** Copilot writes a finding on code the diff left unchanged only in its review body, under `Previously missed` or `Suppressed comments`, and no thread carries it. An `APPROVED` review can carry them too. Before this step ends on an approved head, and before a `copilot-approved-on-rerequest`, `copilot-declined-unchanged` or `copilot-fallback` notice, run the one reader of those bodies, so a body finding is answered before the lane waits on CI rather than at the merge gate after it:
 
 ```bash
 env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/github/scripts/github.sh -C "[WORKTREE_PATH]" check-review-replies [PR_NUMBER]
 ```
 
-A `head=` other than `[HEAD_SHA]` ends this step: the new head takes its own route. Answer exit `1` as [submit-pr.md](submit-pr.md) § 6.1 directs, each `suppressed-entry` in the `Dispositions at [HEAD_SHA]` comment, then run the check again. Under the notice's thread lines, one line per body finding gives its `path:line` and the answering comment's URL, and one line names the id of each Copilot review at `[HEAD_SHA]` from the reviews read. No notice goes out before an exit `0`. Exit `2` reached no verdict: report its first stderr line and send nothing.
+A `head=` other than `[HEAD_SHA]` ends this step: the new head takes its own route. Answer exit `1` as [submit-pr.md](submit-pr.md) § 6.1 directs, each `suppressed-entry` in the `Dispositions at [HEAD_SHA]` comment, then run the check again. Under the thread lines of a `copilot-declined-unchanged` or `copilot-fallback` notice, one line per body finding gives its `path:line` and the answering comment's URL, and one line names the id of each Copilot review at `[HEAD_SHA]` from the reviews read. No notice goes out, and no step ends on an approved head, before an exit `0`. Exit `2` reached no verdict: report its first stderr line and send nothing.
 
 **Notice.** In a lane, write it with the harness file-write tool to `[WORKTREE_PATH]/tmp/copilot-head-[ISSUE_ID].md` and send it with `.agents/skills/orch/scripts/lane-mail notice --item [ISSUE_ID] --file [WORKTREE_PATH]/tmp/copilot-head-[ISSUE_ID].md`. Outside a lane no overseer reads a notice, and the caller's own approval wait decides the head.
 

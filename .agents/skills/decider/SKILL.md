@@ -9,7 +9,6 @@ metadata:
   source: kendex
   repository: "https://github.com/vanillagreencom/kendex"
   bugs: "https://github.com/vanillagreencom/kendex/issues"
-  version: "2.0.2"
 tags: [planning]
 ---
 
@@ -23,7 +22,7 @@ Numbered decision documents indexed in one `INDEX.md` (default `docs/decisions/`
 
 Actions (`search`, `search --issue`, `list`, `next-id`, `get`, `check`), search coverage and scoring, output shapes, and the `DECISIONS_DIR` / `DECISIONS_BASE_REF` / `DECISION_ID_*` environment: `decisions --help`. There is no bare `issue` action; use `search --issue`.
 
-Read the full decision file and its status before acting on a hit. An active decision binds design policy; a suggestion contradicting it is invalid unless the decision itself is flawed. One marked superseded binds only what its status leaves active; a retired one binds nothing.
+Read a hit's INDEX row first. Read an active or superseded record's document before treating it as binding. When considering a withdrawn option, read its retained document and withdrawal reason. A removed record's reason lives where its Rationale cell names it, the comment at the code or the principle doc's section. An active decision binds design policy; a suggestion contradicting it is invalid unless the decision itself is flawed. One marked superseded binds only what its status leaves active; a withdrawn one binds nothing; a removed one binds through the code or principle doc its INDEX row names.
 
 ## What warrants a decision record, and why
 
@@ -42,14 +41,14 @@ Not warranted:
 - A choice no one would revisit: a file format version field, a naming scheme.
 - A record of what was done: git history holds it.
 
-A record is short: the choice, why, the main rejected alternative, the revisit trigger, with its ID, status, issue or evidence link and partial-supersession scope. Shortening a record keeps its ID and status; moving a reason into code is not a reversal. A record is never deleted: one withdrawn with no replacement is retired per `workflows/update-decision.md`, which keeps its row and a one-line document so the ID stays reserved and a citation still resolves. Supersede only changed policy.
+A record is short: the choice, why, the main rejected alternative, the revisit trigger, with its ID, status, issue or evidence link and partial-supersession scope. Shortening a record keeps its ID and status; moving a reason into code is not a reversal. A record whose choice is routine is removed once its reason lives in the code or principle doc it governs: removal is not withdrawal and changes no policy. A withdrawal with no replacement is a retirement. Follow `workflows/update-decision.md`: retain a significant withdrawn decision's short document with status `Withdrawn` and the withdrawal reason; remove a routine record's document after moving its reason. Keep the INDEX row in both cases so the ID stays reserved. Supersede only changed policy.
 
 ## Workflows
 
 | Workflow | Trigger |
 |----------|---------|
 | `workflows/create-decision.md` | A choice under the bar above is settled |
-| `workflows/update-decision.md` | A new decision supersedes, partially supersedes, or revisits an existing one |
+| `workflows/update-decision.md` | A new decision supersedes, partially supersedes, or revisits an existing one, or an existing one is retired or removed |
 
 Format: `schemas/decision-format.md` (constraints), `templates/decision-entry.md` (document skeleton), `templates/index-row.md` (INDEX row). The finished example is the docs-writing skill's `examples/decision.md`.
 

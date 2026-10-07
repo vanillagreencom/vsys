@@ -54,7 +54,9 @@ Follow [dev SKILL.md § Reflect](../SKILL.md#reflect). Complete every repository
 
 ## 3. Validate And Commit
 
-Follow [dev-implement.md § 5. Validate](./dev-implement.md#5-validate) from the worktree root, with two changes. Its `DEV_VALIDATE_CMD` item validates this round's changes only: start it as `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH] --validate-mode [MODE] --base [BASE_SHA]`, where `[MODE]` is `ci` for a `Source: pr-comments` round, whose pull request is open, and `range` for every other source, and `[BASE_SHA]` is the `base_sha` of `[WORKTREE_PATH]/tmp/dev-round-[ARTIFACT_KEY]-[DEV_ROUND_ID].json`, and poll it the same way. A project whose policy forbids `dev-validate-run` takes that section's foreground route instead, with the record's line `validate-mode=range` where the project sets `DEV_VALIDATE_RANGE_CMD` and `validate-mode=full` where it does not, the mode `dev-artifact-check` holds the round to. Use the Visual QA rule below.
+Read `[ROUND_BASE]` from the `base_sha` of `[WORKTREE_PATH]/tmp/dev-round-[ARTIFACT_KEY]-[DEV_ROUND_ID].json` before entering [dev-implement.md § 5. Validate](./dev-implement.md#5-validate).
+
+Follow that section from the worktree root, with two changes. Its `DEV_VALIDATE_CMD` item validates this round's changes only: start it as `.agents/skills/orch/scripts/dev-validate-run --worktree [WORKTREE_PATH] --validate-mode [MODE] --base [BASE_SHA]`. Read `[MODE]` from the `pr_open` rule in orch's `schemas/dev-round.md`. Use `[ROUND_BASE]` as `[BASE_SHA]`, and poll it the same way. The runner decides whether CI covers the change and whether local validation must run. A project whose policy forbids `dev-validate-run` takes that section's foreground route instead, with the record's line `validate-mode=range` where the project sets `DEV_VALIDATE_RANGE_CMD` and `validate-mode=full` where it does not, the mode `dev-artifact-check` holds the round to. Use the Visual QA rule below.
 
 The run records the mode that ran, and § 5's `dev-return-write` reads it from the run directory: `range`, `full` in a project that sets no `DEV_VALIDATE_RANGE_CMD`, or `ci`, a run that passes with no command because the pull request CI on the pushed head validates the round. `dev-validate-run --help` states when a `ci` request leaves the round to that CI, and what it runs and hands the command anywhere else.
 
@@ -90,12 +92,12 @@ Reflection is complete in § 2.1. Make no repository edit here.
 
 Write the artifact first, per [dev SKILL.md § Round Contract](../SKILL.md#round-contract):
 
-If the validation list misses a rule, write `tmp/proposed-rule-[ISSUE_ID].md` with a `### Proposed Rules` heading and the proposal as one bullet. Append `--summary-file tmp/proposed-rule-[ISSUE_ID].md` to the command below. Omit the file and flag when there is no proposal.
+Write `tmp/fix-summary-[ISSUE_ID].md` with up to two sections. When a fix changed a view the [dev-implement.md § 8](./dev-implement.md#8-record-qa-signals) screenshot rule covers, list that view's screenshot set under a `### Screenshots` heading by [code-quality references/ui.md § Screenshots](../../code-quality/references/ui.md#screenshots), which says what a later round recaptures and what it carries. If the validation list misses a rule, add a `### Proposed Rules` heading with the proposal as one bullet. Append `--summary-file tmp/fix-summary-[ISSUE_ID].md` to the command below. Omit the file and flag when neither section applies.
 
 `[BASE_BRANCH]` is what `.agents/skills/orch/scripts/resolve-base-branch [WORKTREE_PATH]` reports; `--near-ceiling-base` takes it as `origin/[BASE_BRANCH]` because the local branch may sit behind the remote, and in a fresh clone may not exist at all.
 
 ```bash
-.agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind fix --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|no-verdict|"FAILING: check1,check2"] [--validate-run-dir [RUN_DIR] | --validate-record [FILE]] [--validate-note [TEXT]] [--label [LABEL]]... [--no-labels] --no-summary [--summary-file tmp/proposed-rule-[ISSUE_ID].md] --item [N] [DECISION] [REASONING] [--item ...] --near-ceiling-base origin/[BASE_BRANCH]
+.agents/skills/orch/scripts/dev-return-write --worktree [WORKTREE_PATH] --kind fix --issue [ARTIFACT_KEY] --round-id [DEV_ROUND_ID] --branch [BRANCH] --commit [HEAD_SHA_AFTER_COMMIT] --validate [pass|no-verdict|"FAILING: check1,check2"] [--validate-run-dir [RUN_DIR] | --validate-record [FILE]] [--validate-note [TEXT]] [--label [LABEL]]... [--no-labels] --no-summary [--summary-file tmp/fix-summary-[ISSUE_ID].md] --item [N] [DECISION] [REASONING] [--item ...] --near-ceiling-base origin/[BASE_BRANCH]
 ```
 
 One `--label` per entry of the delegation's `Labels:` line, or `--no-labels` when it reads `none`; the Apple gate in `dev-return-write --help` reads them, and [dev-implement.md § 5. Validate](./dev-implement.md#5-validate) names the `mac run test` it holds an Apple item to.

@@ -1,6 +1,6 @@
 # PR Review Workflow
 
-Pre-submission review, bounded fixes, QA, and issue audit. `review-pr [PR#]` resolves that PR's worktree; `start-worktree` supplies managed caller context.
+Pre-submission review, bounded fixes, QA, and issue audit. `review-pr [PR#]` resolves that PR's worktree; `start-worktree` supplies managed caller context. After [start-worktree.md](start-worktree.md) § 2.1 opened the PR early, this review runs on the pushed head and its fix rounds stay local until submit-pr pushes them.
 
 **Caller context** (via `⤵`): `worktree`; `agents` — an explicit reviewer panel, default the first-cycle panel § 2 selects from the diff; `lifecycle` — `"managed"` (return at § 9) or `"self"` (default); `dev_agent` — a live dev agent for fix delegation; `issue_id` — the workflow-state key, the normalized issue ID, never the bare GitHub issue number.
 
@@ -21,6 +21,8 @@ git -C [WORKTREE_PATH] diff "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]"...HEAD 
 ```
 
 A non-empty `status --porcelain` stops the review. Managed with a `dev_agent`: re-delegate to commit or revert the leftovers, then re-enter § 1. Standalone: report the dirty files and ask the user to commit, revert, or run `orch review all` for an ad-hoc uncommitted review. No committed diff after that check → report "No committed changes to review" and **END**.
+
+**Review line.** In a lane whose brief names a status file, a review that starts with workflow state `pr_order` reading `open-first` writes `Review: pending PR #[PR_NUMBER]` to that file before any reviewer starts, `[PR_NUMBER]` from `.agents/skills/orch/scripts/pr-view-json [WORKTREE_PATH] --json number,state`; a read that gives no number writes no line. [submit-pr.md](submit-pr.md) § 2 step 1 replaces the line once the push carrying this review's fix round lands.
 
 **Trivial diffs skip review by rule, not by asking.** Trivial is the shared CI classifier's class for the whole branch:
 
@@ -358,6 +360,12 @@ git -C [WORKTREE_PATH] diff --exit-code -G'unsafe |Ordering::|Atomic(U|I|Bool|Pt
 .agents/skills/orch/scripts/orch-env QA_PERF_PATHS ""
 ```
 
+   When the repo sets `QA_UI_PATHS` (space-separated path globs), any changed file matching one adds `needs-ui-review`:
+
+```bash
+.agents/skills/orch/scripts/orch-env QA_UI_PATHS ""
+```
+
 3. **Judgment** — you may add or drop a signal with a one-line reason; record it:
 
 ```bash
@@ -370,7 +378,9 @@ Drop a signal when the triggering code is trivial or test-only; never drop one f
 
 **Skip if** the recorded `qa_decision.signals` is empty → § 7, which finds no QA artifacts, converges, and routes on: the exit is decided in one place even when QA never ran.
 
-Map each signal to its agent — `needs-safety-audit` → `reviewer-safety`, `needs-perf-test` → `reviewer-perf`, `needs-review` → `reviewer-correctness`; a project may override the mapping in its instructions. For each, delegate and wait.
+Map each signal to its agent — `needs-safety-audit` → `reviewer-safety`, `needs-perf-test` → `reviewer-perf`, `needs-review` → `reviewer-correctness`, `needs-ui-review` → `reviewer-quality`, whose UI lens judges the screenshots the dev summary lists against the design-system doc `QA_UI_DESIGN_DOC` names; a project may override the mapping in its instructions. For each, delegate and wait.
+
+A `needs-ui-review` delegation's Dev summary carries a Screenshots list, each changed view's set as `.agents/skills/code-quality/references/ui.md` § Screenshots defines it. On a QA re-check, each view's entries come from the latest dev round whose summary lists that view: a fix round that recaptured it, else the implement round.
 
 Fill `Worktree:` by the rule at the top of this workflow.
 
@@ -484,5 +494,15 @@ Record each created issue:
 After delegating children, apply the § 4 bounded re-review rule to their diff.
 
 ## 9. Return
+
+`[VERDICT]` is the verdict this return hands its caller, the one [submit-pr.md](submit-pr.md) § 6.1 gate 1 reads. Read workflow state `pr_order` and take one branch:
+
+- **`open-first`**: keep § 1's pending line, and write no verdict line: this review's fix round is still local, and the overseer must not approve or request Copilot on the head it replaces. Record that this review returned, which lets [submit-pr.md](submit-pr.md) § 2 run its triage, write this verdict once its push lands, and arm the pull request:
+
+  ```bash
+  .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] pr_order open-first-returned
+  ```
+
+- **Any other value, or absent**: in a lane whose brief names a status file, write its review line, `Review: [VERDICT]`. Record no workflow state: a review-first lane, a re-submit review and a trivial-diff skip leave `pr_order` as they found it.
 
 **Managed**: return to the parent workflow's next section. **Standalone**: session complete — the summary is in § 8.

@@ -108,11 +108,11 @@ Run `⤵ workflows/roadmap-plan.md $FEATURE_NAME @[FINDINGS_REF] --source-issue 
 
 ### 6.1 Record the Decision
 
-Follow the decider skill's create-decision workflow: `decisions next-id`, pick the template scale from `templates/decision-entry.md` (minimal for a single clear choice, standard for several alternatives, comprehensive for architecture-level work), and write `[project decision documents]/[DECISION_ID]-[DESCRIPTOR].md` per `schemas/decision-format.md`.
-
-Carry the research path, a 1-2 sentence summary, the reasoning as bullets, the impact on existing and future work, and the revisit conditions. Add the INDEX.md row per `templates/index-row.md`.
+Record a decision only under the decider skill's admission and approval rules. Follow its create-decision workflow and current schema, including the INDEX.md row. Keep the detailed analysis and implementation impact on the source issue.
 
 When the new decision replaces specific components of an active decision without superseding it wholesale, update that decision's status to `Active ([COMPONENTS] → [NEW_DECISION_ID])` in both its file and its INDEX row.
+
+If no decision is recorded, skip section 6.2 and decision-only updates. Use the research findings for requirements and scope, omit the decision suffix from child titles, set decision_ref to null, and use the Key Findings and Outcome output below.
 
 ### 6.2 Append the Decision to Blocked Issues
 

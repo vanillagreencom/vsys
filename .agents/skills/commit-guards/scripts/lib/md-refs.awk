@@ -29,7 +29,9 @@
 #       heading with prose after it is the § rule's.
 #   -v mode=resolve -v phase=targets|contents|verdict -v tracked=FILE
 #         [-v headings=FILE -v contents=FILE -v skips=FILE -v dec_dir=DIR
-#          -v dec_judge=0|1 -v id_prefix=D -v lock_paths=FILE]
+#          -v dec_judge=0|1 -v dec_index=FILE -v id_prefix=D -v lock_paths=FILE]
+#       `dec_index` holds the tracked `DECISIONS_DIR/INDEX.md` blob; each
+#       of its rows reserves its ID only within that row.
 #       `lock_paths` holds newline-separated repo-relative emitted paths from
 #       .kendex-lock.json, supplied by gg_md_lock_paths and read in `verdict`.
 #       A citing source at a listed path or below it emits W instead of V.
@@ -332,6 +334,27 @@ function load_tracked(   line, d, rec, id) {
   close(tracked)
 }
 
+# The INDEX rows. A removed or retired record keeps its row and loses its
+# document, per the decider's schemas/decision-format.md. The ID in that
+# row reserves the number, but does not authorize citations elsewhere.
+# A row opens `| YYYY-` and its second cell is the ID: the
+# decider's positional contract, read off the raw blob as the decider reads
+# it. A heading citation still needs the decision's document.
+function load_dec_index(   line, row, n, cells, id) {
+  if (dec_index == "") return
+  while ((getline line < dec_index) > 0) {
+    row++
+    if (line !~ /^\| [0-9][0-9][0-9][0-9]-/) continue
+    n = split(line, cells, "|")
+    if (n < 3) continue
+    id = cells[3]
+    sub(/^[ \t]+/, "", id); sub(/[ \t]+$/, "", id)
+    if (index(id, id_prefix) != 1 || substr(id, length(id_prefix) + 1) !~ /^[0-9]+$/) continue
+    reserved_rows[row SUBSEP id] = 1
+  }
+  close(dec_index)
+}
+
 # The phrases the caller found, keyed target+phrase. A pair absent here is a
 # phrase its cited file does not hold.
 function load_contents(   line, i, rest, t) {
@@ -425,6 +448,7 @@ BEGIN {
       exit 2
     }
     load_tracked()
+    if (dec_judge) load_dec_index()
     if (phase == "verdict") {
       load_headings(); load_contents(); load_skips()
       if (lock_paths != "") {
@@ -539,6 +563,7 @@ mode == "resolve" {
   if (kind == "D") {
     if (!dec_judge) next
     judged++
+    if (src_path == dec_dir "/INDEX.md" && f[5] == "" && ((line_no SUBSEP f[4]) in reserved_rows)) next
     if (!(f[4] in decisions)) { fail("decision-missing", f[4] ":" dec_dir "/" f[4] "-*.md"); next }
     if (f[4] in decfile) seen_target(decfile[f[4]])
     if (f[5] == "") next
