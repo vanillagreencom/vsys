@@ -29,7 +29,7 @@ paru -S vsys
 paru -S vsys-git
 ```
 
-Linux with cgroup v2 only. The installer puts `vsys` in `~/.local/bin`, or in `VSYS_INSTALL_DIR`. Release archives are on the [Releases](https://github.com/vanillagreencom/vsys/releases) page.
+Linux with cgroup v2 only. Release installations need `flock` from util-linux on PATH to save filesystem error times. This requirement also applies when you unpack a release archive directly. The installer puts `vsys` in `~/.local/bin`, or in `VSYS_INSTALL_DIR`. Release archives are on the [Releases](https://github.com/vanillagreencom/vsys/releases) page.
 
 ## How it works
 

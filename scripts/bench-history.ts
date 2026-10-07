@@ -204,14 +204,19 @@ async function writeCost(loaded: boolean): Promise<WriteCost> {
     inside: (...args: A) => T,
   ) {
     const run = transaction.bind(this)(inside);
-    return Object.assign((...args: A): T => {
-      const began = performance.now();
-      try {
-        return run(...args);
-      } finally {
-        if (timing) commitMs.push(performance.now() - began);
-      }
-    }, run);
+    const measure =
+      (execute: (...args: A) => T) =>
+      (...args: A): T => {
+        const began = performance.now();
+        try {
+          return execute(...args);
+        } finally {
+          if (timing) commitMs.push(performance.now() - began);
+        }
+      };
+    return Object.assign(measure(run), run, {
+      immediate: measure(run.immediate),
+    });
   } as typeof transaction;
   let history: History | undefined;
   const until = Date.now() + LOAD_LIFETIME_MS;

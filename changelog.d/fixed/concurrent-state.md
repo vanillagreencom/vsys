@@ -1,0 +1,1 @@
+- Keep recorded history and newer filesystem error readings when two vsys processes save at the same time.

@@ -40,6 +40,11 @@ aarch64 | arm64) ARCH="aarch64" ;;
 There is no vsys build for $(uname -m). Build from source: https://github.com/${REPO}" ;;
 esac
 
+if ! command -v flock >/dev/null 2>&1; then
+	die "command=flock missing
+vsys needs flock from util-linux to save filesystem error times. Install util-linux before installing vsys."
+fi
+
 if command -v curl >/dev/null 2>&1; then
 	fetch() { curl -fsSL "$1" -o "$2"; }
 	fetch_stdout() { curl -fsSL "$1"; }

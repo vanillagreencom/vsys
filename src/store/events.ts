@@ -161,11 +161,16 @@ export class EventLog {
   private watching = new Map<string, Watch>();
   private verdict: CauseId | "" = "";
   private verdictLevel: Level = "ok";
-  /** The first sample records the state it observes and reports no change. */
-  advance(s: Snapshot, c: Config): TimelineEvent[] {
+  get previousTime(): number | undefined {
+    return this.previous?.time;
+  }
+  /** With no accepted predecessor, the first sample reports no change. */
+  advance(
+    s: Snapshot,
+    c: Config,
+    previous: Snapshot | null = this.previous,
+  ): TimelineEvent[] {
     const out: TimelineEvent[] = [];
-    const previous = this.previous;
-    // The first sample has nothing to compare against, so it records nothing.
     const add = (
       kind: EventKind,
       subject: string,
