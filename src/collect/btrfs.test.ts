@@ -25,7 +25,11 @@ afterEach(() => {
 for (const row of [
   { before: "healthy", after: "unknown", uncorrectable: 0 },
   { before: "damaged", after: "damaged", uncorrectable: 1 },
-]) {
+] satisfies {
+  before: IntegrityState;
+  after: IntegrityState;
+  uncorrectable: number;
+}[]) {
   test(`an unreadable report preserves the evidence from a ${row.before} check`, async () => {
     const f = fixture();
     fixtures.push(f);

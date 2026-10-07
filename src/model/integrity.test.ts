@@ -4,13 +4,14 @@ import { volumeSnapshot } from "../test/fixture";
 import { present } from "../test/present";
 import {
   damageCounts,
+  type ErrorSource,
   type Integrity,
   type IntegrityState,
   integrity,
   integrityLevel,
   volumesByDevice,
 } from "./integrity";
-import type { Scrub, ScrubCoverage, Storage, Volume } from "./types";
+import type { CsumFailure, Scrub, ScrubCoverage, Storage, Volume } from "./types";
 import type { Level } from "./verdict";
 
 const day = 86400000;
@@ -45,8 +46,13 @@ function report(overrides: Partial<Scrub> = {}): Scrub {
 }
 
 test("an unreadable report leaves confirmed new errors ahead of unknown", () => {
-  const rows = [
-    { source: "none", growth: null, logged: [], state: "unknown" },
+  const rows: {
+    source: ErrorSource | null;
+    growth: number | null;
+    logged: CsumFailure[];
+    state: IntegrityState;
+  }[] = [
+    { source: null, growth: null, logged: [], state: "unknown" },
     { source: "counter", growth: now - 1000, logged: [], state: "new-errors" },
     {
       source: "kernel-log",
@@ -70,7 +76,7 @@ test("an unreadable report leaves confirmed new errors ahead of unknown", () => 
       source: row.source,
       state: row.state,
     });
-    expect(item.errorSource).toBe(row.source === "none" ? null : row.source);
+    expect(item.errorSource).toBe(row.source);
     expect(item.blocks).toBeNull();
     expect(item.groups).toEqual([]);
   }
