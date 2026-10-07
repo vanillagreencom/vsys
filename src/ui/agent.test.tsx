@@ -16,6 +16,35 @@ import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
 import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
+import { gap } from "./format";
+
+test.each([
+  { tasks: null, expected: gap },
+  { tasks: 0, expected: "0" },
+])(
+  "agent Tasks tile preserves $tasks in summary and detail",
+  async ({ tasks, expected }) => {
+    const s = emptySnapshot();
+    s.lanes = [laneSnapshot({ tasks })];
+    const t = await mount(s, defaults(), { width: 220, height: 45 });
+    try {
+      await t.press("2");
+      for (const detail of [false, true]) {
+        if (detail) await t.press("enter");
+        const lines = t.frame().split("\n");
+        const heading = lines.findIndex((line) => line.includes("Tasks"));
+        const label = present(lines[heading], "Tasks tile label");
+        const column = label.indexOf("Tasks");
+        const value = present(lines[heading + 1], "Tasks tile value")
+          .slice(column)
+          .trim();
+        expect({ detail, value }).toEqual({ detail, value: expected });
+      }
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 test("agent detail names the account, the charged resources, the limits and the block", async () => {
   const c = defaults();

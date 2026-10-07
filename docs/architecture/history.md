@@ -16,7 +16,7 @@ Deriving events where the samples meet keeps the Timeline and Home in agreement 
 
 ## Rules
 
-- Do add a stored field by giving `normalizeSnapshot()` and `normalizePoint()` its unknown value, never zero. They are idempotent and they are the whole migration. `src/store/history.test.ts` reads records older than each field.
+- Do add a stored field by giving `normalizeSnapshot()` and `normalizePoint()` its unknown value when the record cannot establish the reading, never zero. They are idempotent and they are the whole migration. `src/store/history.test.ts` reads records older than each field.
 - Do keep a stored snapshot independent of live objects: an exported snapshot can be edited without changing the replay cache. `src/store/archive.test.ts` checks mutation isolation.
 - Do bound retention by time, and grow the points ring rather than dropping a point still inside the window.
 - Do keep the writes of one sample within the write budget, half the shortest refresh interval the settings accept, `WRITE_BUDGET_MS` in `scripts/bench-history.ts`. `bun run bench:writes`, in `scripts/ci.py`, fails when the median exceeds it. Only the cost without disk load is held, because the cost under load depends on the disk as much as the code.

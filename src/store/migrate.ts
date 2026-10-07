@@ -93,9 +93,10 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     capabilities: s.capabilities ?? [],
     groups: s.groups.map((group) => ({
       ...group,
-      highRead: group.highRead ?? false,
-      swapMaxRead: group.swapMaxRead ?? false,
-      tasksMaxRead: group.tasksMaxRead ?? false,
+      // Older collectors stored numbers only after a successful read.
+      highRead: group.highRead ?? typeof group.high === "number",
+      swapMaxRead: group.swapMaxRead ?? typeof group.swapMax === "number",
+      tasksMaxRead: group.tasksMaxRead ?? typeof group.tasksMax === "number",
     })),
     lanes: (s.lanes ?? []).map(normalizeLane),
     storage: {

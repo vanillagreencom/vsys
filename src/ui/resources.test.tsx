@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
@@ -92,13 +92,38 @@ test("Resources shows an unknown limit for each unread limit file", async () => 
     t = await mount(
       s,
       { ...f.config, cgroupRoot: root },
-      { width: 140, height: 40 },
+      { width: 220, height: 40 },
     );
     await t.press("3");
-    const gaps = (frame: string) => frame.split(gap).length - 1;
-    const baseline = gaps(t.frame());
-    // Readable max files contain no limit. Denied files must each add a gap.
-    for (const denied of files.map((file) => [file]).concat([files])) {
+    const limits = () => {
+      const lines = present(t, "the mounted Resources screen")
+        .frame()
+        .split("\n");
+      const start = lines.findIndex((line) => line.includes("Limits"));
+      const heading = present(
+        lines[start],
+        "the selected group's Limits field",
+      );
+      const labelColumn = heading.indexOf("Limits");
+      const valueColumn = heading.indexOf("memory high", labelColumn);
+      const end = lines.findIndex(
+        (line, index) =>
+          index > start && line.slice(labelColumn).startsWith("CPU "),
+      );
+      expect(valueColumn).toBeGreaterThan(labelColumn);
+      expect(end).toBeGreaterThan(start);
+      return lines
+        .slice(start, end)
+        .map((line) => line.slice(valueColumn).trim())
+        .join(" ");
+    };
+    expect(limits()).toContain(
+      "memory high none · max none · swap 0 B of none · tasks max none",
+    );
+    writeFileSync(join(root, "memory.high"), "1048576");
+    writeFileSync(join(root, "memory.swap.max"), "0");
+    writeFileSync(join(root, "pids.max"), "512");
+    for (const denied of [[], ...files.map((file) => [file]), files]) {
       const r = new DeniedLimits(denied);
       const groups = collectGroups(r, root, [], 0);
       expect(r.errors.map((error) => basename(error.source))).toEqual(denied);
@@ -109,10 +134,9 @@ test("Resources shows an unknown limit for each unread limit file", async () => 
         tasksMaxRead: !denied.includes("pids.max"),
       });
       await t.update({ ...s, groups, errors: r.errors });
-      expect({ denied, addedGaps: gaps(t.frame()) - baseline }).toEqual({
-        denied,
-        addedGaps: denied.length,
-      });
+      expect(limits()).toContain(
+        `memory high ${denied.includes("memory.high") ? gap : "1.0 MiB"} · max none · swap 0 B of ${denied.includes("memory.swap.max") ? gap : "0 B"} · tasks max ${denied.includes("pids.max") ? gap : "512"}`,
+      );
     }
   } finally {
     await t?.close();

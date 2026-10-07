@@ -280,7 +280,7 @@ test("a stored snapshot written before the capability probe loads with none", ()
   cleanup.push(() => reopened.close());
   expect(reopened.at(now)?.capabilities).toEqual([]);
 });
-test("stored group limits without read flags load as unknown and keep measured flags", () => {
+test("stored group limits infer numeric readings and preserve recorded flags", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
   f.config.persistence = true;
@@ -288,6 +288,9 @@ test("stored group limits without read flags load as unknown and keep measured f
   const first = new History(f.config);
   const s = emptySnapshot(now);
   const measured = groupSnapshot({
+    high: 1048576,
+    swapMax: 0,
+    tasksMax: 512,
     highRead: true,
     swapMaxRead: false,
     tasksMaxRead: true,
@@ -295,9 +298,22 @@ test("stored group limits without read flags load as unknown and keep measured f
   s.groups = [measured];
   first.add(s);
   first.close();
-  const { highRead, swapMaxRead, tasksMaxRead, ...legacy } = measured;
-  expect([highRead, swapMaxRead, tasksMaxRead]).toEqual([true, false, true]);
-  const stored = { ...s, groups: [legacy, measured] };
+  const rows = [
+    { values: { high: null, swapMax: null, tasksMax: null }, known: false },
+    { values: { high: 1048576, swapMax: 0, tasksMax: 512 }, known: true },
+    { values: { high: 0, swapMax: 0, tasksMax: 0 }, known: true },
+  ];
+  const legacy = rows.map(({ values }) => {
+    const { highRead, swapMaxRead, tasksMaxRead, ...group } =
+      groupSnapshot(values);
+    return group;
+  });
+  const unlimited = groupSnapshot({
+    highRead: false,
+    swapMaxRead: true,
+    tasksMaxRead: false,
+  });
+  const stored = { ...s, groups: [...legacy, measured, unlimited] };
   const db = new Database(f.config.sqlitePath);
   db.query("UPDATE samples SET data = ? WHERE time = ?").run(
     Bun.gzipSync(JSON.stringify(stored)),
@@ -311,8 +327,9 @@ test("stored group limits without read flags load as unknown and keep measured f
       .at(now)
       ?.groups.map((g) => [g.highRead, g.swapMaxRead, g.tasksMaxRead]),
   ).toEqual([
-    [false, false, false],
+    ...rows.map(({ known }) => [known, known, known]),
     [true, false, true],
+    [false, true, false],
   ]);
 });
 

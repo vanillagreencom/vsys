@@ -21,6 +21,7 @@ import {
   bytes,
   capText,
   gap,
+  laneValue,
   percent,
   rate,
   share,
@@ -170,7 +171,7 @@ export function AgentTiles({
       <Tile
         key="Tasks"
         label="Tasks"
-        value={String(lane.tasks)}
+        value={laneValue(lane, "tasks", c)}
         level={lane.state === "blocked" ? "warn" : "ok"}
         detail={blockedText(lane)}
       />
