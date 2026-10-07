@@ -24,7 +24,7 @@ class AgentConfineRules(unittest.TestCase):
             Path(env[key]).mkdir(parents=True, exist_ok=True)
         return env
 
-    def _scope_launch_args(self, launcher_text=None):
+    def _scope_launch_args(self, systemd_version, launcher_text=None):
         with scratch() as tmp:
             base = Path(tmp)
             bin_dir = base / "bin"
@@ -36,11 +36,32 @@ class AgentConfineRules(unittest.TestCase):
                 launcher.write_text(launcher_text)
                 launcher.chmod(0o755)
             capture = base / "argv.jsonl"
+            received = base / "received.json"
+            command = base / "claude"
+            command.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "with open(os.environ['RECEIVED'], 'w') as out:\n"
+                "    json.dump({'args': sys.argv[1:], 'tmpdir': os.environ.get('TMPDIR')}, out)\n"
+            )
+            command.chmod(0o755)
             (bin_dir / "systemd-run").write_text(
                 f"#!{sys.executable}\n"
                 "import json, os, sys\n"
+                f"version = {systemd_version}\n"
+                "args = sys.argv[1:]\n"
+                "if '--help' in args:\n"
+                "    sys.exit(0 if version >= 254 else 2)\n"
                 "with open(os.environ['CAPTURE'], 'a') as out:\n"
-                "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                "    out.write(json.dumps(args) + '\\n')\n"
+                "if version < 254 and '--expand-environment=no' in args:\n"
+                "    sys.exit(2)\n"
+                "if args[-1] == 'true':\n"
+                "    sys.exit(0)\n"
+                "child = args[args.index('env'):]\n"
+                "if version >= 258 and '--expand-environment=no' not in args:\n"
+                "    child = [os.path.expandvars(arg) for arg in child]\n"
+                "os.execvp(child[0], child)\n"
             )
             (bin_dir / "grep").write_text("#!/bin/sh\nexit 1\n")
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
@@ -48,26 +69,47 @@ class AgentConfineRules(unittest.TestCase):
                 path.chmod(0o755)
             env = self._confine_env(base, bin_dir)
             env["CAPTURE"] = str(capture)
-            result = subprocess.run([str(launcher), "claude", "-p", "Explain ${HOME} and $PATH"],
+            env["RECEIVED"] = str(received)
+            result = subprocess.run([str(launcher), str(command), "-p", "Explain ${HOME} and $PATH"],
                                     env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
-            return [json.loads(line) for line in capture.read_text().splitlines()]
+            launches = [json.loads(line) for line in capture.read_text().splitlines()]
+            child = json.loads(received.read_text())
+            child["scratch_exists"] = child["tmpdir"] is not None and Path(child["tmpdir"]).is_dir()
+            return launches, child
 
-    def _assert_literal_scope_args(self, launches):
+    def _assert_literal_scope_args(self, systemd_version, launches, child):
+        self.assertEqual(len(launches), 2)
+        self.assertEqual(child["args"], ["-p", "Explain ${HOME} and $PATH"])
         for launch in launches:
-            self.assertIn("--expand-environment=no", launch)
-        self.assertEqual(launches[-1][-3:], ["claude", "-p", "Explain ${HOME} and $PATH"])
+            self.assertIn("--scope", launch)
+            self.assertIn("--slice=agents.slice", launch)
+            self.assertEqual("--expand-environment=no" in launch, systemd_version >= 254)
+        self.assertTrue(child["scratch_exists"])
+        unit = next(arg.split("=", 1)[1] for arg in launches[-1] if arg.startswith("--unit="))
+        self.assertEqual(Path(child["tmpdir"]).name, unit)
 
     def test_scope_launch_disables_environment_expansion(self):
-        self._assert_literal_scope_args(self._scope_launch_args())
+        # 252 rejects the option; 254 accepts it; 258 expands scope args by default.
+        for version in (252, 254, 258):
+            with self.subTest(systemd=version):
+                self._assert_literal_scope_args(version, *self._scope_launch_args(version))
 
     def test_scope_launch_expansion_mutant_fails(self):
         text = (ROOT / "warden" / "agent-confine").read_text()
-        option = " --expand-environment=no"
-        self.assertEqual(text.count(option), 2)
-        launches = self._scope_launch_args(text.replace(option, ""))
+        selected = "SYSTEMD_SCOPE_ARGS+=(--expand-environment=no)"
+        self.assertEqual(text.count(selected), 1)
+        mutant = text.replace(selected, "SYSTEMD_SCOPE_ARGS+=()")
         with self.assertRaises(AssertionError):
-            self._assert_literal_scope_args(launches)
+            self._assert_literal_scope_args(258, *self._scope_launch_args(258, mutant))
+
+    def test_scope_launch_legacy_systemd_mutant_fails(self):
+        text = (ROOT / "warden" / "agent-confine").read_text()
+        probe = "systemd-run --expand-environment=no --help >/dev/null 2>&1"
+        self.assertEqual(text.count(probe), 1)
+        mutant = text.replace(probe, "true")
+        with self.assertRaises(AssertionError):
+            self._assert_literal_scope_args(252, *self._scope_launch_args(252, mutant))
 
     def test_agent_confine_tmpdir_rows(self):
         with scratch() as tmp:
@@ -152,6 +194,7 @@ class AgentConfineRules(unittest.TestCase):
             (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
             systemd_run = "\n".join([
                 "#!/bin/sh",
+                'case " $* " in *" --help "*) exit 0;; esac',
                 f"printf '%s\\n' \"$*\" >> {log}",
                 'case " $* " in',
                 '*" --unit=agent-confine-"*)',
