@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { chmodSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
@@ -21,6 +22,27 @@ test("a scrub read binds exact text to its file version and records unavailable 
     const replaced = reader.scrubReport(path);
     expect(replaced.kind).toBe("read");
     expect(replaced.version).not.toBe(before.version);
+    f.write(hidden, "Status: finished\nreplacement report");
+    // The shipped reporter can rename a replacement after fstat identified
+    // the opened report but before its read fails.
+    const readFailure = new Error("report read failed after replacement");
+    const read = spyOn(fs, "readFileSync").mockImplementationOnce(() => {
+      renameSync(hidden, path);
+      throw readFailure;
+    });
+    try {
+      expect(reader.scrubReport(path)).toEqual({
+        kind: "unread",
+        version: replaced.version,
+      });
+      expect(reader.errors).toContainEqual({
+        source: path,
+        message: readFailure.message,
+      });
+    } finally {
+      read.mockRestore();
+    }
+    expect(reader.scrubReport(path).version).not.toBe(replaced.version);
     chmodSync(path, 0o000);
     const failed = reader.scrubReport(path);
     expect(failed.kind).toBe("unread");

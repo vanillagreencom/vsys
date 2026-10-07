@@ -54,12 +54,14 @@ export class Reader {
       return { kind: "read", text, version };
     } catch (error) {
       this.error(path, error);
-      // A permission failure can still identify the current file, without
-      // giving an unreadable replacement the previous file's metadata.
-      try {
-        version = reportVersion(statSync(path, { bigint: true }));
-      } catch {
-        version = null;
+      if (version === null) {
+        // A permission failure can still identify the current file, without
+        // giving an unreadable replacement the previous file's metadata.
+        try {
+          version = reportVersion(statSync(path, { bigint: true }));
+        } catch {
+          version = null;
+        }
       }
       return { kind: "unread", version };
     } finally {
