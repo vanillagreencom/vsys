@@ -11,7 +11,13 @@ import {
   integrityLevel,
   volumesByDevice,
 } from "./integrity";
-import type { CsumFailure, Scrub, ScrubCoverage, Storage, Volume } from "./types";
+import type {
+  CsumFailure,
+  Scrub,
+  ScrubCoverage,
+  Storage,
+  Volume,
+} from "./types";
 import type { Level } from "./verdict";
 
 const day = 86400000;
