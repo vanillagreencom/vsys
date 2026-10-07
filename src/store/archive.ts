@@ -1,6 +1,6 @@
-import { memberless } from "../model/lanes";
 import type { Snapshot } from "../model/types";
 import type { LaneSample } from "./lane-series";
+import { normalizeLaneReadings } from "./migrate";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -29,6 +29,14 @@ export class ArchiveError extends Error {
 
 function object(value: Json | undefined): value is ObjectValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function projectionContext(value: ObjectValue): ObjectValue {
+  const context: ObjectValue = {};
+  for (const key of ["lanes", "groups", "processRead"]) {
+    const field = value[key];
+    if (field !== undefined) context[key] = field;
+  }
+  return context;
 }
 
 /** Column layout lets clocks and counters share one exact delta across rows. */
@@ -236,12 +244,12 @@ interface Cursor {
 }
 /**
  * Lane columns projected out of one checkpoint. Every lane it holds has a
- * sample for each line up to `index`, and `table` is the lane table at that
- * line, which is the same table whichever lane it is read for.
+ * sample for each line up to `index`. The context retains lane columns and
+ * the process-read and cgroup evidence needed to normalize legacy readings.
  */
 interface LaneProjection {
   index: number;
-  table: Json;
+  context: ObjectValue;
   lanes: Map<string, LaneSample[]>;
 }
 
@@ -348,6 +356,8 @@ function laneSample(
   columns: ObjectValue,
   index: number | undefined,
   time: number,
+  processRead: Json | undefined,
+  groupCpu: Map<Json, number | null>,
 ): LaneSample {
   const metric = (key: string): number | null => {
     const column = columns[key];
@@ -355,10 +365,17 @@ function laneSample(
       index !== undefined && Array.isArray(column) ? column[index] : null;
     return typeof value === "number" ? value : null;
   };
+  const cgroups = columns.cgroup;
+  const cgroup =
+    index !== undefined && Array.isArray(cgroups) ? cgroups[index] : null;
+  const readings = normalizeLaneReadings(
+    { cpu: metric("cpu"), rss: metric("rss"), mainPid: metric("mainPid") ?? 0 },
+    processRead,
+    groupCpu.get(cgroup ?? null) ?? null,
+  );
   return {
     time,
-    cpu: metric("cpu"),
-    rss: memberless(metric("mainPid")) ? null : metric("rss"),
+    ...readings,
     pressure: metric("pressure"),
     memoryPressure: metric("memoryPressure"),
     ioPressure: metric("ioPressure"),
@@ -554,10 +571,11 @@ export class Archive {
     const first = !saved || fresh.length ? 0 : saved.index + 1;
     const reader = new Reader(chunk);
     try {
-      let table: Json | undefined =
+      const base =
         first === 0 || !saved
-          ? (JSON.parse(reader.line(0)) as ObjectValue).lanes
-          : saved.table;
+          ? (JSON.parse(reader.line(0)) as ObjectValue)
+          : saved.context;
+      let context = projectionContext(base);
       for (const [i, time] of chunk.times.entries()) {
         if (i < first) continue;
         if (i > 0) {
@@ -565,15 +583,17 @@ export class Archive {
           if (change?.kind === "replace") {
             if (!object(change.value))
               throw new Error("Archived snapshot is not an object");
-            table = change.value.lanes;
+            context = projectionContext(change.value);
           } else if (change?.kind === "object") {
-            const laneChange = change.entries.find(
-              ([key]) => key === "lanes",
-            )?.[1];
-            if (laneChange) table = apply(table, laneChange);
+            for (const key of ["lanes", "groups", "processRead"]) {
+              const entry = change.entries.find(([name]) => name === key)?.[1];
+              if (entry) context[key] = apply(context[key], entry);
+              if (change.removed.includes(key)) delete context[key];
+            }
           } else if (change)
             throw new Error("Invalid archived snapshot change");
         }
+        const table = context.lanes;
         if (!object(table) || !object(table.columns))
           throw new Error("Invalid archived lane columns");
         const columns = table.columns;
@@ -582,12 +602,37 @@ export class Archive {
           columns.id.forEach((id, n) => {
             if (!position.has(id)) position.set(id, n);
           });
+        const groupCpu = new Map<Json, number | null>();
+        const groups = context.groups;
+        if (
+          context.processRead === undefined &&
+          object(groups) &&
+          object(groups.columns)
+        ) {
+          const { path, kernelPath, cpuPercent } = groups.columns;
+          if (Array.isArray(path))
+            path.forEach((name, n) => {
+              const cpu = Array.isArray(cpuPercent) ? cpuPercent[n] : null;
+              const value = typeof cpu === "number" ? cpu : null;
+              groupCpu.set(name, value);
+              const kernel = Array.isArray(kernelPath) ? kernelPath[n] : null;
+              if (typeof kernel === "string") groupCpu.set(kernel, value);
+            });
+        }
         for (const [id, samples] of i <= reached ? added : every)
-          samples.push(laneSample(columns, position.get(id), time));
+          samples.push(
+            laneSample(
+              columns,
+              position.get(id),
+              time,
+              context.processRead,
+              groupCpu,
+            ),
+          );
       }
-      if (!object(table))
+      if (!object(context.lanes))
         throw new Error("A lane projection walked no archived line");
-      const projection = { index: last, table, lanes: new Map(every) };
+      const projection = { index: last, context, lanes: new Map(every) };
       for (const id of fresh) this.projected.add(id);
       this.projections.set(chunk, projection);
       return projection;

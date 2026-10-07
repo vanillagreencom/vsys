@@ -2,12 +2,15 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
-import { memberless } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
-import { normalizePoint, normalizeSnapshot } from "./migrate";
+import {
+  normalizeLaneReadings,
+  normalizePoint,
+  normalizeSnapshot,
+} from "./migrate";
 import { type Point, point } from "./point";
 
 /** Snapshots hold command lines and environment values, so only the owner may read them. */
@@ -608,16 +611,25 @@ export class History {
               const s = JSON.parse(History.decodeRow(row.data)) as Snapshot;
               const lanes = new Map(s.lanes.map((l) => [l.id, l]));
               const groups = new Map(s.groups.map((g) => [g.path, g]));
+              const groupCpu = new Map<string, number | null>();
+              for (const group of s.groups) {
+                groupCpu.set(group.path, group.cpuPercent);
+                if (group.kernelPath !== undefined)
+                  groupCpu.set(group.kernelPath, group.cpuPercent);
+              }
               for (const [id, samples] of lists) {
                 const lane = lanes.get(id);
                 const group = groups.get(id);
+                const readings = lane
+                  ? normalizeLaneReadings(
+                      lane,
+                      s.processRead,
+                      groupCpu.get(lane.cgroup) ?? null,
+                    )
+                  : { cpu: null, rss: null };
                 samples.push({
                   time: row.time,
-                  cpu: lane?.cpu ?? null,
-                  rss:
-                    lane === undefined || memberless(lane.mainPid)
-                      ? null
-                      : (lane.rss ?? null),
+                  ...readings,
                   pressure: group?.pressure.cpu?.some ?? lane?.pressure ?? null,
                   memoryPressure:
                     group?.pressure.memory?.some ??

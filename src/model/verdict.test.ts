@@ -1,15 +1,26 @@
 import { expect, test } from "bun:test";
-import { type Config, defaults } from "../config/config";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ProcessCollector } from "../collect/procs";
+import { type Config, defaults, validate } from "../config/config";
+import { History } from "../store/history";
+import { normalizeSnapshot } from "../store/migrate";
+import { point } from "../store/point";
 import {
   emptySnapshot,
   everyCauseSnapshot,
+  fixture,
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
 import { present } from "../test/present";
+import { buildsSummary } from "./builds";
+import { summarySnapshot } from "./export";
 import { type IntegrityState, integrities } from "./integrity";
+import { lanes } from "./lanes";
 import type { Group, Lane, Scrub, Snapshot, Volume } from "./types";
 import {
   agentTotal,
@@ -297,6 +308,111 @@ test("build load counts configured linkers separately and per lane", () => {
   expect(laneLinkers(s, laneSnapshot({ pids: [1, 2] }), c)).toBe(1);
   // The linker list is configuration, so a shorter list counts fewer linkers.
   expect(buildLoad(s, { ...c, linkerNames: ["mold"] }).linkers).toBe(1);
+});
+
+test("build counts stay unknown when process collection omits a process or cannot list them", () => {
+  const c = defaults();
+  const root = mkdtempSync(join(tmpdir(), "vsys-build-counts-"));
+  try {
+    const rows: [string, string, string[] | null, number | null][] = [
+      ["readable empty directory", root, null, 0],
+      ["unread directory", join(root, "unread"), null, null],
+      ["unread process", root, [join(root, "77")], null],
+      ["unread optional field", root, [join(root, "77", "environ")], 0],
+    ];
+    for (const [name, directory, sources, count] of rows) {
+      for (const procRoot of [directory, `${directory}/`]) {
+        const config = validate({ procRoot }, c);
+        const s = emptySnapshot();
+        if (sources === null) {
+          const reading = new ProcessCollector(config, 100, 4096).read({
+            time: s.time,
+            uptime: 0,
+            groups: [],
+          });
+          expect(reading.procs).toEqual([]);
+          expect(reading.errors.map((error) => error.source)).toEqual(
+            count === null ? [procRoot] : [],
+          );
+          s.processRead = reading.processRead;
+          s.procs = reading.procs;
+          s.errors = reading.errors;
+        } else {
+          s.errors = sources.map((source) => ({ source, message: "EACCES" }));
+          s.processRead = count === null ? "incomplete" : "complete";
+        }
+        const counts = { builds: count, linkers: count, lanes: count };
+        expect({ name, ...buildLoad(s, config) }).toEqual({ name, ...counts });
+        expect(buildsSummary(s, config)).toMatchObject(counts);
+        expect(meterOf(s, config, "builds")).toMatchObject({
+          level: count === null ? "warn" : "ok",
+          values: counts,
+        });
+        expect(
+          present(
+            summarySnapshot(s, config).meters.find((m) => m.id === "builds"),
+            name,
+          ),
+        ).toMatchObject({
+          level: count === null ? "warn" : "ok",
+          value: count,
+        });
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true });
+  }
+});
+
+test("replay keeps the collected process outcome after a process root edit", async () => {
+  const f = fixture();
+  const history = new History(f.config);
+  try {
+    f.proc(77, "app.slice/agent.service", {
+      command: ["rustc"],
+      comm: "rustc",
+    });
+    rmSync(join(f.config.procRoot, "77/stat"));
+    mkdirSync(join(f.config.procRoot, "77/stat"));
+    const s = emptySnapshot();
+    const reading = new ProcessCollector(f.config, 100, 4096).read({
+      time: s.time,
+      uptime: 0,
+      groups: [],
+    });
+    expect(reading.processRead).toBe("incomplete");
+    expect(reading.errors.map((e) => e.source)).toContain(
+      join(f.config.procRoot, "77"),
+    );
+    Object.assign(s, reading);
+    history.add(s);
+    const replay = present(history.at(s.time) ?? undefined, "retained sample");
+    for (const procRoot of [
+      f.config.procRoot,
+      `${f.config.procRoot}/`,
+      "/proc-new",
+    ]) {
+      const config = validate({ procRoot }, f.config);
+      expect(buildLoad(replay, config)).toEqual({
+        builds: null,
+        linkers: null,
+        lanes: null,
+      });
+      expect(meterOf(replay, config, "builds").level).toBe("warn");
+    }
+    const { processRead: _outcome, ...legacy } = emptySnapshot();
+    const normalized = normalizeSnapshot(JSON.parse(JSON.stringify(legacy)));
+    expect(normalized.processRead).toBe("unknown");
+    expect(buildLoad(normalized, f.config)).toEqual({
+      builds: null,
+      linkers: null,
+      lanes: null,
+    });
+    expect(normalizeSnapshot(normalized)).toEqual(normalized);
+  } finally {
+    history.close();
+    f.cleanup();
+  }
 });
 
 test("the cause order table is the ladder's own tie order", () => {
@@ -667,7 +783,7 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
       [`${c.procRoot}/77/environ`],
       [30, 30, 150, 150],
     ],
-    // Configuration accepts a trailing slash; the reader's sources carry none.
+    // Process directory paths use join, which removes the root's trailing slash.
     [
       "a process that could not be read, under a root written with a slash",
       [...agents, desktop],
@@ -689,11 +805,256 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
         {
           ...s,
           lanes,
+          processRead: failed.some((source) => !source.endsWith("/environ"))
+            ? "incomplete"
+            : "complete",
           errors: failed.map((source) => ({ source, message: "EACCES" })),
         },
         { ...c, procRoot },
       ),
     }).toEqual({ name, cpu, meterCpu, meterCache, swapCache });
+});
+
+test("nested agent counters reach Home and Timeline once without an agent slice", () => {
+  const rows: {
+    name: string;
+    parentCpu: number | null;
+    childCpu: number | null;
+    parentCache: number | null;
+    childCache: number | null;
+    processCpu: number | null;
+    cpu: number | null;
+    cache: number | null;
+  }[] = [
+    {
+      name: "measured",
+      parentCpu: 30,
+      childCpu: 20,
+      parentCache: 3000,
+      childCache: 2000,
+      processCpu: 10,
+      cpu: 30,
+      cache: 3000,
+    },
+    {
+      name: "covered fallback",
+      parentCpu: 30,
+      childCpu: null,
+      parentCache: 3000,
+      childCache: null,
+      processCpu: 10,
+      cpu: 30,
+      cache: 3000,
+    },
+    {
+      name: "parent fallback",
+      parentCpu: null,
+      childCpu: 20,
+      parentCache: null,
+      childCache: 2000,
+      processCpu: 10,
+      cpu: 30,
+      cache: null,
+    },
+    {
+      name: "process sums",
+      parentCpu: null,
+      childCpu: null,
+      parentCache: null,
+      childCache: null,
+      processCpu: 10,
+      cpu: 30,
+      cache: null,
+    },
+    {
+      name: "unknown process",
+      parentCpu: null,
+      childCpu: 20,
+      parentCache: null,
+      childCache: 2000,
+      processCpu: null,
+      cpu: null,
+      cache: null,
+    },
+    {
+      name: "measured zero",
+      parentCpu: 0,
+      childCpu: 0,
+      parentCache: 0,
+      childCache: 0,
+      processCpu: 10,
+      cpu: 0,
+      cache: 0,
+    },
+  ];
+  for (const failure of ["absent", "masked"] as const)
+    for (const suffix of ["service", "scope"])
+      for (const reverse of [false, true])
+        for (const row of rows) {
+          const c = defaults();
+          const s = emptySnapshot();
+          s.capabilities = s.capabilities.map((cap) =>
+            cap.id === "agent-slice"
+              ? { ...cap, available: false, failure }
+              : cap,
+          );
+          const parent = groupSnapshot({
+            path: "app.slice/agent.service",
+            name: "agent.service",
+            kernelPath: "/tenant.slice/app.slice/agent.service",
+            pids: [40],
+            cpuPercent: row.parentCpu,
+            cache: row.parentCache,
+          });
+          const child = groupSnapshot({
+            path: `${parent.path}/child.${suffix}`,
+            name: `child.${suffix}`,
+            kernelPath: `${parent.kernelPath}/child.${suffix}`,
+            pids: [41],
+            cpuPercent: row.childCpu,
+            cache: row.childCache,
+          });
+          const desktop = groupSnapshot({
+            path: "app.slice",
+            name: c.desktopSlice,
+            swap: c.swapFloor + 1,
+          });
+          s.groups = reverse
+            ? [child, parent, desktop]
+            : [desktop, parent, child];
+          const procs = [
+            processSnapshot({
+              pid: 40,
+              group: parent.kernelPath,
+              cpuPercent: row.processCpu,
+            }),
+            processSnapshot({
+              pid: 41,
+              group: child.kernelPath,
+              cpuPercent: 20,
+            }),
+          ];
+          s.procs = reverse ? procs.reverse() : procs;
+          s.lanes = lanes(
+            s.groups,
+            s.procs,
+            c,
+            8,
+            undefined,
+            s.capabilities,
+            s.processRead,
+          );
+          const parentLane = present(
+            s.lanes.find((l) => l.cgroup === parent.path),
+            "parent lane",
+          );
+          const childLane = present(
+            s.lanes.find((l) => l.cgroup === child.path),
+            "child lane",
+          );
+          expect({
+            row: row.name,
+            failure,
+            suffix,
+            reverse,
+            pids: [parentLane.pids, childLane.pids],
+            laneCpu: [parentLane.cpu, childLane.cpu],
+            laneCache: [parentLane.cache, childLane.cache],
+            cpu: agentTotal(s, c, "cpu"),
+            cache: agentTotal(s, c, "cache"),
+            homeCpu: meterOf(s, c, "cpu").values.agents,
+            homeCache: meterOf(s, c, "memory").values.cache,
+            swapCache: causes(s, c).find((cause) => cause.id === "desktop-swap")
+              ?.values.cache,
+            timelineCpu: point(s, c).agents,
+          }).toEqual({
+            row: row.name,
+            failure,
+            suffix,
+            reverse,
+            pids: [[40], [41]],
+            laneCpu: [row.parentCpu ?? row.processCpu, row.childCpu ?? 20],
+            laneCache: [row.parentCache, row.childCache],
+            cpu: row.cpu,
+            cache: row.cache,
+            homeCpu: row.cpu,
+            homeCache: row.cache,
+            swapCache: row.cache,
+            timelineCpu: row.cpu,
+          });
+        }
+});
+
+test("agent totals add disjoint groups and uncovered process CPU", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.capabilities = s.capabilities.map((cap) =>
+    cap.id === "agent-slice"
+      ? { ...cap, available: false, failure: "absent" as const }
+      : cap,
+  );
+  const group = groupSnapshot({
+    path: "app.slice/agent.service",
+    name: "agent.service",
+    kernelPath: "/tenant.slice/app.slice/agent.service",
+    pids: [40],
+    cpuPercent: 30,
+    cache: 3000,
+  });
+  const sibling = groupSnapshot({
+    path: `${group.path}-other`,
+    name: "other.service",
+    kernelPath: `${group.kernelPath}-other`,
+    pids: [41],
+    cpuPercent: 7,
+    cache: 700,
+  });
+  s.groups = [group, sibling];
+  s.procs = [
+    processSnapshot({ pid: 40, group: group.kernelPath, cpuPercent: 10 }),
+    processSnapshot({ pid: 41, group: sibling.kernelPath, cpuPercent: 7 }),
+    processSnapshot({
+      pid: 43,
+      group: `${group.kernelPath}/uncollected.service`,
+      cpuPercent: 20,
+    }),
+  ];
+  s.lanes = lanes(
+    s.groups,
+    s.procs,
+    c,
+    8,
+    undefined,
+    s.capabilities,
+    s.processRead,
+  );
+  expect([agentTotal(s, c, "cpu"), agentTotal(s, c, "cache")]).toEqual([
+    37, 3700,
+  ]);
+  s.procs.push(
+    processSnapshot({ pid: 42, group: "/outside.service", cpuPercent: 5 }),
+  );
+  s.lanes = lanes(
+    s.groups,
+    s.procs,
+    c,
+    8,
+    undefined,
+    s.capabilities,
+    s.processRead,
+  );
+  expect([
+    agentTotal(s, c, "cpu"),
+    agentTotal(s, c, "cache"),
+    meterOf(s, c, "cpu").values.agents,
+    point(s, c).agents,
+  ]).toEqual([42, null, 42, 42]);
+  s.processRead = "incomplete";
+  expect([
+    agentTotal(s, c, "cpu"),
+    agentTotal(s, c, "cache"),
+    point(s, c).agents,
+  ]).toEqual([null, null, null]);
 });
 
 test("unjudged names each cause whose own reading could not be taken", () => {

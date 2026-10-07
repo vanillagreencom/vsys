@@ -11,8 +11,8 @@ export interface LaneBuilds {
   name: string;
   /** The process leading the lane, which tells two of one name apart. */
   mainPid: number;
-  builds: number;
-  linkers: number;
+  builds: number | null;
+  linkers: number | null;
   /** The linker executables running there, so the disk writers are named. */
   linkerNames: string[];
 }
@@ -33,9 +33,9 @@ export interface CacheEffect {
   bypassed: string[];
 }
 export interface BuildsSummary {
-  builds: number;
-  linkers: number;
-  lanes: number;
+  builds: number | null;
+  linkers: number | null;
+  lanes: number | null;
   cores: number;
   rows: LaneBuilds[];
   cache: CacheEffect;
@@ -66,9 +66,11 @@ function buildRow(
   id: string,
   name: string,
   mainPid: number,
-  kinds: Record<string, number>,
+  kinds: Record<string, number> | null,
   c: Config,
 ): LaneBuilds | null {
+  if (kinds === null)
+    return { id, name, mainPid, builds: null, linkers: null, linkerNames: [] };
   const slots = Object.entries(kinds).filter(([kind]) =>
     compileOrLink(kind, c.compilerNames, c.linkerNames),
   );
@@ -97,12 +99,12 @@ export function laneBuilds(s: Snapshot, c: Config): LaneBuilds[] {
       loose[p.build] = (loose[p.build] ?? 0) + 1;
   const rows = [
     ...s.lanes.map((l) => buildRow(l.id, l.name, l.mainPid, l.builds, c)),
-    buildRow("", "", 0, loose, c),
+    buildRow("", "", 0, s.processRead === "complete" ? loose : null, c),
   ].filter((row): row is LaneBuilds => row !== null);
   // Busiest first; the catch-all row for unwatched cgroups breaks a tie last.
   return rows.sort(
     (a, b) =>
-      b.builds - a.builds ||
+      (b.builds ?? -1) - (a.builds ?? -1) ||
       Number(a.name === "") - Number(b.name === "") ||
       a.name.localeCompare(b.name),
   );

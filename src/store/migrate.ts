@@ -37,12 +37,12 @@ function laneUnknowns(): Lane {
     readRate: null,
     writeRate: null,
     tasks: 0,
-    rustc: 0,
-    cargo: 0,
-    tests: 0,
-    builds: {},
-    linkers: 0,
-    sccache: 0,
+    rustc: null,
+    cargo: null,
+    tests: null,
+    builds: null,
+    linkers: null,
+    sccache: null,
     memoryMax: null,
     memoryMaxKnown: false,
     cpuWeight: null,
@@ -63,6 +63,20 @@ function laneUnknowns(): Lane {
 export function normalizeLane(stored: Partial<Lane>): Lane {
   const lane = { ...laneUnknowns(), ...stored };
   return memberless(stored.mainPid) ? { ...lane, rss: null, age: null } : lane;
+}
+/** Snapshot replay and chart projections share the stored reading evidence. */
+export function normalizeLaneReadings(
+  stored: Pick<Lane, "cpu" | "rss" | "mainPid">,
+  processRead: unknown,
+  groupCpu: number | null,
+): Pick<Lane, "cpu" | "rss"> {
+  return {
+    cpu: processRead === undefined ? groupCpu : stored.cpu,
+    rss:
+      processRead === undefined || memberless(stored.mainPid)
+        ? null
+        : stored.rss,
+  };
 }
 /** A cache reading as a build before the query outcome stored it. */
 type StoredSccache = Omit<Sccache, "state"> & { available: boolean };
@@ -91,7 +105,40 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     // A build older than the capability probe recorded no capabilities. An
     // empty list is the unknown value: no reading claims a missing interface.
     capabilities: s.capabilities ?? [],
-    lanes: (s.lanes ?? []).map(normalizeLane),
+    processRead: s.processRead ?? "unknown",
+    groups: s.groups.map((group) => ({
+      ...group,
+      // Older collectors stored numbers only after a successful read.
+      highRead: group.highRead ?? typeof group.high === "number",
+      swapMaxRead: group.swapMaxRead ?? typeof group.swapMax === "number",
+      tasksMaxRead: group.tasksMaxRead ?? typeof group.tasksMax === "number",
+    })),
+    lanes: (s.lanes ?? []).map((lane) => {
+      if (s.processRead !== undefined) return normalizeLane(lane);
+      const group = s.groups.find(
+        (g) => g.path === lane.cgroup || g.kernelPath === lane.cgroup,
+      );
+      return normalizeLane({
+        ...lane,
+        ...normalizeLaneReadings(
+          lane,
+          s.processRead,
+          group?.cpuPercent ?? null,
+        ),
+        cpuShare:
+          group?.cpuPercent == null || s.system.cores <= 0
+            ? null
+            : group.cpuPercent / s.system.cores,
+        swap: group?.swap ?? null,
+        tasks: group?.tasks ?? null,
+        builds: null,
+        rustc: null,
+        cargo: null,
+        tests: null,
+        linkers: null,
+        sccache: null,
+      });
+    }),
     storage: {
       ...s.storage,
       // A build older than root origins stored rows with none. Null is the

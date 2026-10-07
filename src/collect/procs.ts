@@ -36,9 +36,8 @@ export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
  * process in the reading with a field unknown.
  */
 export function omittedProcess(source: string, procRoot: string): boolean {
-  // Sources are built with join, which drops the trailing slash a configured
-  // root may carry.
   const root = resolve(procRoot);
+  source = resolve(source);
   return (
     source === root ||
     (dirname(source) === root && /^\d+$/.test(basename(source)))
@@ -123,6 +122,7 @@ export interface ProcessRequest {
 export interface ProcessReading {
   procs: Proc[];
   errors: SourceError[];
+  processRead: "complete" | "incomplete";
 }
 /**
  * Where process collection runs. The program runs it on a thread of its own;
@@ -386,7 +386,13 @@ export class ProcessCollector implements ProcessSource {
         result.map((p) => [p.pid, { start: p.start, ticks: p.ticks }]),
       ),
     };
-    return { procs: result, errors: r.errors };
+    return {
+      procs: result,
+      errors: r.errors,
+      processRead: r.errors.some((e) => omittedProcess(e.source, c.procRoot))
+        ? "incomplete"
+        : "complete",
+    };
   }
 }
 

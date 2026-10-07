@@ -14,13 +14,116 @@ import { defaults } from "../config/config";
 import {
   emptySnapshot,
   fixture,
+  groupSnapshot,
   laneSnapshot,
   processSnapshot,
 } from "../test/fixture";
+import { present } from "../test/present";
+import { Archive } from "./archive";
 import { History, Ring } from "./history";
+import { normalizeSnapshot } from "./migrate";
 import { point } from "./point";
 
 const cleanup: (() => void)[] = [];
+
+test("legacy replay and both chart paths share reading evidence and retain measured values", async () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const first = new History(f.config);
+  const archive = new Archive();
+  const now = Date.now();
+  const rows: {
+    legacy: boolean;
+    groupCpu: number | null;
+    cpu: number | null;
+    rss: number | null;
+    absolute?: boolean;
+  }[] = [
+    { legacy: true, groupCpu: 0, cpu: 0, rss: null },
+    { legacy: false, groupCpu: 27, cpu: 10, rss: 1024 },
+    { legacy: true, groupCpu: 27, cpu: 27, rss: null, absolute: true },
+    { legacy: true, groupCpu: null, cpu: null, rss: null },
+  ];
+  for (const [index, row] of rows.entries()) {
+    const s = emptySnapshot(now + index);
+    s.groups =
+      row.groupCpu === null
+        ? []
+        : [
+            groupSnapshot({
+              cpuPercent: row.groupCpu,
+              swap: 0,
+              tasks: 0,
+              kernelPath: "/agents.slice/a.scope",
+            }),
+          ];
+    s.lanes = [
+      laneSnapshot({
+        cpu: 10,
+        rss: 1024,
+        builds: { rustc: 1 },
+        linkers: 0,
+        cgroup: row.absolute ? "/agents.slice/a.scope" : "agents.slice/a.scope",
+      }),
+    ];
+    const { processRead: _outcome, ...legacy } = s;
+    const stored = JSON.parse(JSON.stringify(row.legacy ? legacy : s));
+    const replay = normalizeSnapshot(stored);
+    const lane = present(replay.lanes[0], "replayed lane");
+    expect([lane?.cpu, lane?.rss]).toEqual([row.cpu, row.rss]);
+    expect([lane?.swap, lane?.tasks, lane?.builds, lane?.linkers]).toEqual(
+      row.legacy
+        ? [
+            row.groupCpu === null ? null : 0,
+            row.groupCpu === null ? null : 0,
+            null,
+            null,
+          ]
+        : [0, 1, { rustc: 1 }, 0],
+    );
+    expect(normalizeSnapshot(replay)).toEqual(replay);
+    if (!row.legacy) expect(normalizeSnapshot(s)).toEqual(s);
+    archive.add(s.time, JSON.stringify(stored));
+    const archived = normalizeSnapshot(
+      present(archive.at(s.time) ?? undefined, "archived snapshot"),
+    );
+    const archivedLane = present(archived.lanes[0], "archived lane");
+    expect([archivedLane.cpu, archivedLane.rss]).toEqual([row.cpu, row.rss]);
+    expect(
+      archive
+        .laneWindows([lane.id], s.time, s.time)
+        .get(lane.id)
+        ?.map((sample) => [sample.cpu, sample.rss]),
+    ).toEqual([[row.cpu, row.rss]]);
+    first.add(stored);
+  }
+  first.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  const id = laneSnapshot().id;
+  const expected = rows.map((row) => [row.cpu, row.rss]);
+  expect(
+    rows.map((_, index) => {
+      const lane = present(
+        reopened.at(now + index)?.lanes[0],
+        "disk replayed lane",
+      );
+      return [lane?.cpu, lane?.rss];
+    }),
+  ).toEqual(expected);
+  expect(
+    archive
+      .laneWindows([id], now, now + rows.length)
+      .get(id)
+      ?.map((sample) => [sample.cpu, sample.rss]),
+  ).toEqual(expected);
+  expect(
+    (await reopened.laneWindows([id], now + rows.length, 1000))
+      .get(id)
+      ?.map((sample) => [sample.cpu, sample.rss]),
+  ).toEqual(expected);
+});
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();
 });
@@ -216,7 +319,7 @@ test("a stored lane written before this build's fields loads with unknown values
   cleanup.push(() => reopened.close());
   const lane = reopened.at(now)?.lanes[0];
   expect(lane?.name).toBe("lane-a");
-  expect(lane?.builds).toEqual({});
+  expect(lane?.builds).toBeNull();
   expect([lane?.memoryMaxKnown, lane?.blocked, lane?.blockedOn]).toEqual([
     false,
     0,
@@ -279,6 +382,59 @@ test("a stored snapshot written before the capability probe loads with none", ()
   cleanup.push(() => reopened.close());
   expect(reopened.at(now)?.capabilities).toEqual([]);
 });
+test("stored group limits infer numeric readings and preserve recorded flags", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const now = Date.now();
+  const first = new History(f.config);
+  const s = emptySnapshot(now);
+  const measured = groupSnapshot({
+    high: 1048576,
+    swapMax: 0,
+    tasksMax: 512,
+    highRead: true,
+    swapMaxRead: false,
+    tasksMaxRead: true,
+  });
+  s.groups = [measured];
+  first.add(s);
+  first.close();
+  const rows = [
+    { values: { high: null, swapMax: null, tasksMax: null }, known: false },
+    { values: { high: 1048576, swapMax: 0, tasksMax: 512 }, known: true },
+    { values: { high: 0, swapMax: 0, tasksMax: 0 }, known: true },
+  ];
+  const legacy = rows.map(({ values }) => {
+    const { highRead, swapMaxRead, tasksMaxRead, ...group } =
+      groupSnapshot(values);
+    return group;
+  });
+  const unlimited = groupSnapshot({
+    highRead: false,
+    swapMaxRead: true,
+    tasksMaxRead: false,
+  });
+  const stored = { ...s, groups: [...legacy, measured, unlimited] };
+  const db = new Database(f.config.sqlitePath);
+  db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+    Bun.gzipSync(JSON.stringify(stored)),
+    now,
+  );
+  db.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  expect(
+    reopened
+      .at(now)
+      ?.groups.map((g) => [g.highRead, g.swapMaxRead, g.tasksMaxRead]),
+  ).toEqual([
+    ...rows.map(({ known }) => [known, known, known]),
+    [true, false, true],
+    [false, true, false],
+  ]);
+});
+
 test("a stored scratch row written before root origins loads with an unknown origin", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

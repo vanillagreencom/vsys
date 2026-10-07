@@ -9,7 +9,7 @@ export interface Pressure {
   full: number | null;
   total: number;
 }
-/** Cgroup v2 limits use null for the kernel's unlimited value. */
+/** Cgroup v2 limits use null for unlimited or unread; read flags distinguish them. */
 export interface Group {
   path: string;
   kernelPath?: string;
@@ -22,13 +22,16 @@ export interface Group {
   cpuMax: string | null;
   memory: number | null;
   high: number | null;
+  highRead: boolean;
   /** memory.max is null for the word max; maxRead separates that from an unread file. */
   max: number | null;
   maxRead: boolean;
   swap: number | null;
   swapMax: number | null;
+  swapMaxRead: boolean;
   tasks: number | null;
   tasksMax: number | null;
+  tasksMaxRead: boolean;
   /** Page cache from memory.stat; io.stat totals since boot and their rates. */
   cache: number | null;
   ioRead: number | null;
@@ -394,14 +397,14 @@ export interface Lane {
   swap: number | null;
   readRate: number | null;
   writeRate: number | null;
-  tasks: number;
-  rustc: number;
-  cargo: number;
-  tests: number;
+  tasks: number | null;
+  rustc: number | null;
+  cargo: number | null;
+  tests: number | null;
   /** Every build process in the lane counted by its kind. */
-  builds: Record<string, number>;
-  linkers: number;
-  sccache: number;
+  builds: Record<string, number> | null;
+  linkers: number | null;
+  sccache: number | null;
   /**
    * Effective caps: the tightest limit any ancestor imposes. A null cap is
    * unlimited only while the cgroup tree covering the lane was read.
@@ -492,6 +495,7 @@ export interface Capability {
   belowSlice?: boolean;
 }
 /** A complete sample carries failures rather than converting them to zero. */
+export type ProcessRead = "complete" | "incomplete" | "unknown";
 export interface Snapshot {
   capabilities: Capability[];
   time: number;
@@ -499,6 +503,8 @@ export interface Snapshot {
   system: System;
   groups: Group[];
   procs: Proc[];
+  /** Collection-time outcome; unknown in records that predate it. */
+  processRead: ProcessRead;
   storage: Storage;
   lanes: Lane[];
   alerts: Alert[];

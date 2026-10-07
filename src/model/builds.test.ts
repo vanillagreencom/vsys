@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { buildKind, compileOrLink } from "../collect/builds";
 import { defaults } from "../config/config";
-import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  groupSnapshot,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { present } from "../test/present";
 import {
   buildsSummary,
@@ -10,8 +15,135 @@ import {
   jobservers,
   laneBuilds,
 } from "./builds";
+import { lanes } from "./lanes";
 import type { Sccache, Snapshot } from "./types";
-import { buildLoad, meters } from "./verdict";
+import { agentLanes, buildLoad, meters } from "./verdict";
+
+test("nested service lanes assign every process once and agree with fleet totals", () => {
+  for (const suffix of ["scope", "service"])
+    for (const reverse of [false, true]) {
+      const s = emptySnapshot();
+      const parent = groupSnapshot({
+        path: "app.slice/agent.service",
+        name: "agent.service",
+        kernelPath: "/app.slice/agent.service",
+        pids: [40],
+      });
+      const child = groupSnapshot({
+        path: `${parent.path}/child.${suffix}`,
+        name: `child.${suffix}`,
+        kernelPath: `${parent.kernelPath}/child.${suffix}`,
+        pids: [41, 42],
+      });
+      s.groups = reverse ? [child, parent] : [parent, child];
+      const procs = [
+        processSnapshot({
+          pid: 40,
+          group: parent.kernelPath,
+          rss: 1024,
+          build: null,
+        }),
+        processSnapshot({
+          pid: 41,
+          group: child.kernelPath,
+          rss: 2048,
+          build: null,
+        }),
+        processSnapshot({
+          pid: 42,
+          group: child.kernelPath,
+          rss: 4096,
+          build: "rustc",
+          tool: null,
+        }),
+      ];
+      s.procs = reverse ? procs.reverse() : procs;
+      s.lanes = lanes(s.groups, s.procs, c);
+      const parentLane = present(
+        s.lanes.find((lane) => lane.cgroup === parent.path),
+        "parent lane",
+      );
+      const childLane = present(
+        s.lanes.find((lane) => lane.cgroup === child.path),
+        "child lane",
+      );
+      expect(parentLane.pids).toEqual([40]);
+      expect([...childLane.pids].sort((a, b) => a - b)).toEqual([41, 42]);
+      expect([
+        parentLane.rss,
+        childLane.rss,
+        agentLanes(s.lanes).reduce(
+          (n, lane) => n + present(lane.rss ?? undefined, "agent memory"),
+          0,
+        ),
+      ]).toEqual([1024, 6144, 7168]);
+      const summary = buildsSummary(s, c);
+      expect(summary.builds).toBe(1);
+      expect(
+        summary.rows.reduce(
+          (n, row) => n + present(row.builds ?? undefined, "build count"),
+          0,
+        ),
+      ).toBe(present(summary.builds ?? undefined, "fleet build count"));
+      expect(
+        summary.rows.find((row) => row.id === parentLane.id),
+      ).toBeUndefined();
+      expect(summary.rows.find((row) => row.id === childLane.id)?.builds).toBe(
+        1,
+      );
+    }
+});
+
+test("incomplete lane membership and unowned collection keep build rows unknown", () => {
+  for (const suffix of ["scope", "service"]) {
+    const s = emptySnapshot();
+    const group = groupSnapshot({
+      path: `app.slice/agent.${suffix}`,
+      name: `agent.${suffix}`,
+      pids: [40, 41],
+      kernelPath: `/app.slice/agent.${suffix}`,
+    });
+    s.groups = [group];
+    s.procs = [
+      processSnapshot({ pid: 40, group: group.kernelPath, build: "rustc" }),
+    ];
+    s.processRead = "incomplete";
+    s.lanes = lanes(
+      s.groups,
+      s.procs,
+      c,
+      8,
+      undefined,
+      s.capabilities,
+      s.processRead,
+    );
+    const lane = present(s.lanes[0], suffix);
+    expect([
+      lane.builds,
+      lane.linkers,
+      lane.rustc,
+      lane.cargo,
+      lane.tests,
+      lane.sccache,
+    ]).toEqual([null, null, null, null, null, null]);
+    const summary = buildsSummary(s, c);
+    expect([summary.builds, summary.linkers, summary.lanes]).toEqual([
+      null,
+      null,
+      null,
+    ]);
+    expect(
+      summary.rows.map((row) => [row.id, row.builds, row.linkers]),
+    ).toEqual([
+      [lane.id, null, null],
+      ["", null, null],
+    ]);
+    s.lanes = [];
+    expect(
+      laneBuilds(s, c).map((row) => [row.id, row.builds, row.linkers]),
+    ).toEqual([["", null, null]]);
+  }
+});
 
 const c = defaults();
 /** Two lanes compiling, one of them linking, plus a build outside every lane. */
@@ -52,17 +184,41 @@ test("the per lane rows sum to the fleet total the Overview meter shows", () => 
   const s = building();
   const summary = buildsSummary(s, c);
   const meter = meters(s, c).find((m) => m.id === "builds");
-  expect(summary.builds).toBe(buildLoad(s, c).builds);
+  expect(summary.builds).toEqual(buildLoad(s, c).builds);
   expect(meter?.values.builds).toBe(summary.builds);
   expect(meter?.values.linkers).toBe(summary.linkers);
   expect(summary.cores).toBe(32);
-  expect(summary.rows.reduce((n, row) => n + row.builds, 0)).toBe(
-    summary.builds,
-  );
-  expect(summary.rows.reduce((n, row) => n + row.linkers, 0)).toBe(
-    summary.linkers,
-  );
+  expect(
+    summary.rows.reduce(
+      (n, row) => n + present(row.builds ?? undefined, "row builds"),
+      0,
+    ),
+  ).toBe(present(summary.builds ?? undefined, "fleet build count"));
+  expect(
+    summary.rows.reduce(
+      (n, row) => n + present(row.linkers ?? undefined, "row linkers"),
+      0,
+    ),
+  ).toBe(present(summary.linkers ?? undefined, "fleet linker count"));
 });
+
+test.each([
+  { failed: false, expected: 0 },
+  { failed: true, expected: null },
+])(
+  "build summary counts preserve a failed process read: $failed",
+  ({ failed, expected }) => {
+    const s = emptySnapshot();
+    if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    s.processRead = failed ? "incomplete" : "complete";
+    const summary = buildsSummary(s, c);
+    expect([summary.builds, summary.linkers, summary.lanes]).toEqual([
+      expected,
+      expected,
+      expected,
+    ]);
+  },
+);
 
 test("linkers are counted and named apart from the compilers in each lane", () => {
   const rows = laneBuilds(building(), c);

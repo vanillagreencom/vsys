@@ -3,6 +3,7 @@ import type { Config } from "../config/config";
 import { escaped } from "./lanes";
 import { laneText } from "./naming";
 import type { Alert, Rule, Snapshot } from "./types";
+import { memoryHighJudgments } from "./verdict";
 
 /** Rules emit transitions, with sustained pressure measured in wall time. */
 export class AlertEngine {
@@ -41,11 +42,13 @@ export class AlertEngine {
         `${laneText(l)} has a memory cap below ${c.memoryFloor} bytes`,
       );
     }
-    for (const g of s.groups) {
+    for (const { subject: g, judged } of memoryHighJudgments(s.groups)) {
+      const key = `memory-high:${g.path}`;
+      if (judged === "unjudged" && this.active.has(key)) next.add(key);
       hit(
         "memory-high",
         g.path,
-        g.memory !== null && g.high !== null && g.memory >= g.high * 0.9,
+        judged === "fired",
         `${g.name} is near memory.high`,
       );
       for (const [kind, p] of Object.entries(g.pressure)) {

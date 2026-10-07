@@ -21,6 +21,7 @@ import {
   verdictLine,
 } from "./attention";
 import { wrapLines } from "./columns";
+import { gap } from "./format";
 
 const base = ["/usr/bin", "/bin"];
 /**
@@ -542,6 +543,39 @@ test("counted nouns in the meters and the cards are singular at one", () => {
   s.procs.push(processSnapshot({ pid: 2, build: "mold", group: "/b.scope" }));
   expect(builds().detail).toBe("2 linkers · 2 lanes");
 });
+
+test.each([
+  { reading: "empty", source: null, value: "0", detail: "0 linkers · 0 lanes" },
+  {
+    reading: "directory unread",
+    source: "",
+    value: gap,
+    detail: `${gap} · ${gap}`,
+  },
+  {
+    reading: "process omitted",
+    source: "/40",
+    value: gap,
+    detail: `${gap} · ${gap}`,
+  },
+])(
+  "build tile preserves $reading counts in every field",
+  ({ source, value, detail }) => {
+    const c = defaults();
+    const s = emptySnapshot();
+    if (source !== null)
+      s.errors = [{ source: `${c.procRoot}${source}`, message: "EACCES" }];
+    s.processRead = source === null ? "complete" : "incomplete";
+    const tile = meterTile(present(meters(s, c)[3], "builds meter"), s, c);
+    expect(tile.value).toBe(`${value} of ${s.system.cores} cores`);
+    expect(tile.detail).toBe(detail);
+    expect(tile.facts.slice(0, 3).map(([, text]) => text)).toEqual([
+      `${value} of ${s.system.cores} cores`,
+      value,
+      value,
+    ]);
+  },
+);
 
 test("source read failures are not a machine problem and raise no card", () => {
   const c = defaults();

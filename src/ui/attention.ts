@@ -850,15 +850,22 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
       ],
     };
   }
+  const tally = (n: number | null | undefined, noun?: string) =>
+    n === null || n === undefined
+      ? unread(s)
+      : noun === undefined
+        ? String(n)
+        : count(n, noun);
+  const builds = `${tally(v.builds)} of ${tally(v.cores)} cores`;
   return {
     label: "Builds",
-    value: `${v.builds ?? 0} of ${v.cores ?? 0} cores`,
-    detail: `${count(v.linkers ?? null, "linker")} · ${count(v.lanes ?? null, "lane")}`,
+    value: builds,
+    detail: `${tally(v.linkers, "linker")} · ${tally(v.lanes, "lane")}`,
     level,
     facts: [
-      ["Compile and link", `${v.builds ?? 0} of ${v.cores ?? 0} cores`],
-      ["Linkers", String(v.linkers ?? 0)],
-      ["Lanes building", String(v.lanes ?? 0)],
+      ["Compile and link", builds],
+      ["Linkers", tally(v.linkers)],
+      ["Lanes building", tally(v.lanes)],
       ["Busiest agent", who("")],
     ],
   };

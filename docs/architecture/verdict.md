@@ -14,9 +14,10 @@ A second detector lets a tile and a card disagree about one machine. One ranking
 
 - Do add a cause to `CauseId`, `causeOrder` and `causeEvidence` together. The two tables are records over `CauseId`, so the type check refuses a cause one of them lacks.
 - Do say in `causeEvidence` whether a cause is a level, which must hold before it alerts, or an event, which alerts on the sample that shows it. The event log reads it ([history.md](history.md)).
+- Do judge memory high once through `memoryHighJudgments()` in `src/model/verdict.ts`. The cause, event log and notifications use that judgment. A failed limit read keeps an active alert; a measured unlimited limit clears it. `src/model/alerts.test.ts` checks both alert consumers across failed reads and recovery.
 - Do make a cause's `lanes`, `groups` and `paths` its subjects, each its own alert. `at` names where a card lands without making that row a subject.
 - Do name a cgroup through `consumerName()`: the lane name where the group is a lane, otherwise the decoded unit name.
-- Do read agent lanes through `agentLanes()` and the agents' total through `agentTotal()`. Where the probe found no agent slice the total sums the agent lanes and stays unknown while any of them is unreported.
+- Do read agent lanes through `agentLanes()` and the agents' total through `agentTotal()`. Where the probe found no agent slice, sum measured agent cgroups without overlapping their subtrees, then add uncovered process sums. An uncovered unknown or an incomplete process read keeps the total unknown. `src/model/verdict.test.ts` checks nested groups, process fallbacks and unknown readings through the Home meters and Timeline points.
 - Do raise a card for every integrity state but `healthy` and `checking`, reading `integrities()` in `src/model/integrity.ts`, so Home never reads healthy while Storage reads otherwise. `src/model/verdict.test.ts` drives one snapshot per state.
 - Do end every card with a next step, and never offer a command carrying an unresolved value. `src/ui/attention.test.ts` checks every cause.
 - Never make a housekeeping cause the verdict, and never raise a card for a source read failure or for a recorded event alone. `src/model/verdict.test.ts` and `src/ui/attention.test.ts` check both.

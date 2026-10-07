@@ -5,6 +5,72 @@ import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
 import { cacheDetail, cacheLevel, cacheText } from "./builds-screen";
+import { gap } from "./format";
+
+test("Builds rows show unknown counts for a partially read lane and unowned processes", async () => {
+  const s = emptySnapshot();
+  s.processRead = "incomplete";
+  s.lanes = [
+    laneSnapshot({ name: "partial-build", builds: null, linkers: null }),
+  ];
+  const t = await mount(s, defaults(), { width: 220, height: 35 });
+  try {
+    await t.press("4");
+    for (const name of ["partial-build", "outside the watched lanes"]) {
+      const row = present(
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes(name)),
+        name,
+      );
+      expect(row.match(new RegExp(gap, "g"))?.length).toBeGreaterThanOrEqual(2);
+      expect(row).not.toContain("null");
+    }
+  } finally {
+    await t.close();
+  }
+});
+
+test.each([{ failed: false }, { failed: true }])(
+  "Builds empty state preserves process read failure: $failed",
+  async ({ failed }) => {
+    const c = defaults();
+    const s = emptySnapshot();
+    if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    s.processRead = failed ? "incomplete" : "complete";
+    const t = await mount(s, c, { width: 220, height: 30 });
+    try {
+      await t.press("4");
+      const lines = t.frame().split("\n");
+      const heading = lines.findIndex((line) =>
+        line.includes("Lanes building"),
+      );
+      expect(heading).toBeGreaterThan(-1);
+      const emptyState = lines.slice(heading + 1, -2).join("\n");
+      expect(emptyState.includes(gap)).toBe(failed);
+      const tiles = lines.findIndex((line) =>
+        line.includes("Compile and link"),
+      );
+      expect(tiles).toBeGreaterThan(-1);
+      const start = present(lines[tiles], "tile headings").indexOf(
+        "Compile and link",
+      );
+      const end = present(lines[tiles], "tile headings").indexOf("Cache hits");
+      expect(end).toBeGreaterThan(start);
+      const value = present(lines[tiles + 1], "build count")
+        .slice(start, end)
+        .trim();
+      const detail = present(lines[tiles + 2], "build detail")
+        .slice(start, end)
+        .trim();
+      expect(value).toBe(`${failed ? gap : "0"} of ${s.system.cores} cores`);
+      expect(detail).toBe(failed ? `${gap} · ${gap}` : "0 linkers · 0 lanes");
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 test.each([
   { selected: "beta", removed: "alpha", expected: "beta", moves: 1 },
