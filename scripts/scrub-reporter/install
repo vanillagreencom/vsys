@@ -160,7 +160,7 @@ The reporter is installed and will run after the next scrub. Could not create $s
 		dest="$scrub_dir/$name"
 		[[ -e $dest ]] && continue
 		tmp="$scrub_dir/.migrate.$name.tmp"
-		cp -- "$report" "$tmp" 2>/dev/null ||
+		{ cp -- "$report" "$tmp" && chmod 0644 -- "$tmp"; } 2>/dev/null ||
 			die "legacy-migrate=copy-failed report=$report
 The reporter is installed and will run after the next scrub. Could not carry $report over into $scrub_dir, so it stays in $LEGACY_SCRUB_DIR until a reboot clears it."
 		mv -n -- "$tmp" "$dest" 2>/dev/null || true

@@ -101,6 +101,32 @@ def parse(report: Path, home: Path) -> dict:
 
 
 class ReporterTest(unittest.TestCase):
+    def test_report_replacement_keeps_other_user_read_permission(self) -> None:
+        for mask in (0o022, 0o077):
+            with self.subTest(umask=oct(mask)), scratch() as tmp:
+                base = Path(tmp)
+                bin_dir = base / "bin"
+                bin_dir.mkdir()
+                fixture = base / "smart.txt"
+                fixture.write_text(NVME)
+                stub(bin_dir, "smartctl", f'cat "{fixture}"\n')
+                sys_block = base / "block"
+                (sys_block / "nvme0n1" / "device").mkdir(parents=True)
+                reports = base / "reports"
+                reports.mkdir()
+                reports.chmod(0o755)
+                report = reports / "nvme0n1.txt"
+                report.write_text("old report\n")
+                report.chmod(0o644)
+                done = subprocess.run(
+                    [bash(), str(REPORTER / "vsys-smart-report"), str(reports)],
+                    env={"PATH": f"{bin_dir}:/usr/bin:/bin", "LC_ALL": "C", "SYS_BLOCK": str(sys_block)},
+                    umask=mask, capture_output=True, text=True, check=False, timeout=10,
+                )
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(report.read_text(), NVME)
+                self.assertEqual(stat.S_IMODE(report.stat().st_mode), 0o644)
+
     def test_each_drive_gets_one_whole_report_and_nothing_else_does(self) -> None:
         with scratch() as tmp:
             base = Path(tmp)
