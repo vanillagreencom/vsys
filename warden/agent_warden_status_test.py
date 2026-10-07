@@ -1,7 +1,11 @@
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
+import re
 import unittest
+from unittest.mock import patch
 
 from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, WardenStateMixin, clean_env, default_tool_exe, load_warden, scratch
 
@@ -126,6 +130,93 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
 
     def test_status_writer_uses_rename_and_mode(self):
         self.assertTrue(self.status_writer_is_atomic(self.w))
+
+    def test_memory_notice_reports_scope_soft_cap(self):
+        with scratch() as tmp:
+            old = self.point_status_state(self.w, Path(tmp))
+            try:
+                lane = self.write_status_cgroup(self.w, lane_memory=str(48 * 1024**3))
+                for raw, expected in ((str(128 * 1024**3), [48, 128]), ("max", [48]),
+                                      ("invalid", [48]), (None, [48])):
+                    with self.subTest(raw=raw):
+                        limit = lane / "memory.high"
+                        if raw is None:
+                            limit.unlink()
+                        else:
+                            limit.write_text(raw)
+                        near, unknown, complete = self.w.warn_near_cap()
+                        self.assertTrue(complete)
+                        self.assertEqual(unknown, set())
+                        notice = next(text for unit, kind, text in near
+                                      if unit == lane.name and kind == "memory")
+                        self.assertEqual([int(value) for value in re.findall(r"\b\d+\b", notice)], expected)
+            finally:
+                self.restore_status_state(self.w, old)
+
+    def test_text_status_preserves_counter_knowledge(self):
+        with scratch() as tmp:
+            old = self.point_status_state(self.w, Path(tmp))
+            try:
+                self.w.STATE_DIR.mkdir()
+                rows = (
+                    ("fresh", None, False, 0),
+                    ("zero", "valid", False, 0),
+                    ("counted", "valid", False, 7),
+                    ("unknown", "unknown", False, None),
+                    ("recovered", "invalid JSON", True, None),
+                    ("malformed", "invalid JSON", False, None),
+                    ("truncated", '{"moves":', False, None),
+                    ("invalid object", '{"moves": "wrong"}', False, None),
+                    ("invalid shape", "[]", False, None),
+                )
+                for name, raw, recovered, count in rows:
+                    with self.subTest(name=name):
+                        st = self.w.default_state()
+                        for _, internal in self.w.STATUS_COUNTER_KEYS_PUBLIC:
+                            st[internal] = count if count is not None else 0
+                        st["counters_unknown"] = raw == "unknown"
+                        if raw is None:
+                            self.w.STATE.unlink(missing_ok=True)
+                        else:
+                            self.w.STATE.write_text(json.dumps(st) if raw in ("valid", "unknown") else raw)
+                        if recovered:
+                            with self.w.State():
+                                pass
+                            self.assertTrue(self.w.read_state_unlocked()["counters_unknown"])
+                        before = self.w.STATE.read_bytes() if self.w.STATE.exists() else None
+                        counters = self.w.status_counters(self.w.read_state_unlocked())
+                        self.assertEqual(set(counters.values()), {count})
+                        for _ in range(2):
+                            output = io.StringIO()
+                            with patch.object(self.w, "scan", return_value={}), \
+                                    patch.object(self.w, "notifier_fresh", return_value=False), \
+                                    contextlib.redirect_stdout(output):
+                                self.assertEqual(self.w.status(), 0)
+                            values = [int(value) for value in re.findall(r"\b\d+\b", output.getvalue().splitlines()[0])]
+                            self.assertEqual(values, [] if count is None else [count] * len(counters))
+                            after = self.w.STATE.read_bytes() if self.w.STATE.exists() else None
+                            self.assertEqual(after, before)
+            finally:
+                self.restore_status_state(self.w, old)
+
+    def test_failed_state_read_zero_mutants_fail(self):
+        text = WARDEN.read_text()
+        rows = (
+            ("invalid object", '    if raw is None:\n        raise ValueError("invalid state")\n',
+             '    if raw is None:\n        return default_state()\n'),
+            ("malformed", '    except Exception:  # noqa: BLE001\n        return {**default_state(), "counters_unknown": True}\n',
+             '    except Exception:  # noqa: BLE001\n        return default_state()\n'),
+        )
+        for name, old, replacement in rows:
+            with self.subTest(name=name):
+                self.assertEqual(text.count(old), 1)
+                mutant = self.load_mutant(text.replace(old, replacement), "agent_warden_failed_state_zero")
+                case = AgentWardenStatusRules("test_text_status_preserves_counter_knowledge")
+                result = unittest.TestResult()
+                with patch.object(AgentWardenStatusRules, "w", mutant):
+                    case.run(result)
+                self.assertEqual(result.errors, [])
+                self.assertTrue(any(test.params.get("name") == name for test, _ in result.failures))
 
     def test_status_writer_handles_short_writes(self):
         with scratch() as tmp:
