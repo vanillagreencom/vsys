@@ -76,6 +76,7 @@ for path in "$sys"/*; do
 	# KILL 5s later if it is still running; what it wrote before that is the
 	# report, and a cut-off report also reads as lifetime writes unknown.
 	timeout -k 5 -- "$smartctl_timeout" smartctl -i -A "/dev/$name" >"$tmp" 2>&1 || true
+	chmod 0644 -- "$tmp"
 	mv -f -- "$tmp" "$dir/$name.txt"
 	tmp=""
 done

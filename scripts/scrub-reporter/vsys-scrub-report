@@ -61,6 +61,7 @@ fi
 } >"$tmp"
 
 finish() {
+	chmod 0644 -- "$tmp"
 	mv -- "$tmp" "$out"
 	echo "$summary"
 	exit 0

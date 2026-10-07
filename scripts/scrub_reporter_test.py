@@ -277,7 +277,8 @@ esac
         return bin_dir
 
     def run_reporter(
-        self, base: Path, status_text: str, kernel: str | None, device_stats: str | None = DEVICE_STATS, **env: str
+        self, base: Path, status_text: str, kernel: str | None, device_stats: str | None = DEVICE_STATS,
+        *, umask: int = -1, **env: str
     ) -> tuple[subprocess.CompletedProcess[str], Path]:
         bin_dir = base / "bin" if (base / "bin").exists() else self.fixture(base, status_text, kernel, device_stats)
         reports = base / "reports"
@@ -288,8 +289,24 @@ esac
             text=True,
             check=False,
             start_new_session=True,
+            umask=umask,
         )
         return done, reports / "-.result"
+
+    def test_report_replacement_keeps_other_user_read_permission(self) -> None:
+        for mask in (0o022, 0o077):
+            with self.subTest(umask=oct(mask)), scratch() as tmp:
+                base = Path(tmp)
+                reports = base / "reports"
+                reports.mkdir()
+                reports.chmod(0o755)
+                report = reports / "-.result"
+                report.write_text("old report\n")
+                report.chmod(0o644)
+                done, report = self.run_reporter(base, STATUS_CLEAN, None, umask=mask)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn(STATUS_CLEAN, report.read_text())
+                self.assertEqual(stat.S_IMODE(report.stat().st_mode), 0o644)
 
     def test_each_address_lists_only_names_proved_to_be_of_its_damage(self) -> None:
         kernel = "\n".join(fixup("vsys-test-a", a) for a in (EMPTY, NO_EXTENT, NAMED, UNMOUNTED, SPLIT, NAMED))
@@ -522,6 +539,7 @@ class InstallTest(unittest.TestCase):
         report_conf: str | None = None,
         cp_stub: str = "",
         mv_stub: str = "",
+        umask: int = -1,
     ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         """version=None leaves VSYS_VERSION unset, so install resolves the tag
         itself from the stubbed GitHub API, the same lookup install.sh uses.
@@ -602,8 +620,27 @@ esac
             capture_output=True,
             text=True,
             check=False,
+            umask=umask,
         )
         return done, calls.read_text().splitlines()
+
+    def test_migrated_report_keeps_other_user_read_permission(self) -> None:
+        for mask in (0o022, 0o077):
+            with self.subTest(umask=oct(mask)), scratch() as tmp:
+                base = Path(tmp)
+                legacy = base / "legacy"
+                legacy.mkdir()
+                source = legacy / "-.result"
+                source.write_text(STATUS_CLEAN)
+                source.chmod(0o644)
+                reports = base / "reports"
+                reports.mkdir()
+                reports.chmod(0o755)
+                done, _ = self.run_install(base, legacy_dir=legacy, scrub_dir=reports, umask=mask)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                report = reports / source.name
+                self.assertEqual(report.read_text(), STATUS_CLEAN)
+                self.assertEqual(stat.S_IMODE(report.stat().st_mode), 0o644)
 
     def test_the_installer_puts_each_file_where_systemd_reads_it(self) -> None:
         with scratch() as tmp:
