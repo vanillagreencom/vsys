@@ -1,0 +1,1 @@
+- The AUR publish script no longer reads the maintainer's `~/.ssh/config`, so a `Host` block there cannot change how the push reaches the AUR.
