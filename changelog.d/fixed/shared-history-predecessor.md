@@ -1,0 +1,1 @@
+- Keep lane starts, lane stops and process moves in shared history after another dashboard saves a sample or vsys restarts.

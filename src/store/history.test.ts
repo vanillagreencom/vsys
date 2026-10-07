@@ -11,8 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaults } from "../config/config";
-import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  fixture,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { History, Ring } from "./history";
+import { point } from "./point";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -122,32 +128,68 @@ test("SQLite reopens full process snapshots and alert history", () => {
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
 });
-test("another dashboard cannot replace a recorded timestamp or advance events with it", () => {
-  const f = fixture();
-  cleanup.push(f.cleanup);
-  f.config.persistence = true;
-  const first = new History(f.config);
-  cleanup.push(() => first.close());
-  const second = new History(f.config);
-  cleanup.push(() => second.close());
-  const time = Date.now();
-  const original = emptySnapshot(time);
-  original.lanes = [laneSnapshot()];
-  second.add(emptySnapshot(time - 2));
-  first.add(emptySnapshot(time - 1));
-  first.add(original);
-  const collision = emptySnapshot(time);
-  collision.lanes = [laneSnapshot({ id: "collision.scope" })];
-  expect(() => second.add(collision)).not.toThrow();
-  const reader = new History(f.config);
-  cleanup.push(() => reader.close());
-  expect(reader.at(time)).toEqual(original);
-  expect(reader.events(time, 10)).toEqual(first.events(time, 10));
-  expect(second.at(time)).toEqual(original);
-  expect(second.window(time, 10).map((p) => p.time)).toEqual([time - 2]);
-  second.add(emptySnapshot(time + 1));
-  expect(second.events(time + 1, 1)).toEqual([]);
-});
+for (const resume of ["collision", "foreign append", "restart", "reconfigure"])
+  test(`snapshot events follow the stored predecessor after ${resume}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    f.config.persistence = true;
+    const first = new History(f.config);
+    cleanup.push(() => first.close());
+    const second = new History(f.config);
+    cleanup.push(() => second.close());
+    const time = Date.now();
+    const original = emptySnapshot(time);
+    original.lanes = [laneSnapshot()];
+    original.procs = [processSnapshot({ group: "agents.slice/before.scope" })];
+    second.add(emptySnapshot(time - 2));
+    first.add(emptySnapshot(time - 1));
+    first.add(original);
+    if (resume === "collision") {
+      const collision = emptySnapshot(time);
+      collision.lanes = [laneSnapshot({ id: "collision.scope" })];
+      expect(() => second.add(collision)).not.toThrow();
+      expect(second.events(time, 10)).toEqual([]);
+      expect(second.window(time, 10).map((p) => p.time)).toEqual([time - 2]);
+    }
+    const reader = new History(f.config);
+    cleanup.push(() => reader.close());
+    expect(reader.at(time)).toEqual(original);
+    expect(reader.events(time, 10)).toEqual(first.events(time, 10));
+    expect(second.at(time)).toEqual(original);
+    const writer =
+      resume === "restart"
+        ? reader
+        : resume === "reconfigure"
+          ? second.reconfigure({ ...f.config, refreshMs: 2000 })
+          : second;
+    if (resume === "reconfigure") cleanup.push(() => writer.close());
+    const stopped = emptySnapshot(time + 1);
+    stopped.procs = [processSnapshot({ group: "agents.slice/after.scope" })];
+    writer.add(stopped);
+    const changes = writer.events(time + 1, 0);
+    expect(changes.map((event) => event.kind)).toEqual([
+      "lane-stop",
+      "cgroup-move",
+    ]);
+    expect(changes.find((event) => event.kind === "lane-stop")?.subjectId).toBe(
+      laneSnapshot().id,
+    );
+    expect(
+      changes.find((event) => event.kind === "cgroup-move")?.names,
+    ).toMatchObject({
+      from: "agents.slice/before.scope",
+      to: "agents.slice/after.scope",
+    });
+    const persisted = new History(f.config);
+    cleanup.push(() => persisted.close());
+    expect(persisted.events(time + 1, 0)).toEqual(changes);
+    expect(persisted.window(time + 1, 10).map((p) => p.time)).toEqual([
+      time - 2,
+      time - 1,
+      time,
+      time + 1,
+    ]);
+  });
 test("a stored lane written before this build's fields loads with unknown values", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
@@ -631,11 +673,13 @@ async function otherDashboard(
     `import { Database } from "bun:sqlite";
 declare const self: Worker;
 self.onmessage = (event) => {
-  const { path, time, holdMs, signal } = event.data;
+  const { path, snapshot, recorded, holdMs, signal } = event.data;
   const flags = new Int32Array(signal);
   const db = new Database(path);
   db.exec("BEGIN IMMEDIATE");
-  db.query("INSERT INTO samples VALUES (?, x'00', '{}')").run(time);
+  db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
+    snapshot.time, Bun.gzipSync(JSON.stringify(snapshot)), JSON.stringify(recorded),
+  );
   postMessage("locked");
   Atomics.wait(flags, 0, 0);
   Atomics.wait(flags, 1, 0, holdMs);
@@ -659,7 +703,14 @@ self.onmessage = (event) => {
     Atomics.notify(flags, index);
   };
   const locked = next();
-  worker.postMessage({ path, time, holdMs, signal: flags.buffer });
+  const snapshot = emptySnapshot(time);
+  worker.postMessage({
+    path,
+    snapshot,
+    recorded: point(snapshot, defaults()),
+    holdMs,
+    signal: flags.buffer,
+  });
   expect(await locked).toBe("locked");
   const released = next();
   return {

@@ -239,7 +239,8 @@ export class History {
     if (newest !== undefined && s.time <= newest) return;
     const json = JSON.stringify(s);
     const cutoff = s.time - this.c.historyHours * 3600000;
-    const record = () => point(s, this.c, this.eventLog.advance(s, this.c));
+    const record = (previous?: Snapshot | null) =>
+      point(s, this.c, this.eventLog.advance(s, this.c, previous));
     const db = this.db;
     const p = db
       ? db
@@ -253,7 +254,23 @@ export class History {
               )
               .get()?.time;
             if (latest !== undefined && s.time <= latest) return null;
-            const p = record();
+            // The snapshot predecessor belongs to the shared database, even
+            // after a collision or a restart. Keep alert watch clocks local;
+            // another dashboard can use different thresholds and hold times.
+            let previous: Snapshot | null | undefined;
+            if (latest === undefined) previous = null;
+            else if (this.eventLog.previousTime !== latest) {
+              const row = db
+                .query<{ data: Uint8Array }, [number]>(
+                  "SELECT data FROM samples WHERE time = ?",
+                )
+                .get(latest);
+              if (!row) throw new Error("Stored predecessor disappeared");
+              previous = normalizeSnapshot(
+                JSON.parse(History.decodeRow(row.data)) as Snapshot,
+              );
+            }
+            const p = record(previous);
             db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
               s.time,
               Bun.gzipSync(json),

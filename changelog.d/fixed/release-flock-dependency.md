@@ -1,0 +1,1 @@
+- Refuse release installation when util-linux flock is missing, so filesystem error times can survive a restart.

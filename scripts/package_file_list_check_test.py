@@ -339,7 +339,7 @@ class InstallScript(unittest.TestCase):
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         (self.root / "SHA256SUMS").write_text(f"{digest}  {self.asset}\n")
 
-    def write_curl_stub(self) -> Path:
+    def write_curl_stub(self, missing: tuple[str, ...] = ()) -> Path:
         commands = self.root / "commands"
         commands.mkdir(exist_ok=True)
         curl = commands / "curl"
@@ -391,14 +391,24 @@ class InstallScript(unittest.TestCase):
                 f"exec {system_rm} \"$@\"\n"
             )
             rm.chmod(0o755)
+        # install.sh and tar's gzip child use only this directory, so the
+        # missing-command case cannot find flock through the host's PATH.
+        for name in ("bash", "uname", "flock", "sha256sum", "cut", "mkdir", "mktemp",
+                     "rm", "dirname", "install", "find", "cp", "chmod", "mv", "sed",
+                     "head", "tar", "gzip"):
+            if name in missing or (commands / name).exists():
+                continue
+            found = shutil.which(name)
+            if found is None:
+                raise AssertionError(f"{name}=missing: the release installer needs it")
+            (commands / name).symlink_to(found)
         return commands
 
-    def run_install(self) -> subprocess.CompletedProcess[str]:
-        commands = self.write_curl_stub()
+    def run_install(self, *, missing: tuple[str, ...] = (), installer: Path = INSTALL) -> subprocess.CompletedProcess[str]:
+        commands = self.write_curl_stub(missing)
         env = {
-            **os.environ,
             "HOME": str(self.root / "home"),
-            "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+            "PATH": str(commands),
             "VSYS_INSTALL_DIR": str(self.bin_dir),
             "VSYS_VERSION": self.version,
             "XDG_CACHE_HOME": str(self.cache),
@@ -410,7 +420,7 @@ class InstallScript(unittest.TestCase):
 
             preexec_fn = set_umask
         return subprocess.run(
-            ["bash", str(INSTALL)],
+            [str(commands / "bash"), str(installer)],
             env=env,
             capture_output=True,
             text=True,
@@ -461,6 +471,35 @@ class InstallScript(unittest.TestCase):
         result = self.run_install()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
+        self.assert_full_warden_tree_installed()
+
+    def test_missing_flock_refuses_before_changing_files(self) -> None:
+        self.make_archive("full")
+        self.bin_dir.mkdir(parents=True)
+        binary = self.bin_dir / "vsys"
+        binary.write_text("old binary\n")
+        warden = self.lib_root() / "warden" / "agent-warden"
+        warden.parent.mkdir(parents=True)
+        warden.write_text("old warden\n")
+        result = self.run_install(missing=("flock",))
+        self.assertEqual(self.refusal(result), "vsys install: command=flock missing")
+        self.assertEqual(binary.read_text(), "old binary\n")
+        self.assertEqual(warden.read_text(), "old warden\n")
+        self.assertFalse(self.cache.exists())
+        self.assertEqual(sorted(path.name for path in self.bin_dir.iterdir()), ["vsys"])
+
+        # Removing the dependency check from a private script admits the
+        # same host and replaces the files. This proves the refusal above.
+        source = INSTALL.read_text()
+        start = source.index("if ! command -v flock ")
+        end = source.index("\nfi\n", start) + len("\nfi\n")
+        self.assertEqual(source.count("if ! command -v flock "), 1)
+        broken = self.root / "install-without-flock-check.sh"
+        broken.write_text(source[:start] + source[end:])
+        self.assertNotEqual(broken.read_text(), source)
+        admitted = self.run_install(missing=("flock",), installer=broken)
+        self.assertEqual(admitted.returncode, 0, admitted.stderr)
+        self.assertEqual(binary.read_text(), "full binary\n")
         self.assert_full_warden_tree_installed()
 
     def test_restrictive_umask_keeps_shared_warden_modes(self) -> None:
