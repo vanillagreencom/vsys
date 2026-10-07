@@ -79,7 +79,7 @@ else
 fi
 known_hosts="${repo_root}/packaging/aur-known-hosts"
 [ -f "$known_hosts" ] || fail "No pinned host keys at ${known_hosts}"
-export GIT_SSH_COMMAND="ssh -i '${key}' -o IdentitiesOnly=yes -o UserKnownHostsFile='${known_hosts}' -o StrictHostKeyChecking=yes -o User=aur"
+export GIT_SSH_COMMAND="ssh -F /dev/null -i '${key}' -o IdentitiesOnly=yes -o UserKnownHostsFile='${known_hosts}' -o StrictHostKeyChecking=yes -o User=aur"
 git clone "ssh://aur@aur.archlinux.org/${pkgname}.git" "${work}/pkg"
 cp "$recipe" "${work}/pkg/PKGBUILD"
 cd "${work}/pkg"
