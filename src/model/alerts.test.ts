@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
+import { EventLog } from "../store/events";
 import {
   emptySnapshot,
   groupSnapshot,
@@ -8,6 +9,73 @@ import {
 } from "../test/fixture";
 import { AlertEngine } from "./alerts";
 import type { Rule } from "./types";
+import { unjudged } from "./verdict";
+
+test("memory-high alerts survive failed reads and rearm only after measured recovery", () => {
+  for (const quiet of [
+    { high: null, memory: null },
+    { high: 100, memory: 50 },
+  ]) {
+    const c = { ...defaults(), pressureHoldSeconds: 2, refreshMs: 1000 };
+    const engine = new AlertEngine();
+    const log = new EventLog();
+    const group = groupSnapshot({ memory: 95, high: 100 });
+    const at = (time: number, reading: Partial<typeof group>) => {
+      Object.assign(group, reading);
+      const s = emptySnapshot(time);
+      s.groups = [group];
+      return {
+        unread: unjudged(s, c)["memory-high"]?.has(group.path) ?? false,
+        events: log
+          .advance(s, c)
+          .filter(
+            (event) =>
+              event.cause === "memory-high" && event.kind.startsWith("alert-"),
+          )
+          .map((event) => event.kind),
+        notifications: engine
+          .evaluate(s, c)
+          .filter((alert) => alert.rule === "memory-high")
+          .map((alert) => alert.subject),
+      };
+    };
+    expect(at(0, {}).notifications).toEqual([group.path]);
+    expect(at(1000, {}).events).toEqual([]);
+    expect(at(2000, {}).events).toEqual(["alert-open"]);
+    // Reader.limit supplies highRead=false when memory.high cannot be read.
+    for (const time of [3000, 4000, 5000])
+      expect(at(time, { high: null, highRead: false })).toEqual({
+        unread: true,
+        events: [],
+        notifications: [],
+      });
+    expect(at(6000, { high: 100, highRead: true })).toEqual({
+      unread: false,
+      events: [],
+      notifications: [],
+    });
+    expect(at(7000, quiet)).toEqual({
+      unread: false,
+      events: [],
+      notifications: [],
+    });
+    expect(at(8000, quiet)).toEqual({
+      unread: false,
+      events: ["alert-close"],
+      notifications: [],
+    });
+    expect(at(9000, quiet)).toEqual({
+      unread: false,
+      events: [],
+      notifications: [],
+    });
+    expect(at(10000, { high: 100, memory: 95 }).notifications).toEqual([
+      group.path,
+    ]);
+    expect(at(11000, {}).events).toEqual([]);
+    expect(at(12000, {}).events).toEqual(["alert-open"]);
+  }
+});
 
 test("each alert condition emits its own rule and clears before rearming", () => {
   const cases: [Rule, (s: ReturnType<typeof emptySnapshot>) => void][] = [

@@ -188,7 +188,6 @@ export function lanes(
    */
   const socket = tmux?.socket ?? "";
   const own = tmux?.own ?? "";
-  const covered = new Set<number>();
   const result: Lane[] = [];
   const compared = sliceCompared(capabilities);
   // An escaped agent is worth a lane, and so is every agent where there is no
@@ -196,15 +195,74 @@ export function lanes(
   const agentLane = (p: Proc) =>
     escaped(p, c, capabilities) || (!compared && p.tool !== null);
   const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const descendants = (group: Group) =>
+    groups.filter(
+      (g) =>
+        group.path === "." ||
+        g.path === group.path ||
+        g.path.startsWith(`${group.path}/`),
+    );
+  const groupMembers = (group: Group) => {
+    const pids = new Set(descendants(group).flatMap((g) => g.pids));
+    const members: Proc[] = [];
+    for (const pid of pids) {
+      const p = byPid.get(pid);
+      if (
+        p &&
+        (!group.kernelPath ||
+          group.kernelPath === "/" ||
+          p.group === group.kernelPath ||
+          p.group.startsWith(`${group.kernelPath}/`))
+      )
+        members.push(p);
+    }
+    return members;
+  };
+  const candidates: { id: string; members: Proc[]; group?: Group }[] = [];
+  for (const group of groups.filter((g) => g.name.endsWith(".scope"))) {
+    const members = groupMembers(group);
+    if (
+      c.watchedSlices.some((s) => inSlice(group.path, s)) ||
+      dangerousCap(group, groups, c.memoryFloor) ||
+      members.some(agentLane)
+    )
+      candidates.push({ id: group.path, members, group });
+  }
+  const scoped = new Set(
+    candidates.flatMap((candidate) => candidate.members.map((p) => p.pid)),
+  );
+  for (const proc of procs.filter((p) => agentLane(p) && !scoped.has(p.pid))) {
+    if (candidates.some((candidate) => candidate.id === proc.group)) continue;
+    const group = groups.find(
+      (g) => (g.kernelPath ?? `/${g.path}`) === proc.group,
+    );
+    candidates.push({
+      id: proc.group,
+      group,
+      members: procs.filter(
+        (p) =>
+          p.group === proc.group ||
+          (group &&
+            (proc.group === "/" || p.group.startsWith(`${proc.group}/`))),
+      ),
+    });
+  }
+  // The nearest lane owns a process, regardless of collection order. Group
+  // counters remain cgroup readings and are not divided between lane owners.
+  const owners = new Map<number, (typeof candidates)[number]>();
+  for (const candidate of candidates)
+    for (const p of candidate.members) {
+      const previous = owners.get(p.pid);
+      const path = candidate.group?.kernelPath ?? candidate.id;
+      const priorPath = previous?.group?.kernelPath ?? previous?.id ?? "";
+      if (!previous || path.length > priorPath.length)
+        owners.set(p.pid, candidate);
+    }
   function lane(id: string, members: Proc[], group?: Group) {
     if (!members.length && !group) return;
     const memberIndex = new Map(members.map((p) => [p.pid, p]));
     const complete = group
-      ? groups
-          .filter(
-            (g) => g.path === group.path || g.path.startsWith(`${group.path}/`),
-          )
-          .every((g) => g.pids.every((pid) => byPid.has(pid)))
+      ? descendants(group).every((g) => g.pids.every((pid) => byPid.has(pid)))
       : processRead === "complete";
     const main =
       scopeMain(group ? group.pids : members.map((p) => p.pid), memberIndex) ??
@@ -367,49 +425,13 @@ export function lanes(
         ? dangerousCap(capsGroup, groups, c.memoryFloor)
         : false,
     });
-    for (const p of members) covered.add(p.pid);
   }
-  for (const group of groups.filter((g) => g.name.endsWith(".scope"))) {
-    const pids = new Set(
-      groups
-        .filter(
-          (g) => g.path === group.path || g.path.startsWith(`${group.path}/`),
-        )
-        .flatMap((g) => g.pids),
-    );
-    const members: Proc[] = [];
-    for (const pid of pids) {
-      const p = byPid.get(pid);
-      if (
-        p &&
-        (!group.kernelPath ||
-          p.group === group.kernelPath ||
-          p.group.startsWith(`${group.kernelPath}/`))
-      )
-        members.push(p);
-    }
-    if (
-      c.watchedSlices.some((s) => inSlice(group.path, s)) ||
-      dangerousCap(group, groups, c.memoryFloor) ||
-      members.some(agentLane)
-    )
-      lane(group.path, members, group);
-  }
-  for (const proc of procs.filter((p) => agentLane(p) && !covered.has(p.pid))) {
-    if (covered.has(proc.pid)) continue;
-    const group = groups.find(
-      (g) => (g.kernelPath ?? `/${g.path}`) === proc.group,
-    );
+  for (const candidate of candidates)
     lane(
-      proc.group,
-      procs.filter(
-        (p) =>
-          p.group === proc.group ||
-          (group && p.group.startsWith(`${proc.group}/`)),
-      ),
-      group,
+      candidate.id,
+      candidate.members.filter((p) => owners.get(p.pid) === candidate),
+      candidate.group,
     );
-  }
   return result;
 }
 /** Parent IDs can disappear between samples; cycles terminate explicitly. */

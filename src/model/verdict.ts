@@ -291,6 +291,20 @@ interface Judgment<T> {
   subject: T;
   judged: Judged;
 }
+/** An unread limit cannot clear an alert; a measured unlimited limit can. */
+export function memoryHighJudgments(groups: Group[]): Judgment<Group>[] {
+  return groups.map((group) => {
+    const high = group.high;
+    return {
+      subject: group,
+      judged: !group.highRead
+        ? "unjudged"
+        : high === null
+          ? "absent"
+          : judge([group.memory], (n) => n >= high * 0.9),
+    };
+  });
+}
 /** The causes judged on one host reading, so an unread one covers every subject. */
 const hostCauses = [
   "disk",
@@ -347,18 +361,7 @@ function judgments(s: Snapshot, c: Config): Judgments {
         (n) => n > c.pressureAmber,
       ),
     })),
-    // A null limit reads the same for `max` and for a file that failed to
-    // read, so it is judged absent: no limit, nothing to come near.
-    "memory-high": s.groups.map((group) => {
-      const high = group.high;
-      return {
-        subject: group,
-        judged:
-          high === null
-            ? "absent"
-            : judge([group.memory], (n) => n >= high * 0.9),
-      };
-    }),
+    "memory-high": memoryHighJudgments(s.groups),
     scratch: s.storage.scratch.map((root) => ({
       subject: root,
       judged: judge([root.bytes], (n) => n > c.scratchQuota),

@@ -18,30 +18,111 @@ import {
   laneSnapshot,
   processSnapshot,
 } from "../test/fixture";
+import { present } from "../test/present";
+import { Archive } from "./archive";
 import { History, Ring } from "./history";
 import { normalizeSnapshot } from "./migrate";
 import { point } from "./point";
 
 const cleanup: (() => void)[] = [];
 
-test("legacy snapshots lack process totals but retain cgroup measurements", () => {
-  const s = emptySnapshot();
-  s.groups = [groupSnapshot({ cpuPercent: 0, swap: 0, tasks: 0 })];
-  s.lanes = [laneSnapshot({ builds: { rustc: 1 }, linkers: 0 })];
-  const { processRead: _outcome, ...legacy } = s;
-  const replay = normalizeSnapshot(JSON.parse(JSON.stringify(legacy)));
-  expect(replay.processRead).toBe("unknown");
-  const lane = replay.lanes[0];
-  expect([
-    lane?.rss,
-    lane?.cpu,
-    lane?.swap,
-    lane?.tasks,
-    lane?.builds,
-    lane?.linkers,
-  ]).toEqual([null, 0, 0, 0, null, null]);
-  expect(normalizeSnapshot(replay)).toEqual(replay);
-  expect(normalizeSnapshot(s)).toEqual(s);
+test("legacy replay and both chart paths share reading evidence and retain measured values", async () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const first = new History(f.config);
+  const archive = new Archive();
+  const now = Date.now();
+  const rows: {
+    legacy: boolean;
+    groupCpu: number | null;
+    cpu: number | null;
+    rss: number | null;
+    absolute?: boolean;
+  }[] = [
+    { legacy: true, groupCpu: 0, cpu: 0, rss: null },
+    { legacy: false, groupCpu: 27, cpu: 10, rss: 1024 },
+    { legacy: true, groupCpu: 27, cpu: 27, rss: null, absolute: true },
+    { legacy: true, groupCpu: null, cpu: null, rss: null },
+  ];
+  for (const [index, row] of rows.entries()) {
+    const s = emptySnapshot(now + index);
+    s.groups =
+      row.groupCpu === null
+        ? []
+        : [
+            groupSnapshot({
+              cpuPercent: row.groupCpu,
+              swap: 0,
+              tasks: 0,
+              kernelPath: "/agents.slice/a.scope",
+            }),
+          ];
+    s.lanes = [
+      laneSnapshot({
+        cpu: 10,
+        rss: 1024,
+        builds: { rustc: 1 },
+        linkers: 0,
+        cgroup: row.absolute ? "/agents.slice/a.scope" : "agents.slice/a.scope",
+      }),
+    ];
+    const { processRead: _outcome, ...legacy } = s;
+    const stored = JSON.parse(JSON.stringify(row.legacy ? legacy : s));
+    const replay = normalizeSnapshot(stored);
+    const lane = present(replay.lanes[0], "replayed lane");
+    expect([lane?.cpu, lane?.rss]).toEqual([row.cpu, row.rss]);
+    expect([lane?.swap, lane?.tasks, lane?.builds, lane?.linkers]).toEqual(
+      row.legacy
+        ? [
+            row.groupCpu === null ? null : 0,
+            row.groupCpu === null ? null : 0,
+            null,
+            null,
+          ]
+        : [0, 1, { rustc: 1 }, 0],
+    );
+    expect(normalizeSnapshot(replay)).toEqual(replay);
+    if (!row.legacy) expect(normalizeSnapshot(s)).toEqual(s);
+    archive.add(s.time, JSON.stringify(stored));
+    const archived = normalizeSnapshot(
+      present(archive.at(s.time) ?? undefined, "archived snapshot"),
+    );
+    const archivedLane = present(archived.lanes[0], "archived lane");
+    expect([archivedLane.cpu, archivedLane.rss]).toEqual([row.cpu, row.rss]);
+    expect(
+      archive
+        .laneWindows([lane.id], s.time, s.time)
+        .get(lane.id)
+        ?.map((sample) => [sample.cpu, sample.rss]),
+    ).toEqual([[row.cpu, row.rss]]);
+    first.add(stored);
+  }
+  first.close();
+  const reopened = new History(f.config);
+  cleanup.push(() => reopened.close());
+  const id = laneSnapshot().id;
+  const expected = rows.map((row) => [row.cpu, row.rss]);
+  expect(
+    rows.map((_, index) => {
+      const lane = present(
+        reopened.at(now + index)?.lanes[0],
+        "disk replayed lane",
+      );
+      return [lane?.cpu, lane?.rss];
+    }),
+  ).toEqual(expected);
+  expect(
+    archive
+      .laneWindows([id], now, now + rows.length)
+      .get(id)
+      ?.map((sample) => [sample.cpu, sample.rss]),
+  ).toEqual(expected);
+  expect(
+    (await reopened.laneWindows([id], now + rows.length, 1000))
+      .get(id)
+      ?.map((sample) => [sample.cpu, sample.rss]),
+  ).toEqual(expected);
 });
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();

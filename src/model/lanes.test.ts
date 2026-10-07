@@ -324,6 +324,57 @@ test("lane totals require every reported member, while group counters remain mea
   }
 });
 
+test("an agent at the configured root requires reported child processes", () => {
+  for (const measured of [false, true]) {
+    const root = groupSnapshot({
+      path: ".",
+      name: "agent.service",
+      kernelPath: "/app.slice/agent.service",
+      pids: [40],
+      cpuPercent: measured ? 7 : null,
+      swap: measured ? 8 : null,
+      tasks: measured ? 9 : null,
+    });
+    const child = groupSnapshot({
+      path: "child",
+      name: "child",
+      kernelPath: `${root.kernelPath}/child`,
+      pids: [41],
+    });
+    const proc = processSnapshot({
+      pid: 40,
+      group: root.kernelPath,
+      cpuPercent: 10,
+      rss: 1024,
+      swap: 20,
+      threads: 2,
+    });
+    const lane = present(
+      lanes(
+        [root, child],
+        [proc],
+        defaults(),
+        8,
+        undefined,
+        [],
+        "incomplete",
+      )[0],
+      "root lane",
+    );
+    expect([lane.rss, lane.cpu, lane.swap, lane.tasks]).toEqual(
+      measured ? [null, 7, 8, 9] : [null, null, null, null],
+    );
+    expect([
+      lane.builds,
+      lane.rustc,
+      lane.cargo,
+      lane.tests,
+      lane.linkers,
+      lane.sccache,
+    ]).toEqual([null, null, null, null, null, null]);
+  }
+});
+
 test("service lanes share scope completeness and preserve measured group counters", () => {
   const c = defaults();
   for (const suffix of ["scope", "service"]) {

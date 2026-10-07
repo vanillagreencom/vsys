@@ -64,6 +64,20 @@ export function normalizeLane(stored: Partial<Lane>): Lane {
   const lane = { ...laneUnknowns(), ...stored };
   return memberless(stored.mainPid) ? { ...lane, rss: null, age: null } : lane;
 }
+/** Snapshot replay and chart projections share the stored reading evidence. */
+export function normalizeLaneReadings(
+  stored: Pick<Lane, "cpu" | "rss" | "mainPid">,
+  processRead: unknown,
+  groupCpu: number | null,
+): Pick<Lane, "cpu" | "rss"> {
+  return {
+    cpu: processRead === undefined ? groupCpu : stored.cpu,
+    rss:
+      processRead === undefined || memberless(stored.mainPid)
+        ? null
+        : stored.rss,
+  };
+}
 /** A cache reading as a build before the query outcome stored it. */
 type StoredSccache = Omit<Sccache, "state"> & { available: boolean };
 /**
@@ -106,8 +120,11 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
       );
       return normalizeLane({
         ...lane,
-        rss: null,
-        cpu: group?.cpuPercent ?? null,
+        ...normalizeLaneReadings(
+          lane,
+          s.processRead,
+          group?.cpuPercent ?? null,
+        ),
         cpuShare:
           group?.cpuPercent == null || s.system.cores <= 0
             ? null

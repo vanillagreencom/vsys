@@ -17,7 +17,82 @@ import {
 } from "./builds";
 import { lanes } from "./lanes";
 import type { Sccache, Snapshot } from "./types";
-import { buildLoad, meters } from "./verdict";
+import { agentLanes, buildLoad, meters } from "./verdict";
+
+test("nested service lanes assign every process once and agree with fleet totals", () => {
+  for (const suffix of ["scope", "service"])
+    for (const reverse of [false, true]) {
+      const s = emptySnapshot();
+      const parent = groupSnapshot({
+        path: "app.slice/agent.service",
+        name: "agent.service",
+        kernelPath: "/app.slice/agent.service",
+        pids: [40],
+      });
+      const child = groupSnapshot({
+        path: `${parent.path}/child.${suffix}`,
+        name: `child.${suffix}`,
+        kernelPath: `${parent.kernelPath}/child.${suffix}`,
+        pids: [41, 42],
+      });
+      s.groups = reverse ? [child, parent] : [parent, child];
+      const procs = [
+        processSnapshot({
+          pid: 40,
+          group: parent.kernelPath,
+          rss: 1024,
+          build: null,
+        }),
+        processSnapshot({
+          pid: 41,
+          group: child.kernelPath,
+          rss: 2048,
+          build: null,
+        }),
+        processSnapshot({
+          pid: 42,
+          group: child.kernelPath,
+          rss: 4096,
+          build: "rustc",
+          tool: null,
+        }),
+      ];
+      s.procs = reverse ? procs.reverse() : procs;
+      s.lanes = lanes(s.groups, s.procs, c);
+      const parentLane = present(
+        s.lanes.find((lane) => lane.cgroup === parent.path),
+        "parent lane",
+      );
+      const childLane = present(
+        s.lanes.find((lane) => lane.cgroup === child.path),
+        "child lane",
+      );
+      expect(parentLane.pids).toEqual([40]);
+      expect([...childLane.pids].sort((a, b) => a - b)).toEqual([41, 42]);
+      expect([
+        parentLane.rss,
+        childLane.rss,
+        agentLanes(s.lanes).reduce(
+          (n, lane) => n + present(lane.rss ?? undefined, "agent memory"),
+          0,
+        ),
+      ]).toEqual([1024, 6144, 7168]);
+      const summary = buildsSummary(s, c);
+      expect(summary.builds).toBe(1);
+      expect(
+        summary.rows.reduce(
+          (n, row) => n + present(row.builds ?? undefined, "build count"),
+          0,
+        ),
+      ).toBe(present(summary.builds ?? undefined, "fleet build count"));
+      expect(
+        summary.rows.find((row) => row.id === parentLane.id),
+      ).toBeUndefined();
+      expect(summary.rows.find((row) => row.id === childLane.id)?.builds).toBe(
+        1,
+      );
+    }
+});
 
 test("incomplete lane membership and unowned collection keep build rows unknown", () => {
   for (const suffix of ["scope", "service"]) {
