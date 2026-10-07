@@ -52,17 +52,34 @@ test("the per lane rows sum to the fleet total the Overview meter shows", () => 
   const s = building();
   const summary = buildsSummary(s, c);
   const meter = meters(s, c).find((m) => m.id === "builds");
-  expect(summary.builds).toBe(buildLoad(s, c).builds);
+  expect(summary.builds).toEqual(buildLoad(s, c).builds);
   expect(meter?.values.builds).toBe(summary.builds);
   expect(meter?.values.linkers).toBe(summary.linkers);
   expect(summary.cores).toBe(32);
   expect(summary.rows.reduce((n, row) => n + row.builds, 0)).toBe(
-    summary.builds,
+    present(summary.builds ?? undefined, "fleet build count"),
   );
   expect(summary.rows.reduce((n, row) => n + row.linkers, 0)).toBe(
-    summary.linkers,
+    present(summary.linkers ?? undefined, "fleet linker count"),
   );
 });
+
+test.each([
+  { failed: false, expected: 0 },
+  { failed: true, expected: null },
+])(
+  "build summary counts preserve a failed process read: $failed",
+  ({ failed, expected }) => {
+    const s = emptySnapshot();
+    if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    const summary = buildsSummary(s, c);
+    expect([summary.builds, summary.linkers, summary.lanes]).toEqual([
+      expected,
+      expected,
+      expected,
+    ]);
+  },
+);
 
 test("linkers are counted and named apart from the compilers in each lane", () => {
   const rows = laneBuilds(building(), c);

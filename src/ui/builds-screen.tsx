@@ -241,8 +241,16 @@ export function Builds({
       {rows.length > 0 && <TableHeader columns={buildColumns} />}
       {!rows.length && (
         <Nothing
-          text="Nothing is compiling or linking."
-          next="A lane appears here as soon as it starts a compiler or a linker, with its process count and its linkers named."
+          text={
+            summary.builds === null
+              ? `Compile and link activity is ${gap}.`
+              : "Nothing is compiling or linking."
+          }
+          next={
+            summary.builds === null
+              ? "See Data sources for the failed process reads."
+              : "A lane appears here as soon as it starts a compiler or a linker, with its process count and its linkers named."
+          }
         />
       )}
       {rows.length > 0 && (

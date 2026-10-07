@@ -397,7 +397,7 @@ export interface Lane {
   swap: number | null;
   readRate: number | null;
   writeRate: number | null;
-  tasks: number;
+  tasks: number | null;
   rustc: number;
   cargo: number;
   tests: number;

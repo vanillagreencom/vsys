@@ -33,9 +33,9 @@ export interface CacheEffect {
   bypassed: string[];
 }
 export interface BuildsSummary {
-  builds: number;
-  linkers: number;
-  lanes: number;
+  builds: number | null;
+  linkers: number | null;
+  lanes: number | null;
   cores: number;
   rows: LaneBuilds[];
   cache: CacheEffect;
