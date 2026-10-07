@@ -850,8 +850,8 @@ def _scope_procfiles(base):
 def scope_still_orphan(unit, managers):
     """Re-read one scope's live membership straight from the cgroup tree and
     re-test it, immediately before stopping. Guards against a scope that gained
-    an attached process, or was recreated under the same name, between the scan
-    and the stop."""
+    an attached process between the scan and the stop. The caller checks the
+    directory identity around this read."""
     base = CG_ROOT / SLICE / unit
     if not base.is_dir():
         return False
@@ -917,9 +917,6 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
-# The scopes move() creates (warden_scope_name). A process in one has left the
-# agent-confine scope its TMPDIR names.
-WARDEN_MOVE_SCOPE_RE = re.compile(r"agent-warden(?:-build)?-\d+-\d+\.scope")
 
 
 def _proc_tmpdir(pid):
@@ -944,22 +941,10 @@ def _scratch_in_use(path, procs):
     "in-use" when one does, "unknown" when none does but a pid that could
     hold path has an environ that cannot be read, "free" otherwise.
     "in-use" beats "unknown": one confirmed user is enough to keep path.
-    Most unreadable pids are skipped. Non-dumpable programs (ssh-agent, op,
-    systemd --user) refuse /proc/PID/environ even to their own user, and a
-    desktop always runs some, so counting them would keep every directory
-    forever. Skipping one loses no holder while its nearest readable
-    ancestor is in procs: a child inherits its environment, so that
-    ancestor carries the same TMPDIR and is itself checked here. With no
-    readable ancestor, a pid still in its original scope cannot hold path:
-    the caller asks only about a scope that is already gone, and a scope
-    stays alive while any process in it runs. The exception is a pid in a
-    scope move() created (WARDEN_MOVE_SCOPE_RE). Such a pid has left the
-    scope its TMPDIR names, and once its agent parents exit no readable
-    ancestor is left to check. Nothing ties that pid to any one
-    directory, so it makes every gone-scope path "unknown", not just its
-    own: each such directory no readable pid holds is kept for as long as
-    that pid lives. This fail-closed cost is accepted, and only a pid in a
-    warden move scope incurs it. Both sides are
+    A worker can inherit TMPDIR and enter any scope before its launcher exits.
+    Its current scope cannot prove that it released the directory. Every
+    unreadable environment therefore keeps unclaimed directories, including
+    when an unrelated non-dumpable desktop process delays cleanup. Both sides are
     resolved with os.path.realpath before comparing, not just lexically
     normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
     concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
@@ -973,12 +958,10 @@ def _scratch_in_use(path, procs):
     candidate = os.path.realpath(path)
     prefix = candidate + os.sep
     unknown = False
-    for pid, p in procs.items():
+    for pid in procs:
         tmpdir = _proc_tmpdir(pid)
         if tmpdir is None:
-            m = SCOPE_RE.search(p.cgroup or "")
-            if m and WARDEN_MOVE_SCOPE_RE.fullmatch(m.group(1)):
-                unknown = True
+            unknown = True
             continue
         if not tmpdir:
             continue
@@ -1070,7 +1053,7 @@ def reap_scratch_dirs(correct, procs, failed):
             log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")
             continue
         if status == "unknown":
-            log(f"scratch {name}: scope gone but a moved process's TMPDIR could not be read; not reaping this tick")
+            log(f"scratch {name}: scope gone but a process's TMPDIR could not be read; not reaping this tick")
             continue
         if not correct:
             log(f"scratch {name}: scope gone; would remove (report mode)")
@@ -1203,6 +1186,15 @@ def scope_anon_bytes(unit):
     return int(m.group(1)) if m else None
 
 
+def scope_identity(unit):
+    """A directory instance, kept as JSON values across ticks, or None."""
+    try:
+        info = (CG_ROOT / SLICE / unit).stat()
+    except OSError:
+        return None
+    return [info.st_dev, info.st_ino] if stat.S_ISDIR(info.st_mode) else None
+
+
 def reap_orphans(procs, st, correct, only=None):
     """Carry orphaned scopes across ticks; reap those that stay orphaned past the
     grace period AND are harmful (many processes, steady CPU or held memory) on
@@ -1218,8 +1210,13 @@ def reap_orphans(procs, st, correct, only=None):
     now = time.time()
     tracked, reaped, status_rows = {}, [], []
     for unit, pids in seen.items():
+        identity = scope_identity(unit)
+        if identity is None:
+            log(f"orphan scope {unit}: cannot read directory identity; not reaping")
+            continue
         p = prev.get(unit)
-        p = p if isinstance(p, dict) else {}
+        # A reused systemd unit name does not own its previous directory's grace.
+        p = p if isinstance(p, dict) and p.get("identity") == identity else {}
         first = p.get("first", now)
         n = len(pids)
         usage = scope_usage_usec(unit)
@@ -1232,7 +1229,7 @@ def reap_orphans(procs, st, correct, only=None):
         harmful = age >= ORPHAN_GRACE and scope_harm(n, 0.0 if cores is None else cores, memory)
         # reap only when harmful on this tick and the one before it
         do_reap = harmful and p.get("harmful", False)
-        entry = {"first": first, "usage": usage, "usage_ts": now, "harmful": harmful}
+        entry = {"identity": identity, "first": first, "usage": usage, "usage_ts": now, "harmful": harmful}
         tracked[unit] = entry
         status_row = {"scope": unit, "processes": n, "cores": cores, "memory": memory,
                       "since": first, "harmful": harmful}
@@ -1263,8 +1260,9 @@ def reap_orphans(procs, st, correct, only=None):
             log(f"orphan scope {unit}: harmful ({why}), abandoned {int(age)}s"
                 + (" (report mode, not reaping)" if not correct else " (REAP disabled)"))
             continue
-        if not scope_still_orphan(unit, managers):
-            log(f"orphan scope {unit}: no longer orphaned on recheck; not reaping")
+        if (scope_identity(unit) != identity or not scope_still_orphan(unit, managers)
+                or scope_identity(unit) != identity):
+            log(f"orphan scope {unit}: directory changed or no longer orphaned on recheck; not reaping")
             tracked.pop(unit, None)
             continue
         ok, err = reap(unit)
@@ -2370,6 +2368,10 @@ def _valid_orphan_state_record(record):
     _check_number(errors, record.get("usage_ts"), "state.orphan.usage_ts")
     if not isinstance(record.get("harmful"), bool):
         errors.append("state.orphan.harmful must be a boolean")
+    identity = record.get("identity")
+    if identity is not None and (not isinstance(identity, list) or len(identity) != 2
+                                or any(type(value) is not int or value < 0 for value in identity)):
+        errors.append("state.orphan.identity must hold a device and inode")
     return not errors
 
 

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 from agent_warden_testlib import WARDEN, WardenRulesCase, scratch
 
@@ -317,10 +318,8 @@ class AgentWardenScratchRules(WardenRulesCase):
         # survives a trailing slash on AGENT_TMPDIR, which agent-confine's
         # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
         # os.path.join (this candidate path's source) never does. The
-        # unreadable rows prove a desktop's non-dumpable processes never
-        # pin a gone scope's directory, an agent shell that handed it down
-        # holds it ("in-use" beats "unknown"), and an unreadable process
-        # left alone in a scope move() created keeps it this tick.
+        # unreadable environment can belong to a worker that inherited
+        # TMPDIR before its launcher exited, regardless of its current scope.
         user = "/user.slice/user-1000.slice/user@1000.service"
         app = f"{user}/app.slice/x.scope"
         nested = f"{user}/agents.slice/agent-warden-555-1.scope"
@@ -335,11 +334,11 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("a live process's TMPDIR has a doubled separator",
              [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], "in-use"),
             ("an unreadable desktop daemon outside agents.slice",
-             [manager, (701, 700, "ssh-agent", app, None)], [], "free"),
+             [manager, (701, 700, "ssh-agent", app, None)], [], "unknown"),
             ("an unreadable child of an agent shell whose TMPDIR names it",
              [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], "in-use"),
             ("an orphaned unreadable daemon in another live agents.slice scope",
-             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], "free"),
+             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], "unknown"),
             ("an unreadable child alone in a moved scope whose agent parents are gone",
              [manager, (556, 700, "op", nested, None)], [], "unknown"),
             ("an unreadable child alone in a moved build scope whose agent parents are gone",
@@ -396,6 +395,43 @@ class AgentWardenScratchRules(WardenRulesCase):
                             self.assertEqual(removed, [])
                     finally:
                         self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def _detached_worker_scratch(self, module):
+        with scratch() as tmp:
+            base = Path(tmp)
+            with patch.object(module, "CG_ROOT", base / "cg"), \
+                    patch.object(module, "AGENT_TMPDIR_PARENT", str(base / "scratch")):
+                scope = module.CG_ROOT / module.SLICE / "limited-worker.scope"
+                scope.mkdir(parents=True)
+                (scope / "pids.max").write_text("32")
+                (scope / "memory.max").write_text(str(1024**3))
+                active = Path(module.AGENT_TMPDIR_PARENT) / "agent-confine-100-200"
+                active.mkdir(parents=True)
+                marker = active / "worker-output"
+                marker.write_text("active")
+                now = 1000.0
+                expired = now - module.SCRATCH_GRACE - 1
+                os.utime(active, (expired, expired))
+                worker = module.Proc(700, ppid=1, comm="bun", argv=["bun", "worker.js"],
+                                     exe="/usr/bin/bun", cgroup=f"/agents.slice/{scope.name}",
+                                     start=900, marked=True, tty=0)
+                with patch.object(module.time, "time", return_value=now), \
+                        patch.object(module, "_proc_tmpdir", return_value=None), \
+                        patch.object(module, "log"):
+                    removed = module.reap_scratch_dirs(True, {worker.pid: worker}, set())
+                return removed, marker.exists()
+
+    def test_unreadable_detached_worker_keeps_active_scratch(self):
+        self.assertEqual(self._detached_worker_scratch(self.w), ([], True))
+
+    def test_unreadable_worker_scratch_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "            unknown = True\n"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, "            unknown = False\n"),
+                                  "agent_warden_mutant_unknown_scratch")
+        with self.assertRaises(AssertionError):
+            self.assertEqual(self._detached_worker_scratch(mutant), ([], True))
 
     def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
         text = WARDEN.read_text()

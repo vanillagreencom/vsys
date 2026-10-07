@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,51 @@ class AgentConfineRules(unittest.TestCase):
         for key in ("HOME", "XDG_CACHE_HOME", "XDG_RUNTIME_DIR"):
             Path(env[key]).mkdir(parents=True, exist_ok=True)
         return env
+
+    def _scope_launch_args(self, launcher_text=None):
+        with scratch() as tmp:
+            base = Path(tmp)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            launcher = base / "agent-confine"
+            if launcher_text is None:
+                shutil.copy2(ROOT / "warden" / "agent-confine", launcher)
+            else:
+                launcher.write_text(launcher_text)
+                launcher.chmod(0o755)
+            capture = base / "argv.jsonl"
+            (bin_dir / "systemd-run").write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, sys\n"
+                "with open(os.environ['CAPTURE'], 'a') as out:\n"
+                "    out.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            )
+            (bin_dir / "grep").write_text("#!/bin/sh\nexit 1\n")
+            (bin_dir / "systemctl").write_text("#!/bin/sh\nexit 99\n")
+            for path in bin_dir.iterdir():
+                path.chmod(0o755)
+            env = self._confine_env(base, bin_dir)
+            env["CAPTURE"] = str(capture)
+            result = subprocess.run([str(launcher), "claude", "-p", "Explain ${HOME} and $PATH"],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return [json.loads(line) for line in capture.read_text().splitlines()]
+
+    def _assert_literal_scope_args(self, launches):
+        for launch in launches:
+            self.assertIn("--expand-environment=no", launch)
+        self.assertEqual(launches[-1][-3:], ["claude", "-p", "Explain ${HOME} and $PATH"])
+
+    def test_scope_launch_disables_environment_expansion(self):
+        self._assert_literal_scope_args(self._scope_launch_args())
+
+    def test_scope_launch_expansion_mutant_fails(self):
+        text = (ROOT / "warden" / "agent-confine").read_text()
+        option = " --expand-environment=no"
+        self.assertEqual(text.count(option), 2)
+        launches = self._scope_launch_args(text.replace(option, ""))
+        with self.assertRaises(AssertionError):
+            self._assert_literal_scope_args(launches)
 
     def test_agent_confine_tmpdir_rows(self):
         with scratch() as tmp:

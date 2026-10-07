@@ -1,6 +1,8 @@
 from pathlib import Path
+import json
 import sys
 import unittest
+from unittest.mock import patch
 
 from agent_warden_testlib import WARDEN, WardenRulesCase, scratch
 
@@ -8,6 +10,141 @@ sys.dont_write_bytecode = True
 
 
 class AgentWardenOrphanRules(WardenRulesCase):
+    def _scope_history(self, module, change):
+        with scratch() as tmp:
+            base = Path(tmp)
+            with patch.object(module, "CG_ROOT", base / "cg"), patch.object(module, "log"):
+                unit = "build.scope"
+                scope = module.CG_ROOT / module.SLICE / unit
+                scope.mkdir(parents=True)
+                (scope / "cpu.stat").write_text("usage_usec 1000000\n")
+                (scope / "memory.stat").write_text(f"anon {module.ORPHAN_MEM_BYTES}\n")
+                (scope / "cgroup.procs").write_text("700\n")
+                member = module.Proc(700, ppid=1, comm="bun", argv=["bun", "build.js"],
+                                     exe="/usr/bin/bun", cgroup=f"/agents.slice/{unit}", start=1, tty=0)
+                state = module.default_state()
+                with patch.object(module.time, "time", return_value=1000.0):
+                    module.reap_orphans({member.pid: member}, state, False)
+                past_grace = 1000.0 + module.ORPHAN_GRACE + 1
+                with patch.object(module.time, "time", return_value=past_grace):
+                    module.reap_orphans({member.pid: member}, state, False)
+                self.assertTrue(state["orphans"][unit]["harmful"])
+                state = module.state_object(json.loads(json.dumps(state)))
+
+                def replace_scope():
+                    # Keeping the old fixture directory prevents inode reuse.
+                    scope.rename(scope.with_name("old.scope"))
+                    scope.mkdir()
+                    (scope / "cpu.stat").write_text("usage_usec 1\n")
+                    (scope / "memory.stat").write_text(f"anon {module.ORPHAN_MEM_BYTES}\n")
+                    (scope / "cgroup.procs").write_text("700\n")
+
+                if change == "replacement":
+                    replace_scope()
+                elif change == "legacy":
+                    state["orphans"][unit].pop("identity", None)
+                elif change == "members":
+                    member = module.Proc(700, ppid=1, comm="bun", argv=["bun", "new-build.js"],
+                                         exe="/usr/bin/bun", cgroup=f"/agents.slice/{unit}", start=999, tty=0)
+                elif change == "missing":
+                    scope.rename(scope.with_name("gone.scope"))
+
+                real_read = module.read
+                real_identity = module.scope_identity
+                identity_reads = 0
+                replaced_on_read = False
+
+                def identity_with_replacement(name):
+                    nonlocal identity_reads
+                    identity_reads += 1
+                    if change == "before-recheck" and identity_reads == 2:
+                        replace_scope()
+                    return real_identity(name)
+
+                def read_with_replacement(path, default=None):
+                    nonlocal replaced_on_read
+                    if change == "recheck" and not replaced_on_read and Path(path) == scope / "cgroup.procs":
+                        replace_scope()
+                        replaced_on_read = True
+                    return real_read(path, default)
+
+                now = past_grace + 1
+                with patch.object(module.time, "time", return_value=now), \
+                        patch.object(module, "Proc", return_value=member), \
+                        patch.object(module, "scope_identity", side_effect=identity_with_replacement), \
+                        patch.object(module, "read", side_effect=read_with_replacement), \
+                        patch.object(module, "reap", return_value=(True, "")) as stop:
+                    _, rows = module.reap_orphans({member.pid: member}, state, True)
+                return stop.called, state["orphans"].get(unit), rows, now
+
+    def test_reused_scope_receives_its_own_grace(self):
+        for change in ("replacement", "legacy"):
+            with self.subTest(change=change):
+                stopped, tracked, rows, now = self._scope_history(self.w, change)
+                self.assertFalse(stopped)
+                self.assertEqual(tracked["first"], now)
+                self.assertFalse(tracked["harmful"])
+                self.assertIsNone(rows[0]["cores"])
+
+    def test_same_scope_retains_history_across_process_turnover(self):
+        for change in ("unchanged", "members"):
+            with self.subTest(change=change):
+                stopped, tracked, _, _ = self._scope_history(self.w, change)
+                self.assertTrue(stopped)
+                self.assertIsNone(tracked)
+
+    def test_scope_identity_recheck_prevents_reaping_replacement(self):
+        for change in ("before-recheck", "recheck"):
+            with self.subTest(change=change):
+                stopped, tracked, _, _ = self._scope_history(self.w, change)
+                self.assertFalse(stopped)
+                self.assertIsNone(tracked)
+
+    def test_unreadable_scope_identity_discards_history(self):
+        stopped, tracked, _, _ = self._scope_history(self.w, "missing")
+        self.assertFalse(stopped)
+        self.assertIsNone(tracked)
+
+    def test_scope_identity_guard_mutants_fail(self):
+        text = WARDEN.read_text()
+        rows = [
+            ("reset", 'and p.get("identity") == identity', 'and True', "replacement", "stopped"),
+            ("unreadable", "if identity is None:", "if False and identity is None:", "missing", "tracked"),
+            ("after", "or scope_identity(unit) != identity):", "or False):", "recheck", "stopped"),
+        ]
+        for name, old, replacement, change, result in rows:
+            with self.subTest(name=name):
+                self.assertEqual(text.count(old), 1)
+                mutant = self.load_mutant(text.replace(old, replacement), f"agent_warden_mutant_identity_{name}")
+                stopped, tracked, _, _ = self._scope_history(mutant, change)
+                with self.assertRaises(AssertionError):
+                    if result == "stopped":
+                        self.assertFalse(stopped)
+                    else:
+                        self.assertIsNone(tracked)
+
+    def _assert_orphan_identity_state(self, module):
+        record = {"first": 1, "usage": None, "usage_ts": 2, "harmful": False}
+        rows = [(None, True), ([1, 2], True), ([], False), ([1], False),
+                ([1, 2, 3], False), ("1:2", False), ([True, 2], False),
+                ([1, -1], False), ([1, 2.0], False)]
+        for identity, valid in rows:
+            raw = module.default_state()
+            raw["orphans"] = {"build.scope": dict(record, identity=identity)}
+            self.assertEqual("build.scope" in module.state_object(raw)["orphans"], valid, identity)
+
+    def test_orphan_state_identity_rows(self):
+        self._assert_orphan_identity_state(self.w)
+
+    def test_orphan_state_identity_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "if identity is not None and (not isinstance(identity, list)"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, "if False and (not isinstance(identity, list)"),
+                                  "agent_warden_mutant_identity_state")
+        with self.assertRaises(AssertionError):
+            self._assert_orphan_identity_state(mutant)
+
     def test_orphan_rows(self):
         mgr = 4000
         leak = "/user.slice/user-1000.slice/user@1000.service/agents.slice/agent-confine-leak.scope"
@@ -137,13 +274,14 @@ class AgentWardenOrphanRules(WardenRulesCase):
                     d.mkdir(parents=True, exist_ok=True)
                     (d / "cpu.stat").write_text("")
                 now = self.w.time.time()
+                identity = (self.w.CG_ROOT / self.w.SLICE / reaped_unit).stat()
                 st = {
                     "reaped": 0,
                     "move_failures": 0,
                     "event_seq": 0,
                     "events": [],
                     "orphans": {
-                        reaped_unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True},
+                        reaped_unit: {"identity": [identity.st_dev, identity.st_ino], "first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True},
                     },
                 }
                 self.w.reap = lambda unit: (True, "")
@@ -187,7 +325,8 @@ class AgentWardenOrphanRules(WardenRulesCase):
                     (d / "memory.current").write_text(f"{8 * module.ORPHAN_MEM_BYTES}\n")
                     if stat is not None:
                         (d / "memory.stat").write_text(stat)
-                    st["orphans"][unit] = {"first": now - module.ORPHAN_GRACE - 10, "usage": 1000, "usage_ts": now - 30, "harmful": False}
+                    identity = d.stat()
+                    st["orphans"][unit] = {"identity": [identity.st_dev, identity.st_ino], "first": now - module.ORPHAN_GRACE - 10, "usage": 1000, "usage_ts": now - 30, "harmful": False}
                 module.reap = lambda unit: (stopped.append(unit), (True, ""))[1]
                 module.scope_still_orphan = lambda unit, managers: True
                 _, first_rows = module.reap_orphans(recs, st, True)
@@ -249,7 +388,7 @@ class AgentWardenOrphanRules(WardenRulesCase):
                     "move_failures": 0,
                     "event_seq": 0,
                     "events": [],
-                    "orphans": {unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True}},
+                    "orphans": {unit: {"identity": [d.stat().st_dev, d.stat().st_ino], "first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True}},
                 }
                 self.w.reap = lambda unit: (False, "stop refused")
                 self.w.scope_still_orphan = lambda unit, managers: True

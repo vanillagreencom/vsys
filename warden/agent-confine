@@ -112,7 +112,7 @@ fi
 # the agent outside the slice as a consolation: an agent that runs unconfined
 # but looks fine is the failure that went unseen for weeks.
 if command -v systemd-run >/dev/null 2>&1 &&
-	systemd-run --user --quiet --collect --scope --slice=agents.slice \
+	systemd-run --user --quiet --collect --scope --expand-environment=no --slice=agents.slice \
 		true >/dev/null 2>&1; then
 	# Sibling scopes share the slice's CPU equally only while the CPU controller
 	# is enabled inside agents.slice, and systemd enables it only when some
@@ -158,7 +158,7 @@ if command -v systemd-run >/dev/null 2>&1 &&
 	else
 		echo "agent-confine: TMPDIR unavailable at $agent_confine_scratch; keeping inherited TMPDIR" >&2
 	fi
-	exec systemd-run --user --quiet --collect --scope --slice=agents.slice \
+	exec systemd-run --user --quiet --collect --scope --expand-environment=no --slice=agents.slice \
 		-p "CPUWeight=99" \
 		-p "TasksMax=${AGENT_SCOPE_TASKS_MAX:-8192}" \
 		-p "MemoryHigh=${AGENT_SCOPE_MEM_HIGH:-64G}" \
