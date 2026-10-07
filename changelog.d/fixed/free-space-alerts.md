@@ -1,0 +1,1 @@
+- Free-space warnings name every filesystem below the configured floor. Alerts stay open when a free-space read fails. Each timeline alert records its filesystem's own readings.

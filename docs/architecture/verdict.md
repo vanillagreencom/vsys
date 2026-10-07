@@ -25,7 +25,7 @@ A second detector lets a tile and a card disagree about one machine. One ranking
 
 ## The canonical example
 
-The `free-space` cause in `causes()`: one threshold from the settings, one subject per filesystem below it, its rank and evidence kind from the two tables, and the Storage line reading the same figure. Copy it for a new cause.
+The `free-space` cause in `causes()`: one threshold from the settings, one subject per filesystem below it, its rank and evidence kind from the two tables, and the Storage line reading the same figure. Its consumer and numbers describe the filesystem with the least free space. Each alert keeps its own filesystem's numbers, as required by [history.md](history.md). `src/model/verdict.test.ts` and `src/store/events.test.ts` check both contracts. Copy it for a new cause.
 
 ## Revisit when
 

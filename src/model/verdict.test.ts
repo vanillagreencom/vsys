@@ -159,21 +159,32 @@ test("a saturated disk names the writing scope and carries its numbers", () => {
   expect(ladder[1]?.lanes.map((l) => l.name)).toEqual(["cruncher"]);
 });
 
-test("a filesystem below the free-space floor is its own cause", () => {
+test("the free-space cause names every low filesystem and reports the minimum", () => {
   const c = defaults();
   const s = healthy();
-  const volume = (mount: string, free: number) =>
+  const volume = (mount: string, free: number | null) =>
     volumeSnapshot(mount, { free, total: 100 });
-  s.storage.volumes = [volume("/big", c.freeFloor + 1), volume("/full", 5)];
-  expect(leastFree(s.storage.volumes)?.mount).toBe("/full");
-  const cause = causes(s, c).find((item) => item.id === "free-space");
-  expect(cause).toMatchObject({
-    level: "danger",
-    consumer: "/full",
-    paths: ["/full"],
-    values: { free: 5, total: 100 },
-  });
-  expect(meterOf(s, c, "disk").values.free).toBe(5);
+  const rows = [
+    { free: 5, other: c.freeFloor + 1, paths: ["/full"] },
+    { free: 1, other: 2, paths: ["/other", "/full"] },
+    { free: 0, other: null, paths: ["/full"] },
+  ];
+  for (const { free, other, paths } of rows) {
+    s.storage.volumes = [
+      volume("/other", other),
+      volume("/full", free),
+      volume("/floor", c.freeFloor),
+    ];
+    expect(leastFree(s.storage.volumes)?.mount).toBe("/full");
+    const cause = causes(s, c).find((item) => item.id === "free-space");
+    expect(cause).toMatchObject({
+      level: "danger",
+      consumer: "/full",
+      paths,
+      values: { free, total: 100 },
+    });
+    expect(meterOf(s, c, "disk").values.free).toBe(free);
+  }
   // Above the floor there is no cause at all.
   s.storage.volumes = [volume("/big", c.freeFloor + 1)];
   expect(causes(s, c).find((item) => item.id === "free-space")).toBeUndefined();
@@ -1064,6 +1075,8 @@ test("unjudged names each cause whose own reading could not be taken", () => {
   const groupPath = "agents.slice/h.scope";
   const scratchPath = "/scratch";
   const otherScratch = "/scratch-b";
+  const mount = "/disk";
+  const otherMount = "/other-disk";
   /** Every reading a cause can fail to take, taken and under its threshold. */
   const read = (): Snapshot => {
     const s = healthy();
@@ -1079,6 +1092,9 @@ test("unjudged names each cause whose own reading could not be taken", () => {
       error: null,
       origin: "configured",
     }));
+    s.storage.volumes = [mount, otherMount].map((path) =>
+      volumeSnapshot(path, { free: c.freeFloor }),
+    );
     return s;
   };
   /** Every subject `read()` holds: the host, both lanes and both groups. */
@@ -1093,6 +1109,22 @@ test("unjudged names each cause whose own reading could not be taken", () => {
   });
   const rows: [string, (s: Snapshot) => void, Unjudged][] = [
     ["every reading taken", () => {}, {}],
+    [
+      "filesystem free space",
+      (s) => {
+        s.storage.volumes = s.storage.volumes.map((v) =>
+          v.mount === mount ? { ...v, free: null } : v,
+        );
+      },
+      { "free-space": new Set([mount]) },
+    ],
+    [
+      "filesystem gone",
+      (s) => {
+        s.storage.volumes = [];
+      },
+      {},
+    ],
     ["io pressure", (s) => delete s.system.pressure.io, { disk: held }],
     [
       "cpu pressure",

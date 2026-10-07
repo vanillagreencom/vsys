@@ -125,6 +125,51 @@ test("the verdict is the worst cause, formatted with its numbers", () => {
   );
 });
 
+test("a free-space card names every affected mount and keeps minimum figures on their filesystem", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const minimum = volumeSnapshot("/minimum", { free: 1024, total: 8192 });
+  const other = ["/other-a", "/other-b", "/other-c", "/other-d"];
+  for (const mounts of [
+    [minimum],
+    [
+      minimum,
+      ...other.map((mount) =>
+        volumeSnapshot(mount, { free: 2048, total: 16384 }),
+      ),
+    ],
+  ]) {
+    s.storage.volumes = [
+      ...mounts,
+      volumeSnapshot("/healthy", { free: c.freeFloor }),
+      volumeSnapshot("/unknown", { free: null }),
+    ];
+    const card = present(
+      attention(s, c, { basePath: base }).find(
+        (item) => item.id === "free-space",
+      ),
+      "the free-space card",
+    );
+    expect(card.target).toEqual({ kind: "path", path: "/minimum" });
+    const figures =
+      mounts.length === 1 ? card.title : said(card).split(". ")[0];
+    expect(figures).toContain("/minimum");
+    expect(figures).toContain("1.0 KiB");
+    expect(figures).toContain("8.0 KiB");
+    for (const mount of mounts) {
+      expect(`${card.title} ${said(card)}`).toContain(mount.mount);
+      if (mount !== minimum) expect(figures).not.toContain(mount.mount);
+    }
+    for (const mount of ["/healthy", "/unknown"]) {
+      expect(`${card.title} ${said(card)}`).not.toContain(mount);
+    }
+    if (mounts.length > 1) {
+      expect(card.title).not.toContain("1.0 KiB");
+      expect(card.title).not.toContain("8.0 KiB");
+    }
+  }
+});
+
 test("a process whose agent name was not confirmed by install location gets a visible card", () => {
   const c = defaults();
   const s = emptySnapshot();
