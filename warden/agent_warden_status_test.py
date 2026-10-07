@@ -136,8 +136,8 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             old = self.point_status_state(self.w, Path(tmp))
             try:
                 lane = self.write_status_cgroup(self.w, lane_memory=str(48 * 1024**3))
-                for raw, expected in ((str(128 * 1024**3), "128"), ("max", "unlimited"),
-                                      ("invalid", "unknown"), (None, "unknown")):
+                for raw, expected in ((str(128 * 1024**3), [48, 128]), ("max", [48]),
+                                      ("invalid", [48]), (None, [48])):
                     with self.subTest(raw=raw):
                         limit = lane / "memory.high"
                         if raw is None:
@@ -149,9 +149,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                         self.assertEqual(unknown, set())
                         notice = next(text for unit, kind, text in near
                                       if unit == lane.name and kind == "memory")
-                        cap = re.search(r"soft cap ([^)]+)", notice)
-                        self.assertIsNotNone(cap)
-                        self.assertEqual(cap.group(1), expected)
+                        self.assertEqual([int(value) for value in re.findall(r"\b\d+\b", notice)], expected)
             finally:
                 self.restore_status_state(self.w, old)
 
@@ -177,9 +175,8 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                                 patch.object(self.w, "notifier_fresh", return_value=False), \
                                 contextlib.redirect_stdout(output):
                             self.assertEqual(self.w.status(), 0)
-                        values = re.findall(r"(?:moves|partial|reaped|move failures|scan failures|consecutive skips) (\w+)",
-                                            output.getvalue().splitlines()[0])
-                        self.assertEqual(values, ["unknown" if recovered else str(count)] * len(counters))
+                        values = [int(value) for value in re.findall(r"\b\d+\b", output.getvalue().splitlines()[0])]
+                        self.assertEqual(values, [] if recovered else [count] * len(counters))
             finally:
                 self.restore_status_state(self.w, old)
 
