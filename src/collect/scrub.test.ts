@@ -110,7 +110,7 @@ logical 1:
   ]);
 });
 
-test("the parser anchors on the address heading, not on the prose above it", () => {
+test("the parser keeps addresses when prose changes around the fixed section label", () => {
   // Every line the helper writes as prose, reworded. The addresses still read.
   const reworded = damaged
     .replace(/^btrfs scrub.*$/m, "check over, found trouble on the root disk")
@@ -120,6 +120,11 @@ test("the parser anchors on the address heading, not on the prose above it", () 
       "any of these may be the damaged one",
     );
   expect(parseScrub(reworded).addresses).toEqual(parseScrub(damaged).addresses);
+  // parseScrub consumes the reporter's machine-readable section label.
+  expect(
+    parseScrub(damaged.replace("Damaged files:", "Files with damage:"))
+      .addresses,
+  ).toBeNull();
 });
 
 test("an indented line outside an address is not taken as a damaged path", () => {

@@ -170,6 +170,7 @@ export function corruptionTotal(
  */
 export class FinishedScrubMemory {
   private byFsid: Map<string, FinishedScrub>;
+  private reportFsids = new Map<string, string>();
   constructor(seed?: Record<string, FinishedScrub>) {
     this.byFsid = new Map(Object.entries(seed ?? {}));
   }
@@ -183,6 +184,11 @@ export class FinishedScrubMemory {
   }
   snapshot(): Record<string, FinishedScrub> {
     return Object.fromEntries(this.byFsid);
+  }
+  /** Keep a report's filesystem identity when its latest contents are unread. */
+  identifyReport(path: string, fsid: string | null): string | null {
+    if (fsid !== null) this.reportFsids.set(path, fsid);
+    return fsid ?? this.reportFsids.get(path) ?? null;
   }
 }
 
@@ -514,12 +520,13 @@ export class StorageCollector {
         // with no sign that a check had run at all. `r.text` has already
         // recorded why the read failed.
         if (text === null) {
+          const fsid = this.finishedScrub.identifyReport(path, null);
           storage.scrubs.push({
             path,
             text: "",
             readable: false,
             problem: true,
-            fsid: null,
+            fsid,
             startedAt: null,
             status: null,
             duration: null,
@@ -531,6 +538,7 @@ export class StorageCollector {
           continue;
         }
         const report = parseScrub(text);
+        this.finishedScrub.identifyReport(path, report.uuid);
         // A path the report named can be gone: the reader removed or rebuilt
         // the file since the check. Only what is still on disk is listed, so
         // the list empties as the reader restores what it held.

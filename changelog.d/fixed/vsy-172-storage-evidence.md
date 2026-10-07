@@ -1,0 +1,1 @@
+- Storage leaves filesystem health unknown when its latest scrub report cannot be read. It rejects saved drive figures when serial numbers do not match. It recovers checksum failures after access to the boot ID returns.

@@ -1,6 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
+import { present } from "../test/present";
 import { collectDevices, smartReports, smartWrites } from "./devices";
 import { Reader } from "./io";
 
@@ -8,11 +10,74 @@ const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
 });
+test("a reused device name rejects the previous drive report", () => {
+  const f = fixture();
+  fixtures.push(f);
+  f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
+  f.write(join(f.config.sysBlockRoot, "sda/device/model"), "Replacement SSD\n");
+  f.write(join(f.config.sysBlockRoot, "sda/device/serial"), "REPLACEMENT\n");
+  f.write(
+    join(f.config.smartDir, "sda.txt"),
+    "Device Model: Previous SSD\nSerial Number: PREVIOUS\n241 Total_LBAs_Written 0x0032 099 099 000 Old_age Always - 2000000\n",
+  );
+  const reader = new Reader();
+  const device = present(
+    collectDevices(reader, f.config, smartReports(reader, f.config).reports)[0],
+    "replacement drive",
+  );
+  expect(reader.errors).toEqual([]);
+  expect({
+    model: device.model,
+    lifetimeWritten: device.lifetimeWritten,
+    source: device.source,
+  }).toEqual({ model: null, lifetimeWritten: null, source: null });
+});
+test("a saved drive total requires matching nonempty serial numbers", () => {
+  const f = fixture();
+  fixtures.push(f);
+  const serialPath = join(f.config.sysBlockRoot, "sda/device/serial");
+  const reportPath = join(f.config.smartDir, "sda.txt");
+  f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
+  const rows = [
+    { current: "SN-1", reported: "SN-1", accepted: true },
+    { current: "SN-2", reported: "SN-1", accepted: false },
+    { current: null, reported: "SN-1", accepted: false },
+    { current: "", reported: "SN-1", accepted: false },
+    { current: "SN-1", reported: null, accepted: false },
+    { current: "SN-1", reported: "", accepted: false },
+  ];
+  for (const row of rows) {
+    if (row.current === null) rmSync(serialPath);
+    else f.write(serialPath, `${row.current}\n`);
+    f.write(
+      reportPath,
+      `Device Model: Same model\n${row.reported === null ? "" : `Serial Number: ${row.reported}\n`}241 Total_LBAs_Written 0x0032 099 099 000 Old_age Always - 2000000\n`,
+    );
+    const reader = new Reader();
+    const device = present(
+      collectDevices(reader, f.config, new Map([["sda", reportPath]]))[0],
+      "current drive",
+    );
+    expect({
+      row,
+      model: device.model,
+      written: device.lifetimeWritten,
+      source: device.source,
+    }).toEqual({
+      row,
+      model: row.accepted ? "Same model" : null,
+      written: row.accepted ? 1_024_000_000 : null,
+      source: row.accepted ? "smartctl" : null,
+    });
+    expect(reader.errors).toEqual([]);
+  }
+});
 const nvme = `smartctl 7.4 2023-08-01 r5530 [x86_64-linux] (local build)
 
 === START OF SMART DATA SECTION ===
 SMART/Health Information (NVMe Log 0x02)
 Model Number:                       Samsung SSD 990 PRO 2TB
+Serial Number:                      NVME-DRIVE
 Data Units Read:                    1,000,000 [512 GB]
 Data Units Written:                 8,000,000 [4.09 TB]
 Power On Hours:                     1,234
@@ -74,6 +139,7 @@ test("device numbers name io.stat devices and a missing report is not zero", () 
     },
   ]);
   f.write(join(f.config.smartDir, "nvme0n1.txt"), nvme);
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/device/serial"), "NVME-DRIVE\n");
   const listed = smartReports(r, f.config);
   expect(listed.outcome).toBeNull();
   // One report among two drives leaves both rows, one of them still unknown.
@@ -102,6 +168,7 @@ test("udisks fills a drive only where it has no report, and names itself", () =>
   f.write(join(f.config.sysBlockRoot, "sda/dev"), "8:0\n");
   f.write(join(f.config.sysBlockRoot, "sdb/dev"), "8:16\n");
   f.write(join(f.config.smartDir, "nvme0n1.txt"), nvme);
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/device/serial"), "NVME-DRIVE\n");
   const r = new Reader();
   const { reports } = smartReports(r, f.config);
   const udisks = [

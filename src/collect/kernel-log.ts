@@ -163,6 +163,7 @@ export class KernelLog {
     const text = await this.search(this.cursor);
     const thisBoot = boot?.replaceAll("-", "").toLowerCase() ?? null;
     let cursor = this.cursor;
+    let unmatchedWithoutBoot = false;
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       const end = line.match(cursorLine)?.[1];
@@ -194,7 +195,12 @@ export class KernelLog {
       const fsid =
         this.mounted.get(bootId)?.get(failureDevice) ??
         (bootId === thisBoot ? devices.get(failureDevice) : undefined);
-      if (fsid === undefined) continue;
+      if (fsid === undefined) {
+        // A missing boot id cannot prove this is an old, unmatched entry.
+        // Ask for it again once procfs can identify the current boot.
+        if (thisBoot === null) unmatchedWithoutBoot = true;
+        continue;
+      }
       const root = Number(failure[2]);
       const inode = Number(failure[3]);
       const inodes = this.failures.get(fsid) ?? new Map<string, CsumFailure>();
@@ -205,7 +211,7 @@ export class KernelLog {
     }
     // The cursor moves only once the whole answer parsed, so a read that
     // failed part way is asked again rather than skipped.
-    this.cursor = cursor;
+    if (!unmatchedWithoutBoot) this.cursor = cursor;
     this.searched = true;
     for (const [fsid, inodes] of this.failures) {
       // Only the newest are kept, so the map stays as small as what a

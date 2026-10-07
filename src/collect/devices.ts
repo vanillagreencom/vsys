@@ -97,7 +97,14 @@ export function collectDevices(
     const dev = r.text(join(c.sysBlockRoot, name, "dev"), true);
     const number = dev && /^\d+:\d+$/.test(dev) ? dev : null;
     const report = reports.get(name);
-    const raw = report === undefined ? null : r.text(report);
+    let raw = report === undefined ? null : r.text(report);
+    if (raw !== null) {
+      // A device name can be reused before the reporter runs again. Without
+      // matching serial numbers, its saved figures name no current drive.
+      const serial = r.text(join(c.sysBlockRoot, name, "device/serial"), true);
+      const reported = raw.match(/^Serial Number:\s*(.+?)\s*$/im)?.[1];
+      if (!serial || reported !== serial) raw = null;
+    }
     const drive = fromUdisks.get(name);
     if (raw !== null) {
       const read = smartWrites(raw);

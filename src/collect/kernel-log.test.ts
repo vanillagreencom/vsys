@@ -37,6 +37,24 @@ const failed = (device: string, root: number, inode: number) =>
 const fsA = "2ff9dd6d-c928-4458-9444-bffb6c01eacb";
 const fsB = "71345faf-0e2f-4855-88f2-fd0ea2697ea5";
 
+test("restoring the boot ID recovers a failure read without a mount message", async () => {
+  const asked: (string | null)[] = [];
+  const failure = entry(current, 300, failed("sda", 5, 7));
+  const log = new KernelLog(async (cursor) => {
+    asked.push(cursor);
+    return cursor === null
+      ? `${failure}\n-- cursor: after-failure\n`
+      : "-- cursor: after-failure\n";
+  });
+  const devices = new Map([["sda", fsA]]);
+  expect(await log.read(devices, null)).toEqual({});
+  expect(await log.read(devices, currentDashed)).toEqual({
+    [fsA]: [{ root: 5, inode: 7, at: 300_000 }],
+  });
+  await log.read(devices, currentDashed);
+  expect(asked).toEqual([null, null, "after-failure"]);
+});
+
 test("a failure is matched to the filesystem its own boot mounted on that device", async () => {
   // The earlier boot mounted fsA on nvme0n1p2. This boot enumerated the drives
   // in another order, and nvme0n1p2 is fsB now. The old failure is fsA's.

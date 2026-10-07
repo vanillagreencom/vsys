@@ -1264,9 +1264,10 @@ test("device totals come from the cgroup root, not the watched user tree", async
 test("a sample carries drive lifetime writes when a SMART report is readable", async () => {
   const f = setup();
   f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/device/serial"), "TEST-DRIVE\n");
   f.write(
     join(f.config.smartDir, "nvme0n1"),
-    "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
+    "Model Number: Test Drive\nSerial Number: TEST-DRIVE\nData Units Written: 1,000,000 [512 GB]\n",
   );
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.storage.devices).toContainEqual({
@@ -1304,9 +1305,10 @@ test("a machine whose timer leaves reports reads them, and never asks udisks", a
   const f = setup();
   const calls: string[][] = [];
   f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
+  f.write(join(f.config.sysBlockRoot, "nvme0n1/device/serial"), "TEST-DRIVE\n");
   f.write(
     join(f.config.smartDir, "nvme0n1"),
-    "Model Number: Test Drive\nData Units Written: 1,000,000 [512 GB]\n",
+    "Model Number: Test Drive\nSerial Number: TEST-DRIVE\nData Units Written: 1,000,000 [512 GB]\n",
   );
   const s = await withUdisks(f, fakeBus([udisksDrive], calls)).sample();
   expect(s.storage.devices).toEqual([
