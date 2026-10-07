@@ -196,18 +196,16 @@ class PackageFileListCheck(unittest.TestCase):
         self.assertEqual(self.refusal(self.run_check()), "pkgbuild=user-units package=vsys value=/usr/lib/systemd/user")
 
     def test_missing_required_dependency_fails(self) -> None:
-        line = "depends=('python' 'systemd' 'systemd-libs')\n"
         for package in ("vsys", "vsys-git"):
             pkgbuild = self.repo / "packaging" / package / "PKGBUILD"
             original = pkgbuild.read_text()
-            self.assertEqual(original.count(line), 1)
-            for dependency, without in (
-                ("'python'", "depends=('systemd' 'systemd-libs')\n"),
-                ("'systemd'", "depends=('python' 'systemd-libs')\n"),
-                ("'systemd-libs'", "depends=('python' 'systemd')\n"),
-            ):
+            declarations = [line for line in original.splitlines(keepends=True) if line.startswith("depends=(")]
+            self.assertEqual(len(declarations), 1)
+            line = declarations[0]
+            for dependency in ("'python'", "'systemd'", "'systemd-libs'"):
                 with self.subTest(package=package, dependency=dependency):
-                    pkgbuild.write_text(original.replace(line, without))
+                    self.assertEqual(line.count(dependency), 1)
+                    pkgbuild.write_text(original.replace(line, line.replace(dependency, "")))
                     self.assertEqual(
                         self.refusal(self.run_check(), prose=False),
                         f"pkgbuild=dependency-missing package={package} value={dependency}",

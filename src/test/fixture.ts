@@ -152,9 +152,10 @@ export function fixture() {
   };
 }
 /**
- * A PATH directory holding only a getconf stand-in with this fixture's clock
- * and page units. A program run with it as its whole PATH reaches no tmux
- * server and no build cache.
+ * A PATH directory holding a getconf stand-in with this fixture's clock
+ * and page units, disabled systemd timers, and the real flock for error-memory
+ * saves. A program run with it as its whole PATH reaches no tmux server and
+ * no build cache.
  */
 export function hermeticBin(root: string): string {
   const bin = join(root, "bin");
@@ -165,6 +166,15 @@ export function hermeticBin(root: string): string {
     '#!/bin/sh\ncase "$1" in\n  CLK_TCK) echo 100 ;;\n  PAGESIZE) echo 4096 ;;\n  *) exit 1 ;;\nesac\n',
   );
   chmodSync(getconf, 0o755);
+  const flock = Bun.which("flock");
+  if (flock === null) throw new Error("hermeticBin: flock is not installed");
+  symlinkSync(flock, join(bin, "flock"));
+  const systemctl = join(bin, "systemctl");
+  writeFileSync(
+    systemctl,
+    '#!/bin/sh\ncase "$1" in\n  is-enabled)\n    shift\n    if [ "$1" = "--" ]; then shift; fi\n    for unit do echo disabled; done\n    exit 1 ;;\n  *) exit 1 ;;\nesac\n',
+  );
+  chmodSync(systemctl, 0o755);
   return bin;
 }
 /**
