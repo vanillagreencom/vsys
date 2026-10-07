@@ -33,7 +33,7 @@ const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
 const procs = [processSnapshot()];
 const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes, procs });
 
-test.each(laneActions)(
+test.each([...laneActions])(
   "%s refuses a replacement with a reused process ID",
   (action) => {
     const sample = (start: number) => {
@@ -64,7 +64,7 @@ test("a lane with no readable leading process gets no action target", () => {
   expect(laneTarget(lane, c, [])).toBeNull();
 });
 
-test.each(laneActions)(
+test.each([...laneActions])(
   "%s refuses when the current sample cannot identify the leading process",
   (action) => {
     const lane = laneSnapshot();
