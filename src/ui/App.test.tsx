@@ -2,12 +2,14 @@ import { expect, test } from "bun:test";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { type Config, defaults, validate } from "../config/config";
+import type { LaneCommand } from "../model/actions";
 import { History } from "../store/history";
 import {
   emptySnapshot,
   everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
+  processSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
 import { mount } from "../test/harness";
@@ -15,6 +17,50 @@ import { present } from "../test/present";
 import { hints, Waiting } from "./App";
 import { headerRowWidth, keyLabel, viewKey, views } from "./chrome";
 import { homeRegions, type NamedRegion, storageRegions } from "./regions";
+
+test("disabling Agent actions through Settings refuses a pending Stop", async () => {
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.groups = [groupSnapshot()];
+  s.procs = [processSnapshot()];
+  const calls: LaneCommand[] = [];
+  const saved: Config[] = [];
+  const t = await mount(
+    s,
+    { ...defaults(), writeMode: true },
+    { width: 160, height: 160 },
+    {
+      onAction: async (command) => {
+        calls.push(command);
+      },
+      onSave: async (config) => {
+        saved.push(config);
+      },
+    },
+  );
+  const clickText = async (text: string) => {
+    const lines = t.frame().split("\n");
+    const y = lines.findIndex((line) => line.includes(text));
+    const line = present(lines[y], text);
+    await t.click(line.indexOf(text) + 1, y);
+  };
+  try {
+    await t.press("2");
+    await t.press("enter");
+    for (let i = 0; i < 4; i++) await t.press("j");
+    await t.press("enter");
+    for (let i = 0; i < 3; i++) await t.press("j");
+    await t.press("enter");
+    expect(calls).toEqual([]);
+    await clickText("7 Settings");
+    await clickText("Agent actions");
+    expect(present(saved[0], "saved settings").writeMode).toBe(false);
+    await t.press("enter");
+    expect(calls).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
 
 test("keys and the mouse move between tabs, open an agent, and quit", async () => {
   const c = defaults();

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { testRender } from "@opentui/react/test-utils";
-import { act } from "react";
+import { act, useState } from "react";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
@@ -14,7 +14,7 @@ import {
   groupSnapshot,
   laneSnapshot,
 } from "../test/fixture";
-import { mount } from "../test/harness";
+import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
 import { meterTile } from "./attention";
 import { type KeyHandler, KeyProvider } from "./keys";
@@ -28,6 +28,37 @@ import {
   Resources,
   treePrefixes,
 } from "./resources";
+
+test.each([
+  { selected: "beta", removed: "alpha", expected: "beta", moves: 1 },
+  { selected: "beta", removed: "beta", expected: "gamma", moves: 1 },
+  { selected: "gamma", removed: "gamma", expected: "beta", moves: 2 },
+])(
+  "Resources keeps or replaces $selected when $removed leaves",
+  async ({ selected, removed, expected, moves }) => {
+    const s = emptySnapshot();
+    s.groups = ["alpha", "beta", "gamma"].map((name) =>
+      groupSnapshot({
+        path: `agents.slice/${name}.scope`,
+        name: `${name}.scope`,
+        cpuPercent: 1,
+      }),
+    );
+    const t = await mount(s, defaults(), { width: 160, height: 40 });
+    try {
+      await t.press("3");
+      for (let i = 0; i < moves; i++) await t.press("down");
+      expect(selectedRow(t.frame())).toContain(selected);
+      await t.update({
+        ...s,
+        groups: s.groups.filter((group) => group.name !== `${removed}.scope`),
+      });
+      expect(selectedRow(t.frame())).toContain(expected);
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 test("a leaf with no work and little memory is idle; slices and the root never are", () => {
   const mib = 1024 * 1024;
@@ -396,3 +427,45 @@ test("a target whose group has gone is said out loud, not dropped", async () => 
   expect(gone.used).toBe(1);
   expect(gone.notices).toEqual([["/gone is no longer in the sample", "warn"]]);
 });
+
+test.each(["alpha", "beta"])(
+  "Resources selects a requested %s group, including an idle group",
+  async (name) => {
+    const s = emptySnapshot();
+    s.groups = [
+      groupSnapshot({ path: "alpha.scope", name: "alpha.scope" }),
+      groupSnapshot({ path: "beta.scope", name: "beta.scope", cpuPercent: 1 }),
+    ];
+    const handlers = new Set<KeyHandler>();
+    let used = 0;
+    function Requested() {
+      const [target, setTarget] = useState<string | null>(`${name}.scope`);
+      return (
+        <KeyProvider handlers={handlers}>
+          <Resources
+            snapshot={s}
+            config={defaults()}
+            target={target}
+            onTargetUsed={() => {
+              used++;
+              setTarget(null);
+            }}
+            onNotice={() => {}}
+            width={140}
+            height={30}
+          />
+        </KeyProvider>
+      );
+    }
+    const ui = await testRender(<Requested />, { width: 140, height: 30 });
+    try {
+      await ui.renderOnce();
+      expect(selectedRow(ui.captureCharFrame())).toContain(name);
+      expect(used).toBe(1);
+    } finally {
+      await act(async () => {
+        ui.renderer.destroy();
+      });
+    }
+  },
+);

@@ -305,21 +305,25 @@ export function App({
   // action always addresses the live machine. Both refusals sit above the one
   // call that reaches an effect, so no screen arrives at it by another route,
   // and the confirmation stands between it and the effect.
-  const act = (intent: LaneIntent) => {
+  const actionAllowed = (intent: LaneIntent) => {
     if (pinned) {
       notice(
         `Pinned sample · ${intent.scope} may be gone or its name reused · ${keyLabel(c.keys.pin)} shows live data`,
         "warn",
       );
-      return;
+      return false;
     }
     if (!c.writeMode) {
       notice(
         `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`,
         "warn",
       );
-      return;
+      return false;
     }
+    return true;
+  };
+  const act = (intent: LaneIntent) => {
+    if (!actionAllowed(intent)) return;
     setConfirming(intent);
   };
   useKeyboard((key) => {
@@ -335,6 +339,7 @@ export function App({
       // is re-derived from the current one, so the reader's confirmed line is
       // the line that runs or nothing is.
       if (name === c.keys.open) {
+        if (!actionAllowed(intent)) return;
         const resolved = resolveIntent(intent, snapshot, c);
         if (resolved.state !== "ready") {
           notice(`${stale[resolved.state](intent)} · nothing ran`, "warn");
