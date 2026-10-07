@@ -635,6 +635,5 @@
   ".pi/kendex/hooks/skill-load-check.sh",
   ".pi/kendex/hooks/skill-load-record.sh",
   ".pi/kendex/hooks/stop-failure-row.sh",
-  ".pi/prompts/code-scrub.md",
-  "CLAUDE.md"
+  ".pi/prompts/code-scrub.md"
 ]
