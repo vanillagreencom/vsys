@@ -188,8 +188,9 @@ WORKFLOW_STATE="$SCRIPT_DIR/workflow-state"
 # directory's checkout, so a launch run from another repository records into
 # that repository's state, which is not the one the watch reads.
 # A launch names a fleet by naming its state: with no --state-dir there is no
-# fleet to record into, so nothing below writes a lane record or creates a
-# state. ../workflows/handoff.md § 2: launch-only commands pass none; every oversee entry
+# fleet to record into, so nothing below writes a lane record or fleet state.
+# A foreground hosted continuation uses the item's state instead.
+# ../workflows/handoff.md § 2: launch-only commands pass none; every oversee entry
 # point passes the fleet's.
 FLEET=false
 WORKFLOW_STATE_ARGS=()
@@ -1337,17 +1338,16 @@ UNPARK_JQ='def unpark($at): (if .parked.at == null then .
 # what a relaunch can change (a lane moved to another account, host or window)
 # and keeps launched_at, the fleet start the watch is given as --since, and
 # over_cap, the exception its launch was admitted on. A relaunch that records
-# the lane preparing or stopped has not taken, so it also keeps harness, model,
-# account and session_id as the last launch that took wrote them: the next
-# relaunch's route is judged on them. A wake
+# the lane preparing before start or stopped has not taken, so it also keeps
+# harness, model, account and session_id as the last launch that took wrote
+# them: the next relaunch's route is judged on them. A wake
 # rewrites the session it resumed and nothing else, and an item no entry names
 # is refused with status 2, since a lane this launcher never launched has no
 # record to rewrite. A launch created the state on the first item, before its
 # window, so no write here inits by hand; a wake creates nothing and writes
 # into the state a launch already made. Every field the launch does not know is
 # null, never "": a reader tests presence, and a hosted lane is one whose host
-# is set. STATUS is running unless a launch handed to a background job names
-# preparing or stopped; that launch's LAUNCH_PREPARE is recorded as `prepare`,
+# is set. LAUNCH_PREPARE is recorded as `prepare`,
 # and any other launch or relaunch drops an earlier one, as it drops the
 # `parked` record a park left: the resumed lane is running again. A launch or
 # relaunch recording the lane running stamps `running_at` with the time it
@@ -1403,7 +1403,10 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
        + (if $pick == null then {} else {pick: ($pick | {account: .config_dir, binding_bucket, claims,
            burn_pct_per_lane_hour, session_burn_pct_per_lane_hour, session_charge_hours,
            binding_projected_headroom_pct, session_projected_headroom_pct, projected_headroom_pct, selection_score})} end)
-       + (if $prepare == null then {} else {prepare: $prepare} end)
+       + (if $prepare.step == "selection" then
+           {harness: $prepare.harness, account: ($prepare.account | sub("^[^=]*="; "")), model: $prepare.model, effort: $prepare.effort}
+         else {} end)
+       + (if $prepare == null or ($prepare.step == "selection" and $status == "running") then {} else {prepare: $prepare} end)
        + {launch: (if $pane == "" then null else {pane: $pane, server: $server, pid: $harness_pid, start: $harness_start}
          | map_values(if . == "" then null else . end) | (.pid, .server) |= (if . == null then null else tonumber end) end)}
        + (if $wake == null then {} else {wake: $wake} end)')" || return 1
@@ -1412,10 +1415,10 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
   report="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} update-report oversee \
     "$UNPARK_JQ"'(.lanes // []) as $l
      | ($rec | if $mode == "wake" then {session_id, status, wake} elif $mode == "relaunch" then del(.launched_at, .over_cap, .tier, .tier_inputs)
-       | if .status == "running" then . else del(.harness, .model, .effort, .preference_entry, .pick, .account, .session_id) end else . end) as $patch
+       | if .status == "running" or .prepare.step == "selection" then . else del(.harness, .model, .effort, .preference_entry, .pick, .account, .session_id) end else . end) as $patch
      | if any($l[]; .item == $rec.item)
        then {state: (.lanes = ($l | map(if .item == $rec.item then (if $mode == "wake" then . else del(.prepare) | unpark($rec.launched_at)
-         | if $rec.status == "running" then del(.preference_entry, .pick) else . end end) + $patch else . end))), report: "rewritten"}
+         | if $rec.status == "running" or $rec.prepare.step == "selection" then del(.preference_entry, .pick) else . end end) + $patch else . end))), report: "rewritten"}
        elif $mode == "wake" then {state: ., report: "unrecorded"}
        else {state: (.lanes = $l + [$rec]), report: "appended"} end' --argjson rec "$rec" --arg mode "$mode")" || return 1
   [[ "$report" != '"unrecorded"' ]] || return 2
@@ -2553,7 +2556,7 @@ open_wake() { # DIR TITLE CMD
 # installed. Of the carrier only package.json, whose extensions list names the
 # lane mail wake, and extensions/vocab.ts, the file that puts context_window on
 # the hook payloads, are read. A file the host does not hold is one Pi does not
-# read. Returns 1 with its keyed line printed on any refusal.
+# read.
 host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
   local pi_item="$1" pi_wt="$2" dir i rc root="${3:-.pi/agent}" carrier=@vanillagreen/pi-hooks
   local -a remote=("$root/settings.json" "$4/.pi/settings.json") packages=("$4/.pi/packages" "$root/packages")
@@ -2562,20 +2565,21 @@ host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
     return 1
   fi
   trap 'rm -rf -- "${dir:?}"' EXIT
-  # host_read PATH DEST REASON STEP — 0 read, 1 not on the host, 2 refused
+  # host_read PATH DEST REASON STEP: 0 read, 1 absent, 2 failed, 69 busy.
   # with its keyed line printed.
   host_read() {
     local rc=0
     lane_host_fetch host_transport "$pi_wt" "$1" "$2" "$dir/err" || rc=$?
     case "$rc" in
       0 | 1) return "$rc" ;;
-      4) ot_message lane-host-busy "item=$pi_item" "step=$4" >&2; return 2 ;;
+      4) ot_message lane-host-busy "item=$pi_item" "step=$4" >&2; return "$LANE_HOST_BUSY_EXIT" ;;
       *) ot_message "$3" "file=$1" >&2; cat -- "$dir/err" >&2; return 2 ;;
     esac
   }
   for i in 0 1; do
     rc=0
     host_read "${remote[i]}" "$dir/$i" pi-settings-unreadable pi-settings || rc=$?
+    [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || return "$rc"
     [[ "$rc" -ne 2 ]] || return 1
   done
   rc=0
@@ -2590,6 +2594,7 @@ host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
   for i in 0 1; do
     rc=0
     host_read "${packages[i]}/$carrier/package.json" "$dir/package.json" pi-carrier-unreadable pi-carrier || rc=$?
+    [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || return "$rc"
     [[ "$rc" -ne 2 ]] || return 1
     [[ "$rc" -eq 0 ]] || continue
     if ! mkdir -p -- "$dir/packages$i/$carrier/extensions" || ! mv -- "$dir/package.json" "$dir/packages$i/$carrier/package.json"; then
@@ -2599,6 +2604,7 @@ host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
     rc=0
     host_read "${packages[i]}/$carrier/extensions/vocab.ts" "$dir/packages$i/$carrier/extensions/vocab.ts" \
       pi-carrier-unreadable pi-carrier || rc=$?
+    [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || return "$rc"
     [[ "$rc" -ne 2 ]] || return 1
     break
   done
@@ -2675,15 +2681,27 @@ relaunch_route() { # ITEM STATE_ID WORKTREE
 # caller checks it, which suspends errexit for this whole body, so every
 # substitution here is checked explicitly.
 launch_finish() {
-  local context_session
+  local context_session rc=0
+  LANE_MARKER_REASON=marker-failed
+  if [[ "$host_pending_step" == selection ]]; then
+    record_session="" LAUNCH_ALLOW_ALL=null
+    launch_record_finish
+    return
+  fi
   if [[ -n "$HOST_SELECTION_FILE" ]]; then
     # Reset before every attempt: a previous resume must not label a fresh run.
-    if ! printf pending | host_transport put --item "$wt_id" "$remote_path/$HOST_SELECTION_FILE"; then
+    printf pending | host_transport put --item "$wt_id" "$remote_path/$HOST_SELECTION_FILE" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || LANE_MARKER_REASON=lane-host-busy
       ot_message relaunch-selection-failed "item=$item" "operation=put" >&2; return 1
     fi
   fi
   if [[ "$LANE_HOST" != local && "$FLEET" == true && "$WAKE" != true && "$HARNESS" == pi ]]; then
-    host_pi_gate "$item" "$wt_id" "$pi_root" "$remote_path" || return 1
+    host_pi_gate "$item" "$wt_id" "$pi_root" "$remote_path" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      [[ "$rc" -ne "$LANE_HOST_BUSY_EXIT" ]] || LANE_MARKER_REASON=lane-host-busy
+      return 1
+    fi
   fi
   session_file=""
   wake_args=()
@@ -2824,10 +2842,23 @@ launch_finish() {
     open_gui "$wt" "$title" "$cmd" || return 1
   fi
   [[ -z "$session_file" || "$WAKE" == true ]] || ot_message session-resumed "item=$item" "harness=$HARNESS" "transcript=$session_file"
+  launch_record_finish
+}
+
+# Selection can be refused after the harness starts. Its continuation finishes
+# this record in the existing pane and never repeats the launch.
+launch_record_finish() {
+  local rc=0
   if [[ -n "$HOST_SELECTION_FILE" ]]; then
     local selected
-    if ! selected="$(host_transport cat --item "$wt_id" "$remote_path/$HOST_SELECTION_FILE")"; then
+    selected="$(host_transport cat --item "$wt_id" "$remote_path/$HOST_SELECTION_FILE")" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
       ot_message relaunch-selection-failed "item=$item" "operation=cat" >&2
+      if [[ "$rc" -eq "$LANE_HOST_BUSY_EXIT" ]]; then
+        LANE_MARKER_REASON=lane-host-busy
+        host_pending_step=selection
+        return 1
+      fi
       UNTAKEN_PANE="$LAUNCH_PANE"; return 1
     fi
     case "$selected" in
@@ -2856,6 +2887,63 @@ launch_finish() {
       ot_message record-write-failed "item=$item" "state=oversee" >&2
       return 1
     fi
+  fi
+}
+
+# An accepted sandbox survives a dispatcher refusal. Fleet launches keep the
+# pending provider line in their lane record; launch-only calls use the item's
+# state, so they do not create a fleet. A retry reads this before create.
+host_launch_pending() { # STEP
+  local pending
+  pending="$(jq -cn --arg line "$host_line" --arg host "$LANE_HOST" --arg step "$1" --arg since "$launched_at" \
+    --arg account "$LANE_ENV" --arg harness "$HARNESS" --argjson relaunch "$RELAUNCH" \
+    --arg model "$LAUNCH_MODEL" --arg effort "$LAUNCH_EFFORT" \
+    --arg pane "$LAUNCH_PANE" --arg server "$LAUNCH_SERVER" --arg session "$LAUNCH_SESSION" \
+    '{status: "preparing", host: $host, line: $line, step: $step, since: $since,
+      account: $account, harness: $harness, relaunch: $relaunch}
+      + (if $step == "selection" then {pane: $pane, server: $server, session: $session, model: $model, effort: $effort} else {} end)')" || return 1
+  # A selection retry already names a started harness. New invocation flags
+  # cannot change its identity while it finishes the same record.
+  [[ "$1" != selection || "$host_pending_step" != selection || -z "${host_pending_record:-}" ]] || pending="$host_pending_record"
+  if [[ "$FLEET" == true ]]; then
+    LAUNCH_PREPARE="$pending"
+    lane_record_write "$RECORD_MODE" "$wt_id" "$LAUNCH_SESSION:$title" "$remote_path" "" "$launched_at" preparing
+  else
+    "$WORKFLOW_STATE" exists "$wt_id" || "$WORKFLOW_STATE" init "$wt_id" >/dev/null || return 1
+    "$WORKFLOW_STATE" set "$wt_id" host_launch "$pending" >/dev/null
+  fi
+}
+
+host_launch_resume() {
+  local key="$wt_id" query='.host_launch' pending
+  host_pending_step="" host_line="" host_pending_since="" host_pending_pane="" host_pending_server="" host_pending_session="" host_pending_record=""
+  if [[ "$FLEET" == true ]]; then
+    key=oversee
+    query='[.lanes[]? | objects | select(.item == "'"$wt_id"'" and .status == "preparing") | .prepare] | first'
+  fi
+  "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} exists "$key" || return 0
+  pending="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} get "$key" "$query")" || return 1
+  [[ -n "$(jq -r '.line // empty' <<<"$pending")" ]] || return 0
+  if ! jq -e --arg host "$LANE_HOST" --arg account "$LANE_ENV" --arg harness "$HARNESS" --argjson relaunch "$RELAUNCH" \
+    '.host == $host and .account == $account and .harness == $harness and .relaunch == $relaunch' <<<"$pending" >/dev/null; then
+    ot_message host-launch-mismatch "item=$item" >&2
+    return 1
+  fi
+  host_line="$(jq -r '.line // empty' <<<"$pending")" || return 1
+  host_pending_step="$(jq -r '.step // empty' <<<"$pending")" || return 1
+  host_pending_since="$(jq -r '.since // empty' <<<"$pending")" || return 1
+  host_pending_pane="$(jq -r '.pane // empty' <<<"$pending")" || return 1
+  host_pending_server="$(jq -r '.server // empty' <<<"$pending")" || return 1
+  host_pending_session="$(jq -r '.session // empty' <<<"$pending")" || return 1
+  [[ "$host_pending_step" != selection ]] || host_pending_record="$pending"
+}
+
+host_launch_ready() {
+  if [[ "$FLEET" == true ]]; then
+    "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} update oversee --arg item "$wt_id" \
+      '(.lanes[]? | select(.item == $item and .prepare.line != null)) |= (del(.prepare) | if .status == "preparing" then .status = "stopped" else . end)' >/dev/null
+  elif "$WORKFLOW_STATE" exists "$wt_id"; then
+    "$WORKFLOW_STATE" update "$wt_id" 'del(.host_launch)' >/dev/null
   fi
 }
 
@@ -3331,6 +3419,10 @@ for raw in "${ITEMS[@]}"; do
     failed=$((failed + 1))
     break
   fi
+  host_pending_step="" host_line=""
+  if [[ "$LANE_HOST" != local ]]; then
+    host_launch_resume || { failed=$((failed + 1)); continue; }
+  fi
   # Judged before the worktree, so a refused item leaves no tree behind. A
   # refusal stops the batch: the count it refused on stands for every later
   # item.
@@ -3460,7 +3552,11 @@ for raw in "${ITEMS[@]}"; do
   fi
   host_args=(create --item "$wt_id" --repo "$repo" --harness "$HARNESS" --account "${LANE_ENV#*=}")
   [[ "$RELAUNCH" != true ]] || host_args+=(--relaunch)
-  if [[ "$LANE_HOST" != local ]]; then host_line="$(host_transport "${host_args[@]}")" || create_rc=$?
+  if [[ "$LANE_HOST" != local ]]; then
+    if [[ -z "$host_line" ]]; then host_line="$(host_transport "${host_args[@]}")" || create_rc=$?; fi
+    # A provider may return an accepted preparation's line with ownership 75.
+    # An ownership refusal without that line still belongs to another launch.
+    [[ "$create_rc" -ne 75 || $'\t'"$host_line"$'\t' != *$'\tstate=preparing\t'* ]] || create_rc=0
   elif [[ "$keep_tree" == true ]]; then wt="$("$WORKTREE_CLI" path "$wt_id")" || create_rc=$?
   else wt="$("$WORKTREE_CLI" create "${create_args[@]}")" || create_rc=$?; fi
   if [[ "$create_rc" -eq "$WORKTREE_REUSE_UNREBASED_EXIT" && "$LANE_HOST" == local ]]; then
@@ -3534,6 +3630,7 @@ for raw in "${ITEMS[@]}"; do
     if [[ -z "$ssh_target" || -z "$remote_path" || -z "$remote_prefix" || "$host_line" == *$'\n'* \
       || -n "$host_state" && "$host_state" != preparing ]]; then
       ot_message host-line-invalid "item=$item" >&2
+      host_launch_ready || { failed=$((failed + 1)); continue; }
       failed=$((failed + 1))
       continue
     fi
@@ -3545,6 +3642,12 @@ for raw in "${ITEMS[@]}"; do
   # stamp taken after the open and its verification would leave anything that
   # landed meanwhile below the floor for the life of the fleet.
   launched_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [[ -n "$host_pending_step" ]]; then
+    launched_at="$host_pending_since"
+    LAUNCH_PANE="$host_pending_pane" LAUNCH_SERVER="$host_pending_server"
+    [[ -z "$host_pending_session" ]] || LAUNCH_SESSION="$host_pending_session"
+    LAUNCH_PREPARE="$host_pending_record"
+  fi
   # Judged before any record write: a preparing record already names this
   # launch's harness, and the switch is read against the one before it.
   RELAUNCH_ROUTE=resume HOST_SELECTION_FILE=""
@@ -3555,30 +3658,42 @@ for raw in "${ITEMS[@]}"; do
   # A host still preparing the item it accepted answers through `wait`. Under a
   # fleet a background job waits and the watch reports what it recorded;
   # without one there is no record to report through, so the launch waits here.
-  if [[ "$host_state" == preparing && "$FLEET" == true && -z "$HOST_SELECTION_FILE" ]]; then
+  if [[ "$host_state" == preparing && "$FLEET" == true && -z "$HOST_SELECTION_FILE" && -z "$host_pending_step" ]]; then
     launch_handoff || { failed=$((failed + 1)); continue; }
     preparing=$((preparing + 1))
   else
     wait_rc=0
-    [[ "$host_state" != preparing ]] || host_transport wait --item "$wt_id" || wait_rc=$?
+    [[ "$LANE_HOST" == local || "$FLEET" == true ]] || host_launch_pending "${host_pending_step:-wait}" \
+      || { failed=$((failed + 1)); continue; }
+    [[ "$host_state" != preparing || "$host_pending_step" == marker || "$host_pending_step" == selection ]] || host_transport wait --item "$wt_id" || wait_rc=$?
     if [[ "$wait_rc" -eq "$LANE_HOST_BUSY_EXIT" ]]; then
       ot_message lane-host-busy "item=$item" step=wait >&2
-      failed=$((failed + 1))
+      host_launch_pending wait || { failed=$((failed + 1)); continue; }
+      preparing=$((preparing + 1))
       continue
     elif [[ "$wait_rc" -ne 0 ]]; then
       ot_message host-prepare-failed "item=$item" >&2
+      host_launch_ready || { failed=$((failed + 1)); continue; }
       failed=$((failed + 1))
       continue
     fi
+    [[ "$LANE_HOST" == local || "$FLEET" == true ]] || host_launch_pending "${host_pending_step:-marker}" || { failed=$((failed + 1)); continue; }
     if ! launch_finish; then
+      if [[ "$LANE_HOST" != local && "$LANE_MARKER_REASON" == lane-host-busy ]]; then
+        host_launch_pending "$([[ "$host_pending_step" == selection ]] && echo selection || echo marker)" || { failed=$((failed + 1)); continue; }
+        preparing=$((preparing + 1))
+        continue
+      fi
       # Only a hosted relaunch whose open_tmux failed after its window opened
       # ends through launch_stop. Any other failure keeps its record as it
       # read: a window that never opened started nothing, and one that opened
       # and took, record-write-failed after it, stands.
       [[ "$HOST_RELAUNCH" != true || "$FLEET" != true || -z "$UNTAKEN_PANE" ]] || launch_stop || true
+      [[ "$LANE_HOST" == local ]] || host_launch_ready || { failed=$((failed + 1)); continue; }
       failed=$((failed + 1))
       continue
     fi
+    [[ "$LANE_HOST" == local ]] || host_launch_ready || { failed=$((failed + 1)); continue; }
     launched=$((launched + 1))
   fi
   # Recorded here, after the window exists: a lane picked for an item that
