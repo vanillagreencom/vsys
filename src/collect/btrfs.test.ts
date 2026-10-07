@@ -114,6 +114,7 @@ for (const phase of ["startup", "replacement"] as const) {
           );
           expect(item.state).toBe("unknown");
           expect(item.scrub?.path).toBe(changing);
+          expect(item.scrub?.fsid).toBeNull();
           expect(item.scrub?.startedAt).toBeNull();
           expect(item.blocks).toBeNull();
           const snapshot = emptySnapshot();
@@ -160,6 +161,104 @@ for (const phase of ["startup", "replacement"] as const) {
     }
   });
 }
+test("an unreadable shipped report stays unassociated after mount reuse", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const previous = "2ff9dd6d-c928-4458-9444-bffb6c01eacb";
+  const current = "71345faf-0e2f-4855-88f2-fd0ea2697ea5";
+  for (const [fsid, device] of [
+    [previous, "testA"],
+    [current, "testB"],
+  ] as const) {
+    const root = join(f.config.btrfsRoot, fsid);
+    mkdirSync(join(root, "devices"), { recursive: true });
+    symlinkSync(`/sys/devices/${device}`, join(root, "devices", device));
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0\n",
+    );
+  }
+  const home = join(f.root, "home");
+  mkdirSync(home);
+  // The shipped reporter keeps the old mount's report when another filesystem
+  // takes that mount. Its filename cannot identify the filesystem in its text.
+  const changing = join(f.config.scrubDir, `${escapePath(f.root)}.result`);
+  const steady = join(f.config.scrubDir, `${escapePath(home)}.result`);
+  const report = (at: string, damaged = 0) =>
+    `UUID: ${previous}\nScrub started: ${at}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: ${damaged}\nDamaged files: 0\n`;
+  f.write(changing, report("2026-09-12T13:25:54Z", 1));
+  f.write(steady, report("2026-09-11T13:25:54Z"));
+  const mounts = parseMounts(
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/testB rw\n2 0 0:2 /home ${home} rw - btrfs /dev/testA rw`,
+  );
+  const time = Date.parse("2026-09-12T13:25:54Z") + 2000;
+  const collector = new StorageCollector();
+  const successor = new StorageCollector(
+    null,
+    null,
+    collector.finishedScrubMemory(),
+  );
+  const reader = new Reader();
+  chmodSync(changing, 0o000);
+  try {
+    for (const active of [collector, successor]) {
+      const snapshot = emptySnapshot();
+      snapshot.time = time;
+      snapshot.storage = await active.collect(
+        reader,
+        f.config,
+        time,
+        mounts,
+        true,
+        true,
+      );
+      const items = integrities(snapshot, f.config);
+      const previousItem = present(
+        items.find((item) => item.id === previous),
+        "previous filesystem",
+      );
+      const currentItem = present(
+        items.find((item) => item.id === current),
+        "current filesystem",
+      );
+      expect(previousItem.state).toBe("unknown");
+      expect(currentItem.state).toBe("unknown");
+      const unread = present(
+        snapshot.storage.scrubs.find((scrub) => scrub.path === changing),
+        "unreadable historical report",
+      );
+      expect(unread.readable).toBe(false);
+      expect(unread.fsid).toBeNull();
+      expect(unread.startedAt).toBeNull();
+      expect(unread.addresses).toBeNull();
+      expect(
+        summarySnapshot(snapshot, f.config).verdict.some(
+          (cause) => cause.cause === "integrity-unknown",
+        ),
+      ).toBe(true);
+    }
+    chmodSync(changing, 0o600);
+    const restored = emptySnapshot();
+    restored.time = time;
+    restored.storage = await successor.collect(
+      reader,
+      f.config,
+      time,
+      mounts,
+      true,
+      true,
+    );
+    const restoredItem = present(
+      integrities(restored, f.config).find((item) => item.id === previous),
+      "restored previous filesystem",
+    );
+    expect(restoredItem.state).toBe("damaged");
+  } finally {
+    chmodSync(changing, 0o600);
+    successor.close();
+    collector.close();
+  }
+});
 for (const row of [
   {
     name: "clean check",

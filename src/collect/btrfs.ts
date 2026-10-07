@@ -17,7 +17,6 @@ import { type MountInfo, readMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
 import { counted, isReportName, parseScrub, stated } from "./scrub";
 import {
-  escapePath,
   missingScrubTimers,
   missingSmartTimer,
   type ScrubMount,
@@ -512,12 +511,6 @@ export class StorageCollector {
       if (smartTimer !== undefined) storage.missingSmartTimers = smartTimer;
     }
     this.scrubDir = undefined;
-    const reportMounts = new Map(
-      scrubMounts.map((mount) => [
-        `${escapePath(mount.mount)}.result`,
-        mount.fsid,
-      ]),
-    );
     try {
       let entries: Dirent[];
       try {
@@ -545,7 +538,7 @@ export class StorageCollector {
             text: "",
             readable: false,
             problem: true,
-            fsid: report?.fsid ?? reportMounts.get(entry.name) ?? null,
+            fsid: report?.fsid ?? null,
             startedAt: report?.startedAt ?? null,
             status: null,
             duration: null,
