@@ -2428,7 +2428,9 @@ def state_object(raw):
 
 def state_from_text(text):
     raw = state_object(json.loads(text))
-    return {**default_state(), **raw} if raw is not None else default_state()
+    if raw is None:
+        raise ValueError("invalid state")
+    return {**default_state(), **raw}
 
 
 def read_state_unlocked():
@@ -2440,7 +2442,7 @@ def read_state_unlocked():
         print(f"agent-warden: state=unreadable {STATE}", file=sys.stderr)
         raise
     except Exception:  # noqa: BLE001
-        return default_state()
+        return {**default_state(), "counters_unknown": True}
 
 
 class State:
