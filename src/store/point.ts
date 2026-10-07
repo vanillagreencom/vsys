@@ -2,7 +2,7 @@ import { corruptionTotal } from "../collect/btrfs";
 import type { Config } from "../config/config";
 import { escaped } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
-import { agentTotal, sliceSum } from "../model/verdict";
+import { agentTotal, buildLoad, sliceSum } from "../model/verdict";
 import type { TimelineEvent } from "./events";
 
 export interface Point {
@@ -15,7 +15,7 @@ export interface Point {
   ioPressure: number | null;
   corruption: number | null;
   unconfined: number;
-  builds: number;
+  builds: number | null;
   alerts: Alert[];
   /** What changed since the previous sample, derived once by the store. */
   events: TimelineEvent[];
@@ -63,7 +63,7 @@ export function point(
     ioPressure: s.system.pressure.io?.some ?? null,
     corruption,
     unconfined: s.procs.filter((p) => escaped(p, c, s.capabilities)).length,
-    builds: s.procs.filter((p) => p.build).length,
+    builds: buildLoad(s, c).builds,
     alerts: s.alerts.map((alert) => ({ ...alert })),
     events,
   };

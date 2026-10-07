@@ -19,20 +19,24 @@ import { lanes } from "./lanes";
 import type { Sccache, Snapshot } from "./types";
 import { agentLanes, buildLoad, meters } from "./verdict";
 
-test("nested service lanes assign every process once and agree with fleet totals", () => {
-  for (const suffix of ["scope", "service"])
+test("nested lanes assign every process once and agree with fleet totals", () => {
+  for (const [parentName, childName] of [
+    ["libpod-abc.scope", "init.scope"],
+    ["agent.service", "child.scope"],
+    ["agent.service", "child.service"],
+  ] as const)
     for (const reverse of [false, true]) {
       const s = emptySnapshot();
       const parent = groupSnapshot({
-        path: "app.slice/agent.service",
-        name: "agent.service",
-        kernelPath: "/app.slice/agent.service",
+        path: `app.slice/${parentName}`,
+        name: parentName,
+        kernelPath: `/app.slice/${parentName}`,
         pids: [40],
       });
       const child = groupSnapshot({
-        path: `${parent.path}/child.${suffix}`,
-        name: `child.${suffix}`,
-        kernelPath: `${parent.kernelPath}/child.${suffix}`,
+        path: `${parent.path}/${childName}`,
+        name: childName,
+        kernelPath: `${parent.kernelPath}/${childName}`,
         pids: [41, 42],
       });
       s.groups = reverse ? [child, parent] : [parent, child];
@@ -67,6 +71,14 @@ test("nested service lanes assign every process once and agree with fleet totals
         s.lanes.find((lane) => lane.cgroup === child.path),
         "child lane",
       );
+      const summary = buildsSummary(s, c);
+      expect(summary.builds).toBe(1);
+      expect(
+        summary.rows.reduce(
+          (n, row) => n + present(row.builds ?? undefined, "build count"),
+          0,
+        ),
+      ).toBe(present(summary.builds ?? undefined, "fleet build count"));
       expect(parentLane.pids).toEqual([40]);
       expect([...childLane.pids].sort((a, b) => a - b)).toEqual([41, 42]);
       expect([
@@ -77,14 +89,6 @@ test("nested service lanes assign every process once and agree with fleet totals
           0,
         ),
       ]).toEqual([1024, 6144, 7168]);
-      const summary = buildsSummary(s, c);
-      expect(summary.builds).toBe(1);
-      expect(
-        summary.rows.reduce(
-          (n, row) => n + present(row.builds ?? undefined, "build count"),
-          0,
-        ),
-      ).toBe(present(summary.builds ?? undefined, "fleet build count"));
       expect(
         summary.rows.find((row) => row.id === parentLane.id),
       ).toBeUndefined();
