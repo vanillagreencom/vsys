@@ -233,6 +233,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                     self.assertEqual(self.w.emit_event(st, "moved", now=1)["id"], 1000)
                 mgr = 4000
                 unit = "agent-confine-counter-unknown.scope"
+                (self.w.CG_ROOT / self.w.SLICE / unit).mkdir(parents=True)
                 recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice"),
                         8000: self.P(8000, mgr, "bun", ["bun"], self._cg(unit), exe="/usr/bin/bun")}
                 with self.w.State() as st:
@@ -573,6 +574,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             old = self.point_status_state(self.w, base)
             try:
                 unit = "agent-confine-bad.scope"
+                (self.w.CG_ROOT / self.w.SLICE / unit).mkdir(parents=True)
                 now = self.w.time.time()
                 self.w.STATE_DIR.mkdir(parents=True, exist_ok=True)
                 self.w.STATE.write_text(json.dumps({"orphans": {unit: {"first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": "yes"}}}))

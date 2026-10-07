@@ -111,8 +111,16 @@ fi
 # A failure after the probe passes stays fatal on purpose. Nothing here starts
 # the agent outside the slice as a consolation: an agent that runs unconfined
 # but looks fine is the failure that went unseen for weeks.
+SYSTEMD_SCOPE_ARGS=(--user --quiet --collect --scope --slice=agents.slice)
+# systemd before 254 passes scope arguments literally. 254 adds this option;
+# 258 expands scope arguments by default. --help tests option parsing without
+# contacting the user manager. Both scope calls use the selected arguments.
 if command -v systemd-run >/dev/null 2>&1 &&
-	systemd-run --user --quiet --collect --scope --slice=agents.slice \
+	systemd-run --expand-environment=no --help >/dev/null 2>&1; then
+	SYSTEMD_SCOPE_ARGS+=(--expand-environment=no)
+fi
+if command -v systemd-run >/dev/null 2>&1 &&
+	systemd-run "${SYSTEMD_SCOPE_ARGS[@]}" \
 		true >/dev/null 2>&1; then
 	# Sibling scopes share the slice's CPU equally only while the CPU controller
 	# is enabled inside agents.slice, and systemd enables it only when some
@@ -158,7 +166,7 @@ if command -v systemd-run >/dev/null 2>&1 &&
 	else
 		echo "agent-confine: TMPDIR unavailable at $agent_confine_scratch; keeping inherited TMPDIR" >&2
 	fi
-	exec systemd-run --user --quiet --collect --scope --slice=agents.slice \
+	exec systemd-run "${SYSTEMD_SCOPE_ARGS[@]}" \
 		-p "CPUWeight=99" \
 		-p "TasksMax=${AGENT_SCOPE_TASKS_MAX:-8192}" \
 		-p "MemoryHigh=${AGENT_SCOPE_MEM_HIGH:-64G}" \
