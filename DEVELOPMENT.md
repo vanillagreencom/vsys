@@ -55,7 +55,7 @@ bun run bench:writes     # the write budget alone; in the check contract
 
 ### Secrets
 
-`AUR_SSH_PRIVATE_KEY` holds the AUR key's contents, which CI uses to push `vsys` and `vsys-git` to the AUR. Running `packaging/publish-aur.sh` by hand takes `AUR_SSH_KEY_FILE` instead, the path to a key already on disk, so no private key is copied anywhere. The script verifies the AUR against the host keys pinned in `packaging/aur-known-hosts` and reads and writes nothing under `~/.ssh`.
+`AUR_SSH_PRIVATE_KEY` holds the AUR key's contents, which CI uses to push `vsys` and `vsys-git` to the AUR. Running `packaging/publish-aur.sh` by hand takes `AUR_SSH_KEY_FILE` instead, the path to a key already on disk, so no private key is copied anywhere. The script connects with that key and verifies the AUR against the host keys pinned in `packaging/aur-known-hosts`.
 
 ### AUR packages
 
@@ -63,7 +63,7 @@ Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the 
 
 Both AUR packages disable makepkg strip and debug splitting, because stripping a Bun compiled binary removes its appended program bundle.
 
-The first push to the AUR creates each package, so bootstrap each one with the script CI runs. It pins the version, fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
+The first push to the AUR creates each package, so bootstrap each one with the script CI runs. The script pins the version. For `vsys` it also fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
 
 ```sh
 export AUR_SSH_KEY_FILE=~/.ssh/vgs_aur_rsa
