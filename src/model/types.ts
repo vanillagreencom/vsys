@@ -398,13 +398,13 @@ export interface Lane {
   readRate: number | null;
   writeRate: number | null;
   tasks: number | null;
-  rustc: number;
-  cargo: number;
-  tests: number;
+  rustc: number | null;
+  cargo: number | null;
+  tests: number | null;
   /** Every build process in the lane counted by its kind. */
-  builds: Record<string, number>;
-  linkers: number;
-  sccache: number;
+  builds: Record<string, number> | null;
+  linkers: number | null;
+  sccache: number | null;
   /**
    * Effective caps: the tightest limit any ancestor imposes. A null cap is
    * unlimited only while the cgroup tree covering the lane was read.
@@ -495,6 +495,7 @@ export interface Capability {
   belowSlice?: boolean;
 }
 /** A complete sample carries failures rather than converting them to zero. */
+export type ProcessRead = "complete" | "incomplete" | "unknown";
 export interface Snapshot {
   capabilities: Capability[];
   time: number;
@@ -502,6 +503,8 @@ export interface Snapshot {
   system: System;
   groups: Group[];
   procs: Proc[];
+  /** Collection-time outcome; unknown in records that predate it. */
+  processRead: ProcessRead;
   storage: Storage;
   lanes: Lane[];
   alerts: Alert[];

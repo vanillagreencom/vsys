@@ -1,5 +1,4 @@
 import { compileOrLink } from "../collect/builds";
-import { omittedProcess } from "../collect/procs";
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
@@ -205,7 +204,7 @@ export function agentTotal(
     return sliceSum(s.groups, c.agentSlice, (g) =>
       reading === "cpu" ? g.cpuPercent : g.cache,
     );
-  if (s.errors.some((e) => omittedProcess(e.source, c.procRoot))) return null;
+  if (s.processRead !== "complete") return null;
   const agents = agentLanes(s.lanes);
   return agents.every((l) => l[reading] !== null)
     ? agents.reduce((sum, l) => sum + (l[reading] ?? 0), 0)
@@ -238,7 +237,7 @@ export function buildLoad(
   s: Snapshot,
   c: Config,
 ): { builds: number | null; linkers: number | null; lanes: number | null } {
-  if (s.errors.some((e) => omittedProcess(e.source, c.procRoot)))
+  if (s.processRead !== "complete")
     return { builds: null, linkers: null, lanes: null };
   const building = s.procs.filter((p) =>
     compileOrLink(p.build, c.compilerNames, c.linkerNames),
@@ -251,7 +250,8 @@ export function buildLoad(
   };
 }
 /** Linkers inside one lane, matched through the lane's own process list. */
-export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number {
+export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number | null {
+  if (lane.builds === null) return null;
   const members = new Set(lane.pids);
   return s.procs.filter(
     (p) => members.has(p.pid) && c.linkerNames.includes(p.build ?? ""),

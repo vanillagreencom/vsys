@@ -292,6 +292,7 @@ test.each([{ failed: false }, { failed: true }])(
     const c = defaults();
     const s = emptySnapshot();
     if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    s.processRead = failed ? "incomplete" : "complete";
     const t = await mount(s, c, { width: 220, height: 30 });
     try {
       await t.press("1");

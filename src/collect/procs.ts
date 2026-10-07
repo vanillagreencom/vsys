@@ -122,6 +122,7 @@ export interface ProcessRequest {
 export interface ProcessReading {
   procs: Proc[];
   errors: SourceError[];
+  processRead: "complete" | "incomplete";
 }
 /**
  * Where process collection runs. The program runs it on a thread of its own;
@@ -385,7 +386,13 @@ export class ProcessCollector implements ProcessSource {
         result.map((p) => [p.pid, { start: p.start, ticks: p.ticks }]),
       ),
     };
-    return { procs: result, errors: r.errors };
+    return {
+      procs: result,
+      errors: r.errors,
+      processRead: r.errors.some((e) => omittedProcess(e.source, c.procRoot))
+        ? "incomplete"
+        : "complete",
+    };
   }
 }
 

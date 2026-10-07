@@ -70,7 +70,7 @@ class FakePort implements ProcessPort {
     return last.id;
   }
 }
-const reading = { procs: [], errors: [] };
+const reading = { procs: [], errors: [], processRead: "complete" as const };
 function fakes() {
   const ports: FakePort[] = [];
   const f = setup();

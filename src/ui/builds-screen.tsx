@@ -179,7 +179,7 @@ export function Builds({
   const meter = meters(s, c).find((m) => m.id === "builds");
   if (!meter) throw new Error("The verdict model has no builds meter");
   const total = meterTile(meter, s, c);
-  const topBuilds = Math.max(1, ...rows.map((r) => r.builds));
+  const topBuilds = Math.max(1, ...rows.map((r) => r.builds ?? 0));
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={width}>
@@ -285,14 +285,18 @@ export function Builds({
                 value={row.builds}
                 text={cell(
                   countColumn,
-                  `${row.builds} ${row.builds === 1 ? "process" : "processes"}`,
+                  row.builds === null
+                    ? gap
+                    : `${row.builds} ${row.builds === 1 ? "process" : "processes"}`,
                 )}
               />
               {linkerColumn && (
                 <span attributes={ui.dim}>
                   {`${columnGap}${cell(
                     linkerColumn,
-                    `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
+                    row.linkers === null
+                      ? gap
+                      : `${count(row.linkers, "linker")}${row.linkerNames.length ? ` (${row.linkerNames.join(", ")})` : ""}`,
                   )}`}
                 </span>
               )}

@@ -17,7 +17,7 @@ import {
   windowTitle,
 } from "./naming";
 import { scopeMain } from "./scopes";
-import type { Capability, Group, Lane, Proc } from "./types";
+import type { Capability, Group, Lane, Proc, ProcessRead } from "./types";
 
 /**
  * Whether a lane held no member read on its sample. A lane takes its main
@@ -178,6 +178,7 @@ export function lanes(
   tmux?: PaneSet,
   /** What the sample's probes found, which decides whether agents escape. */
   capabilities: Capability[] = [],
+  processRead: ProcessRead = "complete",
 ): Lane[] {
   /** Every pane the read gave. Empty when no read answered. */
   const panes = tmux?.byId ?? new Map<string, PaneAddress>();
@@ -195,9 +196,16 @@ export function lanes(
   const agentLane = (p: Proc) =>
     escaped(p, c, capabilities) || (!compared && p.tool !== null);
   const byPid = new Map(procs.map((p) => [p.pid, p]));
-  function lane(id: string, members: Proc[], group?: Group, complete = true) {
+  function lane(id: string, members: Proc[], group?: Group) {
     if (!members.length && !group) return;
     const memberIndex = new Map(members.map((p) => [p.pid, p]));
+    const complete = group
+      ? groups
+          .filter(
+            (g) => g.path === group.path || g.path.startsWith(`${group.path}/`),
+          )
+          .every((g) => g.pids.every((pid) => byPid.has(pid)))
+      : processRead === "complete";
     const main =
       scopeMain(group ? group.pids : members.map((p) => p.pid), memberIndex) ??
       members.find((p) => p.tool) ??
@@ -328,15 +336,18 @@ export function lanes(
         (complete && members.length
           ? members.reduce((n, p) => n + p.threads, 0)
           : null),
-      rustc: builds.rustc ?? 0,
-      cargo: builds.cargo ?? 0,
-      tests: builds.test ?? 0,
-      builds,
-      linkers: members.filter((p) => c.linkerNames.includes(p.build ?? ""))
-        .length,
-      sccache: members.filter((p) =>
-        c.sccacheNames.includes(basename(p.command[0] ?? p.comm)),
-      ).length,
+      rustc: complete ? (builds.rustc ?? 0) : null,
+      cargo: complete ? (builds.cargo ?? 0) : null,
+      tests: complete ? (builds.test ?? 0) : null,
+      builds: complete ? builds : null,
+      linkers: complete
+        ? members.filter((p) => c.linkerNames.includes(p.build ?? "")).length
+        : null,
+      sccache: complete
+        ? members.filter((p) =>
+            c.sccacheNames.includes(basename(p.command[0] ?? p.comm)),
+          ).length
+        : null,
       memoryMax: caps.max,
       memoryMaxKnown: caps.known,
       cpuWeight: group?.weight ?? null,
@@ -382,18 +393,21 @@ export function lanes(
       dangerousCap(group, groups, c.memoryFloor) ||
       members.some(agentLane)
     )
-      lane(
-        group.path,
-        members,
-        group,
-        [...pids].every((pid) => byPid.has(pid)),
-      );
+      lane(group.path, members, group);
   }
   for (const proc of procs.filter((p) => agentLane(p) && !covered.has(p.pid))) {
     if (covered.has(proc.pid)) continue;
+    const group = groups.find(
+      (g) => (g.kernelPath ?? `/${g.path}`) === proc.group,
+    );
     lane(
       proc.group,
-      procs.filter((p) => p.group === proc.group),
+      procs.filter(
+        (p) =>
+          p.group === proc.group ||
+          (group && p.group.startsWith(`${proc.group}/`)),
+      ),
+      group,
     );
   }
   return result;

@@ -246,6 +246,7 @@ export function emptySnapshot(time = 1000): Snapshot {
     },
     groups: [],
     procs: [],
+    processRead: "complete",
     storage: { volumes: [], scratch: [], sessions: [], scrubs: [] },
     lanes: [],
     alerts: [],

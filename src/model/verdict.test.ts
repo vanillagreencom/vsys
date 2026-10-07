@@ -1,12 +1,15 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProcessCollector } from "../collect/procs";
 import { type Config, defaults, validate } from "../config/config";
+import { History } from "../store/history";
+import { normalizeSnapshot } from "../store/migrate";
 import {
   emptySnapshot,
   everyCauseSnapshot,
+  fixture,
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
@@ -329,10 +332,12 @@ test("build counts stay unknown when process collection omits a process or canno
           expect(reading.errors.map((error) => error.source)).toEqual(
             count === null ? [procRoot] : [],
           );
+          s.processRead = reading.processRead;
           s.procs = reading.procs;
           s.errors = reading.errors;
         } else {
           s.errors = sources.map((source) => ({ source, message: "EACCES" }));
+          s.processRead = count === null ? "incomplete" : "complete";
         }
         const counts = { builds: count, linkers: count, lanes: count };
         expect({ name, ...buildLoad(s, config) }).toEqual({ name, ...counts });
@@ -354,6 +359,57 @@ test("build counts stay unknown when process collection omits a process or canno
     }
   } finally {
     rmSync(root, { recursive: true });
+  }
+});
+
+test("replay keeps the collected process outcome after a process root edit", async () => {
+  const f = fixture();
+  const history = new History(f.config);
+  try {
+    f.proc(77, "app.slice/agent.service", {
+      command: ["rustc"],
+      comm: "rustc",
+    });
+    rmSync(join(f.config.procRoot, "77/stat"));
+    mkdirSync(join(f.config.procRoot, "77/stat"));
+    const s = emptySnapshot();
+    const reading = new ProcessCollector(f.config, 100, 4096).read({
+      time: s.time,
+      uptime: 0,
+      groups: [],
+    });
+    expect(reading.processRead).toBe("incomplete");
+    expect(reading.errors.map((e) => e.source)).toContain(
+      join(f.config.procRoot, "77"),
+    );
+    Object.assign(s, reading);
+    history.add(s);
+    const replay = present(history.at(s.time) ?? undefined, "retained sample");
+    for (const procRoot of [
+      f.config.procRoot,
+      `${f.config.procRoot}/`,
+      "/proc-new",
+    ]) {
+      const config = validate({ procRoot }, f.config);
+      expect(buildLoad(replay, config)).toEqual({
+        builds: null,
+        linkers: null,
+        lanes: null,
+      });
+      expect(meterOf(replay, config, "builds").level).toBe("warn");
+    }
+    const { processRead: _outcome, ...legacy } = emptySnapshot();
+    const normalized = normalizeSnapshot(JSON.parse(JSON.stringify(legacy)));
+    expect(normalized.processRead).toBe("unknown");
+    expect(buildLoad(normalized, f.config)).toEqual({
+      builds: null,
+      linkers: null,
+      lanes: null,
+    });
+    expect(normalizeSnapshot(normalized)).toEqual(normalized);
+  } finally {
+    history.close();
+    f.cleanup();
   }
 });
 
@@ -747,6 +803,9 @@ test("with no agent slice, agent totals sum the agent lanes and stay unknown on 
         {
           ...s,
           lanes,
+          processRead: failed.some((source) => !source.endsWith("/environ"))
+            ? "incomplete"
+            : "complete",
           errors: failed.map((source) => ({ source, message: "EACCES" })),
         },
         { ...c, procRoot },

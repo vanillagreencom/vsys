@@ -19,9 +19,30 @@ import {
   processSnapshot,
 } from "../test/fixture";
 import { History, Ring } from "./history";
+import { normalizeSnapshot } from "./migrate";
 import { point } from "./point";
 
 const cleanup: (() => void)[] = [];
+
+test("legacy snapshots lack process totals but retain cgroup measurements", () => {
+  const s = emptySnapshot();
+  s.groups = [groupSnapshot({ cpuPercent: 0, swap: 0, tasks: 0 })];
+  s.lanes = [laneSnapshot({ builds: { rustc: 1 }, linkers: 0 })];
+  const { processRead: _outcome, ...legacy } = s;
+  const replay = normalizeSnapshot(JSON.parse(JSON.stringify(legacy)));
+  expect(replay.processRead).toBe("unknown");
+  const lane = replay.lanes[0];
+  expect([
+    lane?.rss,
+    lane?.cpu,
+    lane?.swap,
+    lane?.tasks,
+    lane?.builds,
+    lane?.linkers,
+  ]).toEqual([null, 0, 0, 0, null, null]);
+  expect(normalizeSnapshot(replay)).toEqual(replay);
+  expect(normalizeSnapshot(s)).toEqual(s);
+});
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn();
 });
@@ -217,7 +238,7 @@ test("a stored lane written before this build's fields loads with unknown values
   cleanup.push(() => reopened.close());
   const lane = reopened.at(now)?.lanes[0];
   expect(lane?.name).toBe("lane-a");
-  expect(lane?.builds).toEqual({});
+  expect(lane?.builds).toBeNull();
   expect([lane?.memoryMaxKnown, lane?.blocked, lane?.blockedOn]).toEqual([
     false,
     0,

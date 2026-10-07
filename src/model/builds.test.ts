@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { buildKind, compileOrLink } from "../collect/builds";
 import { defaults } from "../config/config";
-import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  groupSnapshot,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { present } from "../test/present";
 import {
   buildsSummary,
@@ -10,8 +15,60 @@ import {
   jobservers,
   laneBuilds,
 } from "./builds";
+import { lanes } from "./lanes";
 import type { Sccache, Snapshot } from "./types";
 import { buildLoad, meters } from "./verdict";
+
+test("incomplete lane membership and unowned collection keep build rows unknown", () => {
+  for (const suffix of ["scope", "service"]) {
+    const s = emptySnapshot();
+    const group = groupSnapshot({
+      path: `app.slice/agent.${suffix}`,
+      name: `agent.${suffix}`,
+      pids: [40, 41],
+      kernelPath: `/app.slice/agent.${suffix}`,
+    });
+    s.groups = [group];
+    s.procs = [
+      processSnapshot({ pid: 40, group: group.kernelPath, build: "rustc" }),
+    ];
+    s.processRead = "incomplete";
+    s.lanes = lanes(
+      s.groups,
+      s.procs,
+      c,
+      8,
+      undefined,
+      s.capabilities,
+      s.processRead,
+    );
+    const lane = present(s.lanes[0], suffix);
+    expect([
+      lane.builds,
+      lane.linkers,
+      lane.rustc,
+      lane.cargo,
+      lane.tests,
+      lane.sccache,
+    ]).toEqual([null, null, null, null, null, null]);
+    const summary = buildsSummary(s, c);
+    expect([summary.builds, summary.linkers, summary.lanes]).toEqual([
+      null,
+      null,
+      null,
+    ]);
+    expect(
+      summary.rows.map((row) => [row.id, row.builds, row.linkers]),
+    ).toEqual([
+      [lane.id, null, null],
+      ["", null, null],
+    ]);
+    s.lanes = [];
+    expect(
+      laneBuilds(s, c).map((row) => [row.id, row.builds, row.linkers]),
+    ).toEqual([["", null, null]]);
+  }
+});
 
 const c = defaults();
 /** Two lanes compiling, one of them linking, plus a build outside every lane. */
@@ -56,12 +113,18 @@ test("the per lane rows sum to the fleet total the Overview meter shows", () => 
   expect(meter?.values.builds).toBe(summary.builds);
   expect(meter?.values.linkers).toBe(summary.linkers);
   expect(summary.cores).toBe(32);
-  expect(summary.rows.reduce((n, row) => n + row.builds, 0)).toBe(
-    present(summary.builds ?? undefined, "fleet build count"),
-  );
-  expect(summary.rows.reduce((n, row) => n + row.linkers, 0)).toBe(
-    present(summary.linkers ?? undefined, "fleet linker count"),
-  );
+  expect(
+    summary.rows.reduce(
+      (n, row) => n + present(row.builds ?? undefined, "row builds"),
+      0,
+    ),
+  ).toBe(present(summary.builds ?? undefined, "fleet build count"));
+  expect(
+    summary.rows.reduce(
+      (n, row) => n + present(row.linkers ?? undefined, "row linkers"),
+      0,
+    ),
+  ).toBe(present(summary.linkers ?? undefined, "fleet linker count"));
 });
 
 test.each([
@@ -72,6 +135,7 @@ test.each([
   ({ failed, expected }) => {
     const s = emptySnapshot();
     if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    s.processRead = failed ? "incomplete" : "complete";
     const summary = buildsSummary(s, c);
     expect([summary.builds, summary.linkers, summary.lanes]).toEqual([
       expected,

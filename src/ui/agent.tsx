@@ -207,10 +207,12 @@ export function AgentSummary({
       <Field
         label="Builds"
         value={`${
-          Object.entries(lane.builds)
-            .map(([kind, n]) => `${n} ${kind}`)
-            .join(", ") || "none"
-        } · ${lane.linkers} linking`}
+          lane.builds === null
+            ? gap
+            : Object.entries(lane.builds)
+                .map(([kind, n]) => `${n} ${kind}`)
+                .join(", ") || "none"
+        } · ${lane.linkers ?? gap} linking`}
       />
       <Line
         height={1}
@@ -510,9 +512,12 @@ export function Agent({
     Math.max(floor, ...values.map((v) => v ?? 0));
   const cpuTop = top(cpuPeaks, 100);
   const rssTop = top(rssPeaks, 1);
-  const kinds = Object.entries(lane.builds)
-    .map(([kind, n]) => `${n} ${kind}`)
-    .join(", ");
+  const kinds =
+    lane.builds === null
+      ? gap
+      : Object.entries(lane.builds)
+          .map(([kind, n]) => `${n} ${kind}`)
+          .join(", ");
   const unique = [...new Set(files)];
   const tree = processTree(members);
   const count = (name: SectionName) =>
@@ -542,7 +547,7 @@ export function Agent({
         />
         <Field
           label="Builds"
-          value={`${kinds || "none"} · ${lane.linkers} linking · ${lane.sccache} sccache clients`}
+          value={`${kinds || "none"} · ${lane.linkers ?? gap} linking · ${lane.sccache ?? gap} sccache clients`}
         />
         <box height={1} flexShrink={0} />
         {seriesError && <Line fg={ui.danger}>{safe(seriesError)}</Line>}

@@ -565,6 +565,7 @@ test.each([
     const s = emptySnapshot();
     if (source !== null)
       s.errors = [{ source: `${c.procRoot}${source}`, message: "EACCES" }];
+    s.processRead = source === null ? "complete" : "incomplete";
     const tile = meterTile(present(meters(s, c)[3], "builds meter"), s, c);
     expect(tile.value).toBe(`${value} of ${s.system.cores} cores`);
     expect(tile.detail).toBe(detail);

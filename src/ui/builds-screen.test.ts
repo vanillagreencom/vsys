@@ -7,12 +7,38 @@ import { present } from "../test/present";
 import { cacheDetail, cacheLevel, cacheText } from "./builds-screen";
 import { gap } from "./format";
 
+test("Builds rows show unknown counts for a partially read lane and unowned processes", async () => {
+  const s = emptySnapshot();
+  s.processRead = "incomplete";
+  s.lanes = [
+    laneSnapshot({ name: "partial-build", builds: null, linkers: null }),
+  ];
+  const t = await mount(s, defaults(), { width: 220, height: 35 });
+  try {
+    await t.press("4");
+    for (const name of ["partial-build", "outside the watched lanes"]) {
+      const row = present(
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes(name)),
+        name,
+      );
+      expect(row.match(new RegExp(gap, "g"))?.length).toBeGreaterThanOrEqual(2);
+      expect(row).not.toContain("null");
+    }
+  } finally {
+    await t.close();
+  }
+});
+
 test.each([{ failed: false }, { failed: true }])(
   "Builds empty state preserves process read failure: $failed",
   async ({ failed }) => {
     const c = defaults();
     const s = emptySnapshot();
     if (failed) s.errors = [{ source: c.procRoot, message: "EACCES" }];
+    s.processRead = failed ? "incomplete" : "complete";
     const t = await mount(s, c, { width: 220, height: 30 });
     try {
       await t.press("4");
