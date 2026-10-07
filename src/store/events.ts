@@ -310,7 +310,8 @@ export class EventLog {
         this.watching.delete(key);
         continue;
       }
-      if (unread[watch.cause]?.has(watch.subjectId)) {
+      const subjects = unread[watch.cause];
+      if (subjects === "all" || subjects?.has(watch.subjectId)) {
         watch.closeFrom = s.time;
         continue;
       }

@@ -24,8 +24,9 @@ test("memory-high alerts survive failed reads and rearm only after measured reco
       Object.assign(group, reading);
       const s = emptySnapshot(time);
       s.groups = [group];
+      const unread = unjudged(s, c)["memory-high"];
       return {
-        unread: unjudged(s, c)["memory-high"]?.has(group.path) ?? false,
+        unread: unread === "all" || (unread?.has(group.path) ?? false),
         events: log
           .advance(s, c)
           .filter(

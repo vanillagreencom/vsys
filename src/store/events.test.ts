@@ -269,6 +269,32 @@ test("unread free space keeps an open alert until measured recovery or removal",
     ).toMatchObject([{ cause: "free-space", subjectId: "/full" }]);
   }
 });
+test("an unread mount list keeps every open free-space alert", () => {
+  const held = { ...defaults(), pressureHoldSeconds: 1 };
+  const sample = (time: number, mountsAvailable: boolean): Snapshot => {
+    const s = emptySnapshot(time);
+    s.storage.mountsAvailable = mountsAvailable;
+    s.storage.volumes = mountsAvailable
+      ? [volumeSnapshot("/a", { free: 1 }), volumeSnapshot("/b", { free: 2 })]
+      : [];
+    return s;
+  };
+  const log = new EventLog();
+  log.advance(sample(1000, true), held);
+  expect(
+    log
+      .advance(sample(2000, true), held)
+      .filter((e) => e.kind === "alert-open" && e.cause === "free-space"),
+  ).toMatchObject([{ subjectId: "/a" }, { subjectId: "/b" }]);
+  // StorageCollector drops the volumes when /proc/self/mountinfo is unreadable.
+  for (const time of [3000, 5000]) {
+    expect(
+      log
+        .advance(sample(time, false), held)
+        .filter((e) => e.kind === "alert-close" && e.cause === "free-space"),
+    ).toEqual([]);
+  }
+});
 test("each low filesystem keeps its alert and its own free-space readings", () => {
   const held = { ...defaults(), pressureHoldSeconds: 1 };
   const sample = (time: number, a: number, b: number): Snapshot => {

@@ -397,10 +397,10 @@ const where = <T>(rows: Judgment<T>[], judged: Judged): T[] =>
  * alert about it carries: the host as the empty id, a lane id, a group path
  * or a storage path. A host cause whose reading failed covers every subject
  * the sample holds, and a lane listed under one is judged by that reading
- * alone. A subject the sample no longer holds is never here: it is gone, not
- * unread.
+ * alone. An unread mount list leaves every free-space subject unjudged;
+ * a readable list can establish that a filesystem is gone.
  */
-export type Unjudged = Partial<Record<CauseId, ReadonlySet<string>>>;
+export type Unjudged = Partial<Record<CauseId, ReadonlySet<string> | "all">>;
 export function unjudged(s: Snapshot, c: Config): Unjudged {
   const j = judgments(s, c);
   const held = [
@@ -418,6 +418,7 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
     if (j.host[id] === "unjudged") subjects.push([id, held]);
   const out: Unjudged = {};
   for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
+  if (s.storage.mountsAvailable === false) out["free-space"] = "all";
   return out;
 }
 /**
