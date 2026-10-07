@@ -600,7 +600,6 @@
   ".github/hooks/skill-load-check.sh",
   ".github/hooks/skill-load-record.json",
   ".github/hooks/skill-load-record.sh",
-  {"path":".github/workflows/kendex-refresh.yml","template":".agents/skills/review-gate/templates/kendex-refresh.yml","templateHash":"sha256:8da3c9809b1983f60a1057d67d961bac1ccfe2ce04d1703ae37d58fb2542c34b"},
   ".kendex-generated.json",
   ".kendex-lock.json",
   ".pi/agents/maintainer.md",

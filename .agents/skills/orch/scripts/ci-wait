@@ -161,6 +161,7 @@ REPO_REJECTED=""
 print_usage() {
   cat <<'USAGE'
 Usage: ci-wait <PR#> [poll_interval] [max_wait] [--json] [--item ID]
+               [--required-only]
 
 Wait for CI checks to complete on a PR. Every exit path but 5 emits a final
 result on stdout — a "CI passed"/"CI failed"/"CI timeout"/"CI error" line,
@@ -173,16 +174,29 @@ failures (max 1 retry).
   max_wait       total budget in seconds (default 600)
   --json         emit the machine-readable result object on stdout
   --item ID      the lane whose new mail exits 5; no mail check without it
+  --required-only  classify as GitHub gates the merge: only a context the
+                 base branch requires counts as pending or failed, and a
+                 required context with no check yet is pending as
+                 "<context> (missing)"; passed_checks, which completes the
+                 wait, holds the required checks that passed or were
+                 skipped (GitHub counts a skipped check as satisfied; with
+                 the set unreadable, every check that passed or was
+                 skipped), and rollup_key, which the stale window holds,
+                 keys the required checks alone. The required set is the github
+                 skill's own read (lib/ci-run-correlation.sh
+                 required_contexts); where it cannot be read, every check
+                 counts, as without the flag
 
 Verdicts (JSON "verdict"):
   pass     every current-head check settled green, only ever paired with
            status "complete"
   fail     a settled current-head failure — current-run failures are
-           terminal. EVERY red check counts, whether or not the base branch
-           requires its context; only the github pr-merge readiness check
-           applies that filter, in --check, in an immediate merge and under
-           --auto alike, so a red optional check fails this wait while that
-           gate reports it as a ci_optional_failed warning
+           terminal. By default EVERY red check counts, whether or not the
+           base branch requires its context, so a red optional check fails
+           this wait while the github pr-merge readiness check reports it
+           as a ci_optional_failed warning. --required-only applies that
+           gate's filter, from the same required set: a red optional check
+           is not a failure, and fail names only required contexts
   pending  checks still running, not yet registered, or settled green but
            unconfirmed; at the deadline the result is status "timeout" with
            this verdict, never silent success
@@ -208,7 +222,8 @@ A missing replacement reaches the timeout rather than passing.
 A rollup of settled checks with at least one passed, none ever seen in
 progress, is either the prior run's leftovers or CI that finished before the
 wait started. It completes once the stale window has measured consecutive
-polls showing one unchanged rollup of every check's name and state: 90
+polls showing one unchanged rollup of every check's name and state (every
+required check's, under --required-only): 90
 seconds of wall clock, not a count of polls, which at the default interval is
 the second poll. Any other poll starts the window over, and short of it the
 deadline reports status "timeout" with verdict "pending".
@@ -225,7 +240,14 @@ JSON output (always when --json):
     "error": <string>,            # only when status == "error"
     "pending_checks": [ {name,state} ... ],
     "failed_checks":  [ {name,state} ... ],
-    "passed_checks":  [ {name,state} ... ]
+    "passed_checks":  [ {name,state} ... ],
+    "rollup_key": <string>        # only once a rollup was read: the last
+                                  # scoped rollup's canonical name/state
+                                  # set (its required checks alone under
+                                  # --required-only), skipped checks
+                                  # included — the
+                                  # identity the stale window holds, so a
+                                  # caller compares rollups across runs
   }
 
 Environment:
@@ -278,12 +300,14 @@ USAGE
 
 # --- arg parse (before auth so error paths can honor --json) ---
 JSON_OUTPUT=false
+REQUIRED_ONLY=false
 ITEM=""
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) print_usage; exit 0 ;;
     --json) JSON_OUTPUT=true; shift ;;
+    --required-only) REQUIRED_ONLY=true; shift ;;
     --item)
       [[ -n "${2:-}" ]] || { ci_message missing-item >&2; exit 2; }
       ITEM="$2"
@@ -344,6 +368,8 @@ EMPTY_CLASSES='{"pending":[],"failed":[],"passed":[]}'
 # Last classification seen by the poll loop, so timeout/error results can
 # report the checks that were still outstanding.
 last_check_classes="$EMPTY_CLASSES"
+# The last scoped rollup's canonical key, "" until one is read.
+rollup_key=""
 
 # Emit the final machine-readable result on stdout. Every exit path routes
 # through here (or emit_error) so the script can never finish silently.
@@ -366,6 +392,7 @@ emit_result() {
       --arg repo "$REPO" \
       --argjson elapsed "$elapsed" \
       --arg error "$error_msg" \
+      --arg rollup "$rollup_key" \
       --argjson classes "$(jq -c 'map_values(map({name, state: (.state // .bucket // "UNKNOWN")}))' <<<"$classes")" \
       '{
         status: $s,
@@ -375,7 +402,8 @@ emit_result() {
         pending_checks: $classes.pending,
         failed_checks: $classes.failed,
         passed_checks: $classes.passed
-      } + (if $error == "" then {} else {error: $error} end)'
+      } + (if $error == "" then {} else {error: $error} end)
+        + (if $rollup == "" then {} else {rollup_key: $rollup} end)'
     return 0
   fi
   case "$status" in
@@ -564,16 +592,23 @@ fi
 # shellcheck source=../../github/scripts/lib/ci-run-correlation.sh
 source "$CI_RUN_CORRELATION_LIB"
 
+# The contexts classify_checks counts as blocking; [] counts every check.
+REQUIRED_CONTEXTS='[]'
+if $REQUIRED_ONLY; then
+  REQUIRED_CONTEXTS=$(required_contexts "$PR_NUM" "$REPO") || REQUIRED_CONTEXTS='[]'
+fi
+
 # Failure check `link` is `https://github.com/owner/repo/actions/runs/<RUN_ID>/job/<JOB_ID>` —
 # extract RUN_ID, not the trailing JOB_ID (which `gh run rerun` won't accept as a workflow run).
 # Scope to the current run first so a rerun never targets a superseded/canceled
-# run.
+# run, and, under --required-only, to a required context, so the retry never
+# re-runs optional CI the classification does not count.
 get_failed_run_id() {
   local pr="$1"
   gh pr checks "$pr" --repo "$REPO" --json name,state,bucket,link,startedAt,workflow 2>/dev/null | \
     scope_current_run | \
-    jq -r "$CI_RUN_JQ_DEFS"'
-      .[] | select((bucket != "pass") and (bucket != "skipping") and (bucket != "pending")) | .link
+    jq -r --argjson req "$REQUIRED_CONTEXTS" "$CI_RUN_JQ_DEFS"'
+      .[] | select(red and required_only($req)) | .link
     ' | \
     head -1 | sed -nE 's#.*/actions/runs/([0-9]+)(/.*)?$#\1#p'
 }
@@ -656,11 +691,15 @@ superseding_run_state() {
 }
 
 classify_checks() {
-  jq -c "$CI_RUN_JQ_DEFS"'
-    {
-      pending: [.[] | select(bucket == "pending")],
-      failed: [.[] | select((bucket != "pass") and (bucket != "skipping") and (bucket != "pending"))],
-      passed: [.[] | select(bucket == "pass")]
+  jq -c --argjson req "$REQUIRED_CONTEXTS" --argjson ro "$REQUIRED_ONLY" "$CI_RUN_JQ_DEFS"'
+    map(.name) as $names
+    | {
+      pending: ([.[] | select((bucket == "pending") and required_only($req))]
+                + [$req[] | . as $ctx | select(($names | index($ctx)) == null)
+                   | {name: (. + " (missing)"), state: "EXPECTED", bucket: "pending"}]),
+      failed: [.[] | select(red and required_only($req))],
+      passed: [.[] | select(((bucket == "pass") or ($ro and (bucket == "skipping")))
+                            and required_only($req))]
     }
   '
 }
@@ -697,6 +736,9 @@ while [ "$elapsed" -lt "$MAX_WAIT" ]; do
   # Handle no checks / empty response (only reached when gh succeeded)
   if [ -z "$checks_json" ] || [ "$checks_json" = "[]" ] || [ "$checks_json" = "null" ]; then
     no_checks_count=$((no_checks_count + 1))
+    # Under --required-only an empty rollup still names what GitHub waits
+    # on: every required context, pending as missing.
+    last_check_classes=$(classify_checks <<<'[]')
     # One-time probe: a repo with no active workflows AND no required checks
     # on the PR's base branch has no CI to wait for — report that as its own
     # terminal state instead of burning the dispatch grace and exiting 1.
@@ -779,15 +821,21 @@ while [ "$elapsed" -lt "$MAX_WAIT" ]; do
   # Drop checks belonging to superseded workflow runs before classifying, so a
   # prior canceled run can't be reported as a current failure.
   checks_json=$(echo "$checks_json" | scope_current_run)
+  # Keyed on the scoped rollup, not the classified checks, which drop skipped
+  # entries: a check registering late as SKIPPED is a different rollup. Under
+  # --required-only only the required checks key it, skipped ones included, so
+  # an optional check registering or settling never restarts the window.
+  rollup_key=$(jq -cS --argjson req "$REQUIRED_CONTEXTS" "$CI_RUN_JQ_DEFS"'
+    [.[] | select(required_only($req)) | {name, state}] | sort_by(.name, .state)' <<<"$checks_json")
 
   # Count checks by GitHub's bucket classifier, with state fallbacks for older
-  # gh output. The waiter counts EVERY red check, required or not: it reports
-  # what ran on the head. Only the github pr-merge readiness check applies the
-  # base branch's required-context filter, and it runs in every mode, so the
-  # two disagree on a red check the base does not require — there the waiter
-  # fails while the merge gate does not. The shared
-  # run scoping above keeps them agreeing on which run is current; nothing
-  # makes them agree on which checks block.
+  # gh output. By default the waiter counts EVERY red check, required or not:
+  # it reports what ran on the head. The github pr-merge readiness check
+  # applies the base branch's required-context filter in every mode, so
+  # without --required-only the two disagree on a red check the base does
+  # not require — there the waiter fails while the merge gate does not. The
+  # shared run scoping above keeps them agreeing on which run is current, and
+  # --required-only on which checks block.
   check_classes=$(echo "$checks_json" | classify_checks)
   last_check_classes="$check_classes"
   pending_count=$(echo "$check_classes" | jq '.pending | length')
@@ -867,7 +915,7 @@ while [ "$elapsed" -lt "$MAX_WAIT" ]; do
     # The clock the streak is stamped and measured against is the one this
     # rollup was read at, not the one before the request that fetched it.
     update_elapsed
-    settled_key=$(jq -cS '[.[] | {name, state}] | sort_by(.name, .state)' <<<"$checks_json")
+    settled_key="$rollup_key"
     if [ "$settled_key" != "$stale_key" ]; then
       stale_key="$settled_key"
       stale_since="$elapsed"
