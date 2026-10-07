@@ -1155,7 +1155,9 @@ def warn_near_cap():
             unknown.add((d.name, "memory"))
         else:
             if mem >= SCOPE_MEM_WARN:
-                near.append((d.name, "memory", f"{mem >> 30} GiB (soft cap {SCOPE_MEM_HIGH >> 30})"))
+                high = _read_limit(d / "memory.high")
+                cap = str(high >> 30) if isinstance(high, int) else "unlimited" if high == "max" else "unknown"
+                near.append((d.name, "memory", f"{mem >> 30} GiB (soft cap {cap})"))
     return near, unknown, True
 
 
@@ -2677,10 +2679,15 @@ def status():
     def age(k):
         return "never" if not st.get(k) else f"{int(now - st[k])} s ago"
 
+    counters = status_counters(st)
+
+    def count(k):
+        return "unknown" if counters[k] is None else str(counters[k])
+
     print(f"last correct scan {age('last_correct')}, last report scan {age('last_report')}; "
-          f"moves {st['moves']}, partial {st['partial']}, reaped {st.get('reaped', 0)}, "
-          f"move failures {st['move_failures']}, scan failures {st['scan_failures']}, "
-          f"consecutive skips {st['skips']}")
+          f"moves {count('moves')}, partial {count('partial')}, reaped {count('reaped')}, "
+          f"move failures {count('moveFailures')}, scan failures {count('scanFailures')}, "
+          f"consecutive skips {count('skips')}")
     print("notifier heartbeat " + ("fresh" if notifier_fresh(now=now) else "stale"))
     episodes = _episodes(st)
     if episodes:

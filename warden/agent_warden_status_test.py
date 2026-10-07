@@ -1,7 +1,11 @@
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
+import re
 import unittest
+from unittest.mock import patch
 
 from agent_warden_testlib import ROOT, WARDEN, WardenMutantMixin, WardenStateMixin, clean_env, default_tool_exe, load_warden, scratch
 
@@ -126,6 +130,58 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
 
     def test_status_writer_uses_rename_and_mode(self):
         self.assertTrue(self.status_writer_is_atomic(self.w))
+
+    def test_memory_notice_reports_scope_soft_cap(self):
+        with scratch() as tmp:
+            old = self.point_status_state(self.w, Path(tmp))
+            try:
+                lane = self.write_status_cgroup(self.w, lane_memory=str(48 * 1024**3))
+                for raw, expected in ((str(128 * 1024**3), "128"), ("max", "unlimited"),
+                                      ("invalid", "unknown"), (None, "unknown")):
+                    with self.subTest(raw=raw):
+                        limit = lane / "memory.high"
+                        if raw is None:
+                            limit.unlink()
+                        else:
+                            limit.write_text(raw)
+                        near, unknown, complete = self.w.warn_near_cap()
+                        self.assertTrue(complete)
+                        self.assertEqual(unknown, set())
+                        notice = next(text for unit, kind, text in near
+                                      if unit == lane.name and kind == "memory")
+                        cap = re.search(r"soft cap ([^)]+)", notice)
+                        self.assertIsNotNone(cap)
+                        self.assertEqual(cap.group(1), expected)
+            finally:
+                self.restore_status_state(self.w, old)
+
+    def test_text_status_preserves_counter_knowledge(self):
+        with scratch() as tmp:
+            old = self.point_status_state(self.w, Path(tmp))
+            try:
+                self.w.STATE_DIR.mkdir()
+                for recovered, count in ((False, 0), (False, 7), (True, 0)):
+                    with self.subTest(recovered=recovered, count=count):
+                        st = self.w.default_state()
+                        for _, internal in self.w.STATUS_COUNTER_KEYS_PUBLIC:
+                            st[internal] = count
+                        self.w.STATE.write_text("invalid JSON" if recovered else json.dumps(st))
+                        if recovered:
+                            with self.w.State():
+                                pass
+                            self.assertTrue(self.w.read_state_unlocked()["counters_unknown"])
+                        counters = self.w.status_counters(self.w.read_state_unlocked())
+                        self.assertEqual(set(counters.values()), {None if recovered else count})
+                        output = io.StringIO()
+                        with patch.object(self.w, "scan", return_value={}), \
+                                patch.object(self.w, "notifier_fresh", return_value=False), \
+                                contextlib.redirect_stdout(output):
+                            self.assertEqual(self.w.status(), 0)
+                        values = re.findall(r"(?:moves|partial|reaped|move failures|scan failures|consecutive skips) (\w+)",
+                                            output.getvalue().splitlines()[0])
+                        self.assertEqual(values, ["unknown" if recovered else str(count)] * len(counters))
+            finally:
+                self.restore_status_state(self.w, old)
 
     def test_status_writer_handles_short_writes(self):
         with scratch() as tmp:
