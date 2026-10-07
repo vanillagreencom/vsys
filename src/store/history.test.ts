@@ -122,6 +122,32 @@ test("SQLite reopens full process snapshots and alert history", () => {
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
 });
+test("another dashboard cannot replace a recorded timestamp or advance events with it", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const first = new History(f.config);
+  cleanup.push(() => first.close());
+  const second = new History(f.config);
+  cleanup.push(() => second.close());
+  const time = Date.now();
+  const original = emptySnapshot(time);
+  original.lanes = [laneSnapshot()];
+  second.add(emptySnapshot(time - 2));
+  first.add(emptySnapshot(time - 1));
+  first.add(original);
+  const collision = emptySnapshot(time);
+  collision.lanes = [laneSnapshot({ id: "collision.scope" })];
+  expect(() => second.add(collision)).not.toThrow();
+  const reader = new History(f.config);
+  cleanup.push(() => reader.close());
+  expect(reader.at(time)).toEqual(original);
+  expect(reader.events(time, 10)).toEqual(first.events(time, 10));
+  expect(second.at(time)).toEqual(original);
+  expect(second.window(time, 10).map((p) => p.time)).toEqual([time - 2]);
+  second.add(emptySnapshot(time + 1));
+  expect(second.events(time + 1, 1)).toEqual([]);
+});
 test("a stored lane written before this build's fields loads with unknown values", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

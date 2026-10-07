@@ -1,4 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import {
   mkdirSync,
   mkdtempSync,
@@ -8,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { ErrorMemory } from "./errors";
+import { ErrorMemory, type ErrorRecord } from "./errors";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -246,6 +247,112 @@ test("a second process writing the same file loses neither growth time", () => {
     seen: 9000,
   });
 });
+
+for (const operation of ["write", "rename"] as const)
+  test(`an overlapping save during ${operation} retries and keeps the newer reading`, () => {
+    const path = statePath();
+    const seed = new ErrorMemory(path);
+    seed.observe("fs", 0, 100);
+    seed.save();
+    const older = new ErrorMemory(path);
+    const newer = new ErrorMemory(path);
+    older.load();
+    newer.load();
+    older.observe("fs", 1, 200);
+    newer.observe("fs", 2, 300);
+    let attempted = false;
+    let refused = false;
+    const overlap = () => {
+      if (attempted) return;
+      attempted = true;
+      try {
+        newer.save();
+      } catch {
+        refused = true;
+      }
+    };
+    const write = fs.writeFileSync;
+    const rename = fs.renameSync;
+    const hook =
+      operation === "write"
+        ? spyOn(fs, "writeFileSync").mockImplementation(
+            (file, data, options) => {
+              overlap();
+              return write(file, data, options);
+            },
+          )
+        : spyOn(fs, "renameSync").mockImplementation((from, to) => {
+            overlap();
+            return rename(from, to);
+          });
+    try {
+      older.save();
+    } finally {
+      hook.mockRestore();
+    }
+    newer.save();
+    older.observe("fs", 1, 250);
+    older.save();
+    const saved = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      ErrorRecord
+    >;
+    expect(saved.fs).toEqual({
+      counter: 2,
+      at: 300,
+      size: 2,
+      before: null,
+      storedBefore: 100,
+      seen: 300,
+    });
+    expect(attempted).toBe(true);
+    expect(refused).toBe(true);
+  });
+
+for (const operation of ["lock", "write", "rename"] as const)
+  test(`a failed ${operation} releases the lock and leaves the save retryable`, () => {
+    const path = statePath();
+    const older = new ErrorMemory(path);
+    older.observe("fs", 0, 100);
+    older.save();
+    older.observe("fs", 1, 200);
+    const failure = Object.assign(new Error("Injected I/O failure"), {
+      code: "EIO",
+    });
+    const fail = () => {
+      throw failure;
+    };
+    const hook =
+      operation === "lock"
+        ? spyOn(Bun, "spawnSync").mockImplementation(fail)
+        : operation === "write"
+          ? spyOn(fs, "writeFileSync").mockImplementation(fail)
+          : spyOn(fs, "renameSync").mockImplementation(fail);
+    let refused: unknown;
+    try {
+      try {
+        older.save();
+      } catch (error) {
+        refused = error;
+      }
+      expect(refused).toBe(failure);
+    } finally {
+      hook.mockRestore();
+    }
+    expect(
+      fs.readdirSync(dirname(path)).filter((name) => name.endsWith(".tmp")),
+    ).toEqual([]);
+    const newer = new ErrorMemory(path);
+    newer.load();
+    newer.observe("fs", 2, 300);
+    expect(() => newer.save()).not.toThrow();
+    expect(() => older.save()).not.toThrow();
+    const saved = JSON.parse(readFileSync(path, "utf8")) as Record<
+      string,
+      ErrorRecord
+    >;
+    expect(saved.fs).toMatchObject({ counter: 2, at: 300, seen: 300 });
+  });
 
 test("a growth time on disk is never replaced by an older one", () => {
   const path = statePath();

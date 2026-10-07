@@ -1,4 +1,12 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 
 /**
@@ -168,25 +176,46 @@ export class ErrorMemory {
     if (!this.dirty || !this.readable) return;
     // Two vsys processes watching one host each hold the map they loaded, and
     // the one that renames last would otherwise drop the other's newer growth
-    // time. Merging the file as it stands now keeps the later of the two.
+    // time. Merging and replacing under the same lock keeps the later reading.
     // A refusal is raised rather than returned: the caller reports it, the
     // memory stays dirty, and the next sample tries again. Returning quietly
     // would drop the reading with no word anywhere.
-    if (!this.merge())
-      throw new Error(`Error memory on disk could not be read: ${this.path}`);
     mkdirSync(dirname(this.path), { recursive: true });
-    const temp = `${this.path}.${process.pid}.tmp`;
-    writeFileSync(
-      temp,
-      `${JSON.stringify(Object.fromEntries(this.records))}\n`,
-      {
-        mode: 0o600,
-      },
-    );
-    renameSync(temp, this.path);
-    this.dirty = false;
-    // What this process holds now survives it, so its readings stand again.
-    this.available = this.readable;
+    // The lock file stays in place across renames. flock locks the inherited
+    // open descriptor, so close or process exit releases it without leaving
+    // a stale lock. A competing vsys save stays dirty and retries next sample.
+    const lock = openSync(`${this.path}.lock`, "a", 0o600);
+    try {
+      const held = Bun.spawnSync(["flock", "--exclusive", "--nonblock", "0"], {
+        stdin: lock,
+        stdout: "ignore",
+        stderr: "pipe",
+        env: { PATH: process.env.PATH, LC_ALL: "C" },
+      });
+      if (!held.success)
+        throw new Error(
+          `Error memory lock failed: ${this.path} (flock exit ${held.exitCode}): ${held.stderr.toString().trim()}`,
+        );
+      if (!this.merge())
+        throw new Error(`Error memory on disk could not be read: ${this.path}`);
+      const temp = `${this.path}.${crypto.randomUUID()}.tmp`;
+      const file = openSync(temp, "wx", 0o600);
+      try {
+        writeFileSync(
+          file,
+          `${JSON.stringify(Object.fromEntries(this.records))}\n`,
+        );
+        renameSync(temp, this.path);
+      } finally {
+        closeSync(file);
+        rmSync(temp, { force: true });
+      }
+      this.dirty = false;
+      // What this process holds now survives it, so its readings stand again.
+      this.available = this.readable;
+    } finally {
+      closeSync(lock);
+    }
   }
   /** A write that did not happen leaves the memory unbacked until one does. */
   failed(): void {

@@ -237,9 +237,34 @@ export class History {
     // wrong time.
     const newest = this.points.get(this.points.size - 1)?.time;
     if (newest !== undefined && s.time <= newest) return;
-    const p = point(s, this.c, this.eventLog.advance(s, this.c));
     const json = JSON.stringify(s);
     const cutoff = s.time - this.c.historyHours * 3600000;
+    const record = () => point(s, this.c, this.eventLog.advance(s, this.c));
+    const db = this.db;
+    const p = db
+      ? db
+          .transaction(() => {
+            // Another dashboard can commit after this instance loaded its
+            // points. Hold the write lock before checking the shared time, so
+            // rejecting its duplicate changes neither replay nor event state.
+            const latest = db
+              .query<{ time: number }, []>(
+                "SELECT time FROM samples ORDER BY time DESC LIMIT 1",
+              )
+              .get()?.time;
+            if (latest !== undefined && s.time <= latest) return null;
+            const p = record();
+            db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
+              s.time,
+              Bun.gzipSync(json),
+              JSON.stringify(p),
+            );
+            db.query("DELETE FROM samples WHERE time < ?").run(cutoff);
+            return p;
+          })
+          .immediate()
+      : record();
+    if (!p) return;
     this.archive.prune(cutoff);
     this.archive.add(s.time, json);
     // A stored series is kept only while its lane lives, for the reason the
@@ -248,17 +273,6 @@ export class History {
       const live = new Set(s.lanes.map((lane) => lane.id));
       for (const id of this.stored.lanes.keys())
         if (!live.has(id)) this.stored.lanes.delete(id);
-    }
-    if (this.db) {
-      const data = Bun.gzipSync(json);
-      this.db.transaction(() => {
-        this.db
-          ?.query("INSERT OR REPLACE INTO samples VALUES (?, ?, ?)")
-          .run(s.time, data, JSON.stringify(p));
-        this.db
-          ?.query("DELETE FROM samples WHERE time < ?")
-          .run(s.time - this.c.historyHours * 3600000);
-      })();
     }
     if (
       this.points.size === this.points.capacity &&

@@ -2,6 +2,8 @@
 
 Bun at the version in `.bun-version`, on a Linux host with cgroup v2. The repository ships that Bun as a dependency; where the system Bun differs, prefix a command with `PATH="$PWD/node_modules/.bin:$PATH"`.
 
+Error-counter persistence requires `flock` from util-linux. A missing command is a source error, and the collector retries the save on the next sample.
+
 ## Run
 
 ```sh
