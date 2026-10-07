@@ -72,6 +72,25 @@ export function smartReports(
   };
 }
 
+/** NVMe exposes text; SATA and SCSI expose the unit-serial VPD page. */
+function driveSerial(r: Reader, device: string): string | null {
+  const serial = r.text(join(device, "serial"), true);
+  if (serial !== null) return serial || null;
+  const path = join(device, "vpd_pg80");
+  const page = r.bytes(path, true);
+  if (page === null) return null;
+  if (
+    page.length < 4 ||
+    page[1] !== 0x80 ||
+    page.readUInt16BE(2) !== page.length - 4 ||
+    page.subarray(4).some((byte) => byte < 0x20 || byte > 0x7e)
+  ) {
+    r.error(path, "Invalid unit serial VPD page");
+    return null;
+  }
+  return page.subarray(4).toString("ascii").trim() || null;
+}
+
 /**
  * Block devices carry the names behind io.stat's device numbers. A report a
  * privileged timer left is read first, because a read-only monitor cannot run
@@ -97,7 +116,14 @@ export function collectDevices(
     const dev = r.text(join(c.sysBlockRoot, name, "dev"), true);
     const number = dev && /^\d+:\d+$/.test(dev) ? dev : null;
     const report = reports.get(name);
-    const raw = report === undefined ? null : r.text(report);
+    let raw = report === undefined ? null : r.text(report);
+    if (raw !== null) {
+      // A device name can be reused before the reporter runs again. Without
+      // matching serial numbers, its saved figures name no current drive.
+      const serial = driveSerial(r, join(c.sysBlockRoot, name, "device"));
+      const reported = raw.match(/^Serial Number:\s*(.+?)\s*$/im)?.[1];
+      if (!serial || reported !== serial) raw = null;
+    }
     const drive = fromUdisks.get(name);
     if (raw !== null) {
       const read = smartWrites(raw);

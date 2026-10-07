@@ -1,19 +1,501 @@
-import { afterEach, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import {
+  chmodSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
-import { type IntegrityState, integrities } from "../model/integrity";
+import { summarySnapshot } from "../model/export";
+import {
+  damageCounts,
+  type IntegrityState,
+  integrities,
+  integrity,
+  integrityLevel,
+  volumesByDevice,
+} from "../model/integrity";
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
+import { present } from "../test/present";
 import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";
 import { ScratchCollector } from "./scratch";
-import { type ScrubUnits, scrubTimer, smartTimer } from "./scrub-timers";
+import {
+  escapePath,
+  type ScrubUnits,
+  scrubTimer,
+  smartTimer,
+} from "./scrub-timers";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
 });
+for (const phase of ["startup", "replacement"] as const) {
+  test(`an unreadable shipped report with unknown order prevents Healthy at ${phase}`, async () => {
+    const f = fixture();
+    fixtures.push(f);
+    const fsid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+    const root = join(f.config.btrfsRoot, fsid);
+    mkdirSync(join(root, "devices"), { recursive: true });
+    symlinkSync("/sys/devices/test", join(root, "devices/test"));
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0\n",
+    );
+    const home = join(f.root, "home");
+    mkdirSync(home);
+    const changing = join(f.config.scrubDir, `${escapePath(f.root)}.result`);
+    const steady = join(f.config.scrubDir, `${escapePath(home)}.result`);
+    const report = (at: string, damaged = 0) =>
+      `UUID: ${fsid}\nScrub started: ${at}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: ${damaged}\nDamaged files: 0\n`;
+    f.write(
+      changing,
+      report(
+        phase === "startup" ? "2026-09-12T13:25:54Z" : "2026-09-10T13:25:54Z",
+      ),
+    );
+    f.write(steady, report("2026-09-11T13:25:54Z"));
+    const mounts = parseMounts(
+      `1 0 0:1 / ${f.root} rw - btrfs /dev/test rw\n2 0 0:1 /home ${home} rw - btrfs /dev/test rw`,
+    );
+    const time = Date.parse("2026-09-12T13:25:54Z") + 2000;
+    const collector = new StorageCollector();
+    const reader = new Reader();
+    try {
+      if (phase === "replacement") {
+        const first = await collector.collect(
+          reader,
+          f.config,
+          time,
+          mounts,
+          true,
+          true,
+        );
+        expect(
+          integrity(
+            present(volumesByDevice(first.volumes)[0], "filesystem"),
+            first,
+            time,
+            f.config,
+          ).state,
+        ).toBe("healthy");
+        const before = statSync(changing).ino;
+        const hidden = join(f.config.scrubDir, ".replacement.tmp");
+        f.write(hidden, report("2026-09-12T13:25:54Z", 1));
+        renameSync(hidden, changing);
+        expect(statSync(changing).ino).not.toBe(before);
+      }
+      chmodSync(changing, 0o000);
+      const successor = new StorageCollector(
+        null,
+        null,
+        collector.finishedScrubMemory(),
+      );
+      try {
+        for (const active of [collector, successor]) {
+          const storage = await active.collect(
+            reader,
+            f.config,
+            time,
+            mounts,
+            true,
+            true,
+          );
+          const item = integrity(
+            present(volumesByDevice(storage.volumes)[0], "filesystem"),
+            storage,
+            time,
+            f.config,
+          );
+          expect(item.state).toBe("unknown");
+          expect(item.scrub?.path).toBe(changing);
+          expect(item.scrub?.fsid).toBeNull();
+          expect(item.scrub?.startedAt).toBeNull();
+          expect(item.blocks).toBeNull();
+          const snapshot = emptySnapshot();
+          snapshot.time = time;
+          snapshot.storage = storage;
+          expect(
+            summarySnapshot(snapshot, f.config).verdict.some(
+              (cause) => cause.cause === "integrity-unknown",
+            ),
+          ).toBe(true);
+          expect(damageCounts(item)).toEqual({
+            files: null,
+            free: null,
+            unresolved: null,
+            unnamed: null,
+          });
+          expect(reader.errors.map((error) => error.source)).toContain(
+            changing,
+          );
+        }
+        chmodSync(changing, 0o600);
+        const restored = await successor.collect(
+          reader,
+          f.config,
+          time,
+          mounts,
+          true,
+          true,
+        );
+        expect(
+          integrity(
+            present(volumesByDevice(restored.volumes)[0], "filesystem"),
+            restored,
+            time,
+            f.config,
+          ).state,
+        ).toBe(phase === "replacement" ? "damaged" : "healthy");
+      } finally {
+        chmodSync(changing, 0o600);
+        successor.close();
+      }
+    } finally {
+      collector.close();
+    }
+  });
+}
+test("an unreadable shipped report stays unassociated after mount reuse", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const previous = "2ff9dd6d-c928-4458-9444-bffb6c01eacb";
+  const current = "71345faf-0e2f-4855-88f2-fd0ea2697ea5";
+  for (const [fsid, device] of [
+    [previous, "testA"],
+    [current, "testB"],
+  ] as const) {
+    const root = join(f.config.btrfsRoot, fsid);
+    mkdirSync(join(root, "devices"), { recursive: true });
+    symlinkSync(`/sys/devices/${device}`, join(root, "devices", device));
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0\n",
+    );
+  }
+  const home = join(f.root, "home");
+  mkdirSync(home);
+  // The shipped reporter keeps the old mount's report when another filesystem
+  // takes that mount. Its filename cannot identify the filesystem in its text.
+  const changing = join(f.config.scrubDir, `${escapePath(f.root)}.result`);
+  const steady = join(f.config.scrubDir, `${escapePath(home)}.result`);
+  const report = (at: string, damaged = 0) =>
+    `UUID: ${previous}\nScrub started: ${at}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: ${damaged}\nDamaged files: 0\n`;
+  f.write(changing, report("2026-09-12T13:25:54Z", 1));
+  f.write(steady, report("2026-09-11T13:25:54Z"));
+  const mounts = parseMounts(
+    `1 0 0:1 / ${f.root} rw - btrfs /dev/testB rw\n2 0 0:2 /home ${home} rw - btrfs /dev/testA rw`,
+  );
+  const time = Date.parse("2026-09-12T13:25:54Z") + 2000;
+  const collector = new StorageCollector();
+  const successor = new StorageCollector(
+    null,
+    null,
+    collector.finishedScrubMemory(),
+  );
+  const reader = new Reader();
+  chmodSync(changing, 0o000);
+  try {
+    for (const active of [collector, successor]) {
+      const snapshot = emptySnapshot();
+      snapshot.time = time;
+      snapshot.storage = await active.collect(
+        reader,
+        f.config,
+        time,
+        mounts,
+        true,
+        true,
+      );
+      const items = integrities(snapshot, f.config);
+      const previousItem = present(
+        items.find((item) => item.id === previous),
+        "previous filesystem",
+      );
+      const currentItem = present(
+        items.find((item) => item.id === current),
+        "current filesystem",
+      );
+      expect(previousItem.state).toBe("unknown");
+      expect(currentItem.state).toBe("unknown");
+      const unread = present(
+        snapshot.storage.scrubs.find((scrub) => scrub.path === changing),
+        "unreadable historical report",
+      );
+      expect(unread.readable).toBe(false);
+      expect(unread.fsid).toBeNull();
+      expect(unread.startedAt).toBeNull();
+      expect(unread.addresses).toBeNull();
+      expect(
+        summarySnapshot(snapshot, f.config).verdict.some(
+          (cause) => cause.cause === "integrity-unknown",
+        ),
+      ).toBe(true);
+    }
+    chmodSync(changing, 0o600);
+    const restored = emptySnapshot();
+    restored.time = time;
+    restored.storage = await successor.collect(
+      reader,
+      f.config,
+      time,
+      mounts,
+      true,
+      true,
+    );
+    const restoredItem = present(
+      integrities(restored, f.config).find((item) => item.id === previous),
+      "restored previous filesystem",
+    );
+    expect(restoredItem.state).toBe("damaged");
+  } finally {
+    chmodSync(changing, 0o600);
+    successor.close();
+    collector.close();
+  }
+});
+for (const row of [
+  {
+    name: "clean check",
+    before: "healthy",
+    after: "unknown",
+    uncorrectable: 0,
+  },
+  {
+    name: "damaged check",
+    before: "damaged",
+    after: "damaged",
+    uncorrectable: 1,
+  },
+  {
+    name: "newest check",
+    before: "healthy",
+    after: "unknown",
+    uncorrectable: 0,
+    otherStarted: "2026-09-10T13:25:54Z",
+  },
+  {
+    name: "older check",
+    before: "healthy",
+    after: "healthy",
+    uncorrectable: 0,
+    otherStarted: "2026-09-11T13:25:55Z",
+  },
+] satisfies {
+  name: string;
+  before: IntegrityState;
+  after: IntegrityState;
+  uncorrectable: number;
+  otherStarted?: string;
+}[]) {
+  test(`an unreadable report preserves the evidence from the ${row.name}`, async () => {
+    const f = fixture();
+    fixtures.push(f);
+    const fsid = "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6";
+    const root = join(f.config.btrfsRoot, fsid);
+    mkdirSync(join(root, "devices"), { recursive: true });
+    symlinkSync("/sys/devices/test", join(root, "devices/test"));
+    f.write(
+      join(root, "devinfo/1/error_stats"),
+      "corruption_errs 0\nwrite_errs 0\nread_errs 0\nflush_errs 0\ngeneration_errs 0\n",
+    );
+    mkdirSync(f.config.smartDir);
+    const path = join(f.config.scrubDir, "root.result");
+    const started = "2026-09-11T13:25:54Z";
+    const time = Date.parse(started) + 2000;
+    f.write(
+      path,
+      `UUID: ${fsid}\nScrub started: ${started}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: ${row.uncorrectable}\n`,
+    );
+    const otherPath = join(f.config.scrubDir, "home.result");
+    if (row.otherStarted !== undefined)
+      f.write(
+        otherPath,
+        `UUID: ${fsid}\nScrub started: ${row.otherStarted}\nStatus: finished\nDuration: 0:00:01\nCorrected: 0\nUncorrectable: 0\nDamaged files: 0\n`,
+      );
+    const mounts = parseMounts(`1 0 0:1 / ${f.root} rw - btrfs /dev/test rw`);
+    const collector = new StorageCollector();
+    const reader = new Reader();
+    try {
+      const first = await collector.collect(
+        reader,
+        f.config,
+        time,
+        mounts,
+        true,
+        true,
+      );
+      expect(
+        integrity(
+          present(volumesByDevice(first.volumes)[0], "first filesystem"),
+          first,
+          time,
+          f.config,
+        ).state,
+      ).toBe(row.before);
+      const read = reader.scrubReport.bind(reader);
+      const hook = spyOn(reader, "scrubReport").mockImplementation((file) => {
+        const source = read(file);
+        if (file !== path) return source;
+        reader.error(
+          file,
+          Object.assign(new Error("EACCES"), { code: "EACCES" }),
+        );
+        return { kind: "unread", version: source.version };
+      });
+      try {
+        const successor = new StorageCollector(
+          null,
+          null,
+          collector.finishedScrubMemory(),
+        );
+        try {
+          for (const active of [collector, successor]) {
+            const second = await active.collect(
+              reader,
+              f.config,
+              time + 1000,
+              mounts,
+              true,
+              true,
+            );
+            expect(reader.errors.map((error) => error.source)).toContain(path);
+            const failed = present(
+              second.scrubs.find((scrub) => scrub.path === path),
+              "failed report",
+            );
+            expect(failed.readable).toBe(false);
+            expect(
+              present(second.volumes[0], "second volume").countersAvailable,
+            ).toBe(true);
+            const item = integrity(
+              present(volumesByDevice(second.volumes)[0], "second filesystem"),
+              second,
+              time + 1000,
+              f.config,
+            );
+            expect(item.state).toBe(row.after);
+            expect(item.scrub?.path).toBe(
+              row.after === "healthy" ? otherPath : path,
+            );
+            expect(failed).toMatchObject({
+              fsid,
+              startedAt: Date.parse(started),
+              addresses: null,
+              uncorrectable: null,
+              corrected: null,
+              csum: null,
+            });
+            expect(item.blocks).toBe(row.after === "healthy" ? 0 : null);
+            expect(item.groups).toEqual([]);
+            expect(damageCounts(item)).toEqual({
+              files: row.after === "healthy" ? 0 : null,
+              free: row.after === "healthy" ? 0 : null,
+              unresolved: row.after === "healthy" ? 0 : null,
+              unnamed: row.after === "healthy" ? 0 : null,
+            });
+            if (row.after === "damaged")
+              expect(integrityLevel(item.state)).toBe("danger");
+          }
+        } finally {
+          successor.close();
+        }
+      } finally {
+        hook.mockRestore();
+      }
+    } finally {
+      collector.close();
+    }
+  });
+}
+for (const row of [
+  {
+    name: "a different filesystem and older start",
+    fsid: "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f7",
+    started: "2026-09-10T13:25:54Z",
+  },
+  {
+    name: "a different filesystem without a start",
+    fsid: "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f7",
+    started: null,
+  },
+  {
+    name: "a missing filesystem identity",
+    fsid: null,
+    started: "2026-09-10T13:25:54Z",
+  },
+  {
+    name: "the same filesystem without a start",
+    fsid: "2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6",
+    started: null,
+  },
+]) {
+  test(`an unreadable report retains only the latest metadata for ${row.name}`, async () => {
+    const f = fixture();
+    fixtures.push(f);
+    const path = join(f.config.scrubDir, "root.result");
+    f.write(
+      path,
+      "UUID: 2ff9dd6d-1b2c-4d5e-8f90-a1b2c3d4e5f6\nScrub started: 2026-09-11T13:25:54Z\nStatus: running\n",
+    );
+    const collector = new StorageCollector();
+    const reader = new Reader();
+    try {
+      await collector.collect(reader, f.config, 1000, [], true, true);
+      f.write(
+        path,
+        `${row.fsid === null ? "" : `UUID: ${row.fsid}\n`}${row.started === null ? "" : `Scrub started: ${row.started}\n`}Status: running\n`,
+      );
+      await collector.collect(reader, f.config, 2000, [], true, true);
+      const successor = new StorageCollector(
+        null,
+        null,
+        collector.finishedScrubMemory(),
+      );
+      const read = reader.scrubReport.bind(reader);
+      const hook = spyOn(reader, "scrubReport").mockImplementation((file) => {
+        const source = read(file);
+        if (file !== path) return source;
+        reader.error(
+          file,
+          Object.assign(new Error("EACCES"), { code: "EACCES" }),
+        );
+        return { kind: "unread", version: source.version };
+      });
+      try {
+        for (const active of [collector, successor]) {
+          const storage = await active.collect(
+            reader,
+            f.config,
+            3000,
+            [],
+            true,
+            true,
+          );
+          expect(present(storage.scrubs[0], "failed report")).toMatchObject({
+            fsid: row.fsid,
+            startedAt: row.started === null ? null : Date.parse(row.started),
+            readable: false,
+            addresses: null,
+            uncorrectable: null,
+            corrected: null,
+            csum: null,
+          });
+        }
+      } finally {
+        hook.mockRestore();
+        successor.close();
+      }
+    } finally {
+      collector.close();
+    }
+  });
+}
 test("mount options retain both mount and superblock read-only flags", () => {
   expect(
     btrfsMounts(

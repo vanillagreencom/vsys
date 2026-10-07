@@ -131,8 +131,8 @@ export function parseScrub(raw: string): ScrubReport {
   const started = field(raw, "Scrub started");
   const at = started === null ? Number.NaN : Date.parse(started);
   const lines = raw.split("\n");
-  // The section heading is prose, so its presence is the only thing read from
-  // it. Everything under it is anchored on the address heading instead.
+  // The fixed section label separates addresses from report prose. The text
+  // after that label is prose; address headings carry the readings below it.
   const opened = lines.findIndex((line) => /^Damaged files:/.test(line));
   let addresses: DamagedAddress[] | null = opened < 0 ? null : [];
   let current: DamagedAddress | null = null;

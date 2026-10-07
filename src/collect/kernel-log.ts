@@ -127,7 +127,7 @@ const cursorLine = /^-- cursor: (\S+)$/;
  */
 export class KernelLog {
   private cursor: string | null = null;
-  /** For each boot, the filesystem id each device name mounted. */
+  /** Mount mappings as of the retained cursor, before any replayed entries. */
   private mounted = new Map<string, Map<string, string>>();
   /** For each filesystem id, each inode's newest failure. */
   private failures = new Map<string, Map<string, CsumFailure>>();
@@ -162,7 +162,11 @@ export class KernelLog {
   ): Promise<Record<string, CsumFailure[]>> {
     const text = await this.search(this.cursor);
     const thisBoot = boot?.replaceAll("-", "").toLowerCase() ?? null;
+    const mounted = new Map(
+      [...this.mounted].map(([id, names]) => [id, new Map(names)]),
+    );
     let cursor = this.cursor;
+    let unmatchedWithoutBoot = false;
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;
       const end = line.match(cursorLine)?.[1];
@@ -180,9 +184,9 @@ export class KernelLog {
       const device = mount?.[1];
       const filesystem = mount?.[2];
       if (device !== undefined && filesystem !== undefined) {
-        const names = this.mounted.get(bootId) ?? new Map<string, string>();
+        const names = mounted.get(bootId) ?? new Map<string, string>();
         names.set(device, filesystem.toLowerCase());
-        this.mounted.set(bootId, names);
+        mounted.set(bootId, names);
         continue;
       }
       const failure = entry.MESSAGE.match(failureLine);
@@ -192,9 +196,14 @@ export class KernelLog {
       if (!Number.isFinite(at))
         throw new Error("Kernel log entry carries no time");
       const fsid =
-        this.mounted.get(bootId)?.get(failureDevice) ??
+        mounted.get(bootId)?.get(failureDevice) ??
         (bootId === thisBoot ? devices.get(failureDevice) : undefined);
-      if (fsid === undefined) continue;
+      if (fsid === undefined) {
+        // A missing boot id cannot prove this is an old, unmatched entry.
+        // Ask for it again once procfs can identify the current boot.
+        if (thisBoot === null) unmatchedWithoutBoot = true;
+        continue;
+      }
       const root = Number(failure[2]);
       const inode = Number(failure[3]);
       const inodes = this.failures.get(fsid) ?? new Map<string, CsumFailure>();
@@ -205,7 +214,10 @@ export class KernelLog {
     }
     // The cursor moves only once the whole answer parsed, so a read that
     // failed part way is asked again rather than skipped.
-    this.cursor = cursor;
+    if (!unmatchedWithoutBoot && cursor !== this.cursor) {
+      this.cursor = cursor;
+      this.mounted = mounted;
+    }
     this.searched = true;
     for (const [fsid, inodes] of this.failures) {
       // Only the newest are kept, so the map stays as small as what a

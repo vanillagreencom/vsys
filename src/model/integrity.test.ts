@@ -4,13 +4,20 @@ import { volumeSnapshot } from "../test/fixture";
 import { present } from "../test/present";
 import {
   damageCounts,
+  type ErrorSource,
   type Integrity,
   type IntegrityState,
   integrity,
   integrityLevel,
   volumesByDevice,
 } from "./integrity";
-import type { Scrub, ScrubCoverage, Storage, Volume } from "./types";
+import type {
+  CsumFailure,
+  Scrub,
+  ScrubCoverage,
+  Storage,
+  Volume,
+} from "./types";
 import type { Level } from "./verdict";
 
 const day = 86400000;
@@ -43,6 +50,115 @@ function report(overrides: Partial<Scrub> = {}): Scrub {
     ...overrides,
   };
 }
+
+test("an unreadable report leaves confirmed new errors ahead of unknown", () => {
+  const rows: {
+    source: ErrorSource | null;
+    growth: number | null;
+    logged: CsumFailure[];
+    state: IntegrityState;
+  }[] = [
+    { source: null, growth: null, logged: [], state: "unknown" },
+    { source: "counter", growth: now - 1000, logged: [], state: "new-errors" },
+    {
+      source: "kernel-log",
+      growth: null,
+      logged: [{ root: 5, inode: 7, at: now - 1000 }],
+      state: "new-errors",
+    },
+  ];
+  for (const row of rows) {
+    const item = integrity(
+      filesystem({ lastErrorAt: row.growth }),
+      {
+        scrubs: [report({ readable: false, status: null, startedAt: null })],
+        lastFinishedScrub: { fs: { at: now - day, damaged: false } },
+        csumFailures: { fs: row.logged },
+      },
+      now,
+      defaults(),
+    );
+    expect({ source: row.source, state: item.state }).toEqual({
+      source: row.source,
+      state: row.state,
+    });
+    expect(item.errorSource).toBe(row.source);
+    expect(item.blocks).toBeNull();
+    expect(item.groups).toEqual([]);
+  }
+});
+
+test("an unreadable report allows health only when it is provably older or unrelated", () => {
+  const rows: {
+    name: string;
+    fsid: string | null;
+    at: number | null;
+    damage?: number;
+    growth?: number;
+    state: IntegrityState;
+  }[] = [
+    { name: "unknown identity", fsid: null, at: null, state: "unknown" },
+    { name: "unknown order", fsid: "fs", at: null, state: "unknown" },
+    { name: "same start", fsid: "fs", at: now - day, state: "unknown" },
+    { name: "newer", fsid: "fs", at: now - 1000, state: "unknown" },
+    { name: "older", fsid: "fs", at: now - 2 * day, state: "healthy" },
+    { name: "unrelated", fsid: "other", at: null, state: "healthy" },
+    {
+      name: "independent damage",
+      fsid: null,
+      at: null,
+      damage: 1,
+      state: "damaged",
+    },
+    {
+      name: "independent growth",
+      fsid: null,
+      at: null,
+      growth: now - 1000,
+      state: "new-errors",
+    },
+  ];
+  for (const row of rows) {
+    const unreadable = report({
+      path: "failed.result",
+      fsid: row.fsid,
+      startedAt: row.at,
+      readable: false,
+      status: null,
+      uncorrectable: null,
+      addresses: null,
+    });
+    const clean = report({
+      uncorrectable: row.damage ?? 0,
+      problem: row.damage !== undefined,
+    });
+    // Both directory orders reach the same report-selection owner.
+    for (const scrubs of [
+      [clean, unreadable],
+      [unreadable, clean],
+    ]) {
+      const item = integrity(
+        filesystem({ lastErrorAt: row.growth ?? null }),
+        { scrubs },
+        now,
+        defaults(),
+      );
+      expect({ name: row.name, state: item.state }).toEqual({
+        name: row.name,
+        state: row.state,
+      });
+      expect(item.scrub?.path).toBe(
+        row.state === "healthy" ? clean.path : unreadable.path,
+      );
+      expect(item.blocks).toBe(row.state === "healthy" ? 0 : null);
+      expect(damageCounts(item)).toEqual(
+        row.state === "healthy"
+          ? { files: 0, free: 0, unresolved: 0, unnamed: 0 }
+          : { files: null, free: null, unresolved: null, unnamed: null },
+      );
+    }
+  }
+});
 
 test("an address names its files, free space, or damage it could not name", () => {
   const c = defaults();
