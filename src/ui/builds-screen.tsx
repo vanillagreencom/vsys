@@ -20,6 +20,7 @@ import {
 import { age, bytes, count, gap, percent, share } from "./format";
 import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
+import { firstRow, useSelection } from "./selection";
 import { metric, ui } from "./theme";
 import {
   Bar,
@@ -84,7 +85,7 @@ export function Builds({
   height: number;
   width: number;
 }) {
-  const [selected, setSelected] = useState(0);
+  const [selection, setSelection] = useState(firstRow);
   const [processes, setProcesses] = useState(false);
   const summary = buildsSummary(s, c);
   // One key holds both lists. Each is every row there is, every lane building
@@ -100,6 +101,11 @@ export function Builds({
   hold.drew(
     "lanes",
     rows.map((row) => row.id),
+  );
+  const { selected, choose, move } = useSelection(
+    rows.map((row) => row.id),
+    selection,
+    setSelection,
   );
   // The id for the same reason every other lane list carries one: two lanes
   // that resolve to one name are told apart by a column, never by a suffix on
@@ -127,11 +133,11 @@ export function Builds({
   const buildColumns: Column[] = [nameColumn, ...fixed];
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => nextDown(rows.length, i));
+      move((i) => nextDown(rows.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      setSelected((i) => Math.max(0, i - 1));
+      move((i) => Math.max(0, i - 1));
       return true;
     }
     if (name === c.keys.open && rows.length) {
@@ -148,7 +154,7 @@ export function Builds({
     }
     return false;
   });
-  const current = rows[Math.min(selected, rows.length - 1)];
+  const current = rows[selected];
   const lane = current ? s.lanes.find((l) => l.id === current.id) : undefined;
   const owned = new Set(s.lanes.flatMap((l) => l.pids));
   const procs = heldOrder(
@@ -244,14 +250,14 @@ export function Builds({
           items={rows}
           selected={selected}
           height={Math.max(3, Math.floor((height - 8) / 2))}
-          onSelect={setSelected}
+          onSelect={choose}
           empty=""
           render={(row, i, isSelected) => (
             <Row
               key={row.id || "outside"}
               selected={isSelected}
               onOpen={() => {
-                setSelected(i);
+                choose(i);
                 setProcesses(true);
               }}
             >

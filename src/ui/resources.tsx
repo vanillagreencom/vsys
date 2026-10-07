@@ -18,6 +18,7 @@ import {
   waitText,
 } from "./format";
 import { useScreenKeys } from "./keys";
+import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, ui } from "./theme";
 import {
   Bar,
@@ -227,9 +228,14 @@ export function Resources({
   onTargetUsed: () => void;
   onNotice: (text: string, level: Level) => void;
 }) {
-  const [selected, setSelected] = useState(0);
+  const [selection, setSelection] = useState(firstRow);
   const [all, setAll] = useState(false);
   const rows = groupRows(s, all);
+  const { selected, choose, move } = useSelection(
+    rows.map((g) => g.path),
+    selection,
+    setSelection,
+  );
   // A card that names a group lands on it. An idle group is not in the rows
   // until they are all shown, so the target opens them. The group is found
   // before the request is acknowledged, because a collector refresh between
@@ -240,26 +246,26 @@ export function Resources({
     if (target === null) return;
     const at = groupRows(s, all).findIndex((g) => g.path === target);
     const hidden = s.groups.findIndex((g) => g.path === target);
-    if (at >= 0) setSelected(at);
+    if (at >= 0) choose(at);
     else if (hidden >= 0) {
       setAll(true);
-      setSelected(hidden);
+      setSelection({ index: hidden, id: target });
     } else onNotice(`${target} is no longer in the sample`, "warn");
     onTargetUsed();
-  }, [target, onTargetUsed, onNotice, s, all]);
+  }, [target, onTargetUsed, onNotice, s, all, choose]);
   const hidden = s.groups.length - rows.length;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      setSelected((i) => nextDown(rows.length, i));
+      move((i) => nextDown(rows.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {
-      setSelected((i) => Math.max(0, i - 1));
+      move((i) => Math.max(0, i - 1));
       return true;
     }
     if (name === c.keys.details) {
       setAll((v) => !v);
-      setSelected(0);
+      setSelection(firstRow);
       return true;
     }
     return false;
@@ -275,7 +281,7 @@ export function Resources({
     SwapTotal === undefined || SwapFree === undefined
       ? null
       : SwapTotal - SwapFree;
-  const current = rows[Math.min(selected, rows.length - 1)];
+  const current = rows[selected];
   const currentCause = current ? groupCause(current, s, c) : null;
   const topCpu = Math.max(100, ...rows.map((g) => g.cpuPercent ?? 0));
   const topMemory = Math.max(1, ...rows.map((g) => g.memory ?? 0));
@@ -386,7 +392,7 @@ export function Resources({
           items={rows}
           selected={selected}
           height={listHeight}
-          onSelect={setSelected}
+          onSelect={choose}
           empty="No resource group could be read."
           render={(g, i, isSelected) => {
             const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
@@ -395,7 +401,7 @@ export function Resources({
                 key={g.path}
                 selected={isSelected}
                 color={levelColor(groupLevel(g, s, c))}
-                onOpen={() => setSelected(i)}
+                onOpen={() => choose(i)}
               >
                 {safe(cell(nameColumn, name))}
                 {columnGap}

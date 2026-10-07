@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { defaults } from "./config/config";
 import { runEffect, switchToPane } from "./effect";
 import { laneIntent, laneTarget, resolveIntent } from "./model/actions";
-import { emptySnapshot, laneSnapshot } from "./test/fixture";
+import { emptySnapshot, laneSnapshot, processSnapshot } from "./test/fixture";
 
 /** A directory standing in for the lane's own cgroup. */
 function scopeDir() {
@@ -24,9 +24,9 @@ test("a freeze and a thaw write their own value to the lane's cgroup", async () 
     // a lane frozen when the reader asked for it to be thawed.
     const c = { ...defaults(), cgroupRoot: d.root };
     const lane = laneSnapshot({ id: "a.scope", cgroup: "a.scope" });
-    const target = laneTarget(lane, c);
+    const s = { ...emptySnapshot(), lanes: [lane], procs: [processSnapshot()] };
+    const target = laneTarget(lane, c, s.procs);
     if (target === null) throw new Error("the fixture lane runs in a scope");
-    const s = { ...emptySnapshot(), lanes: [lane] };
     const attribute = join(d.root, "a.scope", "cgroup.freeze");
     mkdirSync(join(d.root, "a.scope"), { recursive: true });
     for (const [action, value] of [

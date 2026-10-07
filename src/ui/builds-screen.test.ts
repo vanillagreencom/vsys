@@ -2,9 +2,43 @@ import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import type { CacheEffect } from "../model/builds";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "../test/fixture";
-import { mount } from "../test/harness";
+import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
 import { cacheDetail, cacheLevel, cacheText } from "./builds-screen";
+
+test.each([
+  { selected: "beta", removed: "alpha", expected: "beta", moves: 1 },
+  { selected: "beta", removed: "beta", expected: "gamma", moves: 1 },
+  { selected: "gamma", removed: "gamma", expected: "beta", moves: 2 },
+])(
+  "Builds keeps or replaces $selected when $removed stops building",
+  async ({ selected, removed, expected, moves }) => {
+    const s = emptySnapshot();
+    s.lanes = ["alpha", "beta", "gamma"].map((name) =>
+      laneSnapshot({
+        id: `agents.slice/${name}.scope`,
+        name,
+        cgroup: `agents.slice/${name}.scope`,
+        builds: { rustc: 1 },
+      }),
+    );
+    const t = await mount(s, defaults(), { width: 160, height: 40 });
+    try {
+      await t.press("4");
+      for (let i = 0; i < moves; i++) await t.press("down");
+      expect(selectedRow(t.frame())).toContain(selected);
+      await t.update({
+        ...s,
+        lanes: s.lanes.map((lane) =>
+          lane.name === removed ? { ...lane, builds: {} } : lane,
+        ),
+      });
+      expect(selectedRow(t.frame())).toContain(expected);
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 test("the cache reading states its window and never divides by nothing", () => {
   expect(cacheText(null)).toBe("not available");

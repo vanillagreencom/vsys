@@ -2,7 +2,13 @@ import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { Collector } from "../collect/collector";
 import { defaults } from "../config/config";
-import { emptySnapshot, fixture, laneSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  fixture,
+  groupSnapshot,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { present } from "../test/present";
 import {
   type LaneAction,
@@ -15,6 +21,7 @@ import {
   laneTarget,
   resolveIntent,
 } from "./actions";
+import { lanes } from "./lanes";
 import type { Lane } from "./types";
 
 const c = defaults();
@@ -23,7 +30,54 @@ afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
 });
 const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
-const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes });
+const procs = [processSnapshot()];
+const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes, procs });
+
+test.each(laneActions)(
+  "%s refuses a replacement with a reused process ID",
+  (action) => {
+    const sample = (start: number) => {
+      const s = emptySnapshot();
+      s.groups = [groupSnapshot({ pids: [40] })];
+      s.procs = [processSnapshot({ pid: 40, start })];
+      s.lanes = lanes(s.groups, s.procs, c);
+      return s;
+    };
+    const before = sample(100);
+    const target = present(
+      laneTarget(
+        present(before.lanes[0], "the confirmed lane"),
+        c,
+        before.procs,
+      ) ?? undefined,
+      "the confirmed target",
+    );
+    const intent = laneIntent(action, target);
+    expect(resolveIntent(intent, before, c).state).toBe("ready");
+    expect(resolveIntent(intent, sample(900), c).state).toBe("replaced");
+  },
+);
+
+test("a lane with no readable leading process gets no action target", () => {
+  // The collector produces a memberless scope when its process reads fail.
+  const lane = laneSnapshot({ mainPid: 0, pids: [] });
+  expect(laneTarget(lane, c, [])).toBeNull();
+});
+
+test.each(laneActions)(
+  "%s refuses when the current sample cannot identify the leading process",
+  (action) => {
+    const lane = laneSnapshot();
+    const target = present(
+      laneTarget(lane, c, procs) ?? undefined,
+      "the confirmed target",
+    );
+    const intent = laneIntent(action, target);
+    expect(
+      resolveIntent(intent, { ...world([lane]), procs: [] }, c).state,
+    ).toBe("unaddressable");
+  },
+);
 /**
  * The command an action reaches through the module's own seam. Nothing
  * outside builds one: an effect exists only where a snapshot justified it.
@@ -48,10 +102,11 @@ function commandFor(
 
 test("each action names the lane's own scope and the exact work it would do", () => {
   const lane = laneSnapshot();
-  const target = laneTarget(lane, c);
+  const target = laneTarget(lane, c, procs);
   expect(target).toEqual({
     laneId: "agents.slice/a.scope",
     mainPid: 40,
+    mainStart: 100,
     scope: "a.scope",
     directory: dir,
     actions: ["Freeze", "Thaw", "Stop"],
@@ -101,7 +156,7 @@ test("a lane vsys cannot address by scope gets no target at all", () => {
   for (const [cgroup, reason] of rows)
     expect({
       reason,
-      target: laneTarget(laneSnapshot({ cgroup }), c),
+      target: laneTarget(laneSnapshot({ cgroup }), c, procs),
     }).toEqual({ reason, target: null });
 });
 
@@ -129,7 +184,7 @@ test("Stop is offered only for a scope systemd created as a unit", () => {
   for (const [cgroup, actions] of rows)
     expect({
       cgroup,
-      actions: laneTarget(laneSnapshot({ cgroup }), c)?.actions,
+      actions: laneTarget(laneSnapshot({ cgroup }), c, procs)?.actions,
     }).toEqual({ cgroup, actions });
 });
 
@@ -150,13 +205,17 @@ test("Stop on a scope nested in a capped container never names the user manager'
   f.group(nested, [500]);
   f.proc(500, nested, { command: ["/sbin/init"], comm: "systemd" });
   f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
   const s = await new Collector(f.config, 100, 4096).sample(1000);
   const resolve = (cgroup: string, action: LaneAction) => {
     const lane = present(
       s.lanes.find((l) => l.cgroup === cgroup),
       `the ${cgroup} lane`,
     );
-    const target = present(laneTarget(lane, f.config) ?? undefined, cgroup);
+    const target = present(
+      laneTarget(lane, f.config, s.procs) ?? undefined,
+      cgroup,
+    );
     return resolveIntent(laneIntent(action, target), s, f.config);
   };
   expect(resolve(nested, "Stop").state).toBe("unaddressable");
@@ -174,10 +233,11 @@ test("a copied command survives an escaped scope name and a path with a space", 
   const scope = "app-Hyprland-chromium\\x2dpersonal-af7ff2b7.scope";
   const root = "/tmp/vsys test/cgroup";
   const lane = laneSnapshot({ cgroup: `agents.slice/${scope}` });
-  const target = laneTarget(lane, { ...c, cgroupRoot: root });
+  const target = laneTarget(lane, { ...c, cgroupRoot: root }, procs);
   expect(target).toEqual({
     laneId: lane.id,
     mainPid: lane.mainPid,
+    mainStart: 100,
     scope,
     directory: `${root}/agents.slice/${scope}`,
     actions: ["Freeze", "Thaw", "Stop"],
@@ -208,7 +268,7 @@ test("a copied command survives an escaped scope name and a path with a space", 
 
 test("an intent reaches an effect only while it still names the same work", () => {
   const lane = laneSnapshot();
-  const target = laneTarget(lane, c);
+  const target = laneTarget(lane, c, procs);
   if (target === null) throw new Error("the fixture lane runs in a scope");
   const intent = laneIntent("Stop", target);
   // What a screen holds is the reader's half alone. There is no effect on it
@@ -217,6 +277,7 @@ test("an intent reaches an effect only while it still names the same work", () =
     action: "Stop",
     laneId: "agents.slice/a.scope",
     mainPid: 40,
+    mainStart: 100,
     scope: "a.scope",
     text: "systemctl --user kill --signal=TERM a.scope",
   });

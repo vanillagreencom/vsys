@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Config } from "../config/config";
 import { shellLine, shellWord } from "./shell";
-import type { Lane, Snapshot } from "./types";
+import type { Lane, Proc, Snapshot } from "./types";
 
 /** What a reader can ask vsys to do to one lane, in menu order. */
 export const laneActions = ["Freeze", "Thaw", "Stop"] as const;
@@ -28,11 +28,11 @@ export interface LaneIntent {
   /** The lane the reader saw. Re-resolution finds it again by this. */
   laneId: string;
   /**
-   * The process leading that lane. A scope name embeds the process id that
-   * opened it, so a later process can hold the same name; the lane is the same
-   * lane only while this process still leads it.
+   * The process leading that lane. A later process can hold the same scope
+   * name and reuse the process ID, so its start time identifies the instance.
    */
   mainPid: number;
+  mainStart: number;
   /** The systemd scope the confirmation names before anything runs. */
   scope: string;
   /** The same work as a line a reader can paste into a shell. */
@@ -46,14 +46,15 @@ export interface LaneCommand extends LaneIntent {
 export interface LaneTarget {
   laneId: string;
   mainPid: number;
+  mainStart: number;
   scope: string;
   directory: string;
   /** The actions this lane offers, in menu order. */
   actions: readonly LaneAction[];
 }
 /**
- * The scope an action would address, or null when the lane has none. Two
- * conditions have to hold, and neither is a formality: `systemctl --user`
+ * The scope an action would address, or null when the lane has no readable
+ * leading process or addressable scope. `systemctl --user`
  * names units, so only a `.scope` leaf can be signalled, and a cgroup traced
  * through /proc alone is an absolute kernel path that does not resolve
  * against the configured root, so joining it would name a different group
@@ -68,15 +69,22 @@ export interface LaneTarget {
  * name a different unit. Such a scope keeps Freeze and Thaw, which address its
  * directory, and gets no Stop.
  */
-export function laneTarget(lane: Lane, c: Config): LaneTarget | null {
+export function laneTarget(
+  lane: Lane,
+  c: Config,
+  procs: readonly Proc[],
+): LaneTarget | null {
   const parts = lane.cgroup.split("/").filter(Boolean);
   const scope = parts.at(-1);
   if (lane.cgroup.startsWith("/") || parts.includes("..")) return null;
   if (scope === undefined || !scope.endsWith(".scope")) return null;
+  const main = procs.find((p) => p.pid === lane.mainPid);
+  if (main === undefined) return null;
   const unit = parts.slice(0, -1).every((part) => part.endsWith(".slice"));
   return {
     laneId: lane.id,
     mainPid: lane.mainPid,
+    mainStart: main.start,
     scope,
     directory: join(c.cgroupRoot, ...parts),
     actions: laneActions.filter((action) => unit || action !== "Stop"),
@@ -91,9 +99,9 @@ export function laneTarget(lane: Lane, c: Config): LaneTarget | null {
  */
 function laneCommand(
   action: LaneAction,
-  { laneId, mainPid, scope, directory }: LaneTarget,
+  { laneId, mainPid, mainStart, scope, directory }: LaneTarget,
 ): LaneCommand {
-  const of = { action, laneId, mainPid, scope };
+  const of = { action, laneId, mainPid, mainStart, scope };
   if (action === "Stop") {
     const argv = ["systemctl", "--user", "kill", "--signal=TERM", scope];
     return { ...of, text: shellLine(argv), effect: { kind: "run", argv } };
@@ -138,9 +146,10 @@ export function resolveIntent(
   const lane = s.lanes.find((l) => l.id === intent.laneId);
   if (lane === undefined) return { state: "ended" };
   if (lane.mainPid !== intent.mainPid) return { state: "replaced" };
-  const target = laneTarget(lane, c);
+  const target = laneTarget(lane, c, s.procs);
   if (target === null || !target.actions.includes(intent.action))
     return { state: "unaddressable" };
+  if (target.mainStart !== intent.mainStart) return { state: "replaced" };
   const command = laneCommand(intent.action, target);
   return command.text === intent.text
     ? { state: "ready", command }

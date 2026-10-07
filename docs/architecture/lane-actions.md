@@ -4,7 +4,7 @@ Read before adding or changing anything the dashboard does to a process, a cgrou
 
 ## The approach
 
-A screen holds a `LaneIntent`: the action, the lane id, its main process, the scope and the line the reader read. It carries no effect. `resolveIntent()` in `src/model/actions.ts` rebuilds it against the snapshot of the moment into a `LaneCommand`, and refuses when the lane ended, another process leads it, its cgroup no longer resolves to a scope, or the rebuilt line differs from the confirmed one. `runEffect()` in `src/effect.ts` performs the command. Write mode ships off, and every action stands behind a confirmation naming the scope.
+A screen holds a `LaneIntent`: the action, the lane id, its main process ID and start time, the scope and the line the reader read. It carries no effect. `resolveIntent()` in `src/model/actions.ts` rebuilds it against the snapshot of the moment into a `LaneCommand`, and refuses when the lane ended, another process instance leads it, the main process is unreadable, its cgroup no longer resolves to a scope, or the rebuilt line differs from the confirmed one. `runEffect()` in `src/effect.ts` performs the command. Write mode ships off, and every action stands behind a confirmation naming the scope.
 
 ## Why
 
@@ -13,7 +13,7 @@ A confirmation stays open while samples land under it. Twice a review found an a
 ## Rules
 
 - Do build intents on the screen and commands only through `resolveIntent()`. It is the only exported function returning a `LaneCommand`, and the builder is private to `src/model/actions.ts`. `src/model/actions.test.ts` pins each command and each refusal.
-- Do refuse every action while write mode is off, while a past sample is pinned, and when the current sample no longer names the confirmed line. `src/ui/agent.test.tsx` lands a sample under an open confirmation and checks all four answers.
+- Do refuse every action while write mode is off, while a past sample is pinned, and when the current sample no longer names the confirmed line. `src/ui/agent.test.tsx` checks these refusals. `src/ui/App.test.tsx` turns write mode off while a confirmation is open.
 - Do offer actions only to a lane whose cgroup is a `.scope` under the configured root, through `laneTarget()`, and offer Stop only where every directory between the root and the scope is a `.slice`. A scope nested in another unit's subtree keeps Freeze and Thaw and gets no Stop ([D002](../decisions/D002-lane-action-mechanism.md)).
 - Do report each refusal as its own answer, so a signal that reached nothing never reads as a completed stop.
 - Never change system state anywhere but `runEffect()`. Review holds this; no check refuses a second writer.

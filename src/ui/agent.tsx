@@ -359,7 +359,7 @@ export function Agent({
       current = false;
     };
   }, [history, lane.id, snapshot.time, windowMs]);
-  const target = laneTarget(lane, c);
+  const target = laneTarget(lane, c, snapshot.procs);
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
       name === "Terminal" &&

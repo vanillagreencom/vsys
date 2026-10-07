@@ -6,7 +6,12 @@ import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
-import { emptySnapshot, groupSnapshot, laneSnapshot } from "../test/fixture";
+import {
+  emptySnapshot,
+  groupSnapshot,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
 import { present } from "../test/present";
 import type { DetailRow } from "./agent";
@@ -151,6 +156,7 @@ async function stopSelected(c: Config, calls: LaneCommand[]) {
   const s = emptySnapshot();
   s.lanes = [laneSnapshot()];
   s.groups = [groupSnapshot()];
+  s.procs = [processSnapshot()];
   const t = await mount(
     s,
     c,
@@ -268,6 +274,7 @@ test("a scope nested in another unit's subtree lists Freeze and Thaw but no Stop
   const s = emptySnapshot();
   const cgroup = "user.slice/libpod-abc.scope/container/init.scope";
   s.lanes = [laneSnapshot({ id: cgroup, cgroup })];
+  s.procs = [processSnapshot()];
   const t = await mount(
     s,
     { ...defaults(), writeMode: true },
@@ -386,6 +393,7 @@ async function paned(
     }),
   ];
   s.groups = [groupSnapshot()];
+  s.procs = [processSnapshot()];
   const t = await mount(
     s,
     c,
