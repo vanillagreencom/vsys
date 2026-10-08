@@ -11,6 +11,7 @@ import {
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  userManager,
 } from "../test/fixture";
 import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
 import { present } from "../test/present";
@@ -243,7 +244,7 @@ async function stopSelected(c: Config, calls: LaneCommand[]) {
   const s = emptySnapshot();
   s.lanes = [laneSnapshot()];
   s.groups = [groupSnapshot()];
-  s.procs = [processSnapshot()];
+  s.procs = [processSnapshot({ group: `${userManager}/agents.slice/a.scope` })];
   const t = await mount(
     s,
     c,
@@ -480,7 +481,7 @@ async function paned(
     }),
   ];
   s.groups = [groupSnapshot()];
-  s.procs = [processSnapshot()];
+  s.procs = [processSnapshot({ group: `${userManager}/agents.slice/a.scope` })];
   const t = await mount(
     s,
     c,

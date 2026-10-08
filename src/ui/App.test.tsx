@@ -10,6 +10,7 @@ import {
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  userManager,
   volumeSnapshot,
 } from "../test/fixture";
 import { mount } from "../test/harness";
@@ -22,7 +23,7 @@ test("disabling Agent actions through Settings refuses a pending Stop", async ()
   const s = emptySnapshot();
   s.lanes = [laneSnapshot()];
   s.groups = [groupSnapshot()];
-  s.procs = [processSnapshot()];
+  s.procs = [processSnapshot({ group: `${userManager}/agents.slice/a.scope` })];
   const calls: LaneCommand[] = [];
   const saved: Config[] = [];
   const t = await mount(
@@ -50,7 +51,10 @@ test("disabling Agent actions through Settings refuses a pending Stop", async ()
     for (let i = 0; i < 4; i++) await t.press("j");
     await t.press("enter");
     for (let i = 0; i < 3; i++) await t.press("j");
+    // The copyable line is Stop's alone, so the pending action is a Stop.
+    expect(t.frame()).toContain("systemctl --user kill --signal=TERM a.scope");
     await t.press("enter");
+    expect(t.frame()).toContain("Stop a.scope?");
     expect(calls).toEqual([]);
     await clickText("7 Settings");
     await clickText("Agent actions");

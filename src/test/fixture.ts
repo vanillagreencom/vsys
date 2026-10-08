@@ -25,6 +25,9 @@ import type {
  */
 export const claudeLink = "/home/reader/.local/bin/claude";
 const claudeBinary = "/home/reader/.local/share/claude/versions/2.1.0";
+/** The kernel cgroup of the user manager of the user running the tests. */
+const uid = process.getuid?.() ?? 1000;
+export const userManager = `/user.slice/user-${uid}.slice/user@${uid}.service`;
 
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
@@ -111,10 +114,7 @@ export function fixture() {
       `${pid} (${options.comm ?? "claude"}) ${fields.join(" ")}`,
     );
     write(join(path, "cmdline"), `${command.join("\0")}\0`);
-    write(
-      join(path, "cgroup"),
-      `0::/user.slice/user-1000.slice/user@1000.service/${groupPath}\n`,
-    );
+    write(join(path, "cgroup"), `0::${userManager}/${groupPath}\n`);
     write(join(path, "status"), "Name:\tclaude\nVmSwap:\t2 kB\n");
     write(join(path, "environ"), options.env ?? "");
     for (const [name, value] of Object.entries({
@@ -134,7 +134,7 @@ export function fixture() {
   );
   write(
     join(config.procRoot, "self/mountinfo"),
-    `1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 0:2 /user.slice/user-1000.slice/user@1000.service ${config.cgroupRoot} rw - cgroup2 cgroup rw\n`,
+    `1 0 0:1 / / rw - ext4 /dev/root rw\n2 1 0:2 ${userManager} ${config.cgroupRoot} rw - cgroup2 cgroup rw\n`,
   );
   for (const kind of ["cpu", "memory", "io"])
     write(join(config.procRoot, "pressure", kind), psi);

@@ -8,6 +8,7 @@ import {
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  userManager,
 } from "../test/fixture";
 import { present } from "../test/present";
 import {
@@ -22,7 +23,7 @@ import {
   resolveIntent,
 } from "./actions";
 import { lanes } from "./lanes";
-import type { Lane } from "./types";
+import type { Lane, Proc } from "./types";
 
 const c = defaults();
 const fixtures: ReturnType<typeof fixture>[] = [];
@@ -30,8 +31,23 @@ afterEach(() => {
   for (const f of fixtures.splice(0)) f.cleanup();
 });
 const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
-const procs = [processSnapshot()];
-const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes, procs });
+/** A leading process in the default root's `agents.slice/a.scope`. */
+const leader = (overrides: Partial<Proc> = {}) =>
+  processSnapshot({
+    group: `${userManager}/agents.slice/a.scope`,
+    ...overrides,
+  });
+const procs = [leader()];
+/** Each lane's leading process, in the lane's own cgroup. */
+const leaders = (lanes: Lane[]) =>
+  lanes.map((l) =>
+    leader({ pid: l.mainPid, group: `${userManager}/${l.cgroup}` }),
+  );
+const world = (lanes: Lane[]) => ({
+  ...emptySnapshot(),
+  lanes,
+  procs: leaders(lanes),
+});
 
 test.each([...laneActions])(
   "%s refuses a replacement with a reused process ID",
@@ -39,7 +55,7 @@ test.each([...laneActions])(
     const sample = (start: number) => {
       const s = emptySnapshot();
       s.groups = [groupSnapshot({ pids: [40] })];
-      s.procs = [processSnapshot({ pid: 40, start })];
+      s.procs = [leader({ pid: 40, start })];
       s.lanes = lanes(s.groups, s.procs, c);
       return s;
     };
@@ -181,11 +197,46 @@ test("Stop is offered only for a scope systemd created as a unit", () => {
       ["Freeze", "Thaw"],
     ],
   ];
-  for (const [cgroup, actions] of rows)
+  for (const [cgroup, actions] of rows) {
+    const lane = laneSnapshot({ cgroup });
     expect({
       cgroup,
-      actions: laneTarget(laneSnapshot({ cgroup }), c, procs)?.actions,
+      actions: laneTarget(lane, c, leaders([lane]))?.actions,
     }).toEqual({ cgroup, actions });
+  }
+});
+
+test("Stop judges the whole kernel path, not only the part below the root", () => {
+  // `systemctl --user` reaches the caller's user manager, so a configured root
+  // inside a container's subtree, or a process whose kernel path vsys cannot
+  // match to the lane, must not hand that manager a bare scope name.
+  const other = (process.getuid?.() ?? 1000) + 1;
+  const rows: [string, LaneAction[]][] = [
+    [`${userManager}/agents.slice/a.scope`, ["Freeze", "Thaw", "Stop"]],
+    [
+      `${userManager}/app.slice/libpod-abc.scope/container/agents.slice/a.scope`,
+      ["Freeze", "Thaw"],
+    ],
+    [
+      `${userManager}/user.slice/user-0.slice/user@0.service/agents.slice/a.scope`,
+      ["Freeze", "Thaw"],
+    ],
+    ["/system.slice/docker-abc.scope/agents.slice/a.scope", ["Freeze", "Thaw"]],
+    // No user manager above the scope: it is not that manager's unit.
+    ["/agents.slice/a.scope", ["Freeze", "Thaw"]],
+    // Another user's manager, which `systemctl --user` does not reach.
+    [
+      `/user.slice/user-${other}.slice/user@${other}.service/agents.slice/a.scope`,
+      ["Freeze", "Thaw"],
+    ],
+    [`${userManager}/agents.slice/b.scope`, ["Freeze", "Thaw"]],
+  ];
+  const lane = laneSnapshot();
+  for (const [group, actions] of rows)
+    expect({
+      group,
+      actions: laneTarget(lane, c, [processSnapshot({ group })])?.actions,
+    }).toEqual({ group, actions });
 });
 
 // A rootless container booted with systemd and a memory limit under the floor
@@ -233,7 +284,7 @@ test("a copied command survives an escaped scope name and a path with a space", 
   const scope = "app-Hyprland-chromium\\x2dpersonal-af7ff2b7.scope";
   const root = "/tmp/vsys test/cgroup";
   const lane = laneSnapshot({ cgroup: `agents.slice/${scope}` });
-  const target = laneTarget(lane, { ...c, cgroupRoot: root }, procs);
+  const target = laneTarget(lane, { ...c, cgroupRoot: root }, leaders([lane]));
   expect(target).toEqual({
     laneId: lane.id,
     mainPid: lane.mainPid,

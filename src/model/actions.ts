@@ -68,6 +68,15 @@ export interface LaneTarget {
  * unit whose subtree a different systemd manages, and there the bare name can
  * name a different unit. Such a scope keeps Freeze and Thaw, which address its
  * directory, and gets no Stop.
+ *
+ * The configured root can itself sit inside such a unit, so the check reads
+ * the whole kernel path the leading process reports rather than the part
+ * below the root: above the scope there must be exactly one unit, the
+ * `user@<uid>.service` of the user vsys runs as, which is the manager
+ * `systemctl --user` reaches, and otherwise only slices. A scope under no
+ * user manager or another user's is not that manager's unit, and a process
+ * whose kernel path is not the lane's own cgroup leaves the manager unknown;
+ * each such lane gets no Stop.
  */
 export function laneTarget(
   lane: Lane,
@@ -80,7 +89,17 @@ export function laneTarget(
   if (scope === undefined || !scope.endsWith(".scope")) return null;
   const main = procs.find((p) => p.pid === lane.mainPid);
   if (main === undefined) return null;
-  const unit = parts.slice(0, -1).every((part) => part.endsWith(".slice"));
+  const uid = process.getuid?.();
+  const units = main.group
+    .split("/")
+    .filter(Boolean)
+    .slice(0, -1)
+    .filter((part) => !part.endsWith(".slice"));
+  const unit =
+    main.group.endsWith(`/${parts.join("/")}`) &&
+    parts.slice(0, -1).every((part) => part.endsWith(".slice")) &&
+    uid !== undefined &&
+    units.join("/") === `user@${uid}.service`;
   return {
     laneId: lane.id,
     mainPid: lane.mainPid,
