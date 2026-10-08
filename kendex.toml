@@ -210,19 +210,41 @@ source = "kendex"
 [commands.code-scrub]
 source = "kendex"
 
-[skill-instructions]
-all = """
-- Use GitHub for code hosting and Linear for tracked work. Load their skills when the task uses those services. (catalog-declarations-10)
-- Do not stop a process by name or argv pattern. Use its recorded launch PID, or on Linux verify /proc/PID/cwd is inside the owned worktree before stopping that PID. (hook-block-argv-kill-03)
-- An explicitly recorded orch lane leaves kendex refresh and apply to the overseer in the base checkout after merge. Ordinary worktrees keep normal project resolution and drift repair. (hook-session-drift-check-04)
+[agent-skills]
+planner = ["github", "linear"]
+researcher = ["decider", "deep-research", "github", "linear"]
+tpm = ["decider", "dev", "github", "linear", "project-management"]
+rust = ["code-quality", "decider", "dev", "github", "linear", "preflight"]
+maintainer = ["code-quality", "decider", "dep-radar", "dev", "github", "linear", "preflight", "review-gate"]
+scout = ["github", "linear"]
+
+[agent-additional-instructions]
+planner = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
 """
+researcher = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+tpm = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+rust = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+maintainer = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+scout = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+
+[skill-instructions]
 dev = """
-- Capture before images from the base revision and after images from HEAD in every supported theme under tmp/ui-shots/. List each view, before or after, and theme in the round summary. Later rounds retain before images and replace after images. New views need after images only. (CQ33)
+- For each changed view, capture a before image from the base revision and an after image from HEAD in every supported theme. Put the images under tmp/ui-shots/ in the worktree. List each file in the round summary with the view, before or after, and theme. A later change to the view replaces its after images and carries its before images forward. A new view has after images only. The reviewer judges the view from this set. (CQ33)
 - Use the estimate scale in kendex.toml [skill-instructions].project-management. Reassess the estimate when implementation changes scope. (DV17)
 """
 docs-writing = """
 - Keep plans, research reports, measurements and handoffs in tmp/ or on the owning tracker issue. Attach final artifacts there. Preserve evidence there before removing a tracked copy during a rewrite. Keep durable product and architecture docs in the repository. (DW12)
-- Treat docs/architecture/ as principle documents for one reader's task and the harmful mistake it prevents. Keep the approach, reason, rules and one canonical code example. (bot-instructions-18)
 """
 linear = """
 - Use the team's live Backlog, Todo, In Progress, In Review, Verifying, Done and Canceled states. Read live states before a transition. Verifying holds merged work with open evidence checks. (LIN-027)
@@ -236,7 +258,7 @@ project-management = """
 - Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
 """
 reviewer = """
-- Apply the principle-document policy in kendex.toml [skill-instructions].docs-writing to docs/architecture/. Raise findings only for claims the current code contradicts. Do not request wording, length, walkthroughs, inventories, history or measurements. (bot-instructions-18)
+- For each changed view, capture a before image from the base revision and an after image from HEAD in every supported theme. Put the images under tmp/ui-shots/ in the worktree. List each file in the round summary with the view, before or after, and theme. A later change to the view replaces its after images and carries its before images forward. A new view has after images only. The reviewer judges the view from this set. (CQ33)
 - Review findings use the estimate scale in kendex.toml [skill-instructions].project-management. Keep the numeric schema field and its consumer-defined meaning separate. (RV20)
 """
 worktree = """
@@ -249,6 +271,7 @@ review-gate = """
 - Preserve the required-review workflow identity: vanillagreencom/kendex, repository ID 1190866154, .github/workflows/request-copilot-review.yml, ref refs/heads/main. Read its live approved full commit SHA before changing the ruleset. (review-gate-16)
 """
 orch = """
+- A worktree created as an orch lane leaves kendex refresh and apply to the overseer in the base checkout after merge. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
 - The rolling install-record pull request owns refresh outputs. After base-checkout refresh, report generated changes and restore only its owned outputs. Preserve unrelated tracked work. (ORCH-M03)
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear. Read the live issue before changing its state. (ORCH-M09)
 - Use the estimate and post-merge observation policies in kendex.toml [skill-instructions].project-management. (ORCH-M22, ORCH-M23)
@@ -268,6 +291,14 @@ orch = """
 
 [bot-instructions]
 schema = 1
+
+[[bot-instructions.surface]]
+name = "consumer-docs-architecture"
+globs = ["docs/architecture/**"]
+reviewer_only = true
+instructions = """
+A file under docs/architecture/ is a principle document for one reader's task and the harmful mistake it prevents. It holds the approach, reason, rules and one canonical code example. Raise a review finding only where the document contradicts the code at this head. Do not request wording, structure or length changes, code walkthroughs, file or test inventories, history, dates or measurements. Change the document beside code only when the code change makes a claim false. (bot-instructions-18)
+"""
 
 [bot-instructions.repo]
 name = "vsys"
