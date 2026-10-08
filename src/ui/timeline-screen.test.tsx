@@ -513,3 +513,32 @@ test("a row opened with the keyboard keeps its change when one arrives above it"
     await t2.close();
   }
 });
+
+test("the cursor marks the column its sample is charted in at an epoch column boundary", async () => {
+  const c = defaults();
+  const h = new History(c);
+  // 1791471600000 * 126 / 300000 is a whole number: the sample opens a column.
+  const s = emptySnapshot(1791471600000);
+  h.add(s);
+  // A chart 126 columns wide: the width less the padding and the gutter.
+  const t = await mount(
+    s,
+    c,
+    { width: 126 + 4 + 13, height: 40 },
+    { history: h },
+  );
+  try {
+    await t.press("6");
+    const strip = present(
+      t
+        .frame()
+        .split("\n")
+        .find((row) => row.includes("▲")),
+      "marker strip",
+    );
+    // The newest sample is in the last of the 126 columns.
+    expect(strip.indexOf("▲") - strip.indexOf("·")).toBe(125);
+  } finally {
+    await t.close();
+  }
+});

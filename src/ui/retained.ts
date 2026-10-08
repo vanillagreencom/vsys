@@ -63,11 +63,6 @@ export class Retained {
       this.events = this.points.toReversed().flatMap((p) => p.events ?? []);
       this.charts.clear();
     } else {
-      const fresh = history
-        .window(end, end - newest)
-        .filter((p) => p.time > newest);
-      for (const p of fresh) this.points.push(p);
-      const added = fresh.toReversed().flatMap((p) => p.events ?? []);
       // Retention can be shorter than the window, and the store has dropped
       // what is older than it.
       const cutoff = end - Math.min(windowMs, retentionMs);
@@ -79,6 +74,12 @@ export class Retained {
         dropped += p.events?.length ?? 0;
       }
       if (gone) this.points.splice(0, gone);
+      // A clock that jumps forward hands over points already past the cutoff.
+      const fresh = history
+        .window(end, end - newest)
+        .filter((p) => p.time > newest && p.time >= cutoff);
+      for (const p of fresh) this.points.push(p);
+      const added = fresh.toReversed().flatMap((p) => p.events ?? []);
       if (added.length || dropped)
         this.events = [
           ...added,
@@ -97,7 +98,12 @@ export class Retained {
    * the new ones. The newest column holds `end`, so the drawn window starts at
    * the column boundary up to one column after `end - windowMs`.
    */
-  columns(width: number): { start: number; columns: (Column | undefined)[] } {
+  columns(width: number): {
+    start: number;
+    columns: (Column | undefined)[];
+    /** The drawn column a time falls in, placed as its sample is. */
+    column: (time: number) => number;
+  } {
     // In whole milliseconds, so a sample on a boundary has one column.
     const at = (time: number) => Math.floor((time * width) / this.windowMs);
     const first = at(this.end) - width + 1;
@@ -150,6 +156,7 @@ export class Retained {
       columns: Array.from({ length: width }, (_, i) =>
         chart.columns.get(first + i),
       ),
+      column: (time) => at(time) - first,
     };
   }
 }

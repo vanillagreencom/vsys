@@ -35,7 +35,9 @@ test("the kept window matches a fresh read as samples arrive, leave and the wind
       const fresh = new Retained().read(h, time, windowMs, retentionMs);
       expect(kept.points).toEqual(h.window(time, windowMs));
       expect(kept.events).toEqual(h.events(time, windowMs));
-      expect(columns).toEqual(fresh.columns(width));
+      const again = fresh.columns(width);
+      expect(columns.start).toBe(again.start);
+      expect(columns.columns).toEqual(again.columns);
       for (const field of ["memory", "pressure"] as const)
         expect(columns.columns.map((x) => x?.peaks[field] ?? null)).toEqual(
           bucketPeaks(
@@ -48,6 +50,55 @@ test("the kept window matches a fresh read as samples arrive, leave and the wind
         );
     }
     expect(kept.events.length).toBeGreaterThan(0);
+  } finally {
+    h.close();
+  }
+});
+
+test("a clock that steps back and recovers keeps only the window's changes", () => {
+  const c = defaults();
+  const h = new History(c);
+  const windowMs = 300000;
+  const retentionMs = c.historyHours * 3600000;
+  try {
+    for (let time = 1000; time <= 402000; time += 1000) {
+      const s = emptySnapshot(time);
+      // A process changing cgroup every sample records a change in each.
+      s.procs = [
+        processSnapshot({
+          pid: 40,
+          start: 100,
+          group:
+            (time / 1000) % 2 ? "app.slice/x.scope" : "agents.slice/x.scope",
+        }),
+      ];
+      h.add(s);
+    }
+    const kept = new Retained();
+    kept.read(h, 402000, windowMs, retentionMs);
+    kept.read(h, 5000, windowMs, retentionMs);
+    expect(kept.events.length).toBeGreaterThan(0);
+    kept.read(h, 402000, windowMs, retentionMs);
+    expect(kept.points).toEqual(h.window(402000, windowMs));
+    expect(kept.events).toEqual(h.events(402000, windowMs));
+  } finally {
+    h.close();
+  }
+});
+
+test("a sample on a column boundary at an epoch time lands in the column its cursor marks", () => {
+  const c = defaults();
+  const h = new History(c);
+  // 1791471600000 * 126 / 300000 is a whole number: the sample opens a column.
+  const time = 1791471600000;
+  const width = 126;
+  try {
+    h.add(emptySnapshot(time));
+    const { columns, column } = new Retained()
+      .read(h, time, 300000, c.historyHours * 3600000)
+      .columns(width);
+    expect(column(time)).toBe(width - 1);
+    expect(columns[width - 1]?.last).toBe(time);
   } finally {
     h.close();
   }

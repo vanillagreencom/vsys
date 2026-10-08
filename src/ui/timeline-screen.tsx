@@ -122,16 +122,13 @@ export function Timeline({
     move,
   } = useSelection(changes.map(eventKey), selection, setSelection);
   const chartWidth = Math.max(10, width - 4 - gutter);
-  const { start, columns } = retained.columns(chartWidth);
+  const { start, columns, column } = retained.columns(chartWidth);
   const selected = pointAt(points, cursor);
   const at = cursor ?? points.at(-1)?.time;
   const cursorColumn =
     at === undefined
       ? undefined
-      : Math.min(
-          chartWidth - 1,
-          Math.max(0, Math.floor(((at - start) * chartWidth) / windowMs)),
-        );
+      : Math.min(chartWidth - 1, Math.max(0, column(at)));
   useScreenKeys((name, key) => {
     if (name === c.keys.down || name === "down") {
       move((from) => nextDown(changes.length, from));
@@ -177,8 +174,13 @@ export function Timeline({
     const v = selected ? numeric(key)(selected) : null;
     return v === null ? "" : format(v);
   };
-  const pick = (column: number) =>
-    onCursor(columns[column]?.last ?? start + (column * windowMs) / chartWidth);
+  // An empty column's cursor is its first whole millisecond, which the
+  // marker places back in that column.
+  const pick = (index: number) =>
+    onCursor(
+      columns[index]?.last ??
+        Math.ceil(start + (index * windowMs) / chartWidth),
+    );
   const onChart = (event: {
     x: number;
     currentTarget: { x: number } | null;
