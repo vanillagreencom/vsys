@@ -774,6 +774,182 @@ test("a different destination database keeps its pre-existing row in lane series
     now + 2000,
   ]);
 });
+for (const [persistence, then] of [false, true].flatMap((persistence) =>
+  ["nothing", "a same-path settings change", "persistence turned off"].map(
+    (then) => [persistence, then] as const,
+  ),
+))
+  test(`a merge keeps the destination's recorded snapshot at a shared time (source persistence: ${persistence}, then ${then})`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    const destination = { ...f.config, persistence: true };
+    const time = Date.now();
+    const target = new History(destination);
+    cleanup.push(() => target.close());
+    const recorded = emptySnapshot(time);
+    recorded.system.host = "recorded-host";
+    recorded.lanes = [laneSnapshot({ id: "agents.slice/recorded.scope" })];
+    recorded.procs = [
+      processSnapshot({ group: "agents.slice/recorded.scope" }),
+    ];
+    target.add(recorded);
+    const source = new History({
+      ...destination,
+      persistence,
+      sqlitePath: f.config.sqlitePath.replace(/history\.db$/, "source.db"),
+    });
+    cleanup.push(() => source.close());
+    const incoming = emptySnapshot(time);
+    incoming.system.host = "incoming-host";
+    incoming.system.memory = { MemTotal: 1000, MemAvailable: 100 };
+    incoming.lanes = [laneSnapshot()];
+    incoming.procs = [
+      processSnapshot({ group: "agents.slice/incoming.scope" }),
+    ];
+    source.add(incoming);
+    const first = source.reconfigure(destination);
+    cleanup.push(() => first.close());
+    // A settings change before the next sample keeps what the merge kept.
+    const merged =
+      then === "nothing"
+        ? first
+        : first.reconfigure(
+            then === "persistence turned off"
+              ? { ...destination, persistence: false }
+              : { ...destination, refreshMs: 2000 },
+          );
+    if (merged !== first) cleanup.push(() => merged.close());
+    expect(merged.at(time)?.system.host).toBe("recorded-host");
+    expect(merged.window(time, 0)).toEqual(target.window(time, 0));
+    // The next sample's changes are measured against the kept snapshot: its
+    // lane stops and its process moves, and the source's lane is not there.
+    const following = emptySnapshot(time + 1000);
+    following.lanes = [laneSnapshot({ id: "agents.slice/following.scope" })];
+    following.procs = [
+      processSnapshot({ group: "agents.slice/following.scope" }),
+    ];
+    merged.add(following);
+    const changes = merged.events(time + 1000, 0);
+    expect(
+      changes
+        .filter((event) => event.kind !== "cgroup-move")
+        .map((event) => [event.kind, event.subjectId])
+        .sort(),
+    ).toEqual([
+      ["lane-start", "agents.slice/following.scope"],
+      ["lane-stop", "agents.slice/recorded.scope"],
+    ]);
+    expect(
+      changes
+        .filter((event) => event.kind === "cgroup-move")
+        .map((event) => event.names),
+    ).toMatchObject([
+      {
+        from: "agents.slice/recorded.scope",
+        to: "agents.slice/following.scope",
+      },
+    ]);
+    const reopened = new History(destination);
+    cleanup.push(() => reopened.close());
+    expect(reopened.at(time)?.system.host).toBe("recorded-host");
+    expect(reopened.window(time, 0)).toEqual(target.window(time, 0));
+  });
+for (const collision of ["retention boundary", "commit during the merge"])
+  test(`a merge's Timeline keeps the destination's point for a collision at the ${collision}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    const destination = { ...f.config, persistence: true };
+    // The source's newest sample predates the merge, so the merge's cutoff
+    // is older than the one the destination opens with.
+    const end = Date.now() - 600000;
+    const time =
+      collision === "retention boundary"
+        ? end - destination.historyHours * 3600000 + 1000
+        : end;
+    const writer = new History(destination);
+    cleanup.push(() => writer.close());
+    const recorded = emptySnapshot(time);
+    recorded.system.host = "recorded-host";
+    const source = new History(f.config);
+    cleanup.push(() => source.close());
+    const incoming = emptySnapshot(time);
+    incoming.system.host = "incoming-host";
+    incoming.system.memory = { MemTotal: 1000, MemAvailable: 100 };
+    source.add(incoming);
+    if (time < end) source.add(emptySnapshot(end));
+    if (collision === "retention boundary") writer.add(recorded);
+    else {
+      // Another dashboard commits after the destination opened, as the
+      // transfer compresses its first row and before it writes one.
+      const gzip = Bun.gzipSync;
+      const spy = spyOn(Bun, "gzipSync");
+      cleanup.push(() => spy.mockRestore());
+      let committed = false;
+      spy.mockImplementation((...args: Parameters<typeof Bun.gzipSync>) => {
+        if (!committed) {
+          committed = true;
+          writer.add(recorded);
+        }
+        return gzip(...args);
+      });
+    }
+    const merged = source.reconfigure(destination);
+    cleanup.push(() => merged.close());
+    expect(merged.at(time)?.system.host).toBe("recorded-host");
+    expect(writer.window(time, 0).map((p) => p.time)).toEqual([time]);
+    expect(merged.window(time, 0)).toEqual(writer.window(time, 0));
+  });
+test("enabling persistence keeps retained points the archive's memory budget let go", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const source = new History(f.config);
+  cleanup.push(() => source.close());
+  // A budget the first checkpoint fits and the first two do not, so the
+  // archive lets the oldest go while the points ring keeps every sample.
+  // biome-ignore lint/complexity/useLiteralKeys: plants a small archive budget
+  source["archive"] = new Archive(200 * 1024);
+  const start = Date.now() - 3600000;
+  let time = start;
+  for (let i = 0; source.retentionWarning === null && i < 600; i++) {
+    time = start + i * 1000;
+    const s = emptySnapshot(time);
+    s.procs = [
+      processSnapshot({ cwd: `/work/${"x".repeat(i < 300 ? 0 : 200)}/${i}` }),
+    ];
+    source.add(s);
+  }
+  expect(source.retentionWarning).not.toBeNull();
+  const retained = source.window(time, 3600000);
+  expect(retained.map((p) => p.time)[0]).toBe(start);
+  const merged = source.reconfigure({ ...f.config, persistence: true });
+  cleanup.push(() => merged.close());
+  expect(merged.window(time, 3600000)).toEqual(retained);
+});
+test("a shared database's samples and their lane starts reach this dashboard's Timeline", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const first = new History(f.config);
+  cleanup.push(() => first.close());
+  const second = new History(f.config);
+  cleanup.push(() => second.close());
+  const time = Date.now();
+  first.add(emptySnapshot(time));
+  const foreign = emptySnapshot(time + 1000);
+  foreign.lanes = [laneSnapshot()];
+  second.add(foreign);
+  first.add({ ...foreign, time: time + 2000 });
+  const window = first.window(time + 2000, 3000);
+  expect(window.map((p) => p.time - time)).toEqual([0, 1000, 2000]);
+  expect(
+    first
+      .events(time + 2000, 3000)
+      .map((event) => [event.kind, event.time - time]),
+  ).toEqual([["lane-start", 1000]]);
+  const stored = new History(f.config);
+  cleanup.push(() => stored.close());
+  expect(window).toEqual(stored.window(time + 2000, 3000));
+});
 test("a same-path reconfigure does not re-read the retained window from disk", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
