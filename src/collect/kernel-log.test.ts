@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
 import { present } from "../test/present";
@@ -9,6 +17,7 @@ import {
   inodeLimit,
   KernelLog,
   kernelLogArgv,
+  kernelLogTimeoutMs,
   probeKernelLog,
   readKernelLog,
 } from "./kernel-log";
@@ -36,6 +45,44 @@ const failed = (device: string, root: number, inode: number) =>
   `BTRFS warning (device ${device}): csum failed root ${root} ino ${inode} off 16629760 csum 0x4361855b expected csum 0x65c64f44 mirror 1`;
 const fsA = "2ff9dd6d-c928-4458-9444-bffb6c01eacb";
 const fsB = "71345faf-0e2f-4855-88f2-fd0ea2697ea5";
+
+test("timeouts pause searches with capped backoff and retain the completed cursor", async () => {
+  let now = 0;
+  let timeout = false;
+  const error = new DOMException("fixture timeout", "TimeoutError");
+  const asked: (string | null)[] = [];
+  const log = new KernelLog(
+    async (cursor) => {
+      asked.push(cursor);
+      if (timeout) throw error;
+      return [
+        entry(earlier, 100, mounted("sda", fsA)),
+        "-- cursor: retained",
+      ].join("\n");
+    },
+    () => now,
+  );
+  await log.read(new Map(), current);
+  timeout = true;
+  for (const delay of [
+    10_000, 20_000, 40_000, 80_000, 160_000, 300_000, 300_000,
+  ]) {
+    await expect(log.read(new Map(), current)).rejects.toBe(error);
+    const searches = asked.length;
+    now += delay - 1;
+    await expect(log.read(new Map(), current)).rejects.toBe(error);
+    expect(asked).toHaveLength(searches);
+    now++;
+  }
+  timeout = false;
+  expect(await log.read(new Map(), current)).toEqual({});
+  timeout = true;
+  await expect(log.read(new Map(), current)).rejects.toBe(error);
+  now += kernelLogTimeoutMs;
+  timeout = false;
+  expect(await log.read(new Map(), current)).toEqual({});
+  expect(asked.slice(1).every((cursor) => cursor === "retained")).toBe(true);
+});
 
 test("restoring the boot ID recovers a failure read without a mount message", async () => {
   const asked: (string | null)[] = [];
@@ -314,3 +361,34 @@ test("storage carries the kernel log's failures, and an unread log as unread", a
   );
   expect(none.csumFailures).toBeNull();
 });
+
+test("A6-3: a timed-out initial journal search backs off before the next sample", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vsys-a6-journal-"));
+  const script = join(root, "journalctl");
+  writeFileSync(
+    script,
+    '#!/bin/sh\nprintf \'%s\\n\' \'{"MESSAGE":"BTRFS warning (device sda): csum failed root 5 ino 7","_BOOT_ID":"boot","__REALTIME_TIMESTAMP":"1000000"}\'\nexec /bin/sleep 30\n',
+  );
+  chmodSync(script, 0o755);
+  const cursors: (string | null)[] = [];
+  const log = new KernelLog(async (cursor) => {
+    cursors.push(cursor);
+    return readKernelLog(cursor, [script, ...kernelLogArgv(cursor).slice(1)]);
+  });
+  try {
+    const failures: unknown[] = [];
+    for (let sample = 0; sample < 2; sample++) {
+      try {
+        await log.read(new Map(), "boot");
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    expect(failures.length).toBeGreaterThan(0);
+    expect(log.held()).toBeNull();
+    expect(present(cursors[0], "initial cursor")).toBeNull();
+    expect(cursors.length).toBe(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 25000);

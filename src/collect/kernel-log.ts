@@ -103,7 +103,12 @@ export async function readKernelLog(
   /** Injected so a test can run a stand-in for journalctl. */
   argv: string[] = kernelLogArgv(cursor),
 ): Promise<string> {
-  const { out, error, status } = await spawnText(argv, kernelLogTimeoutMs);
+  const { out, error, status, timedOut } = await spawnText(
+    argv,
+    kernelLogTimeoutMs,
+  );
+  if (timedOut)
+    throw new DOMException("Kernel log search timed out", "TimeoutError");
   if (!answered(status, error))
     throw new Error(error.trim() || `${argv[0]} exited ${status}`);
   return out;
@@ -127,6 +132,10 @@ const cursorLine = /^-- cursor: (\S+)$/;
  */
 export class KernelLog {
   private cursor: string | null = null;
+  private retry: { at: number; delay: number; error?: DOMException } = {
+    at: 0,
+    delay: 0,
+  };
   /** Mount mappings as of the retained cursor, before any replayed entries. */
   private mounted = new Map<string, Map<string, string>>();
   /** For each filesystem id, each inode's newest failure. */
@@ -135,6 +144,7 @@ export class KernelLog {
   private searched = false;
   constructor(
     private search: (cursor: string | null) => Promise<string> = readKernelLog,
+    private now: () => number = Date.now,
   ) {}
   /**
    * Every failure held, newest first per filesystem. Null until a search has
@@ -160,7 +170,21 @@ export class KernelLog {
     devices: Map<string, string>,
     boot: string | null,
   ): Promise<Record<string, CsumFailure[]>> {
-    const text = await this.search(this.cursor);
+    if (this.retry.error && this.now() < this.retry.at) throw this.retry.error;
+    let text: string;
+    try {
+      text = await this.search(this.cursor);
+      this.retry = { at: 0, delay: 0 };
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "TimeoutError") {
+        const delay = Math.min(
+          this.retry.delay * 2 || kernelLogTimeoutMs,
+          300_000,
+        );
+        this.retry = { at: this.now() + delay, delay, error };
+      }
+      throw error;
+    }
     const thisBoot = boot?.replaceAll("-", "").toLowerCase() ?? null;
     const mounted = new Map(
       [...this.mounted].map(([id, names]) => [id, new Map(names)]),
