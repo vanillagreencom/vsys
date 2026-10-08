@@ -3,16 +3,72 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from agent_warden_testlib import WARDEN, WardenRulesCase, scratch
+from agent_warden_testlib import WARDEN, WardenRulesCase, load_warden, materialize_warden_script, scratch
 
 sys.dont_write_bytecode = True
 
 
 class AgentWardenScratchRules(WardenRulesCase):
+    def test_current_directory_guard_mutants_fail(self):
+        text = WARDEN.read_text()
+        rows = [
+            ("membership", 'cwd = os.readlink(f"/proc/{pid}/cwd")', 'cwd = "/unrelated"', "in-use"),
+            ("unreadable", "if tmpdir is None or cwd is None:", "if tmpdir is None:", "unknown"),
+        ]
+        for name, old, replacement, expected in rows:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(text.count(old), 1)
+                path = materialize_warden_script(Path(tmp), text.replace(old, replacement))
+                mutant = load_warden(self.env, f"agent_warden_mutant_cwd_{name}", path)
+                with patch.object(mutant, "_proc_tmpdir", return_value=""), \
+                        patch.object(mutant.os, "readlink", return_value=tmp,
+                                     side_effect=PermissionError("cwd unreadable") if expected == "unknown" else None):
+                    with self.assertRaises(AssertionError):
+                        self.assertEqual(mutant._scratch_in_use(tmp, {700: None}), expected)
+
+    def test_worker_current_directory_keeps_scratch(self):
+        rows = [
+            ("same", "", "{lane}", "in-use"),
+            ("descendant", "", "{lane}/work", "in-use"),
+            ("sibling", "", "{lane}0", "free"),
+            ("unreadable", "", None, "unknown"),
+            ("cwd confirms unreadable environment", None, "{lane}", "in-use"),
+            ("tmpdir confirms unreadable cwd", "{lane}", None, "in-use"),
+        ]
+        for name, tmpdir, cwd, status in rows:
+            with self.subTest(name=name), scratch() as tmp:
+                base = Path(tmp)
+                (base / "cg" / self.w.SLICE / "worker.scope").mkdir(parents=True)
+                lane = base / "scratch" / "agent-confine-300-400"
+                (lane / "work").mkdir(parents=True)
+                os.utime(lane, (0, 0))
+                environ = None if tmpdir is None else f"TMPDIR={tmpdir.format(lane=lane)}\0"
+                cwd = None if cwd is None else cwd.format(lane=lane)
+                real_read = self.w.read
+
+                def read(path, default=None):
+                    return environ if str(path) == "/proc/700/environ" else real_read(path, default)
+
+                with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                        patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                        patch.object(self.w, "read", side_effect=read), patch.object(self.w, "log"), \
+                        patch.object(self.w.os, "readlink", return_value=cwd,
+                                     side_effect=PermissionError("cwd unreadable") if cwd is None else None), \
+                        patch.object(self.w.shutil, "rmtree") as remove:
+                    self.assertEqual(self.w._scratch_in_use(lane, {700: None}), status)
+                    removed = self.w.reap_scratch_dirs(True, {700: None}, set())
+                if status == "free":
+                    remove.assert_called_once()
+                    self.assertEqual(removed, [lane.name])
+                else:
+                    remove.assert_not_called()
+                    self.assertEqual(removed, [])
+
     def test_reap_scratch_dirs_rows(self):
         with scratch() as tmp:
             base = Path(tmp)
@@ -383,8 +439,9 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                         self.w.read = flaky_read
                         try:
-                            self.assertEqual(self.w._scratch_in_use(str(moved), procs), status)
-                            removed = self.w.reap_scratch_dirs(True, procs, set())
+                            with patch.object(self.w.os, "readlink", return_value="/unrelated"):
+                                self.assertEqual(self.w._scratch_in_use(str(moved), procs), status)
+                                removed = self.w.reap_scratch_dirs(True, procs, set())
                         finally:
                             self.w.read = old_read
                         if status == "free":
@@ -437,7 +494,7 @@ class AgentWardenScratchRules(WardenRulesCase):
         text = WARDEN.read_text()
         old = (
             '        if status == "in-use":\n'
-            '            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")\n'
+            '            log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")\n'
             '            continue\n'
         )
         self.assertEqual(text.count(old), 1)
