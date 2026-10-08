@@ -18,6 +18,41 @@ import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 import { gap } from "./format";
 
+test("process readings occupy their named columns", async () => {
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.procs = [processSnapshot({ cpuPercent: 25, threads: 7, rss: 2097152 })];
+  const t = await mount(s, defaults(), { width: 160, height: 45 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    await t.press("enter");
+    const lines = t.frame().split("\n");
+    const header = present(
+      lines.find(
+        (line) => line.includes("threads") && line.includes("directory"),
+      ),
+      "process header",
+    );
+    const row = present(
+      lines.find((line) => line.includes("25.0%")),
+      "process row",
+    );
+    const under = (label: string, value: string) =>
+      row.slice(
+        header.indexOf(label) + label.length - value.length,
+        header.indexOf(label) + label.length,
+      );
+    expect({
+      cpu: under("CPU", "25.0%"),
+      threads: under("threads", "7"),
+      memory: under("memory", "2.0 MiB"),
+    }).toEqual({ cpu: "25.0%", threads: "7", memory: "2.0 MiB" });
+  } finally {
+    await t.close();
+  }
+});
+
 test("agent build counts stay unknown in summary and detail", async () => {
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ builds: null, linkers: null, sccache: null })];
