@@ -159,7 +159,7 @@ no_extent() {
 # Exits 2 and prints one reason when resolution failed for a real cause, so
 # the caller can still report it when no sector in the block resolved.
 resolve_sector() {
-	local address=$1 refs names line inode root
+	local address=$1 refs names line inode root file_uuid
 	local -A held=()
 	if ! refs=$(btrfs inspect-internal logical-resolve -P -o "$address" "$mnt" 2>&1); then
 		if [[ $refs == *"logical ino ioctl: No such file or directory"* ]]; then
@@ -201,6 +201,8 @@ resolve_sector() {
 		# The containing directory answers for the subvolume: rootid opens a
 		# regular file for writing, which a read-only snapshot refuses.
 		if [[ $line != /* ]] || ! inode=$(stat -c %i -- "$line" 2>/dev/null) ||
+			! file_uuid=$(findmnt --noheadings --output UUID --target "$line" 2>/dev/null) ||
+			[[ -z $uuid || $file_uuid != "$uuid" ]] ||
 			! root=$(btrfs inspect-internal rootid "${line%/*}/" 2>/dev/null) ||
 			[[ -z ${held[$inode/$root]:-} ]]; then
 			echo "a name btrfs printed is not a name of a damaged inode"

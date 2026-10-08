@@ -1,0 +1,1 @@
+- The scrub report no longer lists a file from another filesystem as possibly damaged when its inode and subvolume IDs match.

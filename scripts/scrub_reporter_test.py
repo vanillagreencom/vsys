@@ -247,6 +247,7 @@ class ReporterTest(unittest.TestCase):
         held(EMPTY_DIAGNOSTIC + 4096, clean)
         (names / str(EMPTY_DIAGNOSTIC + 4096)).write_text(f"{clean}\n")
         stub(bin_dir, "systemd-escape", 'echo "-"\n')
+        stub(bin_dir, "findmnt", f'echo "{UUID}"\n')
         if kernel is None:
             stub(bin_dir, "journalctl", "echo 'No journal files were found.' >&2\nexit 1\n")
         else:
@@ -292,6 +293,34 @@ esac
             umask=umask,
         )
         return done, reports / "-.result"
+
+    def test_resolved_name_requires_the_scrubbed_filesystem(self) -> None:
+        cases = (
+            ("same filesystem at another mount", UUID, 0, True),
+            ("foreign filesystem", "ffffffff-ffff-ffff-ffff-ffffffffffff", 0, False),
+            ("missing identity", "", 0, False),
+            ("failed identity read", UUID, 1, False),
+        )
+        for label, file_uuid, exit_code, accepted in cases:
+            with self.subTest(case=label), scratch() as tmp:
+                base = Path(tmp)
+                bin_dir = self.fixture(base, status(uncorrectable=1), fixup("vsys-test-a", NAMED))
+                other = base / "other-mount" / "victim"
+                other.parent.mkdir()
+                other.write_text("x")
+                # Matching inode and subvolume IDs do not prove filesystem identity.
+                (base / "refs" / str(NAMED)).write_text(f"inode {other.stat().st_ino} offset 0 root 5\n")
+                (base / "names" / str(NAMED)).write_text(f"{other}\n")
+                stub(bin_dir, "findmnt", f'''[[ "$*" == "--noheadings --output UUID --target {other}" ]] || exit 2
+echo "{file_uuid}"
+exit {exit_code}
+''')
+                done, report = self.run_reporter(base, status(), None)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                address = parse(report, base)["addresses"][0]
+                self.assertEqual(address["logical"], NAMED)
+                self.assertEqual(address["paths"], [str(other)] if accepted else [])
+                self.assertEqual(address.get("resolved", True), accepted)
 
     def test_report_replacement_keeps_other_user_read_permission(self) -> None:
         for mask in (0o022, 0o077):
