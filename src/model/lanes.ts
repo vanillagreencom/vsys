@@ -69,7 +69,7 @@ export function dangerousCap(
       limitsOf(g).some((max) => max < floor),
   );
 }
-/** A group's own memory.max and, on the root, the tightest one above it. */
+/** A group's own memory.max and the tightest one above the configured root. */
 const limitsOf = (g: Group): number[] =>
   [g.max, g.above?.max ?? null].filter((max) => max !== null);
 /**

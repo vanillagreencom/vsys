@@ -29,8 +29,8 @@ export interface Group {
   max: number | null;
   maxRead: boolean;
   /**
-   * The root group only: the tightest memory.max above the configured root.
-   * Absent in older snapshots.
+   * The tightest memory.max above the configured root, on the root group, or
+   * on every group when the root went unread. Absent in older snapshots.
    */
   above?: { max: number | null; read: boolean };
   swap: number | null;

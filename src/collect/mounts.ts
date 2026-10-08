@@ -54,18 +54,25 @@ export function readMounts(r: Reader, procRoot: string): MountInfo[] | null {
     return null;
   }
 }
-/** Translate a filesystem path through the most specific cgroup v2 mount. */
-export function kernelCgroupRoot(
-  root: string,
+/** The most specific cgroup v2 mount holding a filesystem path. */
+export function cgroupMount(
+  path: string,
   mounts: MountInfo[],
-): string | undefined {
-  const path = resolve(root);
-  const mount = mounts
+): MountInfo | undefined {
+  return mounts
     .filter(
       (m) =>
         m.type === "cgroup2" &&
         (path === m.mount || path.startsWith(`${m.mount}/`)),
     )
     .sort((a, b) => b.mount.length - a.mount.length)[0];
+}
+/** Translate a filesystem path through the most specific cgroup v2 mount. */
+export function kernelCgroupRoot(
+  root: string,
+  mounts: MountInfo[],
+): string | undefined {
+  const path = resolve(root);
+  const mount = cgroupMount(path, mounts);
   return mount ? join(mount.root, relative(mount.mount, path)) : undefined;
 }
