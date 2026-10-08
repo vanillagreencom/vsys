@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import type { Snapshot } from "../model/types";
 import {
   emptySnapshot,
@@ -83,4 +83,57 @@ test("a process that moved slice while its read was out is a move when it is rea
       .filter((e) => e.kind === "cgroup-move")
       .map((e) => [e.subjectId, e.names.from, e.names.to]),
   ).toEqual([["40:100", "/agents.slice/a.scope", "/app.slice/b.scope"]]);
+});
+
+test("a write after many unread samples inflates the predecessor and the marked read, no more", () => {
+  const { open } = persisted();
+  const t = Date.now();
+  const first = open();
+  const second = open();
+  first.add(read(t, true));
+  for (let i = 1; i <= 60; i++) first.add(unread(t + i * 1000));
+  const gunzip = spyOn(Bun, "gunzipSync");
+  try {
+    // Two dashboards alternating: each write reads its predecessor from the
+    // database, because the other one wrote it.
+    for (let i = 61; i <= 64; i++) {
+      gunzip.mockClear();
+      (i % 2 ? second : first).add(unread(t + i * 1000));
+      expect(gunzip.mock.calls.length).toBeLessThanOrEqual(2);
+    }
+    gunzip.mockClear();
+    second.add(read(t + 65_000, true));
+    expect(gunzip.mock.calls.length).toBeLessThanOrEqual(2);
+  } finally {
+    gunzip.mockRestore();
+  }
+  // The marked read is the predecessor: the lane never stopped.
+  expect(laneEvents(second, t + 65_000)).toEqual([]);
+});
+
+test("an unconfirmed tool's alert neither closes nor opens again across an unread sample", () => {
+  const { config } = persisted();
+  const log = new EventLog();
+  const hold = config.pressureHoldSeconds * 1000;
+  const at = (time: number): Snapshot => ({
+    ...emptySnapshot(time),
+    procs: [
+      processSnapshot({
+        unconfirmedTool: "pi",
+        unconfirmedPath: "/opt/pi/bin/pi",
+        unconfirmedMatch: "name",
+      }),
+    ],
+  });
+  log.advance(at(1000), config);
+  const opened = log.advance(at(1000 + hold), config);
+  expect(opened.map((e) => [e.kind, e.cause])).toContainEqual([
+    "alert-open",
+    "unconfirmed-tool",
+  ]);
+  const alerts = (events: { kind: string }[]) =>
+    events.filter((e) => e.kind === "alert-open" || e.kind === "alert-close");
+  expect(alerts(log.advance(unread(2000 + hold), config))).toEqual([]);
+  expect(alerts(log.advance(unread(3000 + 3 * hold), config))).toEqual([]);
+  expect(alerts(log.advance(at(4000 + 3 * hold), config))).toEqual([]);
 });

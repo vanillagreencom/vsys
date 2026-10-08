@@ -444,8 +444,12 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
   const out: Unjudged = {};
   for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
   if (s.storage.mountsAvailable === false) out["free-space"] = "all";
-  // A lane's members went unread, so none of them is known to be confined.
-  if (processesUnread(s)) out.unconfined = "all";
+  // No process was read, so none is known to be confined, and none known to
+  // have stopped running an unconfirmed tool.
+  if (processesUnread(s)) {
+    out.unconfined = "all";
+    out["unconfirmed-tool"] = "all";
+  }
   return out;
 }
 /**
