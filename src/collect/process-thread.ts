@@ -35,7 +35,8 @@ export type ProcessPort = WorkerPort<ProcessMessage, string>;
  * thread that starts from nothing; any other setting keeps both.
  *
  * The thread does no work between requests. A request it has not answered is
- * the only one in flight, because the collector awaits each sample.
+ * the only one in flight, because the collector sends no request while one
+ * is unanswered.
  */
 export class ProcessThread implements ProcessSource {
   private host: WorkerHost<ProcessMessage, string, ProcessReading>;

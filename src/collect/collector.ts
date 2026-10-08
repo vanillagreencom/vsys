@@ -4,6 +4,7 @@ import { agentToolsPath, loadAgentTools } from "../config/agent-tools";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Capability, Snapshot } from "../model/types";
+import { processesUnread } from "../model/verdict";
 import { type FinishedScrubMemory, StorageCollector } from "./btrfs";
 import {
   type Outcome,
@@ -24,7 +25,12 @@ import {
   readMounts,
 } from "./mounts";
 import { ProcessThread } from "./process-thread";
-import { ProcessCollector, type ProcessSource } from "./procs";
+import {
+  ProcessCollector,
+  type ProcessReading,
+  type ProcessRequest,
+  type ProcessSource,
+} from "./procs";
 import { SccacheCollector } from "./sccache";
 import { agentScratchDirs } from "./scratch";
 import type { ScrubUnits } from "./scrub-timers";
@@ -71,6 +77,12 @@ const noKernelLog: Outcome = {
   detail: "this collector was given no kernel log reader",
 };
 
+/**
+ * How long a sample waits for its processes. One process file whose read
+ * blocks in the kernel would otherwise hold every later sample.
+ */
+const processDeadlineMs = 2000;
+
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
   private previous?: Snapshot;
@@ -83,6 +95,14 @@ export class Collector {
   readonly kernelLog: KernelLog | null;
   private engine = new AlertEngine();
   private processes: ProcessSource;
+  /**
+   * The temporary directories the last sample that read processes found
+   * agents naming. A sample that read none measures these, so an agent's
+   * directory and its quota warning outlast a read that did not finish.
+   */
+  private agentScratch: string[] = [];
+  /** A process read an earlier sample stopped waiting for, until it settles. */
+  private lateRead?: Promise<void>;
   private controller = new AbortController();
   /**
    * Probed once: a kernel interface does not appear or vanish between ticks.
@@ -197,6 +217,50 @@ export class Collector {
         : cap,
     );
   }
+  /**
+   * This sample's processes, or none and an unknown reading when the read
+   * misses the deadline. Ending a thread cannot interrupt a read blocked in
+   * the kernel, and a fresh thread would block on the same file, so a late
+   * read is left to finish and no sample asks again until it has. Its answer
+   * describes an earlier moment and is dropped.
+   */
+  private async readProcesses(
+    r: Reader,
+    request: ProcessRequest,
+  ): Promise<ProcessReading> {
+    const unknown: ProcessReading = {
+      procs: [],
+      errors: [],
+      processRead: "unknown",
+    };
+    if (this.lateRead) {
+      r.error(
+        this.config.procRoot,
+        "the process read an earlier sample started has not finished",
+      );
+      return unknown;
+    }
+    const read = this.processes.collect(request, this.controller.signal);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), processDeadlineMs);
+    });
+    try {
+      const reading = await Promise.race([read, late]);
+      if (reading) return reading;
+    } finally {
+      clearTimeout(timer);
+    }
+    const forget = () => {
+      this.lateRead = undefined;
+    };
+    this.lateRead = read.then(forget, forget);
+    r.error(
+      this.config.procRoot,
+      `the process read did not finish within ${processDeadlineMs} ms`,
+    );
+    return unknown;
+  }
   close(): void {
     this.controller.abort();
     this.processes.close();
@@ -245,16 +309,15 @@ export class Collector {
       for (const group of groups)
         group.kernelPath = join(kernelRoot, group.path);
     mark("cgroups");
-    const processes = await this.processes.collect(
-      {
-        time,
-        uptime: system.uptime,
-        groups: groups.map((g) => ({ pids: g.pids, kernelPath: g.kernelPath })),
-      },
-      this.controller.signal,
-    );
+    const processes = await this.readProcesses(r, {
+      time,
+      uptime: system.uptime,
+      groups: groups.map((g) => ({ pids: g.pids, kernelPath: g.kernelPath })),
+    });
     const procs = processes.procs;
     r.errors.push(...processes.errors);
+    if (!processesUnread(processes))
+      this.agentScratch = agentScratchDirs(procs);
     mark("processes");
     const storage = await this.storage.collect(
       r,
@@ -263,7 +326,7 @@ export class Collector {
       mountInfo,
       !this.live,
       options.skipScratch ?? false,
-      agentScratchDirs(procs),
+      this.agentScratch,
       options.skipKernelLog ?? false,
       () => time + (performance.now() - start),
     );

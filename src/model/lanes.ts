@@ -418,14 +418,18 @@ export function lanes(
         complete && members.length
           ? Math.max(0, ...members.map((p) => p.age))
           : null,
-      state: members.some((p) => p.state === "D")
-        ? "blocked"
-        : members.some((p) => p.state === "R")
-          ? "running"
-          : members.length
-            ? "sleeping"
-            : "empty",
-      blocked: members.filter((p) => p.state === "D").length,
+      // A member the sample did not read may be the one blocked or running,
+      // and a scope whose members went unread is not empty.
+      state: !complete
+        ? "unknown"
+        : members.some((p) => p.state === "D")
+          ? "blocked"
+          : members.some((p) => p.state === "R")
+            ? "running"
+            : members.length
+              ? "sleeping"
+              : "empty",
+      blocked: complete ? members.filter((p) => p.state === "D").length : null,
       blockedOn: blockedOn(ioPressure, memoryPressure),
       unconfined: members.some((p) => escaped(p, c, capabilities)),
       dangerous: capsGroup

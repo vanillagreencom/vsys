@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
 import type { Alert, Snapshot } from "../model/types";
+import { processesUnread } from "../model/verdict";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
@@ -172,6 +173,11 @@ export class History {
   private closed = false;
   /** Set when the kept predecessor may differ from the cached one at its time. */
   private predecessorUnchecked = false;
+  /**
+   * The time of the newest kept sample that read processes, without a
+   * database. With one, the `process_reads` row holds it for every writer.
+   */
+  private lastRead?: number;
   get retentionWarning(): string | null {
     return this.archive.shortened && !this.db
       ? "Process replay reached the memory limit. Enable SQLite to retain the full history window."
@@ -214,6 +220,11 @@ export class History {
           );
         }
         this.db.exec("PRAGMA journal_mode=WAL");
+        // One row: the time of the newest sample that read processes, written
+        // with that sample, so a predecessor lookup never scans unread rows.
+        this.db.exec(
+          "CREATE TABLE IF NOT EXISTS process_reads (id INTEGER PRIMARY KEY CHECK (id = 0), time INTEGER NOT NULL)",
+        );
         restrict(c.sqlitePath);
         this.points = History.loadPoints(
           this.db,
@@ -236,8 +247,15 @@ export class History {
     if (newest !== undefined && s.time <= newest) return;
     const json = JSON.stringify(s);
     const cutoff = s.time - this.c.historyHours * 3600000;
-    const record = (previous?: Snapshot | null) =>
-      point(s, this.c, this.eventLog.advance(s, this.c, previous));
+    const record = (
+      previous?: Snapshot | null,
+      processPrevious?: Snapshot | null,
+    ) =>
+      point(
+        s,
+        this.c,
+        this.eventLog.advance(s, this.c, previous, processPrevious),
+      );
     const db = this.db;
     // Points another dashboard committed to the shared database since this
     // one last wrote, so its Timeline holds them before the new point.
@@ -257,8 +275,11 @@ export class History {
             // The snapshot predecessor belongs to the shared database, even
             // after a collision or a restart. Keep alert watch clocks local;
             // another dashboard can use different thresholds and hold times.
+            // So does the last sample that read processes, which lane and
+            // process events compare against.
             let previous: Snapshot | null | undefined;
-            if (latest === undefined) previous = null;
+            let processPrevious: Snapshot | null | undefined;
+            if (latest === undefined) previous = processPrevious = null;
             else if (
               this.predecessorUnchecked ||
               this.eventLog.previousTime !== latest
@@ -269,9 +290,14 @@ export class History {
                 )
                 .get(latest);
               if (!row) throw new Error("Stored predecessor disappeared");
-              previous = normalizeSnapshot(
-                JSON.parse(History.decodeRow(row.data)) as Snapshot,
-              );
+              const raw = JSON.parse(History.decodeRow(row.data)) as Snapshot;
+              previous = normalizeSnapshot(raw);
+              // A record from before the process read had a deadline names no
+              // read state, and every such sample read processes.
+              processPrevious =
+                raw.processRead === "unknown"
+                  ? History.markedRead(db)
+                  : previous;
             }
             if (latest !== undefined && latest !== newest)
               foreign = db
@@ -280,23 +306,26 @@ export class History {
                 )
                 .all(newest ?? cutoff, cutoff)
                 .map((row) => normalizePoint(JSON.parse(row.point) as Point));
-            const p = record(previous);
+            const p = record(previous, processPrevious);
             db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
               s.time,
               Bun.gzipSync(json),
               JSON.stringify(p),
             );
+            if (!processesUnread(s)) History.markRead(db, s.time);
             db.query("DELETE FROM samples WHERE time < ?").run(cutoff);
             return p;
           })
           .immediate()
-      : record(
-          this.predecessorUnchecked && newest !== undefined
-            ? this.at(newest)
-            : undefined,
-        );
+      : this.predecessorUnchecked && newest !== undefined
+        ? record(
+            this.at(newest),
+            this.lastRead === undefined ? null : this.at(this.lastRead),
+          )
+        : record();
     if (!p) return;
     this.predecessorUnchecked = false;
+    if (!processesUnread(s)) this.lastRead = s.time;
     this.archive.prune(cutoff);
     this.archive.add(s.time, json);
     // A stored series is kept only while its lane lives, for the reason the
@@ -414,11 +443,44 @@ export class History {
       // above has settled its final content, keeps that promise.
       if (next.db && rebuildsFromDb)
         next.archive = History.loadArchive(next.db, cutoff);
+      // The newest sample that read processes travels with the rows.
+      const marks = [this, next]
+        .map((h) =>
+          h.db
+            ? h.db
+                .query<{ time: number }, []>(
+                  "SELECT time FROM process_reads WHERE id = 0",
+                )
+                .get()?.time
+            : h.lastRead,
+        )
+        .filter((time) => time !== undefined);
+      if (marks.length) {
+        next.lastRead = Math.max(...marks);
+        if (next.db) History.markRead(next.db, next.lastRead);
+      }
       return next;
     } catch (error) {
       next.close();
       throw error;
     }
+  }
+  /** Records `time` as the newest sample that read processes, never moving it back. */
+  private static markRead(db: Database, time: number): void {
+    db.query(
+      "INSERT INTO process_reads VALUES (0, ?) ON CONFLICT(id) DO UPDATE SET time = max(time, excluded.time)",
+    ).run(time);
+  }
+  /** The newest stored sample that read processes, in one keyed lookup. */
+  private static markedRead(db: Database): Snapshot | null {
+    const row = db
+      .query<{ data: Uint8Array }, []>(
+        "SELECT data FROM samples WHERE time = (SELECT time FROM process_reads WHERE id = 0)",
+      )
+      .get();
+    return row
+      ? normalizeSnapshot(JSON.parse(History.decodeRow(row.data)) as Snapshot)
+      : null;
   }
   /** One snapshot's JSON, inflated from the compressed blob a row stores it as. */
   private static decodeRow(data: Uint8Array): string {

@@ -1,0 +1,1 @@
+- The dashboard keeps drawing new samples when a process file read blocks. After two seconds the sample shows processes as unknown and names the read that did not finish. While the read is out, the Timeline records no lane start, stop, move or alert close from it, notifications stay as they were, and agent scratch rows stay measured.

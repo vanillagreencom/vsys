@@ -12,7 +12,7 @@ import {
   shippedAgentTools,
 } from "../config/agent-tools";
 import { scopeMain } from "../model/scopes";
-import type { Group, Proc, SourceError } from "../model/types";
+import type { Group, Proc, ProcessRead, SourceError } from "../model/types";
 import {
   buildKind,
   excludedArgv,
@@ -159,12 +159,14 @@ export interface ProcessRequest {
 export interface ProcessReading {
   procs: Proc[];
   errors: SourceError[];
-  processRead: "complete" | "incomplete";
+  /** Unknown when the read did not finish in time and nothing was read. */
+  processRead: ProcessRead;
 }
 /**
  * Where process collection runs. The program runs it on a thread of its own;
  * a collector given none reads in its caller's thread. Either way one request
- * is in flight at a time, because the collector awaits each sample.
+ * is in flight at a time, because the collector sends no request while one
+ * is unanswered.
  */
 export interface ProcessSource {
   collect(
