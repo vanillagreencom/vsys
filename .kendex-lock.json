@@ -1,6 +1,130 @@
 {
   "version": 11,
   "entries": {
+    "agent:frontend:claude": {
+      "name": "frontend",
+      "kind": "agent",
+      "harness": "claude",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "6afe9764e057da31117dd756c19caac5d4f24f85a2ade5eaa924f7d5ae603ab8",
+      "sourceCommit": "b96e8760543a7379dc382a2ad8b76e5d76c3f90d",
+      "renderedHash": "3e1cff97d7c26fe5290762f84861881a1f8bc10812c7c796596e3ccaeb965834",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "preflight"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "frontend",
+        "paths": [
+          ".claude/agents/frontend.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:frontend:codex": {
+      "name": "frontend",
+      "kind": "agent",
+      "harness": "codex",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "6afe9764e057da31117dd756c19caac5d4f24f85a2ade5eaa924f7d5ae603ab8",
+      "sourceCommit": "b96e8760543a7379dc382a2ad8b76e5d76c3f90d",
+      "renderedHash": "563b37469c56d030520a76ca483b15d4de2b4200cc35e84987f1bab0a562b6b3",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "preflight"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "frontend",
+        "paths": [
+          ".codex/agents/frontend.toml"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:frontend:copilot": {
+      "name": "frontend",
+      "kind": "agent",
+      "harness": "copilot",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "6afe9764e057da31117dd756c19caac5d4f24f85a2ade5eaa924f7d5ae603ab8",
+      "sourceCommit": "b96e8760543a7379dc382a2ad8b76e5d76c3f90d",
+      "renderedHash": "de8016ed49f9a68d359aba088acab7ba1c24ec74796685e9f0981a63f3b5d98a",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "preflight"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "frontend",
+        "paths": [
+          ".github/agents/frontend.agent.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
+    "agent:frontend:pi": {
+      "name": "frontend",
+      "kind": "agent",
+      "harness": "pi",
+      "source": "kendex",
+      "sourceRepo": "vanillagreencom/kendex",
+      "sourceHash": "6afe9764e057da31117dd756c19caac5d4f24f85a2ade5eaa924f7d5ae603ab8",
+      "sourceCommit": "b96e8760543a7379dc382a2ad8b76e5d76c3f90d",
+      "renderedHash": "c288866408f0f777ea8ad399194370ac35a1fdf76978d734a2390be63f7809fc",
+      "enabled": true,
+      "upstreamSkills": [
+        "code-quality",
+        "decider",
+        "dev",
+        "github",
+        "linear",
+        "preflight"
+      ],
+      "emitted": {
+        "kind": "agent",
+        "name": "frontend",
+        "paths": [
+          ".pi/agents/frontend.md"
+        ]
+      },
+      "reasons": [
+        {
+          "reason": "requested"
+        }
+      ]
+    },
     "agent:maintainer:claude": {
       "name": "maintainer",
       "kind": "agent",

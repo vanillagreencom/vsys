@@ -12,6 +12,9 @@ harnesses = [
 ]
 method = "symlink"
 
+[agents.frontend]
+source = "kendex"
+
 [agents.maintainer]
 source = "kendex"
 
