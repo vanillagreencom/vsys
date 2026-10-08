@@ -170,7 +170,7 @@ export class History {
   private storedLoad?: Promise<void>;
   /** Set by `close`, so a stored pass still out stops before the next row. */
   private closed = false;
-  /** Set when the stored predecessor may differ from the cached one at its time. */
+  /** Set when the kept predecessor may differ from the cached one at its time. */
   private predecessorUnchecked = false;
   get retentionWarning(): string | null {
     return this.archive.shortened && !this.db
@@ -290,7 +290,11 @@ export class History {
             return p;
           })
           .immediate()
-      : record();
+      : record(
+          this.predecessorUnchecked && newest !== undefined
+            ? this.at(newest)
+            : undefined,
+        );
     if (!p) return;
     this.predecessorUnchecked = false;
     this.archive.prune(cutoff);
@@ -344,8 +348,9 @@ export class History {
       // before it still closes with its full duration.
       next.eventLog = this.eventLog;
       // A destination row at the predecessor's time is kept over the source's,
-      // so the next sample reads its predecessor from the destination.
-      next.predecessorUnchecked = rebuildsFromDb;
+      // so the next sample reads its predecessor from what was kept, even
+      // after further settings changes before that sample.
+      next.predecessorUnchecked = rebuildsFromDb || this.predecessorUnchecked;
       for (const p of [...points.values()].sort((a, b) => a.time - b.time))
         next.points.push(p);
       const copy = (row: { time: number; data: Uint8Array; point: string }) => {

@@ -768,8 +768,12 @@ test("a different destination database keeps its pre-existing row in lane series
     now + 2000,
   ]);
 });
-for (const persistence of [false, true])
-  test(`a merge keeps the destination's recorded snapshot at a shared time (source persistence: ${persistence})`, () => {
+for (const [persistence, then] of [false, true].flatMap((persistence) =>
+  ["nothing", "a same-path settings change", "persistence turned off"].map(
+    (then) => [persistence, then] as const,
+  ),
+))
+  test(`a merge keeps the destination's recorded snapshot at a shared time (source persistence: ${persistence}, then ${then})`, () => {
     const f = fixture();
     cleanup.push(f.cleanup);
     const destination = { ...f.config, persistence: true };
@@ -797,8 +801,18 @@ for (const persistence of [false, true])
       processSnapshot({ group: "agents.slice/incoming.scope" }),
     ];
     source.add(incoming);
-    const merged = source.reconfigure(destination);
-    cleanup.push(() => merged.close());
+    const first = source.reconfigure(destination);
+    cleanup.push(() => first.close());
+    // A settings change before the next sample keeps what the merge kept.
+    const merged =
+      then === "nothing"
+        ? first
+        : first.reconfigure(
+            then === "persistence turned off"
+              ? { ...destination, persistence: false }
+              : { ...destination, refreshMs: 2000 },
+          );
+    if (merged !== first) cleanup.push(() => merged.close());
     expect(merged.at(time)?.system.host).toBe("recorded-host");
     expect(merged.window(time, 0)).toEqual(target.window(time, 0));
     // The next sample's changes are measured against the kept snapshot: its
