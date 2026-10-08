@@ -258,7 +258,7 @@ project-management = """
 - Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
 """
 reviewer = """
-- Judge each changed view from the developer's screenshot set under tmp/ui-shots/. Use the dev round summary, which lists each file with its view, before or after, and theme. Check before images from the base revision and after images from HEAD in every supported theme. Later rounds carry before images forward and replace after images. New views require after images only. Report missing required images as findings. The developer creates the images. The reviewer creates no image. (CQ33)
+- Under Trigger: needs-ui-review, judge the appearance of each changed view from the developer's screenshot set under tmp/ui-shots/ against docs/architecture/ui.md and the UI polish rules. Read the code diff to check that colour comes only from the role table in src/ui/theme.ts. Use the dev round summary, which lists each file with its view, before or after, and theme. For an existing changed view, a missing or unlabelled required before or after image in any supported theme is a finding. A new view requires labelled after images only. Later rounds carry before images forward and replace after images. The reviewer never captures or creates an image and writes only the review artifact. (CQ33)
 - Review findings use the estimate scale in kendex.toml [skill-instructions].project-management. Keep the numeric schema field and its consumer-defined meaning separate. (RV20)
 """
 worktree = """
@@ -271,7 +271,7 @@ review-gate = """
 - Preserve the required-review workflow identity: vanillagreencom/kendex, repository ID 1190866154, .github/workflows/request-copilot-review.yml, ref refs/heads/main. Read its live approved full commit SHA before changing the ruleset. (review-gate-16)
 """
 orch = """
-- A worktree created as an orch lane leaves kendex refresh and apply to the overseer in the base checkout after merge. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
+- A worktree created as an orch lane follows the refresh-owner rule (ORCH-M03) in these instructions and respects the lane refresh restriction. A lane explicitly launched to refresh runs kendex refresh or kendex apply only with --lane-refresh, as its brief permits. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
 - The kendex-refresh Actions workflow and its rolling kendex/refresh pull request own kendex refresh outputs. A base-checkout refresh after merge reports generated changes and restores only outputs that workflow owns. Preserve unrelated tracked and untracked work. (ORCH-M03)
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear. Read the live issue before changing its state. (ORCH-M09)
 - Use the estimate and post-merge observation policies in kendex.toml [skill-instructions].project-management. (ORCH-M22, ORCH-M23)
