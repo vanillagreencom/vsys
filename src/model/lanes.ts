@@ -66,10 +66,12 @@ export function dangerousCap(
       (g.path === "." ||
         g.path === group.path ||
         group.path.startsWith(`${g.path}/`)) &&
-      g.max !== null &&
-      g.max < floor,
+      limitsOf(g).some((max) => max < floor),
   );
 }
+/** A group's own memory.max and, on the root, the tightest one above it. */
+const limitsOf = (g: Group): number[] =>
+  [g.max, g.above?.max ?? null].filter((max) => max !== null);
 /**
  * The tightest memory.max on the group itself or on any of its ancestors. An
  * unlimited cap and an unread cgroup tree are different answers, so the caller
@@ -82,10 +84,12 @@ export function effectiveMax(
   const covering = groups.filter(
     (g) => g.path === "." || g.path === path || path.startsWith(`${g.path}/`),
   );
-  const limits = covering.flatMap((g) => (g.max === null ? [] : [g.max]));
+  const limits = covering.flatMap(limitsOf);
   return {
     max: limits.length ? Math.min(...limits) : null,
-    known: covering.length > 0 && covering.every((g) => g.maxRead),
+    known:
+      covering.length > 0 &&
+      covering.every((g) => g.maxRead && g.above?.read !== false),
   };
 }
 /**

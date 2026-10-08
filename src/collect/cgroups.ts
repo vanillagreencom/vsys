@@ -158,5 +158,26 @@ export function collectGroups(
     for (const child of r.dirs(path)) visit(join(path, child));
   }
   visit(root);
+  const top = result.find((g) => g.path === ".");
+  if (top) top.above = limitAbove(r, root);
   return result;
+}
+/**
+ * The tightest memory.max on the cgroups above the configured root, which
+ * limit every group below it. The walk ends at the first directory with no
+ * memory.max, which the cgroup v2 root is. Only a missing file goes
+ * unrecorded by the reader, so a recorded error is a limit left unknown.
+ */
+function limitAbove(
+  r: Reader,
+  root: string,
+): { max: number | null; read: boolean } {
+  let max: number | null = null;
+  for (let dir = dirname(root); ; dir = dirname(dir)) {
+    const errors = r.errors.length;
+    const limit = r.limit(join(dir, "memory.max"), true);
+    if (!limit.read) return { max, read: r.errors.length === errors };
+    if (limit.value !== null) max = Math.min(max ?? limit.value, limit.value);
+    if (dir === dirname(dir)) return { max, read: true };
+  }
 }
