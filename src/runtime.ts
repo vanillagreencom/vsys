@@ -23,7 +23,7 @@ import {
   sameValue,
   validate,
 } from "./config/config";
-import { notify } from "./model/alerts";
+import { notifiable, notify } from "./model/alerts";
 import type { Snapshot } from "./model/types";
 import type { History } from "./store/history";
 
@@ -135,6 +135,8 @@ export class Session {
   private generation = 0;
   private immediate = false;
   private latest?: Snapshot;
+  private notifying = false;
+  private notifyFailures: string[] = [];
   private makeSource: SourceFactory;
   private agentToolsPath: string;
   private writeConfig: (path: string, body: string) => Promise<void>;
@@ -196,13 +198,7 @@ export class Session {
       const snapshot = await this.source.sample();
       if (this.stopped || this.applying || generation !== this.generation)
         return;
-      try {
-        await notify(snapshot.alerts, this.config);
-      } catch (error) {
-        snapshot.errors.push({ source: "notify-send", message: String(error) });
-      }
-      if (this.stopped || this.applying || generation !== this.generation)
-        return;
+      this.notify(snapshot);
       this.history.add(snapshot);
       this.latest = snapshot;
       this.events.frame(snapshot, this.history, this.config, this.configPath());
@@ -227,6 +223,31 @@ export class Session {
           : Math.max(0, this.config.refreshMs - (performance.now() - started)),
       );
     }
+  }
+  /**
+   * Delivery runs beside the sample loop, never in it, so a notifier that
+   * does not exit cannot hold a frame. One batch runs at a time; a sample
+   * that alerts while it runs records its alerts as unsent rather than
+   * queueing them, and a batch's failure reaches the next published sample.
+   */
+  private notify(snapshot: Snapshot): void {
+    for (const message of this.notifyFailures.splice(0))
+      snapshot.errors.push({ source: "notify-send", message });
+    const sent = notifiable(snapshot.alerts, this.config);
+    if (!sent.length) return;
+    if (this.notifying) {
+      snapshot.errors.push({
+        source: "notify-send",
+        message: `${sent.length} notification(s) not sent: the previous notify-send is still running`,
+      });
+      return;
+    }
+    this.notifying = true;
+    notify(sent)
+      .catch((error) => this.notifyFailures.push(String(error)))
+      .finally(() => {
+        this.notifying = false;
+      });
   }
   /** Prepare replacements before saving; failure leaves the active state intact. */
   async configure(input: Config): Promise<void> {
