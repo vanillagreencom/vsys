@@ -1,0 +1,1 @@
+- A desktop notifier that hangs no longer freezes the dashboard on its last frame. Each notify-send call is stopped after five seconds and reported, and alerts raised while a call is still running are reported as not sent.

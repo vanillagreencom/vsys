@@ -87,3 +87,28 @@ test("one failed delivery does not cancel the remaining alerts", async () => {
     f.cleanup();
   }
 });
+test("a notification executable that outlives the time limit is killed and rejects the delivery", async () => {
+  const f = fixture();
+  try {
+    const executable = join(f.root, "bin/notify-send");
+    f.write(executable, "#!/bin/sh\nexec /bin/sleep 30\n");
+    chmodSync(executable, 0o755);
+    const script = `import {notify} from ${JSON.stringify(resolve("src/model/alerts.ts"))}; import {defaults} from ${JSON.stringify(resolve("src/config/config.ts"))}; const c=defaults(); c.notifications=["scrub"]; try { await notify([{time:1,rule:"scrub",subject:"/",message:"failed"}],c,200); } catch { process.exitCode=7; }`;
+    const started = performance.now();
+    const child = Bun.spawn([process.execPath, "-e", script], {
+      cwd: f.root,
+      env: { PATH: join(f.root, "bin") },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    try {
+      expect(await child.exited).toBe(7);
+    } finally {
+      clearTimeout(timer);
+    }
+    expect(performance.now() - started).toBeLessThan(10000);
+  } finally {
+    f.cleanup();
+  }
+}, 15000);

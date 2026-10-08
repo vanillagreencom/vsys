@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   renameSync,
   rmSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { SccacheCollector } from "./collect/sccache";
 import { writeFileAtomic } from "./config/atomic";
 import { loadConfig } from "./config/config";
@@ -1038,3 +1039,79 @@ test("an unrelated save removes a dormant agentTools list that matches the shipp
     f.cleanup();
   }
 });
+test("a notifier that does not exit leaves sample publication running, and its failures reach later frames", async () => {
+  const f = fixture();
+  const notifier = join(f.root, "bin/notify-send");
+  const driver = join(f.root, "driver.ts");
+  f.write(
+    driver,
+    `import { Session } from ${JSON.stringify(resolve("src/runtime.ts"))};
+    import { defaults } from ${JSON.stringify(resolve("src/config/config.ts"))};
+    import { History } from ${JSON.stringify(resolve("src/store/history.ts"))};
+    import { emptySnapshot } from ${JSON.stringify(resolve("src/test/fixture.ts"))};
+    const c = { ...defaults(), refreshMs: 100, notifications: ["unconfined"] };
+    let frames = 0, samples = 0, notifyErrors = 0;
+    const errors = [];
+    const session = new Session(c, () => "unused", {
+      sample: async () => {
+        const s = emptySnapshot(++samples * 100);
+        s.alerts = [{ time: s.time, rule: "unconfined", subject: String(samples), message: "fixture" }];
+        return s;
+      },
+    }, new History(c), {
+      frame: (s) => {
+        frames++;
+        notifyErrors += s.errors.filter((e) => e.source === "notify-send").length;
+      },
+      error: (e) => errors.push(String(e)),
+    });
+    session.start();
+    await Bun.sleep(350);
+    session.stop();
+    console.log(JSON.stringify({ frames, samples, notifyErrors, errors }));`,
+  );
+  const run = async (script: string) => {
+    f.write(notifier, script);
+    chmodSync(notifier, 0o755);
+    const child = Bun.spawn([process.execPath, driver], {
+      env: { PATH: join(f.root, "bin"), HOME: f.root, TMPDIR: f.root },
+      stdout: "pipe",
+      stderr: "pipe",
+      stdin: "ignore",
+    });
+    const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+    try {
+      const [out, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+      return JSON.parse(out) as {
+        frames: number;
+        samples: number;
+        notifyErrors: number;
+        errors: string[];
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  try {
+    const control = await run("#!/bin/sh\nexit 0\n");
+    expect(control.errors).toEqual([]);
+    expect(control.frames).toBeGreaterThanOrEqual(2);
+    expect(control.notifyErrors).toBe(0);
+    const failing = await run("#!/bin/sh\nexit 3\n");
+    expect(failing.errors).toEqual([]);
+    expect(failing.frames).toBeGreaterThanOrEqual(2);
+    expect(failing.notifyErrors).toBeGreaterThan(0);
+    const slow = await run("#!/bin/sh\nexec /bin/sleep 1\n");
+    expect(slow.errors).toEqual([]);
+    expect(slow.frames).toBeGreaterThanOrEqual(2);
+    // Alerts raised while the first call still runs are reported unsent.
+    expect(slow.notifyErrors).toBeGreaterThan(0);
+  } finally {
+    f.cleanup();
+  }
+}, 20000);

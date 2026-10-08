@@ -1,3 +1,4 @@
+import { spawnText } from "../collect/io";
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { escaped } from "./lanes";
@@ -98,18 +99,25 @@ export class AlertEngine {
   }
 }
 
+/** How long one notify-send call may run before it is killed as a failure. */
+export const notifyTimeoutMs = 5000;
+
 /** Notification argv never passes through a shell. */
-export async function notify(alerts: Alert[], c: Config): Promise<void> {
+export async function notify(
+  alerts: Alert[],
+  c: Config,
+  timeoutMs = notifyTimeoutMs,
+): Promise<void> {
   const failures: Error[] = [];
   for (const a of alerts.filter((a) => c.notifications.includes(a.rule))) {
-    const child = Bun.spawn(
+    const { error, status, timedOut } = await spawnText(
       ["notify-send", "--app-name=vsys", "--", `vsys: ${a.rule}`, a.message],
-      { stdout: "ignore", stderr: "pipe" },
+      timeoutMs,
     );
-    const error = await new Response(child.stderr).text();
-    const code = await child.exited;
-    if (code !== 0)
-      failures.push(new Error(`notify-send exited ${code}: ${error.trim()}`));
+    if (timedOut)
+      failures.push(new Error(`notify-send timed out after ${timeoutMs} ms`));
+    else if (status !== 0)
+      failures.push(new Error(`notify-send exited ${status}: ${error.trim()}`));
   }
   if (failures.length)
     throw new AggregateError(
