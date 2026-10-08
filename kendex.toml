@@ -210,8 +210,95 @@ source = "kendex"
 [commands.code-scrub]
 source = "kendex"
 
+[agent-skills]
+planner = ["github", "linear"]
+researcher = ["decider", "deep-research", "github", "linear"]
+tpm = ["decider", "dev", "github", "linear", "project-management"]
+rust = ["code-quality", "decider", "dev", "github", "linear", "preflight"]
+maintainer = ["code-quality", "decider", "dep-radar", "dev", "github", "linear", "preflight", "review-gate"]
+scout = ["github", "linear"]
+
+[agent-additional-instructions]
+planner = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+researcher = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+tpm = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+rust = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+maintainer = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+scout = """
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+"""
+
+[skill-instructions]
+dev = """
+- For each changed view, capture a before image from the base revision and an after image from HEAD in every supported theme. Put the images under tmp/ui-shots/ in the worktree. List each file in the round summary with the view, before or after, and theme. A later change to the view replaces its after images and carries its before images forward. A new view has after images only. The reviewer judges the view from this set. (CQ33)
+- Use the estimate scale in kendex.toml [skill-instructions].project-management. Reassess the estimate when implementation changes scope. (DV17)
+"""
+docs-writing = """
+- Keep plans, research reports, measurements and handoffs in tmp/ or on the owning tracker issue. Attach final artifacts there. Preserve evidence there before removing a tracked copy during a rewrite. Keep durable product and architecture docs in the repository. (DW12)
+"""
+linear = """
+- Use the team's live Backlog, Todo, In Progress, In Review, Verifying, Done and Canceled states. Read live states before a transition. Verifying holds merged work with open evidence checks. (LIN-027)
+- Keep tracker state writes in LINEAR_TEAM. Check the issue team before a write. Route another team's work through lane-mail peer send to its overseer. Comments and related links grant no state-write authority. (LIN-029)
+- Blocking relations connect issues with the same direct parent, or two top-level issues. Use related links across levels. Keep completed-blocker relations as history. (LIN-030)
+- Use the post-merge observation policy in kendex.toml [skill-instructions].project-management. (LIN-032)
+"""
+project-management = """
+- Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear for planning, audits, cycles, roadmaps and research completion. (PM-038)
+- The team estimate scale is 1 for hours, 2 for half a day, 3 for a day, 4 for two to three days, and 5 for a week or more. Planned and review-created issues use this scale. (ORCH-M22)
+- Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
+"""
+reviewer = """
+- Judge each changed view from the developer's screenshot set under tmp/ui-shots/. Use the dev round summary, which lists each file with its view, before or after, and theme. Check before images from the base revision and after images from HEAD in every supported theme. Later rounds carry before images forward and replace after images. New views require after images only. Report missing required images as findings. The developer creates the images. The reviewer creates no image. (CQ33)
+- Review findings use the estimate scale in kendex.toml [skill-instructions].project-management. Keep the numeric schema field and its consumer-defined meaning separate. (RV20)
+"""
+worktree = """
+- Worktree ownership checks use live GitHub pull requests and Git refs before creation or reuse. Resolve the default branch from WORKTREE_DEFAULT_BRANCH or GitHub. (WT-026)
+"""
+review-gate = """
+- The refresh author is vanillagreen-fleet-lanes[bot], type Bot, on kendex/refresh. Approval requires the exact head, passing render proof, passing CI aggregate and review-reply check. (review-gate-15)
+- The refresh app grants consumer repository access. Filing an upstream kendex issue also needs explicit access to vanillagreencom/kendex. Record credential names and private supply paths only. Keep the review finding open if filing fails. (consumer-refresh-13)
+- Use the repository's permitted merge method for refresh pull requests. Preserve squash while it is configured. (consumer-refresh-14)
+- Preserve the required-review workflow identity: vanillagreencom/kendex, repository ID 1190866154, .github/workflows/request-copilot-review.yml, ref refs/heads/main. Read its live approved full commit SHA before changing the ruleset. (review-gate-16)
+"""
+orch = """
+- A worktree created as an orch lane leaves kendex refresh and apply to the overseer in the base checkout after merge. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
+- The rolling install-record pull request owns refresh outputs. After base-checkout refresh, report generated changes and restore only its owned outputs. Preserve unrelated tracked work. (ORCH-M03)
+- Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear. Read the live issue before changing its state. (ORCH-M09)
+- Use the estimate and post-merge observation policies in kendex.toml [skill-instructions].project-management. (ORCH-M22, ORCH-M23)
+- Route unattended lane questions through lane-mail. The master relays owner decision requests and critical notices to Slack and chat. Keep voice replies on their call, progress reports in open text media, and replies in the owner's message thread. (ORCH-D22)
+- Link each owner-summary item to the live tracker URL. Read issue identifiers from LINEAR_TEAM_PREFIX and GH_ISSUE_PATTERN. (ORCH-D25, ORCH-M11)
+- Complete internal review before opening a public or internal repository pull request. A private repository may open after its first validated implementation commit. Read live repository visibility before selecting the route. (ORCH-M01)
+- Apply the refresh identity and approval checks in kendex.toml [skill-instructions].review-gate. (ORCH-D26)
+- The vanillagreen-overseer GitHub App supplies fallback approval separately from lane credentials. Fleet supplies its private mode-600 token file outside lane roots and replaces it atomically before expiry. (ORCH-D27)
+- The fleet's Claude opus capacity is 1000000 on the configurations that measured it. Other providers and models need their own declared or measured capacity. (ORCH-M07)
+- The local fleet's shared Claude transcript store is HOME/.claude-shared/projects. Read relaunch evidence from the selected account and configured store. (ORCH-M17)
+- Keep .kendex-lock.json and .kendex-generated.json out of the micro change class. Keep the consumer queue paths in HARNESS_CI_QUEUE_PATHS. (ORCH-M06)
+- Report measured cycle time against these targets in seconds: render=300, trivial=300, micro=1200, small=1800, standard=5400. Review targets are micro=1, small=1, standard=2 rounds, with 600 seconds per round. A micro task targets about eight lane minutes and three overseer minutes. (ORCH-M12)
+- Request a process issue after the third qualifying miss of the same cycle phase. Include the miss evidence and phase. (ORCH-M13)
+- Compare recorded regressions against the week beginning 2026-09-28 for the organization review-cap experiment. Keep that baseline optional outside the experiment. (ORCH-M14)
+- Use Conventional Commit type syntax for commit subjects and pull-request titles. Keep the issue association. The installed commit gate decides accepted syntax. (ORCH-M26)
+"""
+
 [bot-instructions]
 schema = 1
+
+[[bot-instructions.surface]]
+name = "consumer-docs-architecture"
+globs = ["docs/architecture/**"]
+reviewer_only = true
+instructions = """
+A file under docs/architecture/ is a principle document for one reader's task and the harmful mistake it prevents. It holds the approach, reason, rules and one canonical code example. Raise a review finding only where the document contradicts the code at this head. Do not request wording, structure or length changes, code walkthroughs, file or test inventories, history, dates or measurements. Change the document beside code only when the code change makes a claim false. (bot-instructions-18)
+"""
 
 [bot-instructions.repo]
 name = "vsys"
@@ -229,6 +316,13 @@ macroscope = false
 
 [bot-instructions.exclusions]
 derive_render = false
+
+[bot-instructions.doctrine.append]
+no-preferences = """
+Plans, research reports, measurements and handoffs belong in tmp/ or on the owning tracker issue. Apply this artifact policy to proposed tracked documents. (bot-instructions-16)
+
+Use the installed decider skill's decision-record threshold. A record preserves a choice that code cannot explain and that a later maintainer could otherwise reverse. Do not request a record only to restate a change. (bot-instructions-17)
+"""
 
 [[bot-instructions.exclusions.path]]
 glob = ".agents/skills/**"
