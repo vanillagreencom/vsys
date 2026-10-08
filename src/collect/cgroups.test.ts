@@ -67,7 +67,10 @@ test("an unread cgroup identity leaves rates unknown without losing counters", (
       groups.find((g) => g.path === "build.scope"),
       "scope",
     );
-    expect(r.errors.map((e) => e.source)).toEqual([join(path, "missing")]);
+    expect(r.errors.some((e) => e.source === join(path, "missing"))).toBe(true);
+    expect(r.errors.every((e) => e.source === join(path, "missing"))).toBe(
+      true,
+    );
     expect([unread.cpuUsec, unread.ioRead, unread.ioWrite]).toEqual([
       501000, 3000, 5000,
     ]);
@@ -88,5 +91,81 @@ test("an unread cgroup identity leaves rates unknown without losing counters", (
     ]).toEqual([null, null, null]);
   } finally {
     f.cleanup();
+  }
+});
+
+test("a scope replaced during collection cannot supply a rate baseline", () => {
+  for (const trigger of ["cpu.stat", "io.stat"]) {
+    const f = fixture();
+    const scope = "build.scope";
+    const path = join(f.config.cgroupRoot, scope);
+    class ReplacingReader extends Reader {
+      replaced = false;
+      override text(source: string, optional = false): string | null {
+        if (source === join(path, trigger) && !this.replaced) {
+          const before =
+            trigger === "cpu.stat" ? super.text(source, optional) : undefined;
+          this.replaced = true;
+          renameSync(path, join(f.root, "retired"));
+          f.group(scope);
+          f.write(join(path, "cpu.stat"), "usage_usec 1001000");
+          f.write(join(path, "io.stat"), "8:0 rbytes=1001000 wbytes=1002000");
+          return before === undefined ? super.text(source, optional) : before;
+        }
+        return super.text(source, optional);
+      }
+    }
+    try {
+      f.group(scope);
+      const before = collectGroups(new Reader(), f.config.cgroupRoot, [], 1000);
+      const r = new ReplacingReader();
+      const groups = collectGroups(r, f.config.cgroupRoot, before, 1000);
+      expect(r.replaced).toBe(true);
+      expect(r.errors).toEqual([]);
+      const during = present(
+        groups.find((g) => g.path === scope),
+        "scope",
+      );
+      expect([during.cpuPercent, during.readRate, during.writeRate]).toEqual([
+        null,
+        null,
+        null,
+      ]);
+      f.write(join(path, "cpu.stat"), "usage_usec 1501000");
+      f.write(join(path, "io.stat"), "8:0 rbytes=1003000 wbytes=1005000");
+      const next = collectGroups(
+        new Reader(),
+        f.config.cgroupRoot,
+        groups,
+        1000,
+      );
+      const after = present(
+        next.find((g) => g.path === scope),
+        "scope",
+      );
+      expect([after.cpuPercent, after.readRate, after.writeRate]).toEqual([
+        null,
+        null,
+        null,
+      ]);
+      expect(during.identity).toBeNull();
+      const stable = collectGroups(
+        new Reader(),
+        f.config.cgroupRoot,
+        next,
+        1000,
+      );
+      const measured = present(
+        stable.find((g) => g.path === scope),
+        "scope",
+      );
+      expect([
+        measured.cpuPercent,
+        measured.readRate,
+        measured.writeRate,
+      ]).toEqual([0, 0, 0]);
+    } finally {
+      f.cleanup();
+    }
   }
 });

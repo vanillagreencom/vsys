@@ -70,6 +70,7 @@ export function collectGroups(
   const before = new Map(previous.map((g) => [g.path, g]));
   function visit(path: string) {
     const id = relative(root, path) || ".";
+    const identity = r.identity(path);
     const stat = r.text(join(path, "cpu.stat"));
     const pids = r.text(join(path, "cgroup.procs"));
     if (stat !== null && pids !== null) {
@@ -77,7 +78,6 @@ export function collectGroups(
         const cpuUsec = pairs(stat).usage_usec;
         if (cpuUsec === undefined || !Number.isFinite(cpuUsec))
           throw new Error("Missing cpu usage_usec");
-        const identity = r.identity(path);
         let old = before.get(id);
         if (identity === null || old?.identity !== identity) old = undefined;
         const psi = Object.fromEntries(
@@ -112,7 +112,7 @@ export function collectGroups(
         const members = pids ? pids.split(/\s+/).map(Number) : [];
         if (members.some((p) => !Number.isInteger(p) || p <= 0))
           throw new Error("Invalid cgroup process ID");
-        result.push({
+        const group: Group = {
           path: id,
           identity,
           parent: dirname(id),
@@ -145,7 +145,12 @@ export function collectGroups(
           readRate: rate(io ? io.read : null, old?.ioRead, elapsedMs),
           writeRate: rate(io ? io.write : null, old?.ioWrite, elapsedMs),
           pressure: psi,
-        });
+        };
+        if (r.identity(path) !== identity || identity === null) {
+          group.identity = null;
+          group.cpuPercent = group.readRate = group.writeRate = null;
+        }
+        result.push(group);
       } catch (e) {
         r.error(path, e);
       }
