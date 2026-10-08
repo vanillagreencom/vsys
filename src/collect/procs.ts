@@ -44,23 +44,24 @@ export function omittedProcess(source: string, procRoot: string): boolean {
     (dirname(source) === root && /^\d+$/.test(basename(source)))
   );
 }
-const hiding = [
-  "hidepid=2",
-  "hidepid=invisible",
-  "hidepid=4",
-  "hidepid=ptraceable",
-];
+const invisible = ["hidepid=2", "hidepid=invisible"];
+const ptraceable = ["hidepid=4", "hidepid=ptraceable"];
+/** CAP_SYS_PTRACE, which lets a process trace, and so see, every other. */
+const tracesAll = 1n << 19n;
 /**
- * Whether the proc mount at `procRoot` leaves out processes this one may not
+ * Whether the proc mount at `procRoot` may leave out processes this one cannot
  * trace. Those directories are missing from the listing with no read error,
- * so the listing is incomplete unless this process is root or a member of the
- * mount's exempt group. A process root with no mount table keeps the listing
- * whole.
+ * so the listing counts as whole only where the kernel shows every process,
+ * checked in its order: the ptraceable mode admits only a process that may
+ * trace every other, and the invisible mode also admits the mount's exempt
+ * group. A process root with no mount table keeps the listing whole; a mount
+ * table or a status that could not be read does not.
  */
 export function hiddenProcesses(r: Reader, procRoot: string): boolean {
   const path = join(procRoot, "self/mountinfo");
+  const failed = r.errors.length;
   const raw = r.text(path, true);
-  if (raw === null) return false;
+  if (raw === null) return r.errors.length > failed;
   let mounts: MountInfo[];
   try {
     mounts = parseMounts(raw);
@@ -69,17 +70,26 @@ export function hiddenProcesses(r: Reader, procRoot: string): boolean {
     return true;
   }
   const root = resolve(procRoot);
-  const proc = mounts
-    .filter((m) => m.type === "proc" && resolve(m.mount) === root)
-    .at(-1);
-  if (!proc?.options.some((o) => hiding.includes(o))) return false;
-  if (process.geteuid?.() === 0) return false;
-  const gid = proc.options.find((o) => o.startsWith("gid="))?.slice(4);
-  return !(
+  const options =
+    mounts.filter((m) => m.type === "proc" && resolve(m.mount) === root).at(-1)
+      ?.options ?? [];
+  const ptrace = options.some((o) => ptraceable.includes(o));
+  if (!ptrace && !options.some((o) => invisible.includes(o))) return false;
+  const gid = options.find((o) => o.startsWith("gid="))?.slice(4);
+  if (
+    !ptrace &&
     gid !== undefined &&
     [process.getegid?.(), ...(process.getgroups?.() ?? [])].some(
       (g) => String(g) === gid,
     )
+  )
+    return false;
+  const capabilities = r
+    .text(join(procRoot, "self/status"))
+    ?.match(/^CapEff:\s*([0-9a-f]+)$/m)?.[1];
+  return (
+    capabilities === undefined ||
+    (BigInt(`0x${capabilities}`) & tracesAll) === 0n
   );
 }
 /** stat's command can contain spaces and closing parentheses. */

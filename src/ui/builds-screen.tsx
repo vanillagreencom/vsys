@@ -220,7 +220,7 @@ export function Builds({
           }
           detail={
             pools === null
-              ? "some processes could not be read"
+              ? "the process list may be incomplete"
               : pools.length
                 ? `${pools.map((j) => j.fifo).join(", ")}${
                     pools.some((j) => j.total === null)
