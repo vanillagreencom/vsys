@@ -1,6 +1,6 @@
 # Agent transcripts
 
-Where each harness records a delegated agent's turns, for `round-recover --transcript` in a stalled round ([skill-rules.md § Round Closure](skill-rules.md#round-closure)). `round-recover` reads only the turns after the last user turn carrying the round's `Round ID:` line. A Codex user turn is either a `.payload` whose `role` is `user` or an `event_msg` payload of `type` `user_message`, whose `message` is its text; Codex records a delegated prompt as the latter.
+Where each harness records a delegated agent's turns, for `round-recover --transcript` in a stalled round ([skill-rules.md § Round Closure](skill-rules.md#round-closure)) and for a directive during a round ([§ Directive During A Round](skill-rules.md#directive-during-a-round)). `round-recover` reads only the turns after the last user turn carrying the round's `Round ID:` line. A Codex user turn is either a `.payload` whose `role` is `user` or an `event_msg` payload of `type` `user_message`, whose `message` is its text; Codex records a delegated prompt as the latter.
 
 | Harness | Transcript | Record that carries the report |
 |---|---|---|
@@ -10,3 +10,5 @@ Where each harness records a delegated agent's turns, for `round-recover --trans
 | Copilot CLI | Pending: a session records its events in `${COPILOT_HOME:-~/.copilot}/session-state/<session-id>/events.jsonl`, and where a task-tool subagent's turns land is not yet measured. Copilot CLI 1.0.88 fires agentStop at a custom subagent's end as well, carrying the subagent's own `sessionId` and the parent's `transcriptPath`, so that stop names no transcript of the subagent's own | Pending |
 
 A harness that keeps no transcript for the agent: run `round-recover` without `--transcript`. The round then has no report.
+
+A harness that keeps no transcript, or whose row is pending, confirms no directive: a directive during a round on it is unconfirmed and takes `round-recover --directive-unconfirmed` ([skill-rules.md § Directive During A Round](skill-rules.md#directive-during-a-round)), never the stall recovery above.

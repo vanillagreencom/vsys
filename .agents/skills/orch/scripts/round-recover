@@ -10,6 +10,8 @@
 # Usage:
 #   round-recover --worktree PATH --issue ID --round-id RID [--transcript FILE]
 #     [--state-dir DIR]
+#   round-recover --worktree PATH --issue ID --round-id RID --directive-unconfirmed
+#     [--state-dir DIR]
 #
 # The transcript is the stalled agent's JSONL record, located per harness by
 # references/agent-transcripts.md; omit --transcript when the harness kept none.
@@ -66,8 +68,18 @@
 #   round-recover: round-live run-dir=PATH                         exit 4
 # round-live is the round's validation run still going by dev-validate-run's own
 # answer: the round is not stalled. Reasons: no-transcript, no-report, unparsed,
-# commit-mismatch, validate-unproven, mac-run-unproven. Usage and environment
+# commit-mismatch, validate-unproven, mac-run-unproven, directive-unconfirmed. Usage and environment
 # errors exit 2 with a keyed line on stderr.
+#
+# --directive-unconfirmed re-delegates a round whose agent never confirmed a
+# scope directive sent while it ran, whatever it reported or is still running:
+# a report or a live run answers the old scope. It reads no transcript, ends
+# the worktree's validation runs with dev-validate-run --stop, since a run left
+# going refuses the next round's start as run-live and holds the build output
+# round-prune would reclaim, then mints the fresh round id, prints redelegate
+# with reason directive-unconfirmed, and leaves recovery_round_id as it is,
+# since the round it names did not stall and keeps its one stall recovery. A
+# stop that fails mints nothing.
 #
 # --state-dir DIR is the workflow-state directory the round's state is read
 # from and the fresh round id is minted in, passed to workflow-state as its own
@@ -93,6 +105,8 @@ die() {
       required) printf 'The required option is absent or empty.\n' ;;
       invalid-id) printf 'The ID must be safe for a file path.\n' ;;
       not-directory) printf 'The worktree path is not a directory.\n' ;;
+      conflicting-options) printf 'An unconfirmed directive re-delegates without reading a transcript; pass one of --directive-unconfirmed and --transcript.\n' ;;
+      stop-failed) printf 'dev-validate-run --stop could not end a validation run in the worktree; its own line is above.\n' ;;
       transcript-unreadable) printf 'The transcript is not a readable file; omit --transcript only when the harness kept none.\n' ;;
       transcript-read) printf 'jq could not read the transcript.\n' ;;
       git-failed) printf 'git could not read the worktree.\n' ;;
@@ -123,6 +137,7 @@ transcript=""
 transcript_given=false
 state_dir=""
 state_dir_given=false
+directive=false
 while (( $# > 0 )); do
   case "$1" in
     --worktree)   need "$1" $# "${2:-}"; worktree="$2"; shift 2 ;;
@@ -130,6 +145,7 @@ while (( $# > 0 )); do
     --round-id)   need "$1" $# "${2:-}"; round_id="$2"; shift 2 ;;
     --transcript) need "$1" $# "${2:-}"; transcript_given=true; transcript="$2"; shift 2 ;;
     --state-dir)  need "$1" $# "${2:-}"; state_dir_given=true; state_dir="$2"; shift 2 ;;
+    --directive-unconfirmed) directive=true; shift ;;
     -h|--help)    usage; exit 0 ;;
     *)            die unknown-argument "argument=$1" ;;
   esac
@@ -146,6 +162,15 @@ done
 [[ "$state_dir_given" == false || -n "$state_dir" ]] || die required option=--state-dir
 state=("$SCRIPT_DIR/workflow-state")
 [[ -z "$state_dir" ]] || state+=(--state-dir "$state_dir")
+if [[ "$directive" == true ]]; then
+  [[ "$transcript_given" == false ]] || die conflicting-options option=--transcript
+  "$SCRIPT_DIR/dev-validate-run" --stop --worktree "$worktree" >&2 || die stop-failed "worktree=$worktree"
+  if ! new="$("${state[@]}" new-round-id "$issue" dev_round_id)"; then
+    die state-failed "issue=$issue"
+  fi
+  printf '%s: redelegate round-id=%s from=%s reason=directive-unconfirmed\n' "$PROG" "$new" "$round_id"
+  exit 3
+fi
 if [[ "$transcript_given" == true ]]; then
   [[ -f "$transcript" && -r "$transcript" ]] || die transcript-unreadable "path=$transcript"
 fi
