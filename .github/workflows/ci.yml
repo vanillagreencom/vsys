@@ -14,18 +14,15 @@ permissions:
   contents: read
 
 jobs:
-  # The harness-ci classifier in docs mode, run from the default branch
-  # against the tree under judgement, so a pull request cannot edit the
-  # script that stands its own jobs down. It calls harness-only directly in
-  # place of the composite change-class action: that action is a remote
-  # action at @main where this workflow pins every action by SHA, its render
-  # class needs a kendex install, and its proof reuse needs actions: read.
-  # The docs verdict is the one it would publish for these jobs.
+  # The default branch owns the classifier so a pull request cannot edit
+  # the script that stands its own jobs down. Calling the shared script
+  # keeps SHA-pinned actions and needs no proof-reuse API permission.
   changes:
     name: Classify the diff
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
+      change_class: ${{ steps.change-class.outputs.change_class }}
       lane_application: ${{ steps.lanes.outputs.lane_application }}
       lane_package: ${{ steps.lanes.outputs.lane_package }}
     env:
@@ -45,6 +42,34 @@ jobs:
           fetch-depth: 0
           path: subject
           persist-credentials: false
+      - id: render-reach
+        continue-on-error: true
+        run: >-
+          classifier/.agents/skills/harness-ci/scripts/harness-only
+          --mode render-candidate --repo subject --event "$EVENT" --base "$BASE" --head "$HEAD"
+      - id: kendex
+        if: steps.render-reach.outputs.render_candidate == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ${{ github.token }}
+        run: classifier/.agents/skills/review-gate/scripts/install-latest.sh
+      - id: mirror
+        if: steps.render-reach.outputs.render_candidate == 'true'
+        continue-on-error: true
+        run: kendex source refresh
+        working-directory: subject
+      - name: Report unavailable render prerequisites
+        if: steps.render-reach.outputs.render_candidate == 'true' && (steps.kendex.outcome != 'success' || steps.mirror.outcome != 'success')
+        env:
+          KENDEX_OUTCOME: ${{ steps.kendex.outcome }}
+          MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
+        run: >-
+          echo "::warning title=render proof may be unavailable::kendex install $KENDEX_OUTCOME, source refresh $MIRROR_OUTCOME"
+      - id: change-class
+        run: >-
+          classifier/.agents/skills/harness-ci/scripts/change-class
+          --repo subject --event "$EVENT" --base "$BASE" --head "$HEAD"
       - id: classify
         run: >-
           classifier/.agents/skills/harness-ci/scripts/harness-only
@@ -75,7 +100,7 @@ jobs:
   application:
     name: Bun (lint, types, tests, build)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.lane_application != 'false') }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.change_class != 'render' && needs.changes.outputs.lane_application != 'false')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -91,7 +116,7 @@ jobs:
   arch-package:
     name: Arch package warden status
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.lane_package != 'false') }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.change_class != 'render' && needs.changes.outputs.lane_package != 'false')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container: archlinux:base-devel
@@ -184,9 +209,10 @@ jobs:
     name: CI
     # The aggregate the main ruleset is to require in place of the per-job
     # checks. It fails when the classifier, or any other needed job, fails or
-    # is cancelled, and when a job skips that its lane verdict from the
-    # changes job did not stand down. application and arch-package are the
-    # only jobs a verdict may stand down, and only on a docs-only diff.
+    # is cancelled, and when a job skips that neither the render class nor
+    # its lane verdict from the changes job stood down. application and
+    # arch-package are the only jobs a verdict may stand down, on a proved
+    # render or docs diff.
     needs: [changes, application, arch-package, bot-instructions]
     if: always()
     runs-on: ubuntu-latest
@@ -222,7 +248,9 @@ jobs:
       - name: Require every needed job to succeed or to skip on its verdict
         env:
           NEEDS: ${{ toJSON(needs) }}
+          RENDER_ONLY: ${{ needs.changes.outputs.change_class == 'render' }}
         run: >-
           classifier/.agents/skills/harness-ci/scripts/aggregate-needs
           --results "$NEEDS" --classifier changes
+          --waiver "$RENDER_ONLY" --skippable application --skippable arch-package
           --lane application=application --lane arch-package=package
