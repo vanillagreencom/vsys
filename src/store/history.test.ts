@@ -778,6 +778,7 @@ for (const persistence of [false, true])
     cleanup.push(() => target.close());
     const recorded = emptySnapshot(time);
     recorded.system.host = "recorded-host";
+    recorded.lanes = [laneSnapshot({ id: "agents.slice/recorded.scope" })];
     target.add(recorded);
     const source = new History({
       ...destination,
@@ -788,15 +789,65 @@ for (const persistence of [false, true])
     const incoming = emptySnapshot(time);
     incoming.system.host = "incoming-host";
     incoming.system.memory = { MemTotal: 1000, MemAvailable: 100 };
+    incoming.lanes = [laneSnapshot()];
     source.add(incoming);
     const merged = source.reconfigure(destination);
     cleanup.push(() => merged.close());
     expect(merged.at(time)?.system.host).toBe("recorded-host");
     expect(merged.window(time, 0)).toEqual(target.window(time, 0));
+    // The next sample still holds the recorded lane, so against the kept
+    // predecessor nothing started or stopped.
+    merged.add({ ...recorded, time: time + 1000 });
+    expect(merged.events(time + 1000, 0)).toEqual([]);
     const reopened = new History(destination);
     cleanup.push(() => reopened.close());
     expect(reopened.at(time)?.system.host).toBe("recorded-host");
     expect(reopened.window(time, 0)).toEqual(target.window(time, 0));
+  });
+for (const collision of ["retention boundary", "commit during the merge"])
+  test(`a merge's Timeline keeps the destination's point for a collision at the ${collision}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    const destination = { ...f.config, persistence: true };
+    // The source's newest sample predates the merge, so the merge's cutoff
+    // is older than the one the destination opens with.
+    const end = Date.now() - 600000;
+    const time =
+      collision === "retention boundary"
+        ? end - destination.historyHours * 3600000 + 1000
+        : end;
+    const writer = new History(destination);
+    cleanup.push(() => writer.close());
+    const recorded = emptySnapshot(time);
+    recorded.system.host = "recorded-host";
+    const source = new History(f.config);
+    cleanup.push(() => source.close());
+    const incoming = emptySnapshot(time);
+    incoming.system.host = "incoming-host";
+    incoming.system.memory = { MemTotal: 1000, MemAvailable: 100 };
+    source.add(incoming);
+    if (time < end) source.add(emptySnapshot(end));
+    if (collision === "retention boundary") writer.add(recorded);
+    else {
+      // Another dashboard commits after the destination opened, as the
+      // transfer compresses its first row and before it writes one.
+      const gzip = Bun.gzipSync;
+      const spy = spyOn(Bun, "gzipSync");
+      cleanup.push(() => spy.mockRestore());
+      let committed = false;
+      spy.mockImplementation((...args: Parameters<typeof Bun.gzipSync>) => {
+        if (!committed) {
+          committed = true;
+          writer.add(recorded);
+        }
+        return gzip(...args);
+      });
+    }
+    const merged = source.reconfigure(destination);
+    cleanup.push(() => merged.close());
+    expect(merged.at(time)?.system.host).toBe("recorded-host");
+    expect(writer.window(time, 0).map((p) => p.time)).toEqual([time]);
+    expect(merged.window(time, 0)).toEqual(writer.window(time, 0));
   });
 test("a shared database's samples and their lane starts reach this dashboard's Timeline", () => {
   const f = fixture();

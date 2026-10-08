@@ -170,6 +170,8 @@ export class History {
   private storedLoad?: Promise<void>;
   /** Set by `close`, so a stored pass still out stops before the next row. */
   private closed = false;
+  /** Set when the stored predecessor may differ from the cached one at its time. */
+  private predecessorUnchecked = false;
   get retentionWarning(): string | null {
     return this.archive.shortened && !this.db
       ? "Process replay reached the memory limit. Enable SQLite to retain the full history window."
@@ -213,19 +215,11 @@ export class History {
         }
         this.db.exec("PRAGMA journal_mode=WAL");
         restrict(c.sqlitePath);
-        const cutoff = Date.now() - c.historyHours * 3600000;
-        const rows = this.db
-          .query<{ point: string }, [number]>(
-            "SELECT point FROM samples WHERE time >= ? ORDER BY time",
-          )
-          .all(cutoff);
-        if (rows.length > this.points.capacity)
-          this.points = new Points(rows.length);
-        // A stored point was written by whichever build was running then, so
-        // it reaches the ring through the same normalising step a stored
-        // snapshot does.
-        for (const row of rows)
-          this.points.push(normalizePoint(JSON.parse(row.point) as Point));
+        this.points = History.loadPoints(
+          this.db,
+          Date.now() - c.historyHours * 3600000,
+          capacity,
+        );
       } catch (error) {
         this.db.close();
         throw error;
@@ -265,7 +259,10 @@ export class History {
             // another dashboard can use different thresholds and hold times.
             let previous: Snapshot | null | undefined;
             if (latest === undefined) previous = null;
-            else if (this.eventLog.previousTime !== latest) {
+            else if (
+              this.predecessorUnchecked ||
+              this.eventLog.previousTime !== latest
+            ) {
               const row = db
                 .query<{ data: Uint8Array }, [number]>(
                   "SELECT data FROM samples WHERE time = ?",
@@ -295,6 +292,7 @@ export class History {
           .immediate()
       : record();
     if (!p) return;
+    this.predecessorUnchecked = false;
     this.archive.prune(cutoff);
     this.archive.add(s.time, json);
     // A stored series is kept only while its lane lives, for the reason the
@@ -326,10 +324,8 @@ export class History {
         next.points.get(next.points.size - 1)?.time ?? 0,
       );
       const cutoff = end - c.historyHours * 3600000;
-      // A time both hold keeps the destination's point, as its database keeps
-      // its own row below: a merge never replaces what was recorded.
       const points = new Map(
-        [...this.points.all(), ...next.points.all()]
+        [...next.points.all(), ...this.points.all()]
           .filter((p) => p.time >= cutoff)
           .map((p) => [p.time, p]),
       );
@@ -347,6 +343,9 @@ export class History {
       // Derivation continues across a settings change, so an alert that opened
       // before it still closes with its full duration.
       next.eventLog = this.eventLog;
+      // A destination row at the predecessor's time is kept over the source's,
+      // so the next sample reads its predecessor from the destination.
+      next.predecessorUnchecked = rebuildsFromDb;
       for (const p of [...points.values()].sort((a, b) => a.time - b.time))
         next.points.push(p);
       const copy = (row: { time: number; data: Uint8Array; point: string }) => {
@@ -356,6 +355,14 @@ export class History {
             .run(row.time, row.data, row.point);
         if (!next.db) next.archive.add(row.time, History.decodeRow(row.data));
       };
+      // The destination's rows settle the merged Timeline, read under the lock
+      // the transfer took: a row it kept over the source's, including one
+      // another dashboard committed after `next` opened, keeps its own point.
+      const settle = (db: Database, transfer: () => void) =>
+        db.transaction(() => {
+          transfer();
+          next.points = History.loadPoints(db, cutoff, capacity);
+        })();
       if (this.db && (!next.db || c.sqlitePath !== this.c.sqlitePath)) {
         if (!next.db) next.archive = new Archive();
         const transfer = () => {
@@ -370,7 +377,7 @@ export class History {
             copy(row);
         };
         if (next.db && c.sqlitePath !== this.c.sqlitePath)
-          next.db.transaction(transfer)();
+          settle(next.db, transfer);
         else transfer();
       } else if (!this.db && next.db) {
         const transfer = () => {
@@ -384,7 +391,7 @@ export class History {
             });
           }
         };
-        if (next.db) next.db.transaction(transfer)();
+        if (next.db) settle(next.db, transfer);
         else transfer();
       }
       // A copied source archive carries only what the source held, so a
@@ -404,6 +411,25 @@ export class History {
   /** One snapshot's JSON, inflated from the compressed blob a row stores it as. */
   private static decodeRow(data: Uint8Array): string {
     return new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(data)));
+  }
+  /** The points ring built from a database's own rows, grown to hold them all. */
+  private static loadPoints(
+    db: Database,
+    cutoff: number,
+    capacity: number,
+  ): Points {
+    const rows = db
+      .query<{ point: string }, [number]>(
+        "SELECT point FROM samples WHERE time >= ? ORDER BY time",
+      )
+      .all(cutoff);
+    const points = new Points(Math.max(capacity, rows.length));
+    // A stored point was written by whichever build was running then, so
+    // it reaches the ring through the same normalising step a stored
+    // snapshot does.
+    for (const row of rows)
+      points.push(normalizePoint(JSON.parse(row.point) as Point));
+    return points;
   }
   /** The archive built from a database's own rows, so the two agree on coverage. */
   private static loadArchive(db: Database, cutoff: number): Archive {
