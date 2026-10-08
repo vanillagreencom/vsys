@@ -34,6 +34,11 @@ LINEAR_REQUIRE_REACH = "1"
 # settings reader, makes mode resolution exit 2.
 REVIEW_GATE_MODE = "enforce"
 
+# Organization refresh app, environment and credential names.
+REVIEW_GATE_STANDARD_APP = "vanillagreen-fleet-lanes"
+REVIEW_GATE_STANDARD_ENVIRONMENT = "kendex"
+REVIEW_GATE_STANDARD_SECRETS = "FLEET_GH_APP_ID;FLEET_GH_APP_PRIVATE_KEY"
+
 # Total review-wait budget in seconds before the on-timeout policy applies;
 # an explicit max_wait argument always wins.
 PR_REVIEW_WAIT_SECS = "900"
@@ -92,6 +97,10 @@ ORCH_DECISION_MODE = "auto-recommended"
 # MERGE_READY = false never auto-merges.
 ORCH_MERGE_AUTONOMY = "auto"
 ORCH_LANE_OUTPUT = "quiet"
+
+# Preserve the current report clock and runtime quiet window.
+ORCH_OWNER_TIME_ZONE = "America/Los_Angeles"
+ORCH_REPORT_QUIET_HOURS = "0-7"
 
 # Path globs whose changes add the needs-ui-review QA signal.
 QA_UI_PATHS = "src/ui/**"
@@ -180,7 +189,7 @@ DEV_VALIDATE_CMD = "python3 scripts/ci.py && .agents/skills/bot-instructions/scr
 # A test file stays off the list: it is judged with the code it tests, as
 # the shipped list queues a test harness's shared library and not the tests
 # it runs. Use a glob where a category is a whole directory or file family.
-HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/package_file_list_check.py scripts/refusal.py scripts/build.ts scripts/sample-check.ts scripts/bench-*.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/* warden/agent_warden_testlib.py .agents/skills/bot-instructions/scripts/*"
+HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/package_file_list_check.py scripts/refusal.py scripts/build.ts scripts/sample-check.ts scripts/bench-*.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/* warden/agent_warden_testlib.py .agents/skills/bot-instructions/scripts/* kendex.toml kendex.settings.toml"
 
 # Test files outside the built-in test rule, counted as test lines rather
 # than production by the branch size and change-class measurements: the

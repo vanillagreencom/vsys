@@ -210,6 +210,37 @@ source = "kendex"
 [commands.code-scrub]
 source = "kendex"
 
+[skill-instructions]
+orch = """
+## Kendex workflow policy
+
+- For UI review, capture before images from the base revision and after images from HEAD in each supported theme under tmp/ui-shots/. List each image with its view, before or after, and theme in the round summary. Later rounds replace after images and retain before images. New views need after images only.
+- Use one estimate scale for implementation, planning and review findings: 1 means hours, 2 means half a day, 3 means a day, 4 means two to three days, and 5 means a week or more. Reassess when scope changes.
+- Do not stop a process by its name or argv pattern. Use a PID recorded at launch. On Linux, the other accepted route checks that /proc/PID/cwd is inside the owned worktree before stopping that PID.
+- Leave kendex refresh and apply to the overseer in the base checkout after merge for an explicitly recorded orch lane. An ordinary worktree keeps its normal project resolution and drift repair guidance.
+- The rolling install-record pull request owns refresh outputs. After base-checkout refresh, report generated changes and restore only the outputs that workflow owns. Preserve unrelated tracked work.
+- Use the team's live Backlog, Todo, In Progress, In Review, Verifying, Done and Canceled states in Linear, orch and project-management. Read live states before a transition. Verifying holds merged work with open evidence checks.
+- Keep tracker state writes in the team named by LINEAR_TEAM. Check the issue team before a write. Route another team's work through lane-mail peer send to its overseer. Comments and related links grant no state-write authority.
+- Blocking relations connect issues with the same direct parent, or two top-level issues. Use related links across levels. Keep completed-blocker relations as history.
+- A post-merge observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear, orch and project-management use this policy.
+- Route unattended lane questions through lane-mail. The master relays owner decision requests and critical notices to Slack and chat. Keep voice replies on their call, progress reports in open text media, and replies in the owner's message thread.
+- Link each owner-summary item to the live tracker URL. Read issue identifiers from LINEAR_TEAM_PREFIX and GH_ISSUE_PATTERN.
+- Complete internal review before opening a public or internal repository pull request. A private repository may open after its first validated implementation commit. Read live repository visibility before selecting the route.
+- The refresh author is vanillagreen-fleet-lanes[bot], type Bot, on kendex/refresh. Approval requires the exact head, passing render proof, passing CI aggregate and review-reply check.
+- The refresh app grants consumer repository access. Filing an upstream kendex issue also needs explicit access to vanillagreencom/kendex. Record credential names and private supply paths only. Keep the review finding open if filing fails.
+- The vanillagreen-overseer GitHub App supplies fallback approval separately from lane credentials. Fleet supplies its private mode-600 token file outside lane roots and replaces it atomically before expiry.
+- Use the repository's permitted merge method for refresh pull requests. Preserve squash while it is configured.
+- Preserve the organization required-review workflow identity: vanillagreencom/kendex, repository ID 1190866154, .github/workflows/request-copilot-review.yml, ref refs/heads/main. Read its live approved full commit SHA before changing the ruleset.
+- The fleet's Claude opus capacity is 1000000 on the configurations that measured it. Other providers and models need their own declared or measured capacity.
+- The local fleet's shared Claude transcript store is HOME/.claude-shared/projects. Read relaunch evidence from the selected account and configured store.
+- Keep .kendex-lock.json and .kendex-generated.json out of the micro change class. Keep the consumer queue paths in HARNESS_CI_QUEUE_PATHS.
+- Report measured cycle time against these targets in seconds: render=300, trivial=300, micro=1200, small=1800, standard=5400. Review targets are micro=1, small=1, standard=2 rounds, with 600 seconds per round. A micro task targets about eight lane minutes and three overseer minutes.
+- Request a process issue after the third qualifying miss of the same cycle phase. Include the miss evidence and phase.
+- Compare recorded regressions against the week beginning 2026-09-28 for the organization review-cap experiment. Keep that baseline optional outside the experiment.
+- Use Conventional Commit type syntax for commit subjects and pull-request titles. Keep the issue association. The installed commit gate decides accepted syntax.
+- Worktree ownership checks use live GitHub pull requests and Git refs before creation or reuse. Resolve the default branch from WORKTREE_DEFAULT_BRANCH or GitHub.
+"""
+
 [bot-instructions]
 schema = 1
 
@@ -229,6 +260,11 @@ macroscope = false
 
 [bot-instructions.exclusions]
 derive_render = false
+
+[bot-instructions.doctrine.append]
+no-preferences = """
+Apply AGENTS.md § Kendex workflow policy to plans, research reports, measurements and handoffs. Use the installed decider skill's decision-record threshold. A record preserves a choice that code cannot explain and that a later maintainer could otherwise reverse. Do not request a record only to restate a change.
+"""
 
 [[bot-instructions.exclusions.path]]
 glob = ".agents/skills/**"
