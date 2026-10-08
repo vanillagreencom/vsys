@@ -245,6 +245,9 @@ export class History {
     const record = (previous?: Snapshot | null) =>
       point(s, this.c, this.eventLog.advance(s, this.c, previous));
     const db = this.db;
+    // Points another dashboard committed to the shared database since this
+    // one last wrote, so its Timeline holds them before the new point.
+    let foreign: Point[] = [];
     const p = db
       ? db
           .transaction(() => {
@@ -273,6 +276,13 @@ export class History {
                 JSON.parse(History.decodeRow(row.data)) as Snapshot,
               );
             }
+            if (latest !== undefined && latest !== newest)
+              foreign = db
+                .query<{ point: string }, [number, number]>(
+                  "SELECT point FROM samples WHERE time > ? AND time >= ? ORDER BY time",
+                )
+                .all(newest ?? cutoff, cutoff)
+                .map((row) => normalizePoint(JSON.parse(row.point) as Point));
             const p = record(previous);
             db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
               s.time,
@@ -294,15 +304,17 @@ export class History {
       for (const id of this.stored.lanes.keys())
         if (!live.has(id)) this.stored.lanes.delete(id);
     }
-    if (
-      this.points.size === this.points.capacity &&
-      (this.points.get(0)?.time ?? 0) >= cutoff
-    ) {
-      const expanded = new Points(this.points.capacity * 2);
-      for (const point of this.points.all()) expanded.push(point);
-      this.points = expanded;
+    for (const kept of [...foreign, p]) {
+      if (
+        this.points.size === this.points.capacity &&
+        (this.points.get(0)?.time ?? 0) >= cutoff
+      ) {
+        const expanded = new Points(this.points.capacity * 2);
+        for (const point of this.points.all()) expanded.push(point);
+        this.points = expanded;
+      }
+      this.points.push(kept);
     }
-    this.points.push(p);
     while ((this.points.get(0)?.time ?? cutoff) < cutoff) this.points.shift();
   }
   /** Copy retained evidence before the scheduler commits new settings. */
@@ -314,8 +326,10 @@ export class History {
         next.points.get(next.points.size - 1)?.time ?? 0,
       );
       const cutoff = end - c.historyHours * 3600000;
+      // A time both hold keeps the destination's point, as its database keeps
+      // its own row below: a merge never replaces what was recorded.
       const points = new Map(
-        [...next.points.all(), ...this.points.all()]
+        [...this.points.all(), ...next.points.all()]
           .filter((p) => p.time >= cutoff)
           .map((p) => [p.time, p]),
       );
@@ -338,7 +352,7 @@ export class History {
       const copy = (row: { time: number; data: Uint8Array; point: string }) => {
         if (next.db && (!this.db || c.sqlitePath !== this.c.sqlitePath))
           next.db
-            .query("INSERT OR REPLACE INTO samples VALUES (?, ?, ?)")
+            .query("INSERT OR IGNORE INTO samples VALUES (?, ?, ?)")
             .run(row.time, row.data, row.point);
         if (!next.db) next.archive.add(row.time, History.decodeRow(row.data));
       };

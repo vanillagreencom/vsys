@@ -768,6 +768,61 @@ test("a different destination database keeps its pre-existing row in lane series
     now + 2000,
   ]);
 });
+for (const persistence of [false, true])
+  test(`a merge keeps the destination's recorded snapshot at a shared time (source persistence: ${persistence})`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    const destination = { ...f.config, persistence: true };
+    const time = Date.now();
+    const target = new History(destination);
+    cleanup.push(() => target.close());
+    const recorded = emptySnapshot(time);
+    recorded.system.host = "recorded-host";
+    target.add(recorded);
+    const source = new History({
+      ...destination,
+      persistence,
+      sqlitePath: f.config.sqlitePath.replace(/history\.db$/, "source.db"),
+    });
+    cleanup.push(() => source.close());
+    const incoming = emptySnapshot(time);
+    incoming.system.host = "incoming-host";
+    incoming.system.memory = { MemTotal: 1000, MemAvailable: 100 };
+    source.add(incoming);
+    const merged = source.reconfigure(destination);
+    cleanup.push(() => merged.close());
+    expect(merged.at(time)?.system.host).toBe("recorded-host");
+    expect(merged.window(time, 0)).toEqual(target.window(time, 0));
+    const reopened = new History(destination);
+    cleanup.push(() => reopened.close());
+    expect(reopened.at(time)?.system.host).toBe("recorded-host");
+    expect(reopened.window(time, 0)).toEqual(target.window(time, 0));
+  });
+test("a shared database's samples and their lane starts reach this dashboard's Timeline", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  f.config.persistence = true;
+  const first = new History(f.config);
+  cleanup.push(() => first.close());
+  const second = new History(f.config);
+  cleanup.push(() => second.close());
+  const time = Date.now();
+  first.add(emptySnapshot(time));
+  const foreign = emptySnapshot(time + 1000);
+  foreign.lanes = [laneSnapshot()];
+  second.add(foreign);
+  first.add({ ...foreign, time: time + 2000 });
+  const window = first.window(time + 2000, 3000);
+  expect(window.map((p) => p.time - time)).toEqual([0, 1000, 2000]);
+  expect(
+    first
+      .events(time + 2000, 3000)
+      .map((event) => [event.kind, event.time - time]),
+  ).toEqual([["lane-start", 1000]]);
+  const stored = new History(f.config);
+  cleanup.push(() => stored.close());
+  expect(window).toEqual(stored.window(time + 2000, 3000));
+});
 test("a same-path reconfigure does not re-read the retained window from disk", () => {
   const f = fixture();
   cleanup.push(f.cleanup);
