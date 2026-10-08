@@ -4,6 +4,7 @@ import { agentToolsPath, loadAgentTools } from "../config/agent-tools";
 import { AlertEngine } from "../model/alerts";
 import { lanes } from "../model/lanes";
 import type { Capability, Snapshot } from "../model/types";
+import { processesUnread } from "../model/verdict";
 import { type FinishedScrubMemory, StorageCollector } from "./btrfs";
 import {
   type Outcome,
@@ -94,6 +95,12 @@ export class Collector {
   readonly kernelLog: KernelLog | null;
   private engine = new AlertEngine();
   private processes: ProcessSource;
+  /**
+   * The temporary directories the last sample that read processes found
+   * agents naming. A sample that read none measures these, so an agent's
+   * directory and its quota warning outlast a read that did not finish.
+   */
+  private agentScratch: string[] = [];
   /** A process read an earlier sample stopped waiting for, until it settles. */
   private lateRead?: Promise<void>;
   private controller = new AbortController();
@@ -309,6 +316,8 @@ export class Collector {
     });
     const procs = processes.procs;
     r.errors.push(...processes.errors);
+    if (!processesUnread(processes))
+      this.agentScratch = agentScratchDirs(procs);
     mark("processes");
     const storage = await this.storage.collect(
       r,
@@ -317,7 +326,7 @@ export class Collector {
       mountInfo,
       !this.live,
       options.skipScratch ?? false,
-      agentScratchDirs(procs),
+      this.agentScratch,
       options.skipKernelLog ?? false,
       () => time + (performance.now() - start),
     );

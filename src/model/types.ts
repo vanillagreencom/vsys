@@ -427,8 +427,11 @@ export interface Lane {
    */
   age: number | null;
   state: string;
-  /** Tasks in uninterruptible wait, and the resource they wait on. */
-  blocked: number;
+  /**
+   * Tasks in uninterruptible wait, and the resource they wait on. Unknown,
+   * with the state, for a lane with a member the sample did not read.
+   */
+  blocked: number | null;
   blockedOn: "io" | "memory" | null;
   unconfined: boolean;
   dangerous: boolean;

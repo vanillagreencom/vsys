@@ -3,7 +3,7 @@ import type { Config } from "../config/config";
 import { escaped } from "./lanes";
 import { laneText } from "./naming";
 import type { Alert, Rule, Snapshot } from "./types";
-import { memoryHighJudgments } from "./verdict";
+import { memoryHighJudgments, processesUnread } from "./verdict";
 
 /** Rules emit transitions, with sustained pressure measured in wall time. */
 export class AlertEngine {
@@ -86,6 +86,17 @@ export class AlertEngine {
         scratch.bytes !== null && scratch.bytes > c.scratchQuota,
         `${scratch.path} exceeds ${c.scratchQuota} bytes`,
       );
+    // A sample that read no process cannot say an escaped agent was confined
+    // or a process-named lane ended, so neither notification clears.
+    if (processesUnread(s)) {
+      const lanes = new Set(s.lanes.map((l) => `memory-cap:${l.id}`));
+      for (const key of this.active)
+        if (
+          key.startsWith("unconfined:") ||
+          (key.startsWith("memory-cap:") && !lanes.has(key))
+        )
+          next.add(key);
+    }
     for (const key of this.pressureSince.keys())
       if (!pressureKeys.has(key)) this.pressureSince.delete(key);
     this.active = next;

@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import { escaped, lanePressure } from "../model/lanes";
 import { laneText } from "../model/naming";
-import type { Snapshot } from "../model/types";
+import type { Lane, Snapshot } from "../model/types";
 import {
   type Cause,
   type CauseId,
@@ -10,6 +10,7 @@ import {
   causes,
   consumerName,
   type Level,
+  processesUnread,
   unjudged,
 } from "../model/verdict";
 
@@ -169,6 +170,13 @@ export class EventLog {
   private watching = new Map<string, Watch>();
   private verdict: CauseId | "" = "";
   private verdictLevel: Level = "ok";
+  /**
+   * Lanes a sample that read no process dropped. They are unread rather than
+   * stopped: none stops while the read is out, none starts again when it
+   * returns, and an alert on one stays open. The first sample that reads
+   * processes again stops the ones still missing.
+   */
+  private unreadLanes: Lane[] = [];
   get previousTime(): number | undefined {
     return this.previous?.time;
   }
@@ -197,8 +205,14 @@ export class EventLog {
       });
       return true;
     };
+    const known = [
+      ...(previous?.lanes ?? []),
+      ...this.unreadLanes.filter(
+        (held) => !previous?.lanes.some((old) => old.id === held.id),
+      ),
+    ];
     for (const lane of s.lanes)
-      if (previous && !previous.lanes.some((old) => old.id === lane.id))
+      if (previous && !known.some((old) => old.id === lane.id))
         add("lane-start", laneText(lane), {
           subjectId: lane.id,
           // An unreadable account stays empty; the UI says it is unavailable.
@@ -209,13 +223,16 @@ export class EventLog {
           },
           values: { pid: lane.mainPid },
         });
-    for (const lane of previous?.lanes ?? [])
-      if (!s.lanes.some((live) => live.id === lane.id))
-        add("lane-stop", laneText(lane), {
-          subjectId: lane.id,
-          names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
-          values: { age: lane.age },
-        });
+    const missing = known.filter(
+      (lane) => !s.lanes.some((live) => live.id === lane.id),
+    );
+    this.unreadLanes = processesUnread(s) ? missing : [];
+    for (const lane of processesUnread(s) ? [] : missing)
+      add("lane-stop", laneText(lane), {
+        subjectId: lane.id,
+        names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
+        values: { age: lane.age },
+      });
     // Process identity is the PID with its start time, so a reused PID is a
     // different process rather than a move.
     const before = new Map(
@@ -311,7 +328,11 @@ export class EventLog {
         continue;
       }
       const subjects = unread[watch.cause];
-      if (subjects === "all" || subjects?.has(watch.subjectId)) {
+      if (
+        subjects === "all" ||
+        subjects?.has(watch.subjectId) ||
+        this.unreadLanes.some((lane) => lane.id === watch.subjectId)
+      ) {
         watch.closeFrom = s.time;
         continue;
       }

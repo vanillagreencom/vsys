@@ -4,11 +4,17 @@ import { join } from "node:path";
 import { shippedAgentTools } from "../config/agent-tools";
 import type { Snapshot } from "../model/types";
 import { Session } from "../runtime";
+import { EventLog } from "../store/events";
 import { History } from "../store/history";
 import { fixture } from "../test/fixture";
 import { Collector } from "./collector";
 import { ProcessThread } from "./process-thread";
-import type { ProcessReading, ProcessSource } from "./procs";
+import {
+  ProcessCollector,
+  type ProcessReading,
+  type ProcessRequest,
+  type ProcessSource,
+} from "./procs";
 
 const fixtures: ReturnType<typeof fixture>[] = [];
 afterEach(() => {
@@ -38,6 +44,9 @@ test("A6-2: a blocked process-file read does not silently stop sampling", async 
   const resumed = Promise.withResolvers<Snapshot>();
   const errors: unknown[] = [];
   let frames = 0;
+  // Set once the thread is blocked in its read. Every sample before that one
+  // has already drawn its frame, because the session awaits each sample.
+  let stalled = false;
   let writer: number | undefined;
   const session = new Session(
     f.config,
@@ -52,7 +61,7 @@ test("A6-2: a blocked process-file read does not silently stop sampling", async 
       frame: (snapshot) => {
         frames++;
         if (frames === 1) first.resolve();
-        else resumed.resolve(snapshot);
+        if (stalled) resumed.resolve(snapshot);
       },
       error: (error) => {
         errors.push(error);
@@ -79,6 +88,7 @@ test("A6-2: a blocked process-file read does not silently stop sampling", async 
     // A successful nonblocking writer open proves the real thread opened its
     // reader, so its read now blocks until something is written.
     expect(writer).toBeDefined();
+    stalled = true;
     const next = await Promise.race([resumed.promise, Bun.sleep(4000)]);
     expect(errors).toEqual([]);
     expect(next?.processRead).toBe("unknown");
@@ -133,6 +143,96 @@ test("a late process read is left to finish, and no sample asks again until it h
     const again = await collector.sample(3000);
     expect(source.requests).toBe(2);
     expect(again.processRead).toBe("complete");
+  } finally {
+    collector.close();
+  }
+}, 10000);
+
+/** Reads the fixture until the test stalls it, then answers only on release. */
+class Stallable implements ProcessSource {
+  private reader: ProcessCollector;
+  stall?: PromiseWithResolvers<ProcessReading>;
+  constructor(f: ReturnType<typeof fixture>) {
+    this.reader = new ProcessCollector(f.config, 100, 4096);
+  }
+  collect(request: ProcessRequest, signal: AbortSignal) {
+    return this.stall?.promise ?? this.reader.collect(request, signal);
+  }
+  close(): void {}
+}
+
+test("a process read that misses its deadline closes, clears and drops nothing", async () => {
+  const f = setup();
+  f.config.pressureHoldSeconds = 1;
+  // An agent in the agent slice; one escaped to a watched slice, whose lane
+  // stays; and one escaped to a slice nothing watches, whose lane only its
+  // process names, which stalls, and whose directory is scratch.
+  f.group("agents.slice/a.scope", [41]);
+  f.proc(41, "agents.slice/a.scope");
+  f.group("app.slice/run-a.scope", [42]);
+  f.proc(42, "app.slice/run-a.scope");
+  const tmp = join(f.root, "agent-tmp");
+  f.write(join(tmp, "session/file"), "1234");
+  f.group("background.slice/run-b.scope", [40]);
+  f.proc(40, "background.slice/run-b.scope", { env: `TMPDIR=${tmp}\0` });
+  f.write(
+    join(f.config.cgroupRoot, "background.slice/run-b.scope/cpu.pressure"),
+    "some avg10=50.00 avg60=50.00 avg300=50.00 total=100\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+  );
+  const source = new Stallable(f);
+  const collector = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    source,
+  );
+  const log = new EventLog();
+  const run = async (time: number) => {
+    const s = await collector.sample(time);
+    return { s, events: log.advance(s, f.config) };
+  };
+  try {
+    const first = await run(1000);
+    expect(first.s.alerts.map((a) => a.rule)).toContain("unconfined");
+    const opened = await run(3000);
+    expect(
+      opened.events
+        .filter((e) => e.kind === "alert-open")
+        .map((e) => `${e.cause} ${e.subjectId}`)
+        .sort(),
+    ).toEqual([
+      "stalls background.slice/run-b.scope",
+      "unconfined app.slice/run-a.scope",
+      "unconfined background.slice/run-b.scope",
+    ]);
+    const lanes = opened.s.lanes.map((l) => l.id);
+    source.stall = Promise.withResolvers<ProcessReading>();
+    for (const time of [5000, 7000, 9000]) {
+      const { s, events } = await run(time);
+      expect(s.processRead).toBe("unknown");
+      expect(events.map((e) => e.kind)).toEqual([]);
+      expect(s.alerts).toEqual([]);
+      // Only its process named the escaped agent's lane, so it is gone here.
+      expect(s.lanes.map((l) => l.id).sort()).toEqual([
+        "agents.slice/a.scope",
+        "app.slice/run-a.scope",
+      ]);
+      const scope = s.lanes.find((l) => l.id === "agents.slice/a.scope");
+      expect(scope?.state).toBe("unknown");
+      expect(scope?.blocked).toBeNull();
+      expect(s.storage.scratch.map((x) => x.path)).toEqual([tmp]);
+    }
+    source.stall.resolve({ procs: [], errors: [], processRead: "complete" });
+    source.stall = undefined;
+    await Bun.sleep(0);
+    const back = await run(11000);
+    expect(back.s.processRead).toBe("complete");
+    expect(back.s.lanes.map((l) => l.id)).toEqual(lanes);
+    expect(back.events.map((e) => e.kind)).toEqual([]);
+    expect(back.s.alerts).toEqual([]);
   } finally {
     collector.close();
   }

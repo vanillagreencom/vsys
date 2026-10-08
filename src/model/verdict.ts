@@ -256,6 +256,16 @@ export function leastFree(volumes: Volume[]): Volume | undefined {
 export function processesComplete(s: Pick<Snapshot, "processRead">): boolean {
   return s.processRead === "complete";
 }
+/**
+ * Whether the sample read no process at all, as when the read missed its
+ * deadline. A process such a sample did not list has not ended, so what the
+ * process list raised stays raised through it. An incomplete read is not
+ * held this way: on a host whose proc mount hides processes every read is
+ * incomplete, and a hold there would never release.
+ */
+export function processesUnread(s: Pick<Snapshot, "processRead">): boolean {
+  return s.processRead === "unknown";
+}
 /** Compile and link work, machine wide, with linkers counted separately. */
 export function buildLoad(
   s: Snapshot,
@@ -434,6 +444,8 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
   const out: Unjudged = {};
   for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
   if (s.storage.mountsAvailable === false) out["free-space"] = "all";
+  // A lane's members went unread, so none of them is known to be confined.
+  if (processesUnread(s)) out.unconfined = "all";
   return out;
 }
 /**
