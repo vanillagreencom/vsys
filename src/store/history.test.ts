@@ -779,6 +779,9 @@ for (const persistence of [false, true])
     const recorded = emptySnapshot(time);
     recorded.system.host = "recorded-host";
     recorded.lanes = [laneSnapshot({ id: "agents.slice/recorded.scope" })];
+    recorded.procs = [
+      processSnapshot({ group: "agents.slice/recorded.scope" }),
+    ];
     target.add(recorded);
     const source = new History({
       ...destination,
@@ -790,15 +793,42 @@ for (const persistence of [false, true])
     incoming.system.host = "incoming-host";
     incoming.system.memory = { MemTotal: 1000, MemAvailable: 100 };
     incoming.lanes = [laneSnapshot()];
+    incoming.procs = [
+      processSnapshot({ group: "agents.slice/incoming.scope" }),
+    ];
     source.add(incoming);
     const merged = source.reconfigure(destination);
     cleanup.push(() => merged.close());
     expect(merged.at(time)?.system.host).toBe("recorded-host");
     expect(merged.window(time, 0)).toEqual(target.window(time, 0));
-    // The next sample still holds the recorded lane, so against the kept
-    // predecessor nothing started or stopped.
-    merged.add({ ...recorded, time: time + 1000 });
-    expect(merged.events(time + 1000, 0)).toEqual([]);
+    // The next sample's changes are measured against the kept snapshot: its
+    // lane stops and its process moves, and the source's lane is not there.
+    const following = emptySnapshot(time + 1000);
+    following.lanes = [laneSnapshot({ id: "agents.slice/following.scope" })];
+    following.procs = [
+      processSnapshot({ group: "agents.slice/following.scope" }),
+    ];
+    merged.add(following);
+    const changes = merged.events(time + 1000, 0);
+    expect(
+      changes
+        .filter((event) => event.kind !== "cgroup-move")
+        .map((event) => [event.kind, event.subjectId])
+        .sort(),
+    ).toEqual([
+      ["lane-start", "agents.slice/following.scope"],
+      ["lane-stop", "agents.slice/recorded.scope"],
+    ]);
+    expect(
+      changes
+        .filter((event) => event.kind === "cgroup-move")
+        .map((event) => event.names),
+    ).toMatchObject([
+      {
+        from: "agents.slice/recorded.scope",
+        to: "agents.slice/following.scope",
+      },
+    ]);
     const reopened = new History(destination);
     cleanup.push(() => reopened.close());
     expect(reopened.at(time)?.system.host).toBe("recorded-host");
