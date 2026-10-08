@@ -16,16 +16,10 @@ test("A1-1: hidden compilers leave the machine build count unknown", async () =>
   const pid = join(c.procRoot, "900");
   const list = Reader.prototype.dirs;
   const hidden = spyOn(Reader.prototype, "dirs");
-  // The test runs as an ordinary user whoever runs the suite; the status file
-  // the fixture writes says which capabilities that user holds.
-  const euid = spyOn(process, "geteuid").mockReturnValue(2000);
-  const groups = spyOn(process, "getgroups").mockReturnValue([2000]);
   try {
     mkdirSync(join(root, ".git"));
     writeFileSync(join(root, ".git/HEAD"), "ref: refs/heads/main\n");
     mkdirSync(pid, { recursive: true });
-    mkdirSync(join(c.procRoot, "self"));
-    const mountinfo = join(c.procRoot, "self/mountinfo");
     const fields = Array.from({ length: 22 }, () => "0");
     fields[0] = "R";
     fields[1] = "1";
@@ -44,34 +38,28 @@ test("A1-1: hidden compilers leave the machine build count unknown", async () =>
     const request = { time: 1000, uptime: 10, groups: [] };
     const signal = new AbortController().signal;
     let time = 1000;
-    const sample = async (options: string, capEff = "0000000000000000") => {
-      writeFileSync(
-        mountinfo,
-        `1 0 0:1 / ${c.procRoot} rw - proc proc rw,${options}\n`,
-      );
-      writeFileSync(join(c.procRoot, "self/status"), `CapEff:\t${capEff}\n`);
+    const sample = async (options?: string) => {
+      if (options !== undefined) {
+        mkdirSync(join(c.procRoot, "self"), { recursive: true });
+        writeFileSync(
+          join(c.procRoot, "self/mountinfo"),
+          `1 0 0:1 / ${c.procRoot} rw - proc proc rw,${options}\n`,
+        );
+      }
       time += 1000;
       return collector.collect({ ...request, time }, signal);
     };
-    // A member of the mount's exempt group sees every process.
-    const exempt = await sample("hidepid=2,gid=2000");
-    expect(exempt.errors).toEqual([]);
-    expect(exempt.processRead).toBe("complete");
-    expect(buildLoad({ ...emptySnapshot(), ...exempt }, c).builds).toBe(1);
-    // The ptraceable mode checks trace permission before the exempt group.
-    for (const mode of ["hidepid=4", "hidepid=ptraceable"])
-      expect((await sample(`${mode},gid=2000`)).processRead).toBe("incomplete");
-    // Root credentials without CAP_SYS_PTRACE do not see every process.
-    euid.mockReturnValue(0);
-    groups.mockReturnValue([0]);
-    expect((await sample("hidepid=2")).processRead).toBe("incomplete");
-    expect((await sample("hidepid=4")).processRead).toBe("incomplete");
-    // A process that may trace every other sees every process in both modes.
-    const tracer = "00000000a80c25fb";
-    expect((await sample("hidepid=2", tracer)).processRead).toBe("complete");
-    expect((await sample("hidepid=4", tracer)).processRead).toBe("complete");
-    euid.mockReturnValue(2000);
-    groups.mockReturnValue([2000]);
+    // A process root with no mount table keeps the listing whole.
+    const absent = await sample();
+    expect(absent.errors).toEqual([]);
+    expect(absent.processRead).toBe("complete");
+    expect(buildLoad({ ...emptySnapshot(), ...absent }, c).builds).toBe(1);
+    const shown = await sample("hidepid=0");
+    expect(shown.errors).toEqual([]);
+    expect(shown.processRead).toBe("complete");
+    // Any other hidepid may hide a process, whoever vsys runs as.
+    for (const mode of ["1", "2", "4", "invisible", "ptraceable"])
+      expect((await sample(`hidepid=${mode}`)).processRead).toBe("incomplete");
     // hidepid=2 omits another user's directory without a read error.
     hidden.mockImplementation(function (this: Reader, path, optional) {
       const names = list.call(this, path, optional);
@@ -86,8 +74,6 @@ test("A1-1: hidden compilers leave the machine build count unknown", async () =>
     expect(buildLoad({ ...emptySnapshot(), ...reading }, c).builds).toBeNull();
   } finally {
     hidden.mockRestore();
-    euid.mockRestore();
-    groups.mockRestore();
     rmSync(root, { recursive: true, force: true });
   }
 });
