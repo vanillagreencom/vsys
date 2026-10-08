@@ -1,0 +1,1 @@
+- The compiled binary ships the production build of React, so the dashboard draws a retained day of history faster and uses less CPU.
