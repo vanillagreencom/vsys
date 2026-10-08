@@ -16,7 +16,7 @@ LINEAR_TEAM_PREFIX = "VSY"
 # them, because agent routing never reaches such an issue. Each names an
 # installed agent, except agent:multi, a container whose children span agents,
 # and agent:human, work for a person. Empty turns the guard off.
-LINEAR_AGENT_LABELS = "agent:maintainer, agent:runtime, agent:rust, agent:researcher, agent:multi, agent:human"
+LINEAR_AGENT_LABELS = "agent:frontend, agent:maintainer, agent:runtime, agent:rust, agent:researcher, agent:multi, agent:human"
 
 # Non-empty makes `issues create` hold the presence half of the creation bar
 # in the project-management skill's SKILL.md, § Disposition → **Name what
@@ -92,6 +92,12 @@ ORCH_DECISION_MODE = "auto-recommended"
 # MERGE_READY = false never auto-merges.
 ORCH_MERGE_AUTONOMY = "auto"
 ORCH_LANE_OUTPUT = "quiet"
+
+# Path globs whose changes add the needs-ui-review QA signal.
+QA_UI_PATHS = "src/ui/**"
+
+# Design rules used by dev rounds and the needs-ui-review pass.
+QA_UI_DESIGN_DOC = "docs/architecture/ui.md"
 
 # Seconds per brief-delivery verification pass on tmux handoff lanes.
 ORCH_TMUX_VERIFY_SECS = "15"
