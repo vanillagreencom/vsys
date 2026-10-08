@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import { escaped, lanePressure } from "../model/lanes";
 import { laneText } from "../model/naming";
-import type { Lane, Snapshot } from "../model/types";
+import type { Snapshot } from "../model/types";
 import {
   type Cause,
   type CauseId,
@@ -170,21 +170,27 @@ export class EventLog {
   private watching = new Map<string, Watch>();
   private verdict: CauseId | "" = "";
   private verdictLevel: Level = "ok";
-  /**
-   * Lanes a sample that read no process dropped. They are unread rather than
-   * stopped: none stops while the read is out, none starts again when it
-   * returns, and an alert on one stays open. The first sample that reads
-   * processes again stops the ones still missing.
-   */
-  private unreadLanes: Lane[] = [];
+  /** The last accepted sample that read processes. */
+  private processPrevious: Snapshot | null = null;
   get previousTime(): number | undefined {
     return this.previous?.time;
   }
-  /** With no accepted predecessor, the first sample reports no change. */
+  /**
+   * With no accepted predecessor, the first sample reports no change.
+   *
+   * Lane starts and stops and cgroup moves compare a sample with
+   * `processPrevious`, the last one that read processes, never with a sample
+   * that read none: a lane or a process missing from that is unread, not
+   * gone. A sample that read no process records none of them, and an alert
+   * on a lane it dropped stays open. A caller that stores history passes both
+   * predecessors from storage, so this holds across a restart and beside
+   * another dashboard's writes.
+   */
   advance(
     s: Snapshot,
     c: Config,
     previous: Snapshot | null = this.previous,
+    processPrevious: Snapshot | null = this.processPrevious,
   ): TimelineEvent[] {
     const out: TimelineEvent[] = [];
     const add = (
@@ -205,14 +211,12 @@ export class EventLog {
       });
       return true;
     };
-    const known = [
-      ...(previous?.lanes ?? []),
-      ...this.unreadLanes.filter(
-        (held) => !previous?.lanes.some((old) => old.id === held.id),
-      ),
-    ];
+    const readNone = processesUnread(s);
+    // What the processes last read showed, and nothing through a sample that
+    // read none.
+    const before = readNone ? null : processPrevious;
     for (const lane of s.lanes)
-      if (previous && !known.some((old) => old.id === lane.id))
+      if (before && !before.lanes.some((old) => old.id === lane.id))
         add("lane-start", laneText(lane), {
           subjectId: lane.id,
           // An unreadable account stays empty; the UI says it is unavailable.
@@ -223,23 +227,28 @@ export class EventLog {
           },
           values: { pid: lane.mainPid },
         });
-    const missing = known.filter(
-      (lane) => !s.lanes.some((live) => live.id === lane.id),
+    for (const lane of before?.lanes ?? [])
+      if (!s.lanes.some((live) => live.id === lane.id))
+        add("lane-stop", laneText(lane), {
+          subjectId: lane.id,
+          names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
+          values: { age: lane.age },
+        });
+    // The lanes the last read held that this unread sample dropped.
+    const unreadLanes = new Set(
+      readNone
+        ? (processPrevious?.lanes ?? [])
+            .filter((old) => !s.lanes.some((live) => live.id === old.id))
+            .map((old) => old.id)
+        : [],
     );
-    this.unreadLanes = processesUnread(s) ? missing : [];
-    for (const lane of processesUnread(s) ? [] : missing)
-      add("lane-stop", laneText(lane), {
-        subjectId: lane.id,
-        names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
-        values: { age: lane.age },
-      });
     // Process identity is the PID with its start time, so a reused PID is a
     // different process rather than a move.
-    const before = new Map(
-      (previous?.procs ?? []).map((p) => [`${p.pid}:${p.start}`, p]),
+    const identities = new Map(
+      (before?.procs ?? []).map((p) => [`${p.pid}:${p.start}`, p]),
     );
     for (const p of s.procs) {
-      const was = before.get(`${p.pid}:${p.start}`);
+      const was = identities.get(`${p.pid}:${p.start}`);
       if (!was || was.group === p.group) continue;
       add("cgroup-move", `${p.comm} PID ${p.pid}`, {
         subjectId: `${p.pid}:${p.start}`,
@@ -331,7 +340,7 @@ export class EventLog {
       if (
         subjects === "all" ||
         subjects?.has(watch.subjectId) ||
-        this.unreadLanes.some((lane) => lane.id === watch.subjectId)
+        unreadLanes.has(watch.subjectId)
       ) {
         watch.closeFrom = s.time;
         continue;
@@ -378,6 +387,7 @@ export class EventLog {
     this.verdict = verdict;
     this.verdictLevel = level;
     this.previous = s;
+    this.processPrevious = readNone ? processPrevious : s;
     return out;
   }
 }

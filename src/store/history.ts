@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
 import type { Alert, Snapshot } from "../model/types";
+import { processesUnread } from "../model/verdict";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
 import type { LaneSample } from "./lane-series";
@@ -236,8 +237,15 @@ export class History {
     if (newest !== undefined && s.time <= newest) return;
     const json = JSON.stringify(s);
     const cutoff = s.time - this.c.historyHours * 3600000;
-    const record = (previous?: Snapshot | null) =>
-      point(s, this.c, this.eventLog.advance(s, this.c, previous));
+    const record = (
+      previous?: Snapshot | null,
+      processPrevious?: Snapshot | null,
+    ) =>
+      point(
+        s,
+        this.c,
+        this.eventLog.advance(s, this.c, previous, processPrevious),
+      );
     const db = this.db;
     // Points another dashboard committed to the shared database since this
     // one last wrote, so its Timeline holds them before the new point.
@@ -257,21 +265,36 @@ export class History {
             // The snapshot predecessor belongs to the shared database, even
             // after a collision or a restart. Keep alert watch clocks local;
             // another dashboard can use different thresholds and hold times.
+            // So does the last sample that read processes, which lane and
+            // process events compare against.
             let previous: Snapshot | null | undefined;
-            if (latest === undefined) previous = null;
+            let processPrevious: Snapshot | null | undefined;
+            if (latest === undefined) previous = processPrevious = null;
             else if (
               this.predecessorUnchecked ||
               this.eventLog.previousTime !== latest
             ) {
-              const row = db
-                .query<{ data: Uint8Array }, [number]>(
-                  "SELECT data FROM samples WHERE time = ?",
-                )
-                .get(latest);
-              if (!row) throw new Error("Stored predecessor disappeared");
-              previous = normalizeSnapshot(
-                JSON.parse(History.decodeRow(row.data)) as Snapshot,
+              // Newest first, one row at a time, until one read processes. A
+              // record from before the process read had a deadline names no
+              // read state, and every such sample read processes.
+              const older = db.query<
+                { time: number; data: Uint8Array },
+                [number]
+              >(
+                "SELECT time, data FROM samples WHERE time <= ? ORDER BY time DESC LIMIT 1",
               );
+              processPrevious = null;
+              for (let row = older.get(latest); row; ) {
+                const raw = JSON.parse(History.decodeRow(row.data)) as Snapshot;
+                const stored = normalizeSnapshot(raw);
+                previous ??= stored;
+                if (raw.processRead !== "unknown") {
+                  processPrevious = stored;
+                  break;
+                }
+                row = older.get(row.time - 1);
+              }
+              if (!previous) throw new Error("Stored predecessor disappeared");
             }
             if (latest !== undefined && latest !== newest)
               foreign = db
@@ -280,7 +303,7 @@ export class History {
                 )
                 .all(newest ?? cutoff, cutoff)
                 .map((row) => normalizePoint(JSON.parse(row.point) as Point));
-            const p = record(previous);
+            const p = record(previous, processPrevious);
             db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
               s.time,
               Bun.gzipSync(json),
@@ -290,11 +313,9 @@ export class History {
             return p;
           })
           .immediate()
-      : record(
-          this.predecessorUnchecked && newest !== undefined
-            ? this.at(newest)
-            : undefined,
-        );
+      : this.predecessorUnchecked && newest !== undefined
+        ? record(this.at(newest), this.keptProcessPredecessor())
+        : record();
     if (!p) return;
     this.predecessorUnchecked = false;
     this.archive.prune(cutoff);
@@ -419,6 +440,18 @@ export class History {
       next.close();
       throw error;
     }
+  }
+  /**
+   * The newest kept sample that read processes, newest point first. Only a
+   * settings change asks, so the walk is rare and stops at the first.
+   */
+  private keptProcessPredecessor(): Snapshot | null {
+    for (let i = this.points.size - 1; i >= 0; i--) {
+      const time = this.points.get(i)?.time;
+      const kept = time === undefined ? null : this.at(time);
+      if (kept && !processesUnread(kept)) return kept;
+    }
+    return null;
   }
   /** One snapshot's JSON, inflated from the compressed blob a row stores it as. */
   private static decodeRow(data: Uint8Array): string {
