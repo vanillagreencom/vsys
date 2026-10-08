@@ -103,3 +103,36 @@ test("a sample on a column boundary at an epoch time lands in the column its cur
     h.close();
   }
 });
+
+test("a full-day refresh folds only the new sample into the chart", () => {
+  const c = { ...defaults(), refreshMs: 10000 };
+  const h = new History(c);
+  const day = 86400000;
+  const retentionMs = c.historyHours * 3600000;
+  const kept = new Retained();
+  let time = 0;
+  const sample = () => {
+    time += c.refreshMs;
+    h.add(emptySnapshot(time));
+    kept.read(h, time, day, retentionMs).columns(32);
+  };
+  try {
+    // A full day and one more, so each new sample pushes the oldest out.
+    for (let i = 0; i <= day / c.refreshMs; i++) sample();
+    // Count every field read of the points already held.
+    let reads = 0;
+    for (const p of kept.points) {
+      const agents = p.agents;
+      Object.defineProperty(p, "agents", {
+        get: () => {
+          reads++;
+          return agents;
+        },
+      });
+    }
+    sample();
+    expect(reads).toBe(0);
+  } finally {
+    h.close();
+  }
+});

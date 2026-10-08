@@ -139,10 +139,12 @@ export class Retained {
       const cut = at(oldest);
       for (const index of chart.columns.keys())
         if (index <= cut) chart.columns.delete(index);
-      for (const p of this.points) {
-        if (p.time > chart.folded || at(p.time) !== cut) break;
-        fold(p);
-      }
+      // A column left of the chart is not drawn, so it is not folded again.
+      if (cut >= first)
+        for (const p of this.points) {
+          if (p.time > chart.folded || at(p.time) !== cut) break;
+          fold(p);
+        }
       chart.oldest = oldest;
     }
     let from = this.points.length;
