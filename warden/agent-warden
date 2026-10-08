@@ -1443,8 +1443,11 @@ def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=conta
 # --- moving -------------------------------------------------------------------
 def headroom():
     slice_dir = CG_ROOT / SLICE
-    if not slice_dir.is_dir():
+    state = cgroup_dir_state(slice_dir)
+    if state == "absent":
         return True, 0, 0
+    if state == "unknown":
+        return False, -1, -1
     cur = read(slice_dir / "memory.current")
     mx = read(slice_dir / "memory.max")
     if cur is None or mx is None:
