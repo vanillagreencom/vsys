@@ -23,7 +23,7 @@ import {
   sameValue,
   validate,
 } from "./config/config";
-import { notify } from "./model/alerts";
+import { notifiable, notify } from "./model/alerts";
 import type { Snapshot } from "./model/types";
 import type { History } from "./store/history";
 
@@ -233,9 +233,7 @@ export class Session {
   private notify(snapshot: Snapshot): void {
     for (const message of this.notifyFailures.splice(0))
       snapshot.errors.push({ source: "notify-send", message });
-    const sent = snapshot.alerts.filter((a) =>
-      this.config.notifications.includes(a.rule),
-    );
+    const sent = notifiable(snapshot.alerts, this.config);
     if (!sent.length) return;
     if (this.notifying) {
       snapshot.errors.push({
@@ -245,7 +243,7 @@ export class Session {
       return;
     }
     this.notifying = true;
-    notify(sent, this.config)
+    notify(sent)
       .catch((error) => this.notifyFailures.push(String(error)))
       .finally(() => {
         this.notifying = false;

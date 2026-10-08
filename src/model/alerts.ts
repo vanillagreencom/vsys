@@ -102,14 +102,21 @@ export class AlertEngine {
 /** How long one notify-send call may run before it is killed as a failure. */
 export const notifyTimeoutMs = 5000;
 
-/** Notification argv never passes through a shell. */
+/** The alerts whose rule the reader chose to receive as desktop notifications. */
+export function notifiable(alerts: Alert[], c: Config): Alert[] {
+  return alerts.filter((a) => c.notifications.includes(a.rule));
+}
+
+/**
+ * Sends each alert it is given; `notifiable()` chooses them. Notification
+ * argv never passes through a shell.
+ */
 export async function notify(
   alerts: Alert[],
-  c: Config,
   timeoutMs = notifyTimeoutMs,
 ): Promise<void> {
   const failures: Error[] = [];
-  for (const a of alerts.filter((a) => c.notifications.includes(a.rule))) {
+  for (const a of alerts) {
     const { error, status, timedOut } = await spawnText(
       ["notify-send", "--app-name=vsys", "--", `vsys: ${a.rule}`, a.message],
       timeoutMs,
