@@ -25,9 +25,19 @@ export async function buildDist(): Promise<void> {
   );
 }
 
-/** The standalone binary the release and the vsys-git package ship. */
+/**
+ * The standalone binary the release and the vsys-git package ship. React
+ * picks its build from NODE_ENV, and the binary embeds the one chosen here:
+ * the development build draws a retained day in more than half a refresh.
+ */
 export async function buildBinary(outfile: string): Promise<void> {
-  report(await Bun.build({ entrypoints, compile: { outfile } }));
+  report(
+    await Bun.build({
+      entrypoints,
+      compile: { outfile },
+      define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    }),
+  );
 }
 
 function report(result: Bun.BuildOutput): void {
