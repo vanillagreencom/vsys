@@ -2,6 +2,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from agent_warden_testlib import WARDEN, WardenRulesCase, clean_env, load_warden, scratch, started_scope
 
@@ -174,6 +175,18 @@ class AgentWardenLimitRules(WardenRulesCase):
                         self.assertEqual(actual, expected)
             finally:
                 self.w.CG_ROOT = old_root
+
+    def test_headroom_slice_stat_errors(self):
+        rows = [
+            (FileNotFoundError(), (True, 0, 0)),
+            (PermissionError(), (False, -1, -1)),
+            (OSError(), (False, -1, -1)),
+        ]
+        for error, expected in rows:
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(Path, "stat", side_effect=error), \
+                    patch.object(Path, "is_dir", return_value=False):
+                self.assertEqual(self.w.headroom(), expected)
 
     def test_cpu_weight_rows(self):
         # A non-default weight enables the CPU controller inside agents.slice.
