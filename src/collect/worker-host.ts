@@ -56,7 +56,7 @@ export interface WorkerSpec<Message, Data, Answer> {
  * program keeps. The thread starts at the first request and is kept until a
  * failure, a cancellation or the close ends it; the next request after that
  * starts a new one. A request the host has not answered is the only one in
- * flight, because each owner awaits its request before sending the next.
+ * flight, because no owner sends a request while its last is unanswered.
  */
 export class WorkerHost<Message, Data, Answer> {
   private worker?: WorkerPort<Message, Data>;

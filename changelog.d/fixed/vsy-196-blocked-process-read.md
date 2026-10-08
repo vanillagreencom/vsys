@@ -1,0 +1,1 @@
+- The dashboard keeps drawing new samples when a process file read blocks. After two seconds the sample shows processes as unknown and names the process read that did not finish.
