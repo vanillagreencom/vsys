@@ -272,7 +272,7 @@ review-gate = """
 """
 orch = """
 - A worktree created as an orch lane leaves kendex refresh and apply to the overseer in the base checkout after merge. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
-- The rolling install-record pull request owns refresh outputs. After base-checkout refresh, report generated changes and restore only its owned outputs. Preserve unrelated tracked work. (ORCH-M03)
+- The kendex-refresh Actions workflow and its rolling kendex/refresh pull request own kendex refresh outputs. A base-checkout refresh after merge reports generated changes and restores only outputs that workflow owns. Preserve unrelated tracked and untracked work. (ORCH-M03)
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear. Read the live issue before changing its state. (ORCH-M09)
 - Use the estimate and post-merge observation policies in kendex.toml [skill-instructions].project-management. (ORCH-M22, ORCH-M23)
 - Route unattended lane questions through lane-mail. The master relays owner decision requests and critical notices to Slack and chat. Keep voice replies on their call, progress reports in open text media, and replies in the owner's message thread. (ORCH-D22)
