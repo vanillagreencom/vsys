@@ -258,7 +258,7 @@ project-management = """
 - Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
 """
 reviewer = """
-- For each changed view, capture a before image from the base revision and an after image from HEAD in every supported theme. Put the images under tmp/ui-shots/ in the worktree. List each file in the round summary with the view, before or after, and theme. A later change to the view replaces its after images and carries its before images forward. A new view has after images only. The reviewer judges the view from this set. (CQ33)
+- Judge each changed view from the developer's screenshot set under tmp/ui-shots/. Use the dev round summary, which lists each file with its view, before or after, and theme. Check before images from the base revision and after images from HEAD in every supported theme. Later rounds carry before images forward and replace after images. New views require after images only. Report missing required images as findings. The developer creates the images. The reviewer creates no image. (CQ33)
 - Review findings use the estimate scale in kendex.toml [skill-instructions].project-management. Keep the numeric schema field and its consumer-defined meaning separate. (RV20)
 """
 worktree = """
