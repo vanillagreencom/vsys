@@ -1,15 +1,82 @@
 from pathlib import Path
 import json
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
-from agent_warden_testlib import WARDEN, WardenRulesCase, scratch
+from agent_warden_testlib import WARDEN, WardenRulesCase, load_warden, materialize_warden_script, scratch
 
 sys.dont_write_bytecode = True
 
 
 class AgentWardenOrphanRules(WardenRulesCase):
+    def test_incomplete_child_enumeration_mutant_fails(self):
+        text = WARDEN.read_text()
+        start = text.index("        pending = [base]\n")
+        end = text.index("        return procfiles\n", start) + len("        return procfiles\n")
+        mutant_text = text[:start] + '        return [base / "cgroup.procs", *base.glob("**/cgroup.procs")]\n' + text[end:]
+        self.assertNotEqual(mutant_text, text)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            path = materialize_warden_script(base, mutant_text)
+            mutant = load_warden(self.env, "agent_warden_mutant_child_enumeration", path)
+            scope = base / "cg" / "build.scope"
+            child = scope / "delegated"
+            child.mkdir(parents=True)
+            (scope / "cgroup.procs").write_text("700\n")
+            (child / "cgroup.procs").write_text("701\n")
+            real_scandir = mutant.os.scandir
+
+            def scandir(path):
+                if Path(path) == child:
+                    raise PermissionError("unreadable child")
+                return real_scandir(path)
+
+            with patch.object(mutant.os, "scandir", side_effect=scandir), \
+                    patch.object(mutant, "log"):
+                with self.assertRaises(AssertionError):
+                    self.assertIsNone(mutant._scope_procfiles(scope))
+
+    def test_delegated_membership_recheck_prevents_scope_stop(self):
+        for unreadable, live_agent, stopped in ((False, True, False), (True, True, False),
+                                                (False, False, True)):
+            with self.subTest(unreadable=unreadable, live_agent=live_agent), scratch() as tmp:
+                base = Path(tmp)
+                unit = "build.scope"
+                scope = base / "cg" / self.w.SLICE / unit
+                child = scope / "delegated" / "nested"
+                child.mkdir(parents=True)
+                for directory, contents in ((scope, "700\n"), (child.parent, ""), (child, "701\n")):
+                    (directory / "cgroup.procs").write_text(contents)
+                (scope / "memory.stat").write_text(f"anon {self.w.ORPHAN_MEM_BYTES}\n")
+                member = self.P(700, 1, "bun", ["bun"], cg=f"/agents.slice/{unit}")
+                attached = self.P(701, 700, "claude" if live_agent else "bun", ["worker"],
+                                  cg=f"/agents.slice/{unit}/delegated/nested")
+                state = self.w.default_state()
+                real_scandir = self.w.os.scandir
+
+                def scandir(path):
+                    if unreadable and Path(path) == child.parent:
+                        raise PermissionError("delegated cgroup unreadable")
+                    return real_scandir(path)
+
+                with patch.object(self.w, "CG_ROOT", base / "cg"), patch.object(self.w, "log"), \
+                        patch.object(self.w, "REAP", True), \
+                        patch.object(self.w.time, "time", return_value=1000.0):
+                    self.w.reap_orphans({700: member}, state, False)
+                    with patch.object(self.w.time, "time", return_value=1000.0 + self.w.ORPHAN_GRACE + 1):
+                        self.w.reap_orphans({700: member}, state, False)
+                        self.assertTrue(state["orphans"][unit]["harmful"])
+                        with patch.object(self.w.os, "scandir", side_effect=scandir), \
+                                patch.object(self.w, "Proc", side_effect={700: member, 701: attached}.__getitem__), \
+                                patch.object(self.w, "reap", return_value=(True, "")) as stop:
+                            self.w.reap_orphans({700: member}, state, True)
+                        if stopped:
+                            stop.assert_called_once_with(unit)
+                        else:
+                            stop.assert_not_called()
+
     def _scope_history(self, module, change):
         with scratch() as tmp:
             base = Path(tmp)

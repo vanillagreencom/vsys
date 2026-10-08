@@ -841,7 +841,18 @@ def orphans(procs, managers):
 
 def _scope_procfiles(base):
     try:
-        return [base / "cgroup.procs", *base.glob("**/cgroup.procs")]
+        pending = [base]
+        procfiles = []
+        while pending:
+            directory = pending.pop()
+            procfiles.append(directory / "cgroup.procs")
+            # Recursive glob skips unreadable children. An incomplete tree
+            # cannot establish that no live agent joined this scope.
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(Path(entry.path))
+        return procfiles
     except OSError as e:
         log(f"orphan recheck incomplete: cannot enumerate {base}: {e}")
         return None
@@ -937,13 +948,14 @@ def _proc_tmpdir(pid):
 
 
 def _scratch_in_use(path, procs):
-    """Whether any pid in procs still has TMPDIR resolving inside path:
+    """Whether any pid in procs has TMPDIR or its current directory inside path:
     "in-use" when one does, "unknown" when none does but a pid that could
-    hold path has an environ that cannot be read, "free" otherwise.
+    hold path has an environment or current directory that cannot be read,
+    "free" otherwise.
     "in-use" beats "unknown": one confirmed user is enough to keep path.
     A worker can inherit TMPDIR and enter any scope before its launcher exits.
     Its current scope cannot prove that it released the directory. Every
-    unreadable environment therefore keeps unclaimed directories, including
+    unreadable environment or current directory keeps unclaimed directories, including
     when an unrelated non-dumpable desktop process delays cleanup. Both sides are
     resolved with os.path.realpath before comparing, not just lexically
     normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
@@ -960,14 +972,21 @@ def _scratch_in_use(path, procs):
     unknown = False
     for pid in procs:
         tmpdir = _proc_tmpdir(pid)
-        if tmpdir is None:
+        if tmpdir:
+            resolved = os.path.realpath(tmpdir)
+            if resolved == candidate or resolved.startswith(prefix):
+                return "in-use"
+        # Detached workers can clear TMPDIR while keeping their work here.
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            cwd = None
+        if cwd is not None:
+            resolved = os.path.realpath(cwd)
+            if resolved == candidate or resolved.startswith(prefix):
+                return "in-use"
+        if tmpdir is None or cwd is None:
             unknown = True
-            continue
-        if not tmpdir:
-            continue
-        resolved = os.path.realpath(tmpdir)
-        if resolved == candidate or resolved.startswith(prefix):
-            return "in-use"
     return "unknown" if unknown else "free"
 
 
@@ -1003,7 +1022,7 @@ def _rmtree_writable(root):
 def reap_scratch_dirs(correct, procs, failed):
     """Remove a per-scope scratch directory agent-confine created under
     AGENT_TMPDIR once its scope unit is gone from agents.slice AND no live
-    process this user owns still has TMPDIR pointing there. procs must be a
+    process this user owns has TMPDIR or its current directory there. procs must be a
     snapshot taken immediately before this call, not reused from earlier in
     the tick: a process that started since an older snapshot was taken is
     simply absent from it, which _scratch_in_use cannot tell apart from "no
@@ -1050,10 +1069,10 @@ def reap_scratch_dirs(correct, procs, failed):
             continue
         status = _scratch_in_use(path, procs)
         if status == "in-use":
-            log(f"scratch {name}: scope gone but a live process still has TMPDIR here; not reaping")
+            log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")
             continue
         if status == "unknown":
-            log(f"scratch {name}: scope gone but a process's TMPDIR could not be read; not reaping this tick")
+            log(f"scratch {name}: scope gone but a process's environment or current directory could not be read; not reaping this tick")
             continue
         if not correct:
             log(f"scratch {name}: scope gone; would remove (report mode)")
