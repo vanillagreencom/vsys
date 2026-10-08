@@ -11,7 +11,7 @@ import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
-import { claudeLink, fixture } from "../test/fixture";
+import { claudeLink, fixture, userManager } from "../test/fixture";
 import { present } from "../test/present";
 import { fakeBus, noBus } from "../test/udisks";
 import { FinishedScrubMemory } from "./btrfs";
@@ -177,9 +177,7 @@ test("cgroup membership comes from the scope list when its mount root is known",
   );
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.errors).toEqual([]);
-  expect(s.procs[0]?.group).toBe(
-    "/user.slice/user-1000.slice/user@1000.service/agents.slice/a.scope",
-  );
+  expect(s.procs[0]?.group).toBe(`${userManager}/agents.slice/a.scope`);
 });
 test("ambiguous scope membership uses the process membership file", async () => {
   const f = setup();
@@ -187,9 +185,7 @@ test("ambiguous scope membership uses the process membership file", async () => 
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope");
   const s = await new Collector(f.config, 100, 4096).sample();
-  expect(s.procs[0]?.group).toBe(
-    "/user.slice/user-1000.slice/user@1000.service/agents.slice/a.scope",
-  );
+  expect(s.procs[0]?.group).toBe(`${userManager}/agents.slice/a.scope`);
   expect(s.lanes.find((l) => l.id === "app.slice/a.scope")?.pids).toEqual([]);
   expect(s.lanes.find((l) => l.id === "agents.slice/a.scope")?.pids).toEqual([
     40,
