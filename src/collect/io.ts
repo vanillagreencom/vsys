@@ -30,6 +30,15 @@ export class Reader {
   text(path: string, optional = false): string | null {
     return this.exact(path, optional)?.trim() ?? null;
   }
+  identity(path: string): string | null {
+    try {
+      const stat = statSync(path, { bigint: true });
+      return `${stat.dev}:${stat.ino}`;
+    } catch (error) {
+      this.error(path, error);
+      return null;
+    }
+  }
   /**
    * A file's text as written. A report names files a line each, and trimming
    * its last line would turn one name into another.

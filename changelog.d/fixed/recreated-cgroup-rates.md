@@ -1,0 +1,1 @@
+- An agent scope recreated between or during samples shows unknown CPU and I/O rates until a baseline from the new scope is available.

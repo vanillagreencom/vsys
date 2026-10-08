@@ -390,6 +390,7 @@ test("stored group limits infer numeric readings and preserve recorded flags", (
   const first = new History(f.config);
   const s = emptySnapshot(now);
   const measured = groupSnapshot({
+    identity: "1:42",
     high: 1048576,
     swapMax: 0,
     tasksMax: 512,
@@ -406,7 +407,7 @@ test("stored group limits infer numeric readings and preserve recorded flags", (
     { values: { high: 0, swapMax: 0, tasksMax: 0 }, known: true },
   ];
   const legacy = rows.map(({ values }) => {
-    const { highRead, swapMaxRead, tasksMaxRead, ...group } =
+    const { identity, highRead, swapMaxRead, tasksMaxRead, ...group } =
       groupSnapshot(values);
     return group;
   });
@@ -424,6 +425,11 @@ test("stored group limits infer numeric readings and preserve recorded flags", (
   db.close();
   const reopened = new History(f.config);
   cleanup.push(() => reopened.close());
+  expect(reopened.at(now)?.groups.map((g) => g.identity)).toEqual([
+    ...rows.map(() => null),
+    "1:42",
+    null,
+  ]);
   expect(
     reopened
       .at(now)

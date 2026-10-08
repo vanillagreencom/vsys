@@ -108,6 +108,7 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     processRead: s.processRead ?? "unknown",
     groups: s.groups.map((group) => ({
       ...group,
+      identity: group.identity ?? null,
       // Older collectors stored numbers only after a successful read.
       highRead: group.highRead ?? typeof group.high === "number",
       swapMaxRead: group.swapMaxRead ?? typeof group.swapMax === "number",
