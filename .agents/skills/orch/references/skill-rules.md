@@ -59,6 +59,10 @@ The acceptance table lives in the delegating workflow (`dev-start.md` § 3, `dev
 | `exhausted` | The re-delegated round stalled too, with no report or a report the disk contradicts; the printed `reason` names which. Stop and report it. |
 | `round-live` | Not a stall. Arm one new watchdog. |
 
+#### Directive During A Round
+
+A lane never steers a running dev or fix round by message alone. The harness's send (Claude Code `SendMessage`) only queues a message for the agent's next tool round and returns no delivery receipt, so a send is not delivery, and the agent's transcript ([agent-transcripts.md](agent-transcripts.md)) is the only record of what the agent read. A directive that changes the round's scope goes first into the round's durable brief, the item comment or `tmp/` file the delegation names. The lane then reads the transcript for the change: read there, it is "delivered"; anything else, an unreadable transcript included, is "unconfirmed". An unconfirmed directive overrides whatever the watchdog returns, since a report or an `accept` answers the old scope: at that return, shut the agent down and run `round-recover --worktree [WORKTREE] --issue [ISSUE_ID] --round-id [dev_round_id] --directive-unconfirmed`, with `--state-dir` as for a stalled round. It ends the worktree's validation runs first, and a run it cannot end is its `stop-failed` refusal: stop and report it. Past a refusal it prints only `redelegate`; take that row, which keeps the uncommitted tree and delegates the updated brief under the fresh round id, with one change: on a fix round, the fresh round's record holds the updated scope, never the `from` round's authorization. Write its items file and run `dev-round-write` for the fresh id as step 4 of [dev-fix.md § 2](../workflows/dev-fix.md#2-delegate) does for a new delegation, with the items, `--source`, `--adds` and `--cut` the updated brief names, so `--expect-items-from-round` checks the receipt against the scope the agent was given. The lane's notice to the overseer says "confirmed in the dev agent's transcript at [TIME]" or "unconfirmed, re-delegating", never "reached" on a send.
+
 ---
 
 ## Coordination
