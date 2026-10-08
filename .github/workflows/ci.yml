@@ -209,9 +209,10 @@ jobs:
     name: CI
     # The aggregate the main ruleset is to require in place of the per-job
     # checks. It fails when the classifier, or any other needed job, fails or
-    # is cancelled, and when a job skips that its lane verdict from the
-    # changes job did not stand down. application and arch-package are the
-    # only jobs a verdict may stand down, on a proved render or docs diff.
+    # is cancelled, and when a job skips that neither the render class nor
+    # its lane verdict from the changes job stood down. application and
+    # arch-package are the only jobs a verdict may stand down, on a proved
+    # render or docs diff.
     needs: [changes, application, arch-package, bot-instructions]
     if: always()
     runs-on: ubuntu-latest
