@@ -176,6 +176,7 @@ export function Builds({
     procs.map((p) => String(p.pid)),
   );
   const cache = summary.cache;
+  const pools = summary.jobservers;
   const meter = meters(s, c).find((m) => m.id === "builds");
   if (!meter) throw new Error("The verdict model has no builds meter");
   const total = meterTile(meter, s, c);
@@ -205,24 +206,28 @@ export function Builds({
           key="Make tokens"
           label="Make tokens"
           value={
-            summary.jobservers.length
-              ? summary.jobservers
-                  .map((j) =>
-                    j.total === null
-                      ? `${j.inUse} in use`
-                      : `${j.inUse} of ${j.total}`,
-                  )
-                  .join(", ")
-              : "no pool"
+            pools === null
+              ? gap
+              : pools.length
+                ? pools
+                    .map((j) =>
+                      j.total === null
+                        ? `${j.inUse} in use`
+                        : `${j.inUse} of ${j.total}`,
+                    )
+                    .join(", ")
+                : "no pool"
           }
           detail={
-            summary.jobservers.length
-              ? `${summary.jobservers.map((j) => j.fifo).join(", ")}${
-                  summary.jobservers.some((j) => j.total === null)
-                    ? " · pool size not stated in the build flags"
-                    : ""
-                }`
-              : "no make jobserver in use"
+            pools === null
+              ? "some processes could not be read"
+              : pools.length
+                ? `${pools.map((j) => j.fifo).join(", ")}${
+                    pools.some((j) => j.total === null)
+                      ? " · pool size not stated in the build flags"
+                      : ""
+                  }`
+                : "no make jobserver in use"
           }
         />
       </Tiles>

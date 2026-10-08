@@ -21,6 +21,7 @@ import {
   toolSignals,
 } from "./builds";
 import { Reader } from "./io";
+import { type MountInfo, parseMounts } from "./mounts";
 import type { CollectionConfig } from "./settings";
 
 /**
@@ -41,6 +42,44 @@ export function omittedProcess(source: string, procRoot: string): boolean {
   return (
     source === root ||
     (dirname(source) === root && /^\d+$/.test(basename(source)))
+  );
+}
+const hiding = [
+  "hidepid=2",
+  "hidepid=invisible",
+  "hidepid=4",
+  "hidepid=ptraceable",
+];
+/**
+ * Whether the proc mount at `procRoot` leaves out processes this one may not
+ * trace. Those directories are missing from the listing with no read error,
+ * so the listing is incomplete unless this process is root or a member of the
+ * mount's exempt group. A process root with no mount table keeps the listing
+ * whole.
+ */
+export function hiddenProcesses(r: Reader, procRoot: string): boolean {
+  const path = join(procRoot, "self/mountinfo");
+  const raw = r.text(path, true);
+  if (raw === null) return false;
+  let mounts: MountInfo[];
+  try {
+    mounts = parseMounts(raw);
+  } catch (e) {
+    r.error(path, e);
+    return true;
+  }
+  const root = resolve(procRoot);
+  const proc = mounts
+    .filter((m) => m.type === "proc" && resolve(m.mount) === root)
+    .at(-1);
+  if (!proc?.options.some((o) => hiding.includes(o))) return false;
+  if (process.geteuid?.() === 0) return false;
+  const gid = proc.options.find((o) => o.startsWith("gid="))?.slice(4);
+  return !(
+    gid !== undefined &&
+    [process.getegid?.(), ...(process.getgroups?.() ?? [])].some(
+      (g) => String(g) === gid,
+    )
   );
 }
 /** stat's command can contain spaces and closing parentheses. */
@@ -204,6 +243,7 @@ export class ProcessCollector implements ProcessSource {
     // Executables already read, so the launch chain below reads none twice.
     const executables = new Map<number, string | null>();
     const result: Proc[] = [];
+    const hidden = hiddenProcesses(r, c.procRoot);
     for (const id of r.dirs(c.procRoot).filter((n) => /^\d+$/.test(n))) {
       const root = join(c.procRoot, id);
       try {
@@ -389,9 +429,10 @@ export class ProcessCollector implements ProcessSource {
     return {
       procs: result,
       errors: r.errors,
-      processRead: r.errors.some((e) => omittedProcess(e.source, c.procRoot))
-        ? "incomplete"
-        : "complete",
+      processRead:
+        hidden || r.errors.some((e) => omittedProcess(e.source, c.procRoot))
+          ? "incomplete"
+          : "complete",
     };
   }
 }

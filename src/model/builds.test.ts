@@ -334,7 +334,7 @@ test("only the outermost holder of a token pool is counted", () => {
     { fifo: "/tmp/GMfifo42", total: 4, inUse: 2 },
     { fifo: "/tmp/GMfifo7", total: 2, inUse: 1 },
   ]);
-  for (const pool of pools)
+  for (const pool of pools ?? [])
     expect(pool.inUse).toBeLessThanOrEqual(pool.total ?? 0);
 });
 
