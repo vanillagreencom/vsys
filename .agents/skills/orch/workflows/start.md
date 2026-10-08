@@ -65,6 +65,8 @@ Output: [Lane Output](../references/skill-rules.md#lane-output).
 .agents/skills/linear/scripts/linear.sh issues get [ISSUE_ID] --with-bundle
 ```
 
+Verifying → stop development preparation. Its post-merge readings belong to the overseer under [oversee-events.md § Event kinds](../references/oversee-events.md#event-kinds).
+
 Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)) to the `--with-bundle` output.
 
 - **Container** → it is not the work item. List its unblocked DIRECT children (`depth == 0` in the flattened children array; never select a deeper descendant directly), pick one, and re-run this section for it.
@@ -106,7 +108,7 @@ Exit 75 means a branch or open PR already owns the issue — inspect it instead 
 
 Execute `workflows/start-worktree.md` with `[WT_PATH]` as the worktree context — no question.
 
-An `orch start` run is complete only when the tracker issue is Done and its worktree is gone. An opened or armed PR is not complete.
+An `orch start` run is complete when its merge work is complete, its worktree is gone, and the tracker issue is Done or handed to the overseer in Verifying under [merge-pr.md § 5](merge-pr.md#5-execute-the-merge). The issue reaches Done only after every post-merge box has proof. An opened or armed PR is not complete.
 
 Output: [Lane Output](../references/skill-rules.md#lane-output).
 

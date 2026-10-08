@@ -57,8 +57,9 @@
 #         `no_usage_data`, authenticated with no window to measure; `retired`;
 #         and `error`, a step this machine failed on its own, a renewal's
 #         included. A lane whose usage REFRESH met a 429 while the host still
-#         holds a figure for it younger than the 5-hour session window reports
-#         `rate_limited` ON that figure, with its age in the AGE column, and is
+#         holds a figure younger than the 5-hour session window, with no
+#         consumed bucket reset reached, reports `rate_limited` ON that figure,
+#         with its age in the AGE column, and is
 #         judged on it; with no such figure it carries no window. Only `ok`
 #         and a `rate_limited` lane carrying a figure are pickable. The split
 #         matters because `expired` is the one word an operator answers by
@@ -436,14 +437,18 @@
 #                    be the one caller on the host that posts again what the
 #                    endpoint has already refused. A lane the usage endpoint
 #                    refuses with 429, on record or on this run's own fetch,
-#                    is still answered from the last figure the host holds,
-#                    as `rate_limited` with its age in the AGE column. It
+#                    is answered from the last figure only while it is younger
+#                    than the 5-hour session window and no consumed bucket
+#                    reset has arrived. It reports `rate_limited` with that
+#                    figure's age, or no usable figure when either bound ends.
+#                    A live refusal still blocks a new request. A refresh
 #                    still takes the host-wide refresh lock.
 #   --max-age SECS   Serve a cached usage figure up to SECS old, for a caller
 #                    naming its own pass interval. It WIDENS
 #                    ORCH_LANES_USAGE_TTL and never narrows it, so a caller
 #                    passing nothing, or less than the TTL, keeps the TTL. A
 #                    TTL of 0 is never widened: every run still fetches.
+#                    A consumed bucket reset ends eligibility before this age.
 #                    ORCH_LANES_USAGE_MAX_AGE is the same value as a setting.
 #   --json           Machine-readable output
 #
@@ -524,14 +529,15 @@
 #                      defaults to 240 — because a TTL under that interval has
 #                      every pass find the figure expired and fetch again. The
 #                      provider's `accounts` answer is cached under the same
-#                      TTL. The window a cached figure is served within is
-#                      this TTL widened by --max-age, and the same window
+#                      TTL. A consumed bucket reset ends cache eligibility
+#                      before that TTL or a wider --max-age. The age limit is
+#                      this TTL widened by --max-age, and the same limit
 #                      bounds the age of a local figure `pick` judges in place
 #                      of a provider row read `unreachable`.
 #   ORCH_LANES_USAGE_MAX_AGE  The default of --max-age (default 0, which is the
 #                      TTL alone): the caller's own pass interval, in seconds.
-#                      A pass longer than the TTL serves its last figure rather
-#                      than fetching on every pass.
+#                      A pass longer than the TTL serves its last figure until
+#                      that age limit or a consumed bucket reset arrives.
 #   ORCH_LANE_HOST_ACCOUNTS_TIMEOUT_S  Seconds the provider's `accounts` verb
 #                      may take (default 10; 0 asks for no bound). Applied
 #                      where `timeout` or `gtimeout` is installed. A bound
@@ -541,7 +547,8 @@
 #                      ORCH_LANE_HOST_SHORT_MAX_CALLS cap reads as `lane-host-busy`
 #                      rather than as the bound. Where neither spelling is
 #                      installed, a CACHED read runs unbounded and the cache
-#                      holds its cost to one call per TTL, while a `--no-cache`
+#                      holds its cost to one call per TTL unless a consumed
+#                      bucket reset requires an earlier refresh. A `--no-cache`
 #                      read is refused as `host-accounts-unbounded` rather than
 #                      waiting: the cache covers a listing or a pick, not a
 #                      read that asked to ask the provider now.
@@ -574,8 +581,9 @@
 # USAGE CACHE: each fetched usage body is written to $OVERSEE_WATCH_STATE_DIR/
 # usage/<harness>-<config dir checksum>.json (else <project root>/tmp/
 # oversee-watch/usage, beside the claim store) and reused while younger than
-# ORCH_LANES_USAGE_TTL, or than --max-age where that is longer, so every
-# overseer sharing that directory polls an account at most once per window.
+# ORCH_LANES_USAGE_TTL, or than --max-age where that is longer, unless a
+# consumed bucket reset arrives first. Every overseer sharing that directory
+# polls an account at most once per age window, except for reset refreshes.
 # `usage_age_s` (the AGE column) is how old the figure is. Credentials are
 # still read every run: an expired token is renewed or reports its refusal,
 # whatever the cache holds. A fresh write keeps the displaced figure as
@@ -607,9 +615,11 @@
 # seconds, and USAGE_REFUSAL_WINDOW_S where it did not. Re-posting is what
 # sustains a rate limit, so every watch pass on the host reads the record
 # instead of asking again. The last figure the record held stays beside the
-# refusal, so a usage 429 is answered from it: the lane reports `rate_limited`
-# on that figure while it is younger than the 5-hour session window. With no
-# such figure, the first such lane in a run retries once, after the window or
+# refusal. A usage 429 reports `rate_limited` on that figure only while it is
+# younger than the 5-hour session window and no consumed bucket reset has
+# arrived. After either bound, a live recorded refusal still blocks a new
+# request and reports no usable figure. A new 429 with no eligible figure
+# makes the first such lane in a run retry once, after the window or
 # 5 seconds whichever is shorter, so that retry is the one request posted
 # inside a recorded window; a later cold lane in the same run reports its
 # refusal at once. The record returns to a figure alone the moment the
@@ -923,6 +933,10 @@ message() {
     invalid-usage-max-age)
       printf 'lanes: invalid-usage-max-age value=%s\n' "$1"
       printf '%s\n' "--max-age and ORCH_LANES_USAGE_MAX_AGE must be a whole number of seconds; it widens ORCH_LANES_USAGE_TTL for this caller and never narrows it"
+      ;;
+    usage-cache-reset)
+      printf 'lanes: usage-cache-reset account=%s resets-at=%s\n' "$1" "$2"
+      printf '%s\n' "A consumed usage bucket reset. The cached figure cannot be served."
       ;;
     usage-lock-timeout)
       printf 'lanes: usage-lock-timeout lock-file=%s wait-s=%s\n' "$1" "$2"
@@ -1521,8 +1535,8 @@ measure_lane() {
 
 # Answers the lane from its usage record without posting anything, into
 # measure_lane's own `raw`, `age`, `status` and `detail`, and the sample
-# fields take_cached_usage sets: a figure young
-# enough to serve, else a live refusal of the usage endpoint. A 429 on record is
+# fields take_cached_usage sets: a figure eligible by age and bucket resets,
+# else a live refusal of the usage endpoint. A 429 on record is
 # answered from the last figure beside it while serve_refused_usage finds one;
 # any other refusal, and a 429 with no such figure, is reported as the record
 # states it with no windows. Returns 1 where the record answers neither, the
@@ -1643,12 +1657,13 @@ record_usage_refusal() { # NOW
 
 # Serves the last figure the host holds for a rate-limited lane, into
 # measure_lane's own `raw`, `age`, `status` and `detail`, while it is younger
-# than SESSION_WINDOW_S. A figure older than the shortest window it reports
-# cannot say what that window holds now, and a refusal the endpoint keeps
-# giving never replaces the figure, so without the bound one frozen figure
-# would stand in for an account indefinitely and `pick` would launch on it.
-# It returns 1 where nothing that young is held, and the caller then reports
-# the refusal with no windows.
+# than SESSION_WINDOW_S and no consumed bucket reset has arrived. Either
+# bound ends eligibility, because the figure cannot show current usage after
+# a reset. A refusal the endpoint keeps giving never replaces the figure,
+# so without these bounds one frozen figure would stand in for an account
+# indefinitely and `pick` would launch on it.
+# It returns 1 where no eligible figure is held. The caller then reports
+# the refusal with no windows. A live refusal still blocks a new request.
 #
 # It assigns its caller's locals rather than printing, because several values
 # cannot come back through one substitution and the caller goes on to parse
@@ -1688,9 +1703,10 @@ take_cached_usage() { # CACHED
 # the figure's, or the refusal's where there is one, and a figure kept beside a
 # refusal keeps its own stamp in `usage_fetched_at`. The figure is kept because
 # a usage 429 is answered from it: a refused REFRESH leaves the host's last
-# reading of the account true for its age, and that age is always the figure's
-# own, never the refusal's, so no reader can take a refused refresh for a fresh
-# figure. The two readers select on the key they need, so a record with no
+# reading usable only within its age limit and before a consumed bucket reset.
+# That age is always the figure's own, never the refusal's, so no reader can
+# take a refused refresh for a fresh figure. The two readers select on the key
+# they need, so a record with no
 # figure is a miss for the figure reader and one with no refusal a miss for the
 # refusal reader. The refusal names which endpoint refused, because the token
 # endpoint and the usage endpoint are different hosts under different limits.
@@ -1767,7 +1783,7 @@ prune_usage_cache() {
 # dir $2 at epoch $3 whose age is under $4 seconds; an EMPTY $4 accepts any
 # age. `fetched_at` and `age` are the figure's own. Fails on a miss: an
 # unreadable or malformed record, one naming another lane, one holding no
-# figure, and one stamped in the future.
+# figure, one stamped in the future, and a consumed bucket whose reset arrived.
 #
 # The bound is the caller's argument and not $USAGE_TTL, because the two
 # questions this cache answers take different ones: a measurement asks for a
@@ -1776,17 +1792,38 @@ prune_usage_cache() {
 # declines a figure it could refresh, not the figure that stands in for one the
 # endpoint refused.
 read_usage_cache() { # HARNESS DIR NOW MAX_AGE_S
-	local file
+	local file cached usage buckets expired
 	file="$(usage_cache_file "$1" "$2")" || return 1
 	[[ -f "$file" ]] || return 1
 	usage_cache_permitted "$file" "$1" || return 1
-	jq -ce --arg h "$1" --arg d "$2" --argjson now "$3" --argjson max "${4:-null}" '
+	cached="$(jq -ce --arg h "$1" --arg d "$2" --argjson now "$3" --argjson max "${4:-null}" '
 		(.usage_fetched_at // .fetched_at) as $at
 		| select(.harness == $h and .config_dir == $d
 		       and ($at | type) == "number" and (.usage | type) == "object")
 		| ($now - $at) as $age
 		| select($age >= 0 and ($max == null or $age < $max))
-		| {fetched_at: $at, age: $age, usage: .usage, prior: (.prior // null), sample_claims: (.sample_claims // 1)}' "$file" 2>/dev/null
+		| {fetched_at: $at, age: $age, usage: .usage, prior: (.prior // null), sample_claims: (.sample_claims // 1)}' "$file" 2>/dev/null)" || return 1
+	# The cache stores endpoint bodies and provider rows, so the same parsers
+	# that measure them expose every window, including a non-binding model.
+	if [[ "$1" == host-accounts ]]; then
+		usage="$(jq -r '.usage.rows // empty' <<<"$cached")" || return 1
+		buckets="$(host_account_rows "$usage" all buckets)" || return 1
+	else
+		usage="$(jq -c '.usage' <<<"$cached")" || return 1
+		buckets="$(parse_usage_body "$1" unrounded <<<"$usage")" || return 1
+	fi
+	expired="$(jq -sr --argjson now "$3" "$LANE_MODEL_JQ"'
+		[.[] | utc_resets
+		 | shared_bindings + (.model_buckets // [])
+		 | .[] | select((.pct | type) == "number" and .pct > 0)
+		 | (.resets_at | reset_epoch) as $reset
+		 | select($reset != null and $reset <= $now) | .resets_at]
+		| first // empty' <<<"$buckets")" || return 1
+	if [[ -n "$expired" ]]; then
+		message usage-cache-reset "$2" "$expired" >&2
+		return 1
+	fi
+	printf '%s\n' "$cached"
 }
 
 # The age a cached figure is served within: the TTL, or the caller's own pass
@@ -1917,8 +1954,9 @@ usage_refusal_window() { # RETRY_AFTER
 # ── Host-wide usage refresh lock ─────────────────────────────────────────────
 #
 # One host-wide lock over each lane's REFRESH, so N callers times M lanes is
-# one request per lane per window instead of one per caller. The kendex watch,
-# the fleet watch, each `oversee-succeed --check-marks` and each `pick` sweep
+# one request per lane per age window, plus reset refreshes, instead of one per
+# caller. The kendex watch, the fleet watch, each
+# `oversee-succeed --check-marks` and each `pick` sweep
 # the same accounts, and nothing else serializes them. measure_lane takes it
 # only for a lane its own record read could not answer, and refresh_lane_usage
 # reads the record again inside it, so the second caller through takes the
@@ -2525,7 +2563,7 @@ host_account_records() { # HOST HARNESS [READINGS] — one lane record per accou
 # policy that does not retire the account, since the record it sits in is
 # stamped with every setting the retirement was matched through, the alias
 # map included, and the day, and is a miss under any other.
-host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
+host_account_rows() { # ROWS HARNESS [READINGS|CACHE|BUCKETS]
 	local rows="$1" want="$2" mode="${3:-}" line field key value bad retire said
 	local account harness status detail s_pct w_pct m_pct mo_pct m_label s_reset w_reset m_reset mo_reset
 	local buckets
@@ -2581,7 +2619,7 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 		[[ "$want" == all || "$harness" == "$want" ]] || continue
 		# The cache holds the whole answer, Pi rows included, for every harness
 		# a later read asks for.
-		[[ "$want:$harness" != all:pi || "$mode" == cache ]] || continue
+		[[ "$want:$harness" != all:pi || "$mode" == cache || "$mode" == buckets ]] || continue
 		[[ "$mode" != readings || -n "$said" ]] || continue
 		# The same two settings that remove a local lane remove a hosted row, and
 		# for the same reason: they are the operator saying the account is not
@@ -2617,6 +2655,10 @@ host_account_rows() { # ROWS HARNESS [READINGS|CACHE]
 			message host-account-invalid "$account" buckets >&2
 			continue
 		}
+		if [[ "$mode" == buckets ]]; then
+			printf '%s\n' "$buckets"
+			continue
+		fi
 		emit_lane "$(lane_alias_for "$account")" "$harness" "$account" "$status" "$detail" "" "$buckets" null false host
 	done <<<"$rows"
 }
@@ -2677,7 +2719,8 @@ host_accounts_answer() { # HOST — the provider's rows on stdout, its status ba
 	# verb that hangs would hold a launch open with nothing on stderr. Refused
 	# instead, as the verb failing, which every caller already reads as a host it
 	# could not ask. A cached read keeps the unbounded call: its cost is one per
-	# TTL window, whether a listing or a pick makes it.
+	# TTL window unless a consumed bucket reset requires an earlier refresh,
+	# whether a listing or a pick makes it.
 	#
 	# lane-host waits ORCH_LANE_HOST_SHORT_BUSY_WAIT_SECS for an accounts slot before it
 	# refuses as lane-host-busy, and a bound that ends first cuts that wait off
@@ -3481,7 +3524,7 @@ CLAUDE_TOKEN_UA=""
 ACCOUNTS_TIMEOUT_S="${ORCH_LANE_HOST_ACCOUNTS_TIMEOUT_S:-10}"
 # `timeout`, or the coreutils spelling a Homebrew install carries, empty where
 # neither is installed. Feature-detected: without it the call is unbounded, and
-# the cache below still holds the cost to one call per window.
+# the cache below holds the cost to one call per age window, plus reset refreshes.
 ACCOUNTS_TIMEOUT_CMD=""
 for _accounts_timeout in timeout gtimeout; do
 	if command -v "$_accounts_timeout" >/dev/null 2>&1; then

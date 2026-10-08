@@ -3,9 +3,9 @@
 # name: task-completed-check
 # event: TaskCompleted
 # matcher:
-# description: Before a task is marked complete, runs `cargo clippy --workspace --all-targets -- -D warnings` against the repository's Cargo.toml, or the nearest one above a changed file when the root has none, whenever a Rust file changed in the working tree, the index or as an untracked file, and refuses the completion naming the first error lines, or the output tail when there are none. Rust only. Not run on pi: the pi-hooks carrier runs its own end-of-turn clippy check, and a second run is left out. Not run on codex: it has no TaskCompleted event (Codex hooks reference, CLI 0.160.0). Not run on gemini: it has no TaskCompleted event. Not run on copilot: it has no TaskCompleted event (Copilot hooks reference, CLI 1.0.91). Not run on antigravity: it has no TaskCompleted event.
+# description: Before a task is marked complete, runs `cargo clippy --all-targets` once for the workspace members that own the changed Rust files and every member depending on one of them, however indirectly, through a path dependency whose directory is that member's, `-p` per member as the one `cargo metadata --no-deps` read names them, against the repository's Cargo.toml, or the nearest one above a changed file when the root has none, whenever a Rust file changed in the working tree, the index or as an untracked file; a moved file counts at both its old and its new path. A failing clippy, a compile error or a deny-by-default lint, refuses the completion naming the first error lines, or the output tail when there are none; warnings complete the task and are shown as advice under a `warnings=<count>` notice. A changed Rust file belongs to every member under the directory of one of whose target root files it lies, however deep another member's root sits, or whose build script it is; any other changed Rust file, a root package's own directory included, lints the whole workspace, since any member may compile it in through `#[path]` or `include!`. Rust only. Not run on pi: the pi-hooks carrier runs its own end-of-turn clippy check, and a second run is left out. Not run on codex: it has no TaskCompleted event (Codex hooks reference, CLI 0.160.0). Not run on gemini: it has no TaskCompleted event. Not run on copilot: it has no TaskCompleted event (Copilot hooks reference, CLI 1.0.91). Not run on antigravity: it has no TaskCompleted event.
 # summary: Runs clippy before a task is marked complete whenever Rust files changed, and refuses the completion with the first errors it found.
-# safety: Refuses on any clippy failure and on a git that cannot list the changed set. Claude Code does not block on a hook that outruns its budget, so the budget is that harness's own default for a command hook; a cold build of a large workspace that outruns it completes the task unchecked, and a warm target directory is what keeps this gate closed. Every refusal opens with `task-completed-check: <key>=<value>`; what a command this hook runs writes is captured at the site and replayed under that line, so nothing precedes the key.
+# safety: Refuses on a clippy that exits nonzero and on a `cargo metadata` read that fails, both a defect in the change. A host that cannot run the check is not the committer's to fix and is never read as a pass: a git that cannot list the changed set, or a missing cargo or jq, completes the task with one `git=<subcommand>` or `missing-tools=<list>` notice saying the change was not checked. Claude Code does not block on a hook that outruns its budget, so the budget is that harness's own default for a command hook; a cold build that outruns it completes the task unchecked, and a warm target directory is what keeps this gate closed. Every refusal and notice opens with `task-completed-check: <key>=<value>`; what a command this hook runs writes is captured at the site and replayed under that line, so nothing precedes the key.
 # timeout: 600
 # harnesses: [claude, opencode, cursor]
 # ---
@@ -15,25 +15,36 @@ set -euo pipefail
 # Consume stdin
 cat > /dev/null
 
-# The clippy lines the refusal quotes, empty until there are any.
+# The clippy lines a refusal or the warnings notice quotes, empty until there
+# are any.
 ISSUES=""
 # Every line this hook writes, and the only place its text lives. The first
 # line is the contract a reader parses, `task-completed-check: <key>=<value>`:
 # a stable key for the condition and the value acted on — the git subcommand
-# that could not answer, or the status clippy left. The English explanation and
-# the diagnostics follow it.
+# that could not answer, the tools missing, the status clippy left, or the
+# warnings it printed. The English explanation and the diagnostics follow it.
 # The keyed line stands first, at position 1. What a command this hook runs
 # wrote is captured where the hook reads it and passed here as the cause, so
 # it is replayed under the key rather than ahead of it.
-refuse() { # KEY VALUE [DETAIL]
+message() { # KEY VALUE [DETAIL]
   {
     printf 'task-completed-check: %s=%s\n' "$1" "$2"
     case "$1" in
       git)
-        printf 'git %s failed, so what changed is unknown:\n' "$2"
+        printf 'git %s failed, so what changed is unknown; clippy did not run and the change is unchecked:\n' "$2"
+        ;;
+      missing-tools)
+        printf '%s not on PATH; clippy did not run and the change is unchecked.\n' "$2"
+        ;;
+      metadata)
+        echo "cargo metadata failed, so the crates to lint are unknown — fix the manifest before completing the task:"
         ;;
       clippy)
         echo "Clippy failed — fix before completing task:"
+        printf '%s\n' "$ISSUES"
+        ;;
+      warnings)
+        echo "Clippy passed with warnings; worth fixing:"
         printf '%s\n' "$ISSUES"
         ;;
     esac
@@ -41,16 +52,27 @@ refuse() { # KEY VALUE [DETAIL]
     # replayed here: under the keyed line, never ahead of it.
     [ -z "${3:-}" ] || printf '%s\n' "$3"
   } >&2
+}
+
+refuse() { # KEY VALUE [DETAIL]
+  message "$@"
   exit 2
 }
 
-git_failed() { # SUBCOMMAND OUTPUT — an unreadable changed set is not an empty one
-  refuse git "$1" "$2"
+# A host that cannot run the check is not the committer's to fix, so it does
+# not hold the task (hooks/AGENTS.md); it is reported, never passed silently.
+unchecked() { # KEY VALUE [DETAIL]
+  message "$@"
+  exit 0
 }
 
-# A git that cannot answer blocks, with no reading of the failure that means
-# "nothing to gate": rev-parse exits 128 outside a repository and inside one
-# whose metadata it cannot read, and the hook has no way to tell which.
+git_failed() { # SUBCOMMAND OUTPUT — an unreadable changed set is not an empty one
+  unchecked git "$1" "$2"
+}
+
+# rev-parse exits 128 outside a repository and inside one whose metadata it
+# cannot read, and the hook has no way to tell which, so neither reads as
+# "nothing changed".
 REPO_ROOT=$(git rev-parse --show-toplevel 2>&1) || git_failed 'rev-parse' "$REPO_ROOT"
 
 # Every git read that yields paths goes through here, one path per line in
@@ -75,10 +97,12 @@ git_paths() { # LABEL ARGS... — sets PATHS; LABEL is the git= value on failure
 
 # What counts as changed: the worktree, the index, and untracked non-ignored
 # paths. Without that last set a task whose only work is an untracked file
-# presents an empty changed set and skips the gate entirely.
-git_paths 'diff' diff --name-only -z
+# presents an empty changed set and skips the gate entirely. Rename detection
+# would list only a move's destination, and the crate the file left can break
+# too, so both diffs list the old path beside the new.
+git_paths 'diff' diff --no-renames --name-only -z
 CHANGED=$PATHS
-git_paths 'diff --cached' diff --cached --name-only -z
+git_paths 'diff --cached' diff --cached --no-renames --name-only -z
 STAGED=$PATHS
 git_paths 'ls-files' ls-files --others --exclude-standard --full-name -z -- :/
 UNTRACKED=$PATHS
@@ -92,44 +116,185 @@ fi
 # `head -1` exit at their first match, and under pipefail the SIGPIPE that
 # kills the producer becomes the pipeline's status — 141, read as no match.
 RUST_CHANGED=$(printf '%s\n' "$ALL_CHANGED" | sed -n '/\.rs$/p')
-if [ -n "$RUST_CHANGED" ]; then
-  # Locate Cargo.toml so the hook works when the manifest is nested
-  # (kendex's own `cli/Cargo.toml` is the canonical case) and when the
-  # hook is invoked from a subdirectory. Earlier versions ran `cargo
-  # clippy` from cwd unconditionally and surfaced "could not find
-  # Cargo.toml" as a clippy error.
-  MANIFEST_ARGS=()
-  if [ ! -f "$REPO_ROOT/Cargo.toml" ]; then
-    MANIFEST=$(printf '%s\n' "$RUST_CHANGED" | while IFS= read -r path; do
-      dir=$(dirname "$path")
-      while [ -n "$dir" ] && [ "$dir" != "." ] && [ "$dir" != "/" ]; do
-        if [ -f "$REPO_ROOT/$dir/Cargo.toml" ]; then
-          echo "$REPO_ROOT/$dir/Cargo.toml"
-          break
-        fi
-        dir=$(dirname "$dir")
-      done
-    done | sed -n 1p)
-    if [ -n "$MANIFEST" ]; then
-      MANIFEST_ARGS=(--manifest-path "$MANIFEST")
-    fi
-  fi
+[ -n "$RUST_CHANGED" ] || exit 0
 
-  # A repository whose root holds Cargo.toml leaves MANIFEST_ARGS empty, and
-  # bash 3.2 under `set -u` reads an empty array as an unbound variable.
-  # Hence the guarded expansion.
-  CLIPPY_STATUS=0
-  OUTPUT=$(cargo clippy ${MANIFEST_ARGS[@]+"${MANIFEST_ARGS[@]}"} --workspace --all-targets -- -D warnings 2>&1) ||
-    CLIPPY_STATUS=$?
-  if [ "$CLIPPY_STATUS" -ne 0 ]; then
-    # The exit status is the verdict, and it is what the first line carries: a
-    # missing cargo and a lint failure leave different ones. Diagnostic lines
-    # are only how the failure is reported, so a run that produced none — a
-    # missing cargo, a killed build — falls back to the tail of what it printed.
-    ISSUES=$(printf '%s\n' "$OUTPUT" | grep -E '^error' | head -15 || true)
-    [ -n "$ISSUES" ] || ISSUES=$(printf '%s\n' "$OUTPUT" | tail -15)
-    refuse clippy "$CLIPPY_STATUS"
+MISSING=""
+for tool in cargo jq; do
+  command -v "$tool" >/dev/null 2>&1 || MISSING="$MISSING,$tool"
+done
+[ -z "$MISSING" ] || unchecked missing-tools "${MISSING#,}"
+
+# Locate Cargo.toml so the hook works when the manifest is nested
+# (kendex's own `cli/Cargo.toml` is the canonical case) and when the
+# hook is invoked from a subdirectory. Earlier versions ran `cargo
+# clippy` from cwd unconditionally and surfaced "could not find
+# Cargo.toml" as a clippy error.
+MANIFEST_ARGS=()
+if [ ! -f "$REPO_ROOT/Cargo.toml" ]; then
+  # `sed -n 1p` reads to the end, so no writer dies of SIGPIPE.
+  if MANIFEST=$(printf '%s\n' "$RUST_CHANGED" | while IFS= read -r path; do
+    dir=$(dirname "$path")
+    while [ -n "$dir" ] && [ "$dir" != "." ] && [ "$dir" != "/" ]; do
+      if [ -f "$REPO_ROOT/$dir/Cargo.toml" ]; then
+        echo "$REPO_ROOT/$dir/Cargo.toml"
+        break
+      fi
+      dir=$(dirname "$dir")
+    done
+  done | sed -n 1p) && [ -n "$MANIFEST" ]; then
+    MANIFEST_ARGS=(--manifest-path "$MANIFEST")
   fi
+fi
+
+# The workspace, read once, one row per fact:
+#   P <name> <directory>  a member's package directory
+#   S <name> <directory>  the directory holding one of its targets' root file
+#   F <name> <file>       its build script, a lone file at the package root
+#   D <name> <directory>  a path dependency it declares; a dependency with no
+#                         source is one, the only kind a member can be
+# Only stdout is JSON: a read that succeeds may still warn on stderr, so stderr
+# is captured apart and replayed under the key only when the read fails.
+# On Windows cargo writes native `C:\...` paths, and `@tsv` would double each
+# backslash into a path no `cd` resolves, so separators become `/` first, a
+# form the Windows bash ports `cd` into as well.
+# A repository whose root holds Cargo.toml leaves MANIFEST_ARGS empty, and
+# bash 3.2 under `set -u` reads an empty array as an unbound variable.
+# Hence the guarded expansion.
+WORKSPACE=$(
+  {
+    cause=$( { cargo metadata ${MANIFEST_ARGS[@]+"${MANIFEST_ARGS[@]}"} --no-deps --format-version 1 |
+      jq -r 'def slashed: gsub("\\\\"; "/"); def parent: sub("/[^/]*$"; "");
+        .packages[] | .name as $n |
+        (["P", $n, (.manifest_path | slashed | parent)] | @tsv),
+        ((.targets // [])[] | (.src_path | slashed) as $src |
+          if (.kind | index("custom-build")) then ["F", $n, $src] else ["S", $n, ($src | parent)] end | @tsv),
+        ((.dependencies // [])[] | select(.source == null and .path != null) | ["D", $n, (.path | slashed)] | @tsv)' >&3; } 2>&1) || {
+      printf '%s\n' "$cause"
+      exit 1
+    }
+  } 3>&1
+) || refuse metadata failed "$WORKSPACE"
+
+# Paths are compared physically, since cargo and git may spell the same one
+# through different links. A source root is `<name>\t<path>\t<S|F>`; an edge
+# is `<dependent>\t<member it depends on>`, kept only where the dependency's
+# directory is a member's package directory, so a path crate outside the
+# workspace that shares a member's name is no edge.
+REPO_REAL=$(cd "$REPO_ROOT" && pwd -P)
+TAB=$(printf '\t')
+PACKAGES=""
+ROOTS=""
+while IFS="$TAB" read -r kind name path; do
+  case "$kind" in
+    P | S)
+      real=$(cd "$path" 2>/dev/null && pwd -P) || continue
+      ;;
+    F)
+      real=$(cd "${path%/*}" 2>/dev/null && pwd -P) || continue
+      real="$real/${path##*/}"
+      ;;
+    *) continue ;;
+  esac
+  if [ "$kind" = P ]; then
+    PACKAGES="$PACKAGES$name$TAB$real
+"
+  else
+    ROOTS="$ROOTS$name$TAB$real$TAB$kind
+"
+  fi
+done <<<"$WORKSPACE"
+EDGES=""
+while IFS="$TAB" read -r kind name dir; do
+  [ "$kind" = D ] || continue
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || continue
+  while IFS="$TAB" read -r member member_real; do
+    [ "$member_real" != "$real" ] || EDGES="$EDGES$name$TAB$member
+"
+  done <<<"$PACKAGES"
+done <<<"$WORKSPACE"
+
+# A member's module tree reaches anything under the directory of one of its
+# targets' root files, so a changed Rust file belongs to every member with
+# such a directory above it, however deep another member's root lies, and to
+# the member whose build script it is. A package directory alone proves
+# nothing: a workspace root that is also a package holds every path in the
+# repository. Any other file can be compiled into any member through
+# `#[path]` or `include!`, and which ones only a build knows, so it lints the
+# whole workspace. The selected members are space-delimited with a space at
+# each end so a lookup is one pattern match.
+SELECTED=" "
+WHOLE=""
+while IFS= read -r path; do
+  abs="$REPO_REAL/$path"
+  owners=""
+  while IFS="$TAB" read -r name real kind; do
+    [ -n "$real" ] || continue
+    if [ "$kind" = F ]; then
+      [ "$abs" = "$real" ] || continue
+    elif [ "${abs#"$real"/}" = "$abs" ]; then
+      continue
+    fi
+    owners="$owners $name"
+  done <<<"$ROOTS"
+  [ -n "$owners" ] || WHOLE=1
+  for name in $owners; do
+    case "$SELECTED" in
+      *" $name "*) ;;
+      *) SELECTED="$SELECTED$name " ;;
+    esac
+  done
+done <<<"$RUST_CHANGED"
+
+# A change can break a member that depends on the one it touched, which `-p`
+# alone would not build, so every member depending on a selected one, however
+# indirectly, is selected too.
+GREW=1
+while [ "$GREW" = 1 ]; do
+  GREW=0
+  while IFS="$TAB" read -r name dep; do
+    [ -n "$name" ] || continue
+    case "$SELECTED" in *" $name "*) continue ;; esac
+    case "$SELECTED" in
+      *" $dep "*)
+        SELECTED="$SELECTED$name "
+        GREW=1
+        ;;
+    esac
+  done <<<"$EDGES"
+done
+
+PACKAGE_ARGS=()
+if [ -n "$WHOLE" ]; then
+  PACKAGE_ARGS=(--workspace)
+else
+  for name in $SELECTED; do
+    PACKAGE_ARGS+=(-p "$name")
+  done
+fi
+
+# Errors refuse; warnings are advice, so clippy runs without `-D warnings` and
+# its exit status is the verdict: nonzero only for a compile error or a
+# deny-by-default lint, or a run that died, which the committer can fix.
+CLIPPY_STATUS=0
+# Diagnostics are classified by the word that opens their line, which a
+# colour forced through CARGO_TERM_COLOR or `[term] color` would push behind
+# an escape; the flag outranks both.
+OUTPUT=$(cargo clippy ${MANIFEST_ARGS[@]+"${MANIFEST_ARGS[@]}"} "${PACKAGE_ARGS[@]}" --all-targets --color never 2>&1) ||
+  CLIPPY_STATUS=$?
+if [ "$CLIPPY_STATUS" -ne 0 ]; then
+  # Diagnostic lines are only how the failure is reported, so a run that
+  # produced none — a killed build — falls back to the tail of what it printed.
+  if ! ISSUES=$(sed -n '/^error/p' <<<"$OUTPUT" | sed -n '1,15p') || [ -z "$ISSUES" ]; then
+    ISSUES=$(tail -15 <<<"$OUTPUT")
+  fi
+  refuse clippy "$CLIPPY_STATUS"
+fi
+
+# cargo's per-crate tally (`warning: ``x`` (lib) generated 2 warnings`) is not a
+# warning of its own, so it is left out of the count.
+if WARNINGS=$(sed -n '/^warning/{/generated [0-9]* warning/!p;}' <<<"$OUTPUT") && [ -n "$WARNINGS" ]; then
+  ISSUES=$(sed -n '1,15p' <<<"$WARNINGS")
+  message warnings "$(wc -l <<<"$WARNINGS" | tr -d ' ')"
 fi
 
 exit 0

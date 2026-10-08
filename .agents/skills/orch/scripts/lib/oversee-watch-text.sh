@@ -334,7 +334,7 @@ The long pass's events, checked and reported in this order:
                              digest. Reported once
                              and again every ORCH_OVERSEER_MARK_REPEAT passes
                              while it stands; a change starts a fresh window
-  EVENT lane-long <item> age=<secs> stage=<step>
+  EVENT lane-long <item> age=<secs> review_rounds=<n> repeated_class_rounds=<n> stage=<step>
                              a running or parked --state record is
                              ORCH_WATCH_LANE_AGE_SECS past its launched_at,
                              which --relaunch and handoffs keep and a fresh
@@ -343,6 +343,14 @@ The long pass's events, checked and reported in this order:
                              failed, or `none`. Reported once per age interval
                              of ORCH_WATCH_LANE_AGE_SECS, including after a
                              relaunch; a late pass reports the current interval
+                             review_rounds adds the first internal panel,
+                             re-review cycles and comment-review iterations.
+                             repeated_class_rounds counts later distinct patch
+                             commits repeating a recorded cause, once per commit.
+                             With no recorded cause that count is `-`.
+                             Both counts are `-` for absent or unread state,
+                             a file-less lane, or a parked lane whose stopped
+                             disk is never read
   EVENT window-gone <lane>   the tmux window no longer exists. Nothing follows
                              the line: the remedy is one relaunch, which
                              reads the item's worktree and PR, not a screen
@@ -457,6 +465,18 @@ The long pass's events, checked and reported in this order:
                              settings. Reported on every long pass while it
                              stays due, so it stops once a report is written;
                              read only with --state
+  EVENT verifying-deadline <item> box=<N> deadline=<UTC>
+                             an open post-merge box reached its UTC deadline.
+                             Read its evidence, tick it and complete the same
+                             item, or comment failure and move it In Progress.
+                             A deadline alone does not prove failure. Emitted
+                             once per standing item/overdue-box set; ticking,
+                             leaving Verifying or changing deadlines resets it.
+  verifying <item> box=<N> deadline=<UTC> reading=<JSON> where=<JSON> why=<JSON>
+                             every open post-merge box from the long pass's
+                             tracker read, before active/queued lane filtering.
+                             Printed with the event block or heartbeat. An item
+                             with none prints verifying <item> boxes=0.
   EVENT heartbeat            --max-loops long passes with no event, after
                              the repeated parked-merged lines above. A line
                              `  failing <item> <key>` follows for every lane
@@ -482,7 +502,8 @@ The long pass's events, checked and reported in this order:
                              unjudged harness=<h>>` per item the tracker holds
                              as work the fleet owes that launch_queue lacks:
                              with LINEAR_TEAM, the team's In Progress and In
-                             Review items, one live read, a priority of 0 (none)
+                             Review items, from the long pass's one live read
+                             that also supplies Verifying boxes. A priority of 0 (none)
                              printed `-`; with none, every open PR of the first
                              --repo on an issue-N branch, from a listing of its
                              own that exits 2 as owed-list-truncated at 1000.
@@ -964,7 +985,7 @@ Environment:
                               measures one
   ORCH_WATCH_LANE_AGE_SECS    seconds after a record's launched_at a running
                               or parked lane is reported lane-long, a positive
-                              whole number, default 14400
+                              whole number, default 12600
 USAGE
 }
 # stderr messages start `oversee-watch: REASON field=value ...`. Backslash,
@@ -1051,6 +1072,8 @@ ow_message() { # REASON FIELD=VALUE...
     time-failed) text='The current UTC time could not be read.' ;;
     tracker-list-failed) text='The tracker list command failed.' ;;
     tracker-list-invalid) text='The tracker list output could not be parsed.' ;;
+    missing-linear) text='The tracker path requires the linear skill checklist library beside orch.' ;;
+    verifying-invalid) text='The Verifying item has invalid post-merge metadata or an open branch-provable box. Correct its checklist before verification.' ;;
     owed-roster-invalid) text='The account listing read for the owed items could not be put to them, so the heartbeat names none.' ;;
     owed-accounts-unread) text='lanes list failed under this host, so the owed items on it read unjudged this heartbeat. Its own words follow.' ;;
     merged-search-truncated) text='The merged pull requests naming the item in their title or body, since --since, reached the search limit, so the item'"'"'s own pull request may be past it and its merge unreported. No merged event is judged from a partial list.' ;;
@@ -1067,6 +1090,7 @@ ow_message() { # REASON FIELD=VALUE...
     hosted-duplicate) text='Name each hosted item once.' ;;
     host-capabilities-unread) text='lane-host could not declare the capability line of a host a lane record names, or declared a value this watch has no arm for, so nothing says where that lane is read or how it is judged; lane-host'"'"'s own words are above this line. Nothing of the fleet is carried.' ;;
     lane-age-secs-invalid) text='ORCH_WATCH_LANE_AGE_SECS takes a positive whole number of seconds, with no leading zero.' ;;
+    lane-long-rounds-unread) text='The lane workflow state or its round counts could not be read. The lane-long event carries unavailable counts.' ;;
     lane-stall-secs-invalid) text='ORCH_WATCH_LANE_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
     lane-stall-unread) text='The digest of a lane pull request body could not be taken, so whether the lane moved is unknown. The watch stops rather than report a stall it did not measure.' ;;
     pr-read-failed) text='The open pull request on the item branch could not be listed, so this pass settles nothing about a lane whose kind writes no file this watch reads: no start-stalled or lane-stalled goes out for it and its rows stand. gh'"'"'s own words follow.' ;;

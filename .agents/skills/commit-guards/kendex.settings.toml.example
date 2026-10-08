@@ -4,9 +4,9 @@
 
 # Which checks run, separated by spaces. The value shown here is the default
 # set; delete a name to turn that one off. A project can add the optional
-# prose and comments checks by name. Commit-msg never runs in this batch. What
-# each name refuses is in the skill's CHECKS.md.
-COMMIT_GUARDS_CHECKS = "todo-ban byte-ceiling suppression-ban conflict-markers changelog-entries md-format md-refs py-names secrets"
+# byte-ceiling, prose and comments checks by name. Commit-msg never runs in
+# this batch. What each name refuses is in the skill's CHECKS.md.
+COMMIT_GUARDS_CHECKS = "todo-ban suppression-ban conflict-markers changelog-entries md-format md-refs py-names secrets"
 
 # Kilobytes one tracked binary file may reach before a commit carrying it
 # is refused. An oversized binary file may hold or shrink, but never grow.
@@ -60,9 +60,15 @@ COMMIT_GUARDS_MD_REFS_PATHS = "AGENTS.md */AGENTS.md CLAUDE.md */CLAUDE.md SKILL
 
 # The source files whose comments, and a TOML file's string values too, are
 # checked for those same document links, as path patterns separated by
-# spaces. Unset uses the file extensions the skill ships; an explicitly
-# empty value is refused, so name a path or drop the check.
+# spaces. Unset uses the file extensions the skill ships. An empty combined
+# base and EXTRA list is refused, so name a path or drop the check.
 # COMMIT_GUARDS_MD_REFS_SOURCE_PATHS = "*.rs *.sh"
+
+# Path patterns added to either list above, the shipped one or the value
+# that replaces it, so adding a file restates none of the rest. Empty adds
+# nothing.
+# COMMIT_GUARDS_MD_REFS_PATHS_EXTRA = "docs/guides/*.md"
+# COMMIT_GUARDS_MD_REFS_SOURCE_PATHS_EXTRA = "bin/fleet"
 
 # The source files the comments check reads, as path patterns separated by
 # spaces. A value replaces the list of file extensions the skill ships; add

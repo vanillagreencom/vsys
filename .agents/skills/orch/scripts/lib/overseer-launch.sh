@@ -238,7 +238,7 @@ ol_lanes() { # ARGS...
   ORCH_LANE_HOST=local "$SCRIPT_DIR/lanes" "$@"
 }
 
-# ol_pick_record HARNESS MODEL TRIGGER [EXCLUDE_DIR] — the one `lanes pick
+# ol_pick_record HARNESS MODEL TRIGGER [EXCLUDE_DIR] [LANE]: the one `lanes pick
 # --json` over HARNESS at TRIGGER, its record into OL_PICK_RECORD on every
 # exit, since exit 3 prints its counts too, and `lanes pick`'s own status
 # returned. The pick ol_pick_lane makes and every count a caller holds a
@@ -247,18 +247,19 @@ ol_lanes() { # ARGS...
 # account they spend (ol_account); a launch
 # spending none `lanes` measures, or one nothing can name, returns 4 with no
 # record and asks nothing.
-# It passes --for-overseer: the pick seats an overseer, so the accounts
-# fleets record for their overseers, which a lane pick omits, stay candidates.
+# It passes --for-overseer for a fleet sweep, so recorded overseer accounts
+# stay candidates. LANE asks the same judge about one account instead.
 OL_PICK_RECORD=""
-ol_pick_record() { # HARNESS MODEL TRIGGER [EXCLUDE_DIR]
-  local floor=() exclude=() rc=0 harness model LC_ALL=C
+ol_pick_record() { # HARNESS MODEL TRIGGER [EXCLUDE_DIR] [LANE]
+  local floor=() exclude=() scope=(--for-overseer) rc=0 harness model LC_ALL=C
   OL_PICK_RECORD=""
   ol_account "$1" "$2"
   harness="$OL_ACCOUNT_HARNESS" model="$OL_ACCOUNT_MODEL"
   ol_account_measured "$harness" || return 4
   [[ -n "$(lane_context_mark_model "$harness" "$model")" ]] || floor=(--binding-floor)
   [[ -z "${4:-}" ]] || exclude=(--exclude-lane "$4")
-  OL_PICK_RECORD="$(ol_lanes pick --harness "$harness" --min-headroom-pct "$3" --for-overseer \
+  [[ -z "${5:-}" ]] || scope=(--lane "$5")
+  OL_PICK_RECORD="$(ol_lanes pick --harness "$harness" --min-headroom-pct "$3" "${scope[@]}" \
     ${floor[@]+"${floor[@]}"} ${exclude[@]+"${exclude[@]}"} ${model:+--model "$model"} --json 2>"$DEP_ERR")" || rc=$?
   return "$rc"
 }
@@ -352,6 +353,15 @@ ol_account_id() { # DIR
 #                           picked counted in, and that count stays at or
 #                           below the bound; a successor on no measured
 #                           account reads no count and settles nothing
+#   OL_WALK_KEEP_UNMEASURED the account harness of a caller account nothing
+#                           measured: an entry of the caller's harness that
+#                           spends an account of it, whose pick finds none
+#                           with room, keeps OL_WALK_CALLER_LANE only if the
+#                           policy still admits it and its current pick is
+#                           unmeasured. It keeps that account in place of
+#                           a skip, with OL_KEPT_UNMEASURED 1, since its
+#                           successor spends the account the caller already
+#                           spends
 #
 # Returns 0 with an entry chosen, 3 where none qualifies, the counts in
 # OL_WALKED_WALLED and OL_WALKED_UNMEASURED, and 1 with OL_REASON
@@ -360,12 +370,13 @@ ol_account_id() { # DIR
 OL_WALK_CALLER_HARNESS="" OL_WALK_CALLER_LANE="" OL_WALK_CALLER_MODEL="" OL_WALK_CALLER_EFFORT=""
 OL_WALK_CALLER_PICK_MODEL="" OL_WALK_CALLER_KEEP=0
 OL_WALK_SOURCE_HARNESS="" OL_WALK_SOURCE_FLAGS="" OL_WALK_SOURCE_ROWS=0 OL_WALK_REFUSE_ID="" OL_WALK_SUCCESSOR_BOUND=0
+OL_WALK_KEEP_UNMEASURED="" OL_KEPT_UNMEASURED=0
 OL_CHOSEN="" OL_HARNESS="" OL_MODEL="" OL_EFFORT="" OL_PICK_MODEL="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none
 OL_WALK_SKIPS=() OL_FIELDS=()
 ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
-  local trigger="$1" exclude="$2" entry permitted_entry rc count defaults default_entry deprecated_entry tab=$'\t'
+  local trigger="$1" exclude="$2" entry permitted_entry rc count defaults default_entry deprecated_entry kept tab=$'\t'
   shift 2
-  OL_CHOSEN="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none OL_WALK_SKIPS=() OL_FIELDS=()
+  OL_CHOSEN="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none OL_WALK_SKIPS=() OL_FIELDS=() OL_KEPT_UNMEASURED=0
   for entry in "$@"; do
     if [[ "$entry" == caller ]]; then
       OL_HARNESS="$OL_WALK_CALLER_HARNESS" OL_MODEL="$OL_WALK_CALLER_MODEL" OL_EFFORT="$OL_WALK_CALLER_EFFORT"
@@ -414,11 +425,32 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       fi
       ol_entry_permitted "$permitted_entry" || continue
     fi
-    rc=0
+    rc=0 kept=0
     ol_pick_lane "$OL_HARNESS" "$OL_PICK_MODEL" "$trigger" "$exclude" || rc=$?
     case "$rc" in
       0) ;;
-      3) continue ;;
+      3)
+        [[ -n "$OL_WALK_KEEP_UNMEASURED" && "$OL_HARNESS" == "$OL_WALK_CALLER_HARNESS" \
+          && "$OL_ACCOUNT_HARNESS" == "$OL_WALK_KEEP_UNMEASURED" ]] || continue
+        # A sweep can recover an earlier failed usage fetch. The named pick
+        # must still be unmeasured, and a retired account's unmeasured record
+        # is not admission: the account policy owns that separate question.
+        rc=0
+        ol_lanes check "$OL_WALK_CALLER_LANE" >/dev/null 2>"$DEP_ERR" || rc=$?
+        case "$rc" in
+          0) ;;
+          4) continue ;;
+          *) OL_REASON=lanes-failed OL_FIELDS=("entry=$entry" "exit=$rc" step=retained-policy); return 1 ;;
+        esac
+        rc=0
+        ol_pick_record "$OL_HARNESS" "$OL_PICK_MODEL" "$trigger" "" "$OL_WALK_CALLER_LANE" || rc=$?
+        case "$rc" in
+          5) ;;
+          0|3|4|7) continue ;;
+          *) OL_REASON=lanes-failed OL_FIELDS=("entry=$entry" "exit=$rc" step=retained-account); return 1 ;;
+        esac
+        OL_PICKED_DIR="$OL_WALK_CALLER_LANE" kept=1
+        ;;
       *) OL_REASON=lanes-failed OL_FIELDS=("entry=$entry" "exit=$rc"); return 1 ;;
     esac
     if [[ -n "$OL_WALK_REFUSE_ID" && "$(ol_account_id "$OL_PICKED_DIR")" == "$OL_WALK_REFUSE_ID" ]]; then
@@ -443,7 +475,7 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       esac
       if (( count > 0 && count + 1 <= OL_WALK_SUCCESSOR_BOUND )); then continue; fi
     fi
-    OL_LANE_DIR="$OL_PICKED_DIR" OL_CHOSEN="$entry"
+    OL_LANE_DIR="$OL_PICKED_DIR" OL_CHOSEN="$entry" OL_KEPT_UNMEASURED="$kept"
     return 0
   done
   return 3

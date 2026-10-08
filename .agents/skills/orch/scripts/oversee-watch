@@ -262,6 +262,7 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   usage-limit<TAB><lane><TAB><first-seen-epoch>|<pane key>|<reported event>|<reset key>
 #   model-capacity<TAB><lane><TAB><pane key>|<turn identity>|model-capacity
 #   lane-exited<TAB><lane><TAB><pane key>[|reported]
+#   terminal-close<TAB><item><TAB><terminal state>|<lane record JSON>
 #   lane-idle<TAB><lane><TAB><pane key>|<copilot note>|<screen cksum>[|reported]
 #   handoff<TAB><item><TAB><record checksum>
 #   lane-prepare<TAB><item><TAB><preparation start epoch>|<ready|failed|stuck>
@@ -276,7 +277,7 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   account<TAB><harness>|<through>|<config dir><TAB><status>|<verdict>|<binding_resets_at or ->|<status of the last unmeasured reading, or ->
 # And in the mail pass's file:
 #   lane-mail<TAB><item>[@clone]<TAB><to-overseer.jsonl lines already drained> <first id>
-#   directive<TAB><item>[@clone]<TAB><to-lane.cursor reported read> <last line reported unread> <first id>
+#   directive<TAB><item>[@clone]<TAB><to-lane.cursor reported read> <last line reported unread>[:<passes since unread reported>] <first id>
 #   clone-root<TAB><item><TAB><the hosted lane's clone, on its own host>
 #   lane-failed<TAB><item><TAB><the last lane-local failure the mail pass reported>
 #   long-pass<TAB>fleet<TAB><the epoch the last long pass started at>
@@ -443,7 +444,7 @@ LANE_STALL_SECS="${ORCH_WATCH_LANE_STALL_SECS:-3600}"
 [[ "$LANE_STALL_SECS" =~ ^[1-9][0-9]*$ ]] || die lane-stall-secs-invalid "" "value=$LANE_STALL_SECS"
 # Age threshold in seconds for lane-long on a running or parked lane.
 # Repeat schedule: oversee-watch --help, event lane-long.
-LANE_AGE_SECS="${ORCH_WATCH_LANE_AGE_SECS:-14400}"
+LANE_AGE_SECS="${ORCH_WATCH_LANE_AGE_SECS:-12600}"
 [[ "$LANE_AGE_SECS" =~ ^[1-9][0-9]*$ ]] || die lane-age-secs-invalid "" "value=$LANE_AGE_SECS"
 # The state's records the pane never judges and the start-stall check reads,
 # rebuilt by every fleet read: `<window>=<item>` for each Pi lane, judged from
@@ -520,10 +521,17 @@ check_repo_set() {
 # (worktree create's branch name); one branch per line, for the jq membership
 # test.
 check_item_set() {
-  local item entry hosted_item hosted_seen=""
+  local item entry hosted_item hosted_seen="" stopped=""
+  local merge_items=(${ITEMS[@]+"${ITEMS[@]}"} ${PARKED_ITEMS[@]+"${PARKED_ITEMS[@]}"})
+  if [[ -n "$FLEET_STATE" ]]; then
+    stopped="$(jq -r '(.lanes // [])[] | objects | select(.status == "stopped") | .item | strings' <<<"$FLEET_STATE")" \
+      || die state-invalid "" "path=$STATE_FILE"
+    while IFS= read -r item; do [[ -z "$item" ]] || merge_items+=("$item"); done <<<"$stopped"
+  fi
   ITEM_BRANCHES=""
   MERGED_ITEMS=()
-  for item in ${ITEMS[@]+"${ITEMS[@]}"} ${PARKED_ITEMS[@]+"${PARKED_ITEMS[@]}"}; do
+  for item in ${merge_items[@]+"${merge_items[@]}"}; do
+    item_in "$item" ${MERGED_ITEMS[@]+"${MERGED_ITEMS[@]}"} && continue
     [[ "$item" =~ ^[A-Za-z0-9._-]+$ ]] || die item-invalid "" "item=$item"
     ITEM_BRANCHES+="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"$'\n'
     MERGED_ITEMS+=("$item")
@@ -1070,10 +1078,12 @@ item_state_dir() { # ITEM
 # background, for tick_sleep's reason, and again after a TERM returns the wait
 # early. pass_stop spares its tree, read from CLOSE_PID_FILE.
 CLOSE_TERMED=""
-close_hosted_lane() { # ITEM
+CLOSE_RESULT=failed
+close_hosted_lane() { # ITEM [--if-terminal]
   local out line path="" rc=0 close_pid
+  CLOSE_RESULT=failed
   trap 'CLOSE_TERMED=1' TERM
-  "$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" "$1" > "$WORK_DIR/lane-close.out" 2>&1 &
+  "$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" "$@" > "$WORK_DIR/lane-close.out" 2>&1 &
   close_pid=$!
   printf '%s\n' "$close_pid" > "$CLOSE_PID_FILE"
   while :; do
@@ -1086,6 +1096,7 @@ close_hosted_lane() { # ITEM
   out="$(cat -- "$WORK_DIR/lane-close.out")"
   case "$rc" in
     0)
+      CLOSE_RESULT=closed
       echo "EVENT lane-closed $1"
       # A host that no longer held the item ran no archive pass, so lane-close
       # gives no archive verdict and its closed=absent line stands in its place.
@@ -1095,6 +1106,7 @@ close_hosted_lane() { # ITEM
         echo "kept=none"
       fi ;;
     3)
+      CLOSE_RESULT=refused
       # The provider's close-refused line names the refused checkout.
       while IFS= read -r line; do
         [[ "$line" == *"close-refused path="* ]] || continue
@@ -1104,11 +1116,106 @@ close_hosted_lane() { # ITEM
       echo "EVENT lane-close-refused $1"
       printf 'path=%s\n' "${path:-unknown}"
       [[ -z "$out" ]] || printf '%s\n' "$out" >&2 ;;
+    4)
+      # A provider can also return 4. Only the close verb's own keyed line
+      # says the item reopened after the probe.
+      if [[ "${2:-}" == --if-terminal ]] && grep -qxF "lane-close: item-open item=$1" <<<"$out"; then
+        CLOSE_RESULT=open
+        return 0
+      fi
+      ow_message lane-close-failed "item=$1" "exit=$rc" >&2
+      [[ -z "$out" ]] || printf '%s\n' "$out" >&2
+      return 1 ;;
     *)
       ow_message lane-close-failed "item=$1" "exit=$rc" >&2
       [[ -z "$out" ]] || printf '%s\n' "$out" >&2
       return 1 ;;
   esac
+}
+
+# Stopped and parked records have no pane or mailbox to watch. Read the close
+# verb's terminal judge on every fleet pass, and keep only provider refusals:
+# user-owned changes need an overseer's action, not another provider call.
+check_terminal_lanes() {
+  [[ -n "$STATE_FILE" ]] || return 0
+  local records record item terminal key prior refused rc merged merge_key cycle_pr recorded_merge merged_repo rows="${PW_SEEN[0]}" refreshed=false
+  local items=()
+  records="$(jq -cS '(.lanes // [])[] | objects | select(.status == "parked" or .status == "stopped")' <<<"$FLEET_STATE")" \
+    || die state-invalid "" "path=$STATE_FILE"
+  while IFS= read -r record; do
+    [[ -n "$record" ]] || continue
+    item="$(jq -er '.item | strings | select(length > 0)' <<<"$record")" \
+      || die state-invalid "" "path=$STATE_FILE" "field=item"
+    items+=("$item")
+    rc=0
+    terminal="$("$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" --terminal-state "$item" 2>"$WORK_DIR/terminal.err")" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      ow_message lane-close-failed "item=$item" "exit=$rc" >&2
+      cat -- "$WORK_DIR/terminal.err" >&2
+      PASS_FAILED=1
+      continue
+    fi
+    case "$terminal" in
+      open) rows="$(lane_row_clear terminal-close "$rows" "$item")"; continue ;;
+      completed|canceled) ;;
+      *) die state-invalid "$terminal" "item=$item" "field=terminal-state" ;;
+    esac
+    key="$terminal|$record"
+    prior="$(lane_row_get terminal-close "$rows" "$item")" \
+      || die state-read-failed "" "item=$item" "row=terminal-close"
+    refused=false
+    [[ "$prior" != "$key" ]] || refused=true
+    # The tracker can become terminal at merge while the sandbox is stopped.
+    # Preserve the merge record before close removes its lane-side state.
+    merged="$(lane_row_get merged "$rows" "$item")" \
+      || die state-read-failed "" "item=$item" "row=merged"
+    cycle_pr="$(jq -r '.cycle.pr // empty' <<<"$record")" \
+      || die state-invalid "" "path=$STATE_FILE" "field=cycle"
+    recorded_merge="$(jq -r 'if .parked.pr != null then "\(.parked.repo | ascii_downcase)#\(.parked.pr)" else "" end' <<<"$record")" \
+      || die state-invalid "" "path=$STATE_FILE" "field=parked"
+    merged_repo="$(jq -r '(.repo // "") | ascii_downcase' <<<"$record")" \
+      || die state-invalid "" "path=$STATE_FILE" "field=repo"
+    for merge_key in $merged; do
+      if [[ -n "$recorded_merge" ]]; then
+        [[ "$merge_key" == "$recorded_merge" ]] || continue
+      elif [[ -n "$merged_repo" && "${merge_key%#*}" != "$merged_repo" ]]; then
+        continue
+      fi
+      [[ "${merge_key##*#}" != "$cycle_pr" ]] || break
+      rc=0
+      "$SCRIPT_DIR/oversee-cycle" --state-dir "$FLEET_STATE_DIR" record \
+        --pr "${merge_key##*#}" --repo "${merge_key%#*}" "$item" || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        ow_message lane-close-failed "item=$item" "step=cycle" "exit=$rc" >&2
+      fi
+      # The recorder adds cycle to this same record. Keep that write in the
+      # refusal key so it does not cause a second provider call on restart.
+      record="$(jq -cS --arg item "$item" '.lanes[] | select(.item == $item)' "$STATE_FILE")" \
+        || die state-read-failed "" "path=$STATE_FILE" "item=$item"
+      key="$terminal|$record"
+      refreshed=true
+      break
+    done
+    # A provider refusal suppresses only close. Merge discovery and recorder
+    # recovery still run, and their cycle write keeps the refusal on restart.
+    if [[ "$refused" == true ]]; then
+      rows="$(lane_row_set terminal-close "$rows" "$item" "$key")"
+      continue
+    fi
+    if close_hosted_lane "$item" --if-terminal; then
+      if [[ "$CLOSE_RESULT" == refused ]]; then rows="$(lane_row_set terminal-close "$rows" "$item" "$key")"; fi
+      # A close may have rewritten the fleet. Read it before pane and merge
+      # checks, so they cannot report a closed record as still parked.
+      if [[ "$CLOSE_RESULT" != open ]]; then refreshed=true; PASS_EVENT=1; fi
+    else
+      PASS_FAILED=1
+    fi
+    lane_row_commit "$rows"
+    [[ -z "$CLOSE_TERMED" ]] || exit 143
+  done <<<"$records"
+  rows="$(lane_row_prune terminal-close "$rows" ${items[@]+"${items[@]}"})"
+  lane_row_commit "$rows"
+  [[ "$refreshed" == false ]] || fleet_merge quiet
 }
 
 command -v gh >/dev/null 2>&1 || die command-missing "" "command=gh"
@@ -1282,16 +1389,11 @@ MAIL_STATE_FILE="$(pw_state_file "${REPOS[0]}").mail"
 # delivered, so a merged item still in --item on a re-run is not news again,
 # while a further PR on the branch, in any repo, is. The rows are committed
 # once, after the lines are out.
-# A parked item's merge is handed to the overseer as parked-merged, in the
-# pass that reports it: the lane has no pane to exit and nothing wakes a
-# parked sandbox, and the record carries no launch flags, so the resume is the
-# overseer's relaunch, after which the lane runs its own post-merge. The hand
-# is owed to the pull request its park judged, in the repository it read it
-# in, and to no other pull request on the branch's name, which is reported as
-# any item's is and hands nothing. The record stays parked and nothing is
-# closed here: the relaunched lane's own completion is what closes it. The
-# merged row that holds the key is what parked_merged_owed repeats the hand
-# from at each heartbeat while the record still reads parked.
+# An open parked item needs its lane to finish post-merge work. Hand only
+# the pull request its park judged to the overseer's relaunch. A terminal
+# item needs no relaunch: check_terminal_lanes records its cycle and closes
+# it after this check commits the merge row. The heartbeat repeats the hand
+# while the open item's record still reads parked over that merge.
 # GitHub's search ceiling for one gh pr list; the key search refuses a page
 # that reaches it, since the item's own pull request may be past it.
 MERGED_SEARCH_PAGE=1000
@@ -1358,7 +1460,17 @@ check_merged() {
 # The parked-merged line, one spelling for the merged check's fresh merge and
 # the heartbeat's repeat.
 parked_merged_line() { # ITEM KEY
-  echo "EVENT parked-merged $1 pr=${2##*#} repo=${2%#*}"
+  local terminal rc=0
+  terminal="$("$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" --terminal-state "$1" 2>"$WORK_DIR/terminal.err")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    cat -- "$WORK_DIR/terminal.err" >&2
+    die lane-close-failed "" "item=$1" "exit=$rc"
+  fi
+  case "$terminal" in
+    completed|canceled) return 0 ;;
+    open) echo "EVENT parked-merged $1 pr=${2##*#} repo=${2%#*}" ;;
+    *) die state-invalid "$terminal" "item=$1" "field=terminal-state" ;;
+  esac
 }
 
 # The hand is level-triggered from the record: every record still reading
@@ -1798,7 +1910,7 @@ mail_read() { # ITEM LANE_MAIL_ARGS...
 # from the last full read stand.
 check_mail() { # [overseer]
   local item stored prior seen header count first line fields id kind options text rest root cursor from re by class
-  local envelopes receipts replaced hold lane_read to_first read_at unread_at at
+  local envelopes receipts replaced hold lane_read to_first read_at unread_at unread_passes repeat standing reported at
   local mail_items host_flag args state="$MAIL_SEEN"
   mail_items=()
   if [[ "${1:-}" != overseer ]]; then
@@ -1900,8 +2012,9 @@ check_mail() { # [overseer]
         || die mail-read-invalid "" "item=$item" "value=${header:-<empty>}"
       lane_read="${BASH_REMATCH[1]}"
       to_first="${BASH_REMATCH[2]}"
-      # `<read> <unread> <first>`: the cursor directive-read was last reported
-      # up to, the last line reported directive-unread, and the id to-lane.jsonl
+      # `<read> <unread>[:<passes>] <first>`: the cursor directive-read was
+      # last reported up to, the last line reported directive-unread with the
+      # passes since unread lines were last reported, and the id to-lane.jsonl
       # opened with. A lane with no row yet is taken as having read up to its
       # cursor, so a first pass does not replay every directive it ever read.
       # Only a mailbox opening with another envelope is a replacement, and
@@ -1912,12 +2025,16 @@ check_mail() { # [overseer]
         die state-read-failed "" "item=$item" "row=directive"
       fi
       read -r read_at unread_at seen <<<"$stored"
+      unread_passes=0
+      if [[ "$unread_at" == *:* ]]; then
+        unread_passes="${unread_at#*:}"; unread_at="${unread_at%%:*}"
+      fi
       if [[ "$lane_read" == missed ]]; then
         hold=item
-      elif ! [[ "$read_at" =~ ^[0-9]+$ && "$unread_at" =~ ^[0-9]+$ ]]; then
-        read_at="$lane_read"; unread_at=0
+      elif ! [[ "$read_at" =~ ^[0-9]+$ && "$unread_at" =~ ^[0-9]+$ && "$unread_passes" =~ ^[0-9]+$ ]]; then
+        read_at="$lane_read"; unread_at=0; unread_passes=0
       elif [[ -n "$to_first" && -n "$seen" && "$to_first" != "$seen" ]]; then
-        read_at=0; unread_at=0
+        read_at=0; unread_at=0; unread_passes=0
       elif [[ "$lane_read" -lt "$read_at" ]]; then
         hold=directives
       fi
@@ -1999,19 +2116,33 @@ check_mail() { # [overseer]
     [[ "$replaced" -eq 0 && "$count" -lt "$prior" ]] \
       || state="$(lane_row_set lane-mail "$state" "$cursor" "$count $first")"
     if [[ "$hold" == none ]]; then
+      # A directive reported unread and still unread is reported again every
+      # MARK_REPEAT full mail passes, the rhythm start-stalled keeps on long
+      # passes; one mailbox's standing lines share the count, which any unread
+      # line it reports starts over.
+      unread_passes=$((unread_passes + 1))
+      repeat=0
+      (( unread_passes < MARK_REPEAT )) || repeat=1
+      standing=0
+      reported=0
       while read -r line id at; do
         [[ -n "$line" ]] || continue
         if [[ "$line" -le "$lane_read" ]]; then
           [[ "$line" -gt "$read_at" ]] || continue
           echo "EVENT directive-read $item $id"
           PASS_EVENT=1
-        elif [[ "$line" -gt "$unread_at" && -n "$at" ]] && (( PASS_NOW - at >= UNREAD_SECS )); then
+        elif [[ -n "$at" ]] && (( PASS_NOW - at >= UNREAD_SECS )) \
+          && [[ "$line" -gt "$unread_at" || "$repeat" -eq 1 ]]; then
           echo "EVENT directive-unread $item $id age=$((PASS_NOW - at))"
-          unread_at="$line"
+          [[ "$line" -le "$unread_at" ]] || unread_at="$line"
+          reported=1
           PASS_EVENT=1
+        elif [[ "$line" -le "$unread_at" ]]; then
+          standing=1
         fi
       done <<<"$(tail -n +2 <<<"$receipts")"
-      state="$(lane_row_set directive "$state" "$cursor" "$lane_read $unread_at ${to_first:-$seen}")"
+      (( standing == 1 && reported == 0 )) || unread_passes=0
+      state="$(lane_row_set directive "$state" "$cursor" "$lane_read $unread_at:$unread_passes ${to_first:-$seen}")"
     fi
     # Committed here, per item and after its lines are out: a later mailbox
     # can fail without discarding this read, and a row left uncommitted would
@@ -3637,8 +3768,8 @@ check_report() {
 
 # The work the fleet owes and its launch queue lacks, one `owed` line per item,
 # as OWED_LINES. The tracker is the membership and launch_queue only the
-# order: with LINEAR_TEAM, every team item In Progress or In Review, one live
-# read; with none, every open pull request in the item repository, the first
+# order: with LINEAR_TEAM, every team item In Progress, In Review or
+# Verifying, one live read. Verifying is handled before development filtering; with none, every open pull request in the item repository, the first
 # --repo, whose head is a GitHub item's branch, issue-N, read whole by a
 # listing of its own. A listing that reaches OWED_PR_LIMIT refuses rather than
 # pass a short set as the whole one. An item is owed nothing while its record
@@ -3665,6 +3796,7 @@ check_report() {
 # Without --state there is no queue to compare.
 OWED_PR_LIMIT=1000
 OWED_LINES=""
+VERIFYING_LINES=""
 # The heartbeat's own caches: one listing per host, one verdict per host,
 # harness and model, and the answers owed_accounts and owed_wall hand back.
 OWED_ACCOUNTS=""
@@ -3673,13 +3805,14 @@ OWED_LISTING=""
 OWED_VERDICT=""
 owed_read() {
   OWED_LINES=""
+  VERIFYING_LINES=""
   [[ -n "$STATE_FILE" ]] || return 0
   local errf="$WORK_DIR/owed.err" out items rows rc=0 n
   local id state priority lane host harness model delivery key verdict line asked answer
   OWED_ACCOUNTS=""
   OWED_ANSWERS=""
   if [[ -n "${LINEAR_TEAM:-}" ]]; then
-    out="$("$TRACKER" issues list --team "$LINEAR_TEAM" --state "In Progress,In Review" --max --format=safe 2>"$errf")" || rc=$?
+    out="$("$TRACKER" issues list --team "$LINEAR_TEAM" --state "In Progress,In Review,Verifying" --max --format=safe 2>"$errf")" || rc=$?
     [[ "$rc" -eq 0 ]] \
       || die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "exit=$rc"
     # Linear's priority 0 is No priority, which ranks after Low: it prints `-`.
@@ -3688,8 +3821,8 @@ owed_read() {
       | map(
           if ((.id? | type) == "string" and (.id | test("^[A-Za-z0-9._-]+$"))) then .
           else error("tracker-field field=id value=\(.id | tojson)") end
-          | {id, priority: (if .priority == null or .priority == 0 then "-" else .priority end),
-             state: ({"In Progress": "in-progress", "In Review": "in-review"}[.state? | strings]
+          | {id, description: (.description // ""), priority: (if .priority == null or .priority == 0 then "-" else .priority end),
+             state: ({"In Progress": "in-progress", "In Review": "in-review", "Verifying": "verifying"}[.state? | strings]
                // error("tracker-field field=state value=\(.state | tojson)"))})' <<<"$out" 2>"$errf")" \
       || die tracker-list-invalid "$(cat "$errf")" "team=$LINEAR_TEAM"
   else
@@ -3701,6 +3834,11 @@ owed_read() {
     items="$(awk -F'\t' '$2 ~ /^issue-[0-9]+$/ { print $2 }' <<<"$out" \
       | jq -Rnc '[inputs | {id: ., state: "open-pr", priority: "-"}]' 2>"$errf")" \
       || die pr-list-invalid "$(cat "$errf")" "repo=${REPOS[0]}"
+  fi
+  if [[ -n "${LINEAR_TEAM:-}" ]]; then
+    verifying_read "$items"
+    items="$(jq -c 'map(select(.state != "verifying"))' <<<"$items")" \
+      || die tracker-list-invalid "" "team=$LINEAR_TEAM"
   fi
   # One row per owed item on the unit separator, since a model id is the
   # launcher's to spell: id, state, priority, lane, then the host, harness and
@@ -3776,6 +3914,53 @@ owed_accounts() { # HOST
   OWED_ACCOUNTS+="$host"$'\t'"$OWED_LISTING"$'\n'
 }
 
+# Verification uses the same inventory as owed work, before queue and active
+# lane filtering. Deadlines remain per box in the issue description.
+verifying_read() { # SAFE_ITEMS
+  local lib="$SKILLS_DIR/linear/scripts/lib/issue-validation.sh"
+  local rows row id desc parsed lines overdue prior state="${PW_SEEN[0]}"
+  rows="$(jq -c '.[] | select(.state == "verifying")' <<<"$1")" \
+    || die tracker-list-invalid "" "team=$LINEAR_TEAM"
+  # Rebuild deadline rows from the complete read. Leaving Verifying or ticking
+  # a box clears its edge key, so a later overdue box is new attention.
+  state="$(awk -F'\t' '$1 != "verifying-deadline" { print }' <<<"$state")"
+  if [[ -z "$rows" ]]; then
+    lane_row_commit "$state"
+    return 0
+  fi
+  [[ -r "$lib" ]] || die missing-linear "" "path=$lib"
+  # shellcheck source=../../../linear/scripts/lib/issue-validation.sh
+  source "$lib"
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    id="$(jq -r '.id' <<<"$row")" || die tracker-list-invalid "" "team=$LINEAR_TEAM"
+    desc="$(jq -r '.description + "."' <<<"$row")" || die tracker-list-invalid "" "team=$LINEAR_TEAM"
+    parsed="$(done_when_parse "${desc%.}" '[]')" || die verifying-invalid "" "issue=$id"
+    jq -e '(.errors | length) == 0 and all(.boxes[]; .checked or .post_merge)' <<<"$parsed" >/dev/null \
+      || die verifying-invalid "$parsed" "issue=$id"
+    lines="$(jq -r --arg id "$id" '
+      .boxes[] | select(.post_merge and (.checked | not))
+      | "verifying \($id) box=\(.number) deadline=\(.deadline) reading=\(.reading | tojson) where=\(.where | tojson) why=\(.why | tojson)"' <<<"$parsed")" \
+      || die verifying-invalid "" "issue=$id"
+    [[ -n "$lines" ]] || lines="verifying $id boxes=0"
+    VERIFYING_LINES+="$lines"$'\n'
+    overdue="$(jq -r --argjson now "$PASS_NOW" '
+      .boxes[] | select(.post_merge and (.checked | not) and .deadline_epoch <= $now)
+      | "box=\(.number) deadline=\(.deadline)"' <<<"$parsed")" || die verifying-invalid "" "issue=$id"
+    [[ -n "$overdue" ]] || continue
+    prior="$(lane_row_get verifying-deadline "${PW_SEEN[0]}" "$id")" \
+      || die state-read-failed "" "row=verifying-deadline" "issue=$id"
+    state="$(lane_row_set verifying-deadline "$state" "$id" "${overdue//$'\n'/|}")"
+    [[ "$prior" != "${overdue//$'\n'/|}" ]] || continue
+    while IFS= read -r row; do
+      echo "EVENT verifying-deadline $id $row"
+    done <<<"$overdue"
+    PASS_EVENT=1
+  done <<<"$rows"
+  VERIFYING_LINES="${VERIFYING_LINES%$'\n'}"
+  lane_row_commit "$state"
+}
+
 # The wall verdict of one host, harness and model, as OWED_VERDICT. `lanes
 # pick` judges it under that host exactly as a launch there is judged. Exit 0
 # is room; exit 3 with walled accounts is a wall, dated by the refusal's own
@@ -3838,7 +4023,6 @@ heartbeat() {
     open="$(security_mark_open "$baseline" "$repo" "$open")" || die state-read-failed "" "path=$file" "row=bot-fix"
     open_all+="$(pw_prefix "$repo" "$open")"$'\n'
   done
-  owed_read
   hands="$(parked_merged_owed "$baseline")" || die state-read-failed "" "path=$file" "row=merged"
   # The current fleet's alone: a row clears on the item's next good read,
   # and an item that left the fleet is read no more.
@@ -3858,6 +4042,7 @@ heartbeat() {
     echo "account-roster accounts=$(grep -c . <<<"$ACCOUNT_ROSTER" || true)"
     [[ -z "$ACCOUNT_ROSTER" ]] || awk -F'\t' '{ print "account " $3 }' <<<"$ACCOUNT_ROSTER"
   fi
+  [[ -z "$VERIFYING_LINES" ]] || printf '%s\n' "$VERIFYING_LINES"
   [[ -z "$OWED_LINES" ]] || printf '%s\n' "$OWED_LINES"
   pr_watch_context
   exit 0
@@ -3875,7 +4060,7 @@ heartbeat() {
 # next long pass reads, never this process's copy of them.
 LONG_PASSES=0
 LONG_RETURNS=(LONG_EVENT LONG_FAILED OVERSEER_SUCCEEDED OVERSEER_STOP PW_PASSES PW_RC PW_EVENT
-  PW_OUT PW_ERR LANE_PROBE_NOTED OVERSEER_NOTED ACCOUNT_ROSTER ACCOUNT_ROSTER_RC)
+  PW_OUT PW_ERR LANE_PROBE_NOTED OVERSEER_NOTED ACCOUNT_ROSTER ACCOUNT_ROSTER_RC OWED_LINES VERIFYING_LINES)
 long_pass() {
   local i state_file
   PASS_EVENT=0
@@ -3891,9 +4076,10 @@ long_pass() {
   # overseer exited or walled. A later live pass or the successor receives
   # that work.
   if check_overseer; then
+    check_merged
+    check_terminal_lanes
     observe_lanes
     check_pr_watch
-    check_merged
     check_triage
     check_outside_contribution
     check_refresh
@@ -3904,6 +4090,7 @@ long_pass() {
     check_lane_long
     check_lanes
     check_accounts
+    owed_read
     check_report
   fi
   # Under names of their own, so sourcing them cannot overwrite the news this
@@ -4103,6 +4290,7 @@ run_end() {
     exit 2
   fi
   if [[ "$PASS_EVENT" -eq 1 ]]; then
+    [[ -z "$VERIFYING_LINES" ]] || printf '%s\n' "$VERIFYING_LINES"
     pr_watch_context
     exit 0
   fi
