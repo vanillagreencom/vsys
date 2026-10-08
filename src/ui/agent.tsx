@@ -12,7 +12,7 @@ import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
 import { badgeText, laneBadge, laneLevel, lowCap } from "./agents";
 import { keyLabel, screenPad } from "./chrome";
-import { fit } from "./columns";
+import { type Column, cell, columnGap, fit, headerText } from "./columns";
 import {
   age,
   amount,
@@ -52,6 +52,13 @@ import {
 /** The drill-down sections, closed until the reader opens one. */
 /** How many captured lines the section shows: the tail is what is happening. */
 const terminalLines = 12;
+const processColumns: Column[] = [
+  { label: "PID", width: 8 },
+  { label: "command", width: 14 },
+  { label: "CPU", width: 6, align: "right" },
+  { label: "threads", width: 7, align: "right" },
+  { label: "memory", width: 9, align: "right" },
+];
 const sections = [
   "Processes",
   "Launch",
@@ -640,12 +647,12 @@ export function Agent({
                         {row.name === "Processes" && (
                           <>
                             <Line height={1} truncate attributes={ui.dim}>
-                              {"PID      CPU    threads  memory     directory"}
+                              {`${headerText(processColumns)}${columnGap}directory`}
                             </Line>
                             {tree.map(({ proc: p, depth }) => (
                               <Line key={p.pid} height={1} truncate>
                                 {safe(
-                                  `${"  ".repeat(depth)}${fit(String(p.pid), 8 - depth * 2)} ${fit(p.comm, 14)} ${percent(p.cpuPercent).padStart(6)} ${String(p.threads).padStart(7)}  ${bytes(p.rss, c).padStart(9)}  ${p.cwd ?? gap}`,
+                                  `${processColumns.map((column, index) => cell(column, [`${"  ".repeat(depth)}${p.pid}`, p.comm, percent(p.cpuPercent), String(p.threads), bytes(p.rss, c)][index] ?? gap)).join(columnGap)}${columnGap}${p.cwd ?? gap}`,
                                 )}
                               </Line>
                             ))}
