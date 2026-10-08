@@ -1,0 +1,1 @@
+- A recreated agent scope starts with unknown CPU and I/O rates instead of a false spike from the old scope's counters.

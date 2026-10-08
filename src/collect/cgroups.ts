@@ -77,7 +77,9 @@ export function collectGroups(
         const cpuUsec = pairs(stat).usage_usec;
         if (cpuUsec === undefined || !Number.isFinite(cpuUsec))
           throw new Error("Missing cpu usage_usec");
-        const old = before.get(id);
+        const identity = r.identity(path);
+        let old = before.get(id);
+        if (identity === null || old?.identity !== identity) old = undefined;
         const psi = Object.fromEntries(
           ["cpu", "memory", "io"].map((kind) => {
             const file = join(path, `${kind}.pressure`);
@@ -112,6 +114,7 @@ export function collectGroups(
           throw new Error("Invalid cgroup process ID");
         result.push({
           path: id,
+          identity,
           parent: dirname(id),
           name:
             id === "."

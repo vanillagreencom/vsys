@@ -12,6 +12,8 @@ export interface Pressure {
 /** Cgroup v2 limits use null for unlimited or unread; read flags distinguish them. */
 export interface Group {
   path: string;
+  /** Device and inode of the directory; absent in older snapshots. */
+  identity?: string | null;
   kernelPath?: string;
   parent: string;
   name: string;

@@ -256,6 +256,7 @@ export function emptySnapshot(time = 1000): Snapshot {
 export function groupSnapshot(overrides: Partial<Group> = {}): Group {
   return {
     path: "agents.slice/a.scope",
+    identity: null,
     parent: "agents.slice",
     name: "a.scope",
     pids: [],
