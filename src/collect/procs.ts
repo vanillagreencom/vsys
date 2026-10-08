@@ -48,7 +48,8 @@ export function omittedProcess(source: string, procRoot: string): boolean {
  * Whether the proc mount at `procRoot` may leave out or close processes this
  * one cannot see. Any hidepid but 0 can, with no read error, and whether this
  * process is exempt turns on kernel rules its credentials do not settle, so
- * such a listing never counts as whole. A process root with no mount table
+ * such a listing never counts as whole, and neither does one whose root could
+ * not be resolved to its mount point. A process root with no mount table
  * keeps the listing whole; a mount table that could not be read does not.
  */
 export function hiddenProcesses(r: Reader, procRoot: string): boolean {
@@ -63,7 +64,14 @@ export function hiddenProcesses(r: Reader, procRoot: string): boolean {
     r.error(path, e);
     return true;
   }
-  const root = resolve(procRoot);
+  // mountinfo names the canonical mount point, which a linked root is not.
+  let root: string;
+  try {
+    root = realpathSync(procRoot);
+  } catch (e) {
+    r.error(procRoot, e);
+    return true;
+  }
   const options =
     mounts.filter((m) => m.type === "proc" && resolve(m.mount) === root).at(-1)
       ?.options ?? [];

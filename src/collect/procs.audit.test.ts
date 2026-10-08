@@ -60,6 +60,16 @@ test("A1-1: hidden compilers leave the machine build count unknown", async () =>
     // Any other hidepid may hide a process, whoever vsys runs as.
     for (const mode of ["1", "2", "4", "invisible", "ptraceable"])
       expect((await sample(`hidepid=${mode}`)).processRead).toBe("incomplete");
+    // A process root reached through a link is still the hidden mount.
+    const link = join(root, "linked-proc");
+    symlinkSync(c.procRoot, link);
+    time += 1000;
+    const linked = await new ProcessCollector(
+      { ...c, procRoot: link },
+      100,
+      4096,
+    ).collect({ ...request, time }, signal);
+    expect(linked.processRead).toBe("incomplete");
     // hidepid=2 omits another user's directory without a read error.
     hidden.mockImplementation(function (this: Reader, path, optional) {
       const names = list.call(this, path, optional);
