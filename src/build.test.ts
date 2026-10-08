@@ -26,3 +26,32 @@ test("the compiled binary embeds production React", async () => {
     rmSync(root, { recursive: true, force: true });
   }
 }, 60000);
+
+// The renderer's error boundary draws a render error through jsxDEV, which
+// React's production JSX runtime leaves undefined: without a working jsxDEV
+// the boundary throws in turn and the frame stays blank.
+test("the compiled binary draws a render error", async () => {
+  const root = mkdtempSync(join(tmpdir(), "vsys-build-"));
+  try {
+    const outfile = join(root, "probe");
+    await buildBinary(outfile, ["src/test/render-error.fixture.tsx"]);
+    const child = Bun.spawn([outfile], {
+      cwd: root,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      child.exited,
+    ]);
+    expect(code).toBe(0);
+    const { frame } = JSON.parse(out) as { frame: string };
+    expect({
+      error: frame.includes("render-error-probe"),
+      jsxDEV: frame.includes("jsxDEV"),
+    }).toEqual({ error: true, jsxDEV: false });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60000);
