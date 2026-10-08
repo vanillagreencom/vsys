@@ -31,7 +31,14 @@ afterEach(() => {
 });
 const dir = `${c.cgroupRoot}/agents.slice/a.scope`;
 const procs = [processSnapshot()];
-const world = (lanes: Lane[]) => ({ ...emptySnapshot(), lanes, procs });
+/** Each lane's leading process, in the lane's own cgroup. */
+const leaders = (lanes: Lane[]) =>
+  lanes.map((l) => processSnapshot({ pid: l.mainPid, group: `/${l.cgroup}` }));
+const world = (lanes: Lane[]) => ({
+  ...emptySnapshot(),
+  lanes,
+  procs: leaders(lanes),
+});
 
 test.each([...laneActions])(
   "%s refuses a replacement with a reused process ID",
@@ -181,11 +188,39 @@ test("Stop is offered only for a scope systemd created as a unit", () => {
       ["Freeze", "Thaw"],
     ],
   ];
-  for (const [cgroup, actions] of rows)
+  for (const [cgroup, actions] of rows) {
+    const lane = laneSnapshot({ cgroup });
     expect({
       cgroup,
-      actions: laneTarget(laneSnapshot({ cgroup }), c, procs)?.actions,
+      actions: laneTarget(lane, c, leaders([lane]))?.actions,
     }).toEqual({ cgroup, actions });
+  }
+});
+
+test("Stop judges the whole kernel path, not only the part below the root", () => {
+  // `systemctl --user` reaches the caller's user manager, so a configured root
+  // inside a container's subtree, or a process whose kernel path vsys cannot
+  // match to the lane, must not hand that manager a bare scope name.
+  const host = "/user.slice/user-1000.slice/user@1000.service";
+  const rows: [string, LaneAction[]][] = [
+    [`${host}/agents.slice/a.scope`, ["Freeze", "Thaw", "Stop"]],
+    [
+      `${host}/app.slice/libpod-abc.scope/container/agents.slice/a.scope`,
+      ["Freeze", "Thaw"],
+    ],
+    [
+      `${host}/user.slice/user-0.slice/user@0.service/agents.slice/a.scope`,
+      ["Freeze", "Thaw"],
+    ],
+    ["/system.slice/docker-abc.scope/agents.slice/a.scope", ["Freeze", "Thaw"]],
+    [`${host}/agents.slice/b.scope`, ["Freeze", "Thaw"]],
+  ];
+  const lane = laneSnapshot();
+  for (const [group, actions] of rows)
+    expect({
+      group,
+      actions: laneTarget(lane, c, [processSnapshot({ group })])?.actions,
+    }).toEqual({ group, actions });
 });
 
 // A rootless container booted with systemd and a memory limit under the floor
@@ -233,7 +268,7 @@ test("a copied command survives an escaped scope name and a path with a space", 
   const scope = "app-Hyprland-chromium\\x2dpersonal-af7ff2b7.scope";
   const root = "/tmp/vsys test/cgroup";
   const lane = laneSnapshot({ cgroup: `agents.slice/${scope}` });
-  const target = laneTarget(lane, { ...c, cgroupRoot: root }, procs);
+  const target = laneTarget(lane, { ...c, cgroupRoot: root }, leaders([lane]));
   expect(target).toEqual({
     laneId: lane.id,
     mainPid: lane.mainPid,
