@@ -165,7 +165,10 @@ async function scanRoot(
       local: Set<string>,
       depth: number,
     ): Promise<[number, number]> {
-      if (stat.dev !== top.dev || stat.isSymbolicLink()) return [0, 0];
+      // A directory on another device, a Btrfs subvolume or a mount, holds
+      // the session's bytes too. The identity below carries the device, so a
+      // directory reached twice through a bind mount counts once per total.
+      if (stat.isSymbolicLink()) return [0, 0];
       const id = `${stat.dev}:${stat.ino}`;
       const rootSeen = global.has(id);
       const sessionSeen = local.has(id);

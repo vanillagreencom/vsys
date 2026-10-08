@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { chmodSync, linkSync, lstatSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { fixture } from "../test/fixture";
@@ -51,6 +52,40 @@ test("one traversal counts hard links once per root and once per session", async
     expect(result.scratch[1]?.age).toBeNull();
     expect(result.scratch[0]?.age).not.toBeNull();
   } finally {
+    f.cleanup();
+  }
+});
+
+test("a directory on another device, as a Btrfs subvolume or a mount, is counted", async () => {
+  const f = fixture();
+  const path = join(f.root, "scratch");
+  const nested = join(path, "session/subvolume");
+  const real = fs.lstatSync;
+  // A fixture cannot mount, so the subvolume's status read is staged with a
+  // device of its own; every other read is the real one.
+  const stat = spyOn(fs, "lstatSync").mockImplementation(((
+    at: string,
+    options?: fs.StatOptions,
+  ) => {
+    const info = real(at, options);
+    if (info instanceof fs.Stats && at === nested) info.dev += 1;
+    return info;
+  }) as typeof fs.lstatSync);
+  try {
+    f.write(join(nested, "file"), "1234");
+    const { scan } = await scanScratch(
+      [{ path, origin: "configured" }],
+      Date.now(),
+      full,
+    );
+    const session = real(join(path, "session")).size + real(nested).size + 4;
+    expect(scan.errors).toEqual([]);
+    expect(present(scan.sessions[0], "session").bytes).toBe(session);
+    expect(present(scan.scratch[0], "root").bytes).toBe(
+      real(path).size + session,
+    );
+  } finally {
+    stat.mockRestore();
     f.cleanup();
   }
 });
