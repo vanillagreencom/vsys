@@ -330,23 +330,29 @@ Use the output as `MAIN_REPO_ROOT`.
 
 2. **Complete the issue and close a finished container** — **Linear only**. Skip the WHOLE step for GitHub work items: resolve the tracker first; an `issue-N` key in any casing is a GitHub item.
 
-   The lane owns tracker completion; the overseer does not substitute for it.
+   The lane owns completion after merge. The overseer owns the remaining post-merge checks on the same item.
 
-   Complete `[ISSUE]` only when its Done-when is on the default branch, not only because a merged PR carries its number, and give every remainder from a cut its own issue or bundle before completion.
+   Give every development remainder from a cut its own issue or bundle before completion. Prove every branch-provable Done-when box before merge. Keep post-merge boxes on `[ISSUE]` in the form the project-management skill's SKILL.md § Disposition states. Each box names its reading, location, why the branch cannot prove it, and a UTC deadline no later than three days after merge.
 
-   When `[ISSUE]` was extracted, read it live. For a live state, run the completion command only after the default-branch Done-when check passes. A completed state takes the same check, because Linear's GitHub integration sets Done from the PR's `Closes` line at merge: when the issue's `## Done when` section still holds an unchecked box that check found met, run the same completion command, which sets Done again and ticks those boxes; with no such box, skip the write.
+   Linear's GitHub integration can set `[ISSUE]` Done when the PR merges. Read the item live and use the completion command below. It sets Done when no post-merge box remains open, and Verifying otherwise, including when the integration already set Done. The merge lane never writes In Review or In Progress. The overseer records evidence and ticks each verified box. A failed check gets an evidence comment before the overseer returns the same item to In Progress.
 
    ```bash
    [MAIN_REPO_ROOT]/.agents/skills/linear/scripts/linear.sh issues get [ISSUE]
    ```
 
    ```bash
-   [MAIN_REPO_ROOT]/.agents/skills/linear/scripts/linear.sh issues complete [ISSUE] --done-when-met [MET_BOXES]
+   env -u GH_REPO -u GITHUB_REPOSITORY gh pr view [PR_NUMBER] --json mergedAt --jq .mergedAt
+   ```
+
+   Use that live UTC timestamp as `[MERGED_AT]`. An absent or unreadable timestamp is a tracker-completion failure.
+
+   ```bash
+   [MAIN_REPO_ROOT]/.agents/skills/linear/scripts/linear.sh issues complete [ISSUE] --post-merge-at [MERGED_AT] --done-when-met [MET_BOXES]
    ```
 
    A rate-limited completion is held under the linear skill's `patterns/workflow-actions.md` § Quota Holds, never recorded as a failed step.
 
-   `[MET_BOXES]` is the `## Done when` boxes that check found on the default branch: `all` when it found every box, otherwise their numbers in section order from 1, comma-separated. A section that holds no checkbox, only plain bullets, takes `all`, which ticks nothing and sets Done.
+   `[MET_BOXES]` names only boxes with recorded proof. Use `all` only when every box has proof. Otherwise use their numbers in section order from 1, comma-separated. When no new box has proof, omit `--done-when-met`. The command refuses an open branch-provable box or invalid post-merge metadata before any write. A section with plain bullets and no checkbox takes `all`, which ticks nothing and sets Done.
 
    A canceled or unreadable issue is a tracker failure, not a completed merge record. Carry the diagnostic into § 6 and do not claim tracker completion.
 
@@ -360,7 +366,7 @@ Use the output as `MAIN_REPO_ROOT`.
 
       `closed [PARENT_ID]` → record the closure in § 6 with every stderr diagnostic from the helper. If this container has a container parent, repeat a-c for that parent.
 
-      `deferred [CHILD_IDS...]` → record `container [PARENT_ID] stays open (pending: [CHILD_IDS])` in § 6 and continue to step 3. When `[ISSUE]` is among `[CHILD_IDS]`, report `closure for [ISSUE] has not propagated; rerun merge-pr`. A bare `deferred` means the 120-second lock wait expired; report that and continue.
+      `deferred [CHILD_IDS...]` → record `container [PARENT_ID] stays open (pending: [CHILD_IDS])` in § 6 and continue to step 3. When `[ISSUE]` is among `[CHILD_IDS]`, read its state live. Verifying → report `container [PARENT_ID] awaits verification of [ISSUE]`; the overseer closes the container after verification sets the child Done, under [oversee-events.md § Event kinds](../references/oversee-events.md#event-kinds). Any other open state → report `closure for [ISSUE] has not propagated; rerun merge-pr`. A failed state read remains a tracker failure. A bare `deferred` means the 120-second lock wait expired; report that and continue.
 
       `held [PARENT_ID] [REQUESTS_RESET]` → Linear rate-limited the completion. Hold this helper command under the linear skill's `patterns/workflow-actions.md` § Quota Holds; the helper keeps the bundle summary it built, which its next run posts only where the parent still has none. The rerun's output routes through this list. When the hold returns the command instead, record `container [PARENT_ID] held until [REQUESTS_RESET]; rerun merge-pr after it` in § 6, or `container [PARENT_ID] held; Linear gave no reset time` where `[REQUESTS_RESET]` is `unavailable`, with the helper's stderr diagnostics, do not climb to another parent, and continue to step 3.
 
