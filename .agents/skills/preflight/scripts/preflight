@@ -748,7 +748,81 @@ has_exit_trap() { # FILE
   # the pipeline answers 141 — read here as "no trap" — for any file with
   # more than a pipe buffer left below the trap line. `grep -c` reads to the
   # end and still exits 1 when nothing matched.
-  grep -Ev -- '^[[:space:]]*#' "$1" 2>/dev/null | grep -Ec -- "$TRAP_EXIT_RE" >/dev/null
+  grep -Ev -- '^[[:space:]]*#' "$1" 2>/dev/null | grep -Ec -- "$TRAP_EXIT_RE" >/dev/null && return 0
+  # A quoted action can span lines and name its signal only on the line its
+  # quote closes. Only the operands after that quote are read: any word in
+  # the action, a substitution's included, names no signal.
+  local n='' signals=''
+  while IFS= read -r n; do
+    line_is_code "$1" "$n" || continue
+    signals="$(trap_signals "$1" "$n")" || continue
+    grep -Eq -- '(^|[[:space:]])(EXIT|0)([[:space:]]|;|$)' <<<"$signals" && return 0
+  done < <(LC_ALL=C awk '!/^[[:space:]]*#/ && /(^[[:space:]]*|[;(`{&|][[:space:]]*)trap[[:space:]]/ { print NR }' "$1" 2>/dev/null)
+  return 1
+}
+# Whether the shell reads LINE as code: the lines above it leave no quote or
+# here-document open, where the same text is data another command receives.
+line_is_code() { # FILE LINE
+  local prefix='' diagnostic=''
+  [ "$2" -gt 1 ] || return 0
+  prefix="$(sed -n "1,$(($2 - 1))p" <"$1")" || return 1
+  diagnostic="$(LC_ALL=C bash -n <<<"$prefix" 2>&1)" || :
+  case "$diagnostic" in
+    *'unexpected EOF while looking for matching '* | *'here-document at line '*' delimited by end-of-file'*) return 1 ;;
+  esac
+  return 0
+}
+# The signal operands of the trap command opening on LINE whose quoted action
+# spans lines: from the quote that closes the action to the end of the
+# command, across backslash continuations, with quotes removed. Fails when
+# LINE leaves no quote open, which the single-line match already read, or
+# when the command runs past the window.
+trap_signals() { # FILE LINE -> the operands after the action
+  local source='' prior='' line='' syntax='' lines=0 operands='' closed=0
+  local command_end='[&;|#)]*'
+  while IFS= read -r line; do
+    lines=$((lines + 1))
+    if [ "$closed" = 0 ]; then
+      prior="$source"
+      source="$source$line"$'\n'
+      syntax="$(substitution_parse_result "$source")" || return 1
+      case "$syntax" in
+        open:*) continue ;;
+      esac
+      [ "$lines" -gt 1 ] || return 1
+      line="$(after_action "$prior" "$line")" || return 1
+      closed=1
+    fi
+    operands="$operands ${line%%$command_end}"
+    if [ "${operands%\\}" = "$operands" ]; then
+      printf '%s\n' "${operands//[\"\']/}"
+      return 0
+    fi
+    operands="${operands%\\}"
+  done < <(sed -n "$2,$(($2 + 200))p" <"$1")
+  return 1
+}
+# LINE after the quote that closes the action SOURCE leaves open. A quote
+# inside a command substitution looks the same as the closing one, so Bash's
+# parser decides: the first quote after which SOURCE and the line so far
+# leave nothing open is the action's own.
+after_action() { # SOURCE LINE
+  local i=0 syntax=''
+  while [ "$i" -lt "${#2}" ]; do
+    i=$((i + 1))
+    case "${2:i-1:1}" in
+      \" | \') ;;
+      *) continue ;;
+    esac
+    syntax="$(substitution_parse_result "$1${2:0:i}")" || return 1
+    case "$syntax" in
+      open:*) ;;
+      *)
+        printf '%s\n' "${2:i}"
+        return 0 ;;
+    esac
+  done
+  return 1
 }
 # A bare `VAR="$(cmd)"`: the assignment standing alone as the whole command.
 # Under errexit the substitution's own status escapes from the assignment, so
