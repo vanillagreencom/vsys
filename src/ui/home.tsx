@@ -5,7 +5,6 @@ import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
 import { type Level, type Meter, meters } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
-import type { Point } from "../store/point";
 import {
   type Attention,
   cardDetail,
@@ -34,14 +33,7 @@ import {
   pidColumn,
   wrapLines,
 } from "./columns";
-import {
-  amount,
-  bucketPeaks,
-  plural,
-  share,
-  sortLanes,
-  sparkline,
-} from "./format";
+import { amount, plural, share, sortLanes, sparkline } from "./format";
 import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import {
@@ -52,6 +44,7 @@ import {
   stepToRegion,
   stepWithin,
 } from "./regions";
+import type { ChartField, Retained } from "./retained";
 import { type Selection, useSelection } from "./selection";
 import { levelColor, metric, scrollbar, ui } from "./theme";
 import { eventKey, eventParts } from "./timeline";
@@ -154,7 +147,7 @@ export function homeTarget(row: HomeItem): Target | undefined {
   return row.item.target;
 }
 /** The history field each meter's tile charts, so the two cannot drift apart. */
-const meterSeries: Record<Meter["id"], keyof Point> = {
+const meterSeries: Record<Meter["id"], ChartField> = {
   cpu: "pressure",
   memory: "memory",
   disk: "ioPressure",
@@ -167,21 +160,16 @@ export const meterView: Record<Meter["id"], View> = {
   disk: "Storage",
   builds: "Builds",
 };
-/** The one-row chart under a tile: the peak of each history bucket, placed by time. */
+/** The one-row chart under a tile: the peak of each column, placed by time. */
 function series(
-  points: Point[],
-  key: keyof Point,
-  start: number,
-  end: number,
+  retained: Retained,
+  key: ChartField,
   width: number,
   style: Config["sparkline"],
 ): string {
-  if (!points.length) return "";
+  if (!retained.points.length) return "";
   return sparkline(
-    bucketPeaks(points, start, end, width, (p) => {
-      const v = p[key];
-      return typeof v === "number" ? v : null;
-    }),
+    retained.columns(width).columns.map((column) => column?.peaks[key] ?? null),
     width,
     style,
   );
@@ -195,8 +183,7 @@ export function Home({
   items,
   changes,
   alertsOpened,
-  points,
-  windowMs,
+  retained,
   selection,
   width,
   cardWidth,
@@ -213,8 +200,8 @@ export function Home({
   changes: TimelineEvent[];
   /** Alerts opened since the dashboard started. */
   alertsOpened: number;
-  points: Point[];
-  windowMs: number;
+  /** The window's points, and its chart columns kept across draws. */
+  retained: Retained;
   /** The row the reader chose, and the item that row named. */
   selection: Selection;
   width: number;
@@ -588,10 +575,8 @@ export function Home({
                 detail={card.detail}
                 selected={tile === at}
                 chart={series(
-                  points,
+                  retained,
                   meterSeries[gauge.id],
-                  s.time - windowMs,
-                  s.time,
                   chartWidth,
                   c.sparkline,
                 )}

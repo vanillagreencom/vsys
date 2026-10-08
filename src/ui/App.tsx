@@ -43,6 +43,7 @@ import { type KeyHandler, KeyProvider } from "./keys";
 import { errorText } from "./refusals";
 import { homeRegions, jumpKeys, storageRegions } from "./regions";
 import { Resources } from "./resources";
+import { Retained } from "./retained";
 import { Settings } from "./settings-screen";
 import { Storage } from "./storage-screen";
 import { levelColor, ui } from "./theme";
@@ -218,7 +219,14 @@ export function App({
   const shown = pinned ?? snapshot;
   const issues = attention(snapshot, c, { width: detailWidth(width) });
   const windowMs = windowAt(windowIndex);
-  const points = history.window(snapshot.time, windowMs);
+  // Kept across samples, so a draw reads what arrived since the last one
+  // rather than copying the window.
+  const retained = useRef(new Retained()).current.read(
+    history,
+    snapshot.time,
+    windowMs,
+    c.historyHours * 3600000,
+  );
   const notice = useCallback(
     (text: string, level: Level = "ok") => setToast({ text, level }),
     [],
@@ -419,8 +427,7 @@ export function App({
         // stops rather than scanning a day of history on every render.
         changes={history.recentEvents(snapshot.time, recentChanges)}
         alertsOpened={opened}
-        points={points}
-        windowMs={windowMs}
+        retained={retained}
         selection={homeSelection}
         width={screenWidth(width)}
         cardWidth={detailWidth(width)}
@@ -495,9 +502,8 @@ export function App({
     content = (
       <Timeline
         snapshot={snapshot}
-        history={history}
         config={c}
-        points={points}
+        retained={retained}
         windowIndex={windowIndex}
         cursor={cursor}
         width={width}
