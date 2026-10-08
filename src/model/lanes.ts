@@ -410,7 +410,10 @@ export function lanes(
       memoryMaxKnown: caps.known,
       cpuWeight: group?.weight ?? null,
       ...jobserver(main, c.jobserverEnv),
-      age: members.length ? Math.max(0, ...members.map((p) => p.age)) : null,
+      age:
+        complete && members.length
+          ? Math.max(0, ...members.map((p) => p.age))
+          : null,
       state: members.some((p) => p.state === "D")
         ? "blocked"
         : members.some((p) => p.state === "R")

@@ -2,7 +2,12 @@ import { corruptionTotal } from "../collect/btrfs";
 import type { Config } from "../config/config";
 import { escaped } from "../model/lanes";
 import type { Alert, Snapshot } from "../model/types";
-import { agentTotal, buildLoad, sliceSum } from "../model/verdict";
+import {
+  agentTotal,
+  buildLoad,
+  processesComplete,
+  sliceSum,
+} from "../model/verdict";
 import type { TimelineEvent } from "./events";
 
 export interface Point {
@@ -14,7 +19,8 @@ export interface Point {
   memoryPressure: number | null;
   ioPressure: number | null;
   corruption: number | null;
-  unconfined: number;
+  /** Unknown when the sample could not read every process. */
+  unconfined: number | null;
   builds: number | null;
   alerts: Alert[];
   /** What changed since the previous sample, derived once by the store. */
@@ -62,7 +68,9 @@ export function point(
     memoryPressure: s.system.pressure.memory?.some ?? null,
     ioPressure: s.system.pressure.io?.some ?? null,
     corruption,
-    unconfined: s.procs.filter((p) => escaped(p, c, s.capabilities)).length,
+    unconfined: processesComplete(s)
+      ? s.procs.filter((p) => escaped(p, c, s.capabilities)).length
+      : null,
     builds: buildLoad(s, c).builds,
     alerts: s.alerts.map((alert) => ({ ...alert })),
     events,

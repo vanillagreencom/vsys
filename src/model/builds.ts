@@ -3,7 +3,7 @@ import { compileOrLink } from "../collect/builds";
 import type { Config } from "../config/config";
 import { jobserver, laneText } from "./naming";
 import type { Proc, SccacheDelta, SccacheState, Snapshot } from "./types";
-import { buildLoad } from "./verdict";
+import { buildLoad, processesComplete } from "./verdict";
 
 /** One row per lane that is building, plus one row for everything outside them. */
 export interface LaneBuilds {
@@ -39,7 +39,8 @@ export interface BuildsSummary {
   cores: number;
   rows: LaneBuilds[];
   cache: CacheEffect;
-  jobservers: Jobserver[];
+  /** Unknown when the sample could not read every process. */
+  jobservers: Jobserver[] | null;
 }
 /** Undefined until the cache served a request; a zero denominator is not zero. */
 export function hitRate(hits: number, misses: number): number | null {
@@ -99,7 +100,7 @@ export function laneBuilds(s: Snapshot, c: Config): LaneBuilds[] {
       loose[p.build] = (loose[p.build] ?? 0) + 1;
   const rows = [
     ...s.lanes.map((l) => buildRow(l.id, l.name, l.mainPid, l.builds, c)),
-    buildRow("", "", 0, s.processRead === "complete" ? loose : null, c),
+    buildRow("", "", 0, processesComplete(s) ? loose : null, c),
   ].filter((row): row is LaneBuilds => row !== null);
   // Busiest first; the catch-all row for unwatched cgroups breaks a tie last.
   return rows.sort(
@@ -158,9 +159,11 @@ function buildAncestor(p: Proc, byPid: Map<number, Proc>): Proc | null {
  *
  * The flags variable is inherited down the process tree, so a compiler and the
  * linker it runs advertise one pool twice. Only the outermost holder took a
- * token, and only it is counted.
+ * token, and only it is counted. A process vsys could not read may hold a
+ * token or a pool of its own, so an incomplete read leaves both unknown.
  */
-export function jobservers(s: Snapshot, c: Config): Jobserver[] {
+export function jobservers(s: Snapshot, c: Config): Jobserver[] | null {
+  if (!processesComplete(s)) return null;
   const byPid = new Map(s.procs.map((p) => [p.pid, p]));
   const rows = new Map<string, Jobserver>();
   for (const p of s.procs) {

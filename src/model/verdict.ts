@@ -210,7 +210,7 @@ export function agentTotal(
     return sliceSum(s.groups, c.agentSlice, (g) =>
       reading === "cpu" ? g.cpuPercent : g.cache,
     );
-  if (s.processRead !== "complete") return null;
+  if (!processesComplete(s)) return null;
   const agents = agentLanes(s.lanes);
   const groups = new Map(s.groups.map((g) => [g.path, g]));
   const pick = (g: Group) => (reading === "cpu" ? g.cpuPercent : g.cache);
@@ -249,12 +249,19 @@ export function leastFree(volumes: Volume[]): Volume | undefined {
     .filter((v) => v.free !== null)
     .sort((a, b) => (a.free ?? 0) - (b.free ?? 0))[0];
 }
+/**
+ * Whether the sample read every process. Each count drawn from the process
+ * list reads this one answer, and stays unknown when it is false.
+ */
+export function processesComplete(s: Pick<Snapshot, "processRead">): boolean {
+  return s.processRead === "complete";
+}
 /** Compile and link work, machine wide, with linkers counted separately. */
 export function buildLoad(
   s: Snapshot,
   c: Config,
 ): { builds: number | null; linkers: number | null; lanes: number | null } {
-  if (s.processRead !== "complete")
+  if (!processesComplete(s))
     return { builds: null, linkers: null, lanes: null };
   const building = s.procs.filter((p) =>
     compileOrLink(p.build, c.compilerNames, c.linkerNames),

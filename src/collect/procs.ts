@@ -21,6 +21,7 @@ import {
   toolSignals,
 } from "./builds";
 import { Reader } from "./io";
+import { type MountInfo, parseMounts } from "./mounts";
 import type { CollectionConfig } from "./settings";
 
 /**
@@ -41,6 +42,42 @@ export function omittedProcess(source: string, procRoot: string): boolean {
   return (
     source === root ||
     (dirname(source) === root && /^\d+$/.test(basename(source)))
+  );
+}
+/**
+ * Whether the proc mount at `procRoot` may leave out or close processes this
+ * one cannot see. Any hidepid but 0 can, with no read error, and whether this
+ * process is exempt turns on kernel rules its credentials do not settle, so
+ * such a listing never counts as whole, and neither does one whose root could
+ * not be resolved to its mount point. A process root with no mount table
+ * keeps the listing whole; a mount table that could not be read does not.
+ */
+export function hiddenProcesses(r: Reader, procRoot: string): boolean {
+  const path = join(procRoot, "self/mountinfo");
+  const failed = r.errors.length;
+  const raw = r.text(path, true);
+  if (raw === null) return r.errors.length > failed;
+  let mounts: MountInfo[];
+  try {
+    mounts = parseMounts(raw);
+  } catch (e) {
+    r.error(path, e);
+    return true;
+  }
+  // mountinfo names the canonical mount point, which a linked root is not.
+  let root: string;
+  try {
+    root = realpathSync(procRoot);
+  } catch (e) {
+    r.error(procRoot, e);
+    return true;
+  }
+  const options =
+    mounts.filter((m) => m.type === "proc" && resolve(m.mount) === root).at(-1)
+      ?.options ?? [];
+  return options.some(
+    (o) =>
+      o.startsWith("hidepid=") && !["hidepid=0", "hidepid=off"].includes(o),
   );
 }
 /** stat's command can contain spaces and closing parentheses. */
@@ -204,6 +241,7 @@ export class ProcessCollector implements ProcessSource {
     // Executables already read, so the launch chain below reads none twice.
     const executables = new Map<number, string | null>();
     const result: Proc[] = [];
+    const hidden = hiddenProcesses(r, c.procRoot);
     for (const id of r.dirs(c.procRoot).filter((n) => /^\d+$/.test(n))) {
       const root = join(c.procRoot, id);
       try {
@@ -389,9 +427,10 @@ export class ProcessCollector implements ProcessSource {
     return {
       procs: result,
       errors: r.errors,
-      processRead: r.errors.some((e) => omittedProcess(e.source, c.procRoot))
-        ? "incomplete"
-        : "complete",
+      processRead:
+        hidden || r.errors.some((e) => omittedProcess(e.source, c.procRoot))
+          ? "incomplete"
+          : "complete",
     };
   }
 }
