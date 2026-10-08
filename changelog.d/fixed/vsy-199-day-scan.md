@@ -1,0 +1,1 @@
+- Home and Timeline keep up with a 100 ms refresh when a day of history is kept: a draw now reads only the samples that arrived since the last one, instead of copying and rescanning the whole window for every chart. The charts now begin at a column boundary, up to one column later than the start of the window.

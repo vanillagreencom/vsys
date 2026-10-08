@@ -3,20 +3,12 @@ import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import type { TimelineEvent } from "../store/events";
-import type { History } from "../store/history";
-import { changed, type Point } from "../store/point";
+import type { Point } from "../store/point";
 import { screenPad, sideWidth } from "./chrome";
 import { fit } from "./columns";
-import {
-  bucketPeaks,
-  bytes,
-  gap,
-  percent,
-  spanLabel,
-  sparkline,
-  timeBuckets,
-} from "./format";
+import { bytes, gap, percent, spanLabel, sparkline } from "./format";
 import { useScreenKeys } from "./keys";
+import type { ChartField, Retained } from "./retained";
 import { firstRow, useSelection } from "./selection";
 import { levelColor, metric, readingWeight, ui } from "./theme";
 import { eventKey, eventParts } from "./timeline";
@@ -84,7 +76,6 @@ export function markerRuns(
   });
   return runs;
 }
-const anyChange = (bucket: Point[]) => bucket.some(changed);
 const numeric = (key: keyof Point) => (p: Point) => {
   const v = p[key];
   return typeof v === "number" ? v : null;
@@ -93,9 +84,8 @@ const numeric = (key: keyof Point) => (p: Point) => {
 /** History: what the machine did over the window, then what changed and why. */
 export function Timeline({
   snapshot: s,
-  history,
   config: c,
-  points,
+  retained,
   windowIndex,
   cursor,
   width,
@@ -106,9 +96,9 @@ export function Timeline({
   onTargetUsed,
 }: {
   snapshot: Snapshot;
-  history: History;
   config: Config;
-  points: Point[];
+  /** The window's points and changes, and its chart columns kept across draws. */
+  retained: Retained;
   windowIndex: number;
   cursor: number | null;
   width: number;
@@ -121,7 +111,7 @@ export function Timeline({
   onTargetUsed: () => void;
 }) {
   const windowMs = windowAt(windowIndex);
-  const changes = history.events(s.time, windowMs);
+  const { points, events: changes } = retained;
   // What the reader chose, followed by identity: the window key can swap a
   // long list for a shorter one and a new sample prepends to it, so a row
   // number alone outlives what it pointed at.
@@ -131,18 +121,14 @@ export function Timeline({
     choose,
     move,
   } = useSelection(changes.map(eventKey), selection, setSelection);
-  const start = s.time - windowMs;
   const chartWidth = Math.max(10, width - 4 - gutter);
-  const buckets = timeBuckets(points, start, s.time, chartWidth);
+  const { start, columns, column } = retained.columns(chartWidth);
   const selected = pointAt(points, cursor);
   const at = cursor ?? points.at(-1)?.time;
   const cursorColumn =
     at === undefined
       ? undefined
-      : Math.min(
-          chartWidth - 1,
-          Math.max(0, Math.floor(((at - start) * chartWidth) / windowMs)),
-        );
+      : Math.min(chartWidth - 1, Math.max(0, column(at)));
   useScreenKeys((name, key) => {
     if (name === c.keys.down || name === "down") {
       move((from) => nextDown(changes.length, from));
@@ -176,8 +162,8 @@ export function Timeline({
     onCursor(points[next]?.time ?? null);
     return true;
   });
-  const peaks = (key: keyof Point) =>
-    bucketPeaks(points, start, s.time, chartWidth, numeric(key));
+  const peaks = (key: ChartField) =>
+    columns.map((column) => column?.peaks[key] ?? null);
   const agents = peaks("agents");
   const memory = peaks("memory");
   const top = (values: (number | null)[], floor: number) =>
@@ -188,9 +174,12 @@ export function Timeline({
     const v = selected ? numeric(key)(selected) : null;
     return v === null ? "" : format(v);
   };
-  const pick = (column: number) =>
+  // An empty column's cursor is its first whole millisecond, which the
+  // marker places back in that column.
+  const pick = (index: number) =>
     onCursor(
-      buckets[column]?.at(-1)?.time ?? start + (column * windowMs) / chartWidth,
+      columns[index]?.last ??
+        Math.ceil(start + (index * windowMs) / chartWidth),
     );
   const onChart = (event: {
     x: number;
@@ -350,7 +339,10 @@ export function Timeline({
           })}
         <Line height={1} flexShrink={0} truncate>
           <span attributes={ui.dim}>{" ".repeat(gutter)}</span>
-          {markerRuns(buckets.map(anyChange), cursorColumn).map((run) => (
+          {markerRuns(
+            columns.map((column) => column?.changed ?? false),
+            cursorColumn,
+          ).map((run) => (
             <span
               key={`${run.kind}-${run.at}`}
               fg={
