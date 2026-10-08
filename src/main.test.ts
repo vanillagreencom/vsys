@@ -185,6 +185,7 @@ test("summary sampling gives rate-backed activity a baseline", async () => {
 });
 test("quit, hangup and terminate all take the quit key's shutdown", async () => {
   const f = fixture();
+  const deadline = (Date.now() + 20000) / 1000;
   try {
     const path = join(f.root, "config.toml");
     // History persists so the refresh row can count the samples the child has
@@ -229,7 +230,7 @@ def refreshes():
     except sqlite3.OperationalError:
         return 0
 try:
-    deadline = time.monotonic() + 6
+    deadline = time.monotonic() + (float(sys.argv[7]) - time.time() if trigger == "refresh" else 6)
     while child.poll() is None and time.monotonic() < deadline:
         if trigger == "hangup" and sent:
             try:
@@ -296,6 +297,7 @@ finally:
           f.root,
           fault,
           f.config.sqlitePath,
+          String(deadline),
         ],
         {
           stdout: "pipe",
