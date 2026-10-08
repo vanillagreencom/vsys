@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { dirname } from "node:path";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import type { MountInfo } from "../collect/mounts";
@@ -14,20 +15,22 @@ interface Tree {
   limit: string | null;
   /** Whether the configured root's own counters read. */
   rootCounters: boolean;
-  mount?: MountInfo;
+  /** The cgroup v2 mount holding the root; undefined for an unread mount list. */
+  mount: MountInfo | undefined;
 }
-const tree = (rest: Partial<Tree> = {}): Tree => ({
-  parent: "/sys/fs/cgroup/user.slice/user-1000.slice",
-  limit: "536870912",
-  rootCounters: true,
-  ...rest,
-});
 const mount = (point: string, root: string): MountInfo => ({
   root,
   mount: point,
   device: "cgroup",
   type: "cgroup2",
   options: [],
+});
+const tree = (rest: Partial<Tree> = {}): Tree => ({
+  parent: "/sys/fs/cgroup/user.slice/user-1000.slice",
+  limit: "536870912",
+  rootCounters: true,
+  mount: mount("/sys/fs/cgroup", "/"),
+  ...rest,
 });
 /** The one lane of a tree whose configured root sits below `parent`. */
 function lane(t: Tree) {
@@ -39,6 +42,15 @@ function lane(t: Tree) {
     readings.set(`${directory}/cgroup.procs`, directory === scope ? "40" : "");
     readings.set(`${directory}/memory.max`, "max");
   }
+  // Every cgroup between the mount point and `parent` is unlimited.
+  const point = t.mount?.mount;
+  if (point)
+    for (
+      let dir = dirname(t.parent);
+      dir.startsWith(`${point}/`);
+      dir = dirname(dir)
+    )
+      readings.set(`${dir}/memory.max`, "max");
   if (t.limit === null) readings.delete(`${t.parent}/memory.max`);
   else readings.set(`${t.parent}/memory.max`, t.limit);
   if (!t.rootCounters) readings.delete(`${root}/cpu.stat`);
@@ -90,17 +102,17 @@ test("A2-2 an unread configured root still carries the limit above it", () => {
   expect(below.dangerous).toBe(true);
 });
 
-test("A2-2 the walk above the root stops at the cgroup mount", () => {
-  // A mount of the whole hierarchy ends at the cgroup root.
-  const whole = lane(tree({ mount: mount("/sys/fs/cgroup", "/") }));
-  expect([whole.memoryMax, whole.memoryMaxKnown]).toEqual([536870912, true]);
+test("A2-2 only the top of a mounted hierarchy makes the limit above known", () => {
   // A subtree mount hides the cgroups above its mount point.
-  const subtree = lane(
-    tree({
-      parent: "/tmp/my groups",
-      limit: "max",
-      mount: mount("/tmp/my groups", "/user.slice/user-1000.slice"),
-    }),
+  const subtree = (mounted: MountInfo | undefined) =>
+    lane(tree({ parent: "/tmp/my groups", limit: "max", mount: mounted }));
+  const hidden = subtree(
+    mount("/tmp/my groups", "/user.slice/user-1000.slice"),
   );
-  expect([subtree.memoryMax, subtree.memoryMaxKnown]).toEqual([null, false]);
+  expect([hidden.memoryMax, hidden.memoryMaxKnown]).toEqual([null, false]);
+  // An unread mount list cannot say where the hierarchy ends.
+  const unmapped = subtree(undefined);
+  expect([unmapped.memoryMax, unmapped.memoryMaxKnown]).toEqual([null, false]);
+  const whole = lane(tree({ mount: undefined }));
+  expect([whole.memoryMax, whole.memoryMaxKnown]).toEqual([536870912, false]);
 });

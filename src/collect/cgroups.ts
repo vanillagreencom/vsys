@@ -171,16 +171,19 @@ export function collectGroups(
 }
 /**
  * The tightest memory.max on the cgroups above the configured root, which
- * limit every group below it. The walk ends at the first directory with no
- * memory.max, which the cgroup v2 root is. Only a missing file goes
- * unrecorded by the reader, so a recorded error is a limit left unknown. A
- * mount of a subtree hides the cgroups above it, so leaving one does too.
+ * limit every group below it. They are all known only once the walk reaches
+ * the top of the hierarchy through a mount list that was read: the mount
+ * point of a mount of the whole hierarchy, which has no memory.max. A
+ * subtree mount hides the cgroups above it, a missing memory.max below the
+ * top proves nothing about its parents, and a read the reader recorded as
+ * failed is unknown, so every other ending leaves the limit unknown.
  */
 function limitAbove(
   r: Reader,
   root: string,
   mount: MountInfo | undefined,
 ): { max: number | null; read: boolean } {
+  const whole = mount?.root === "/";
   let max: number | null = null;
   for (let dir = dirname(root); ; dir = dirname(dir)) {
     if (
@@ -188,11 +191,14 @@ function limitAbove(
       dir !== mount.mount &&
       !dir.startsWith(mount.mount === "/" ? "/" : `${mount.mount}/`)
     )
-      return { max, read: mount.root === "/" };
+      return { max, read: whole };
     const errors = r.errors.length;
     const limit = r.limit(join(dir, "memory.max"), true);
-    if (!limit.read) return { max, read: r.errors.length === errors };
+    if (!limit.read) {
+      const top = whole && dir === mount?.mount;
+      return { max, read: top && r.errors.length === errors };
+    }
     if (limit.value !== null) max = Math.min(max ?? limit.value, limit.value);
-    if (dir === dirname(dir)) return { max, read: true };
+    if (dir === dirname(dir)) return { max, read: false };
   }
 }
