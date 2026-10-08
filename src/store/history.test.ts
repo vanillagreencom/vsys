@@ -893,6 +893,32 @@ for (const collision of ["retention boundary", "commit during the merge"])
     expect(writer.window(time, 0).map((p) => p.time)).toEqual([time]);
     expect(merged.window(time, 0)).toEqual(writer.window(time, 0));
   });
+test("enabling persistence keeps retained points the archive's memory budget let go", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const source = new History(f.config);
+  cleanup.push(() => source.close());
+  // A budget the first checkpoint fits and the first two do not, so the
+  // archive lets the oldest go while the points ring keeps every sample.
+  // biome-ignore lint/complexity/useLiteralKeys: plants a small archive budget
+  source["archive"] = new Archive(200 * 1024);
+  const start = Date.now() - 3600000;
+  let time = start;
+  for (let i = 0; source.retentionWarning === null && i < 600; i++) {
+    time = start + i * 1000;
+    const s = emptySnapshot(time);
+    s.procs = [
+      processSnapshot({ cwd: `/work/${"x".repeat(i < 300 ? 0 : 200)}/${i}` }),
+    ];
+    source.add(s);
+  }
+  expect(source.retentionWarning).not.toBeNull();
+  const retained = source.window(time, 3600000);
+  expect(retained.map((p) => p.time)[0]).toBe(start);
+  const merged = source.reconfigure({ ...f.config, persistence: true });
+  cleanup.push(() => merged.close());
+  expect(merged.window(time, 3600000)).toEqual(retained);
+});
 test("a shared database's samples and their lane starts reach this dashboard's Timeline", () => {
   const f = fixture();
   cleanup.push(f.cleanup);

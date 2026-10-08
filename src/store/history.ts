@@ -334,7 +334,11 @@ export class History {
           .map((p) => [p.time, p]),
       );
       const capacity = Math.max(next.points.capacity, points.size);
-      next.points = new Points(capacity);
+      const fill = () => {
+        next.points = new Points(Math.max(capacity, points.size));
+        for (const p of [...points.values()].sort((a, b) => a.time - b.time))
+          next.points.push(p);
+      };
       // A database that is neither new nor swapped for another already
       // agrees with the source archive, so copying it forward is enough;
       // the rebuild below replaces this whole copy wherever `next.db` can
@@ -351,8 +355,7 @@ export class History {
       // so the next sample reads its predecessor from what was kept, even
       // after further settings changes before that sample.
       next.predecessorUnchecked = rebuildsFromDb || this.predecessorUnchecked;
-      for (const p of [...points.values()].sort((a, b) => a.time - b.time))
-        next.points.push(p);
+      fill();
       const copy = (row: { time: number; data: Uint8Array; point: string }) => {
         if (next.db && (!this.db || c.sqlitePath !== this.c.sqlitePath))
           next.db
@@ -363,10 +366,14 @@ export class History {
       // The destination's rows settle the merged Timeline, read under the lock
       // the transfer took: a row it kept over the source's, including one
       // another dashboard committed after `next` opened, keeps its own point.
+      // A retained point whose snapshot the archive's memory budget already
+      // let go has no row to settle it and stays as it was.
       const settle = (db: Database, transfer: () => void) =>
         db.transaction(() => {
           transfer();
-          next.points = History.loadPoints(db, cutoff, capacity);
+          for (const p of History.loadPoints(db, cutoff, capacity).all())
+            points.set(p.time, p);
+          fill();
         })();
       if (this.db && (!next.db || c.sqlitePath !== this.c.sqlitePath)) {
         if (!next.db) next.archive = new Archive();
