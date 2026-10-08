@@ -184,8 +184,9 @@ test("summary sampling gives rate-backed activity a baseline", async () => {
   }
 });
 test("quit, hangup and terminate all take the quit key's shutdown", async () => {
+  // Leave time for both termination waits before Bun ends the test.
+  const deadline = (Date.now() + 13000) / 1000;
   const f = fixture();
-  const deadline = (Date.now() + 20000) / 1000;
   try {
     const path = join(f.root, "config.toml");
     // History persists so the refresh row can count the samples the child has
