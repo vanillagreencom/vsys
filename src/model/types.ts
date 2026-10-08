@@ -28,6 +28,11 @@ export interface Group {
   /** memory.max is null for the word max; maxRead separates that from an unread file. */
   max: number | null;
   maxRead: boolean;
+  /**
+   * The tightest memory.max above the configured root, on the root group, or
+   * on every group when the root went unread. Absent in older snapshots.
+   */
+  above?: { max: number | null; read: boolean };
   swap: number | null;
   swapMax: number | null;
   swapMaxRead: boolean;

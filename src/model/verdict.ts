@@ -418,6 +418,14 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
   const subjects: [CauseId, string[]][] = [
     ["stalls", where(j.stalls, "unjudged").map((lane) => lane.id)],
     ["memory-high", where(j["memory-high"], "unjudged").map((g) => g.path)],
+    // A dangerous lane fired on a limit it read; any other lane with an unread
+    // limit might be under one.
+    [
+      "memory-cap",
+      s.lanes
+        .filter((lane) => !lane.dangerous && !lane.memoryMaxKnown)
+        .map((lane) => lane.id),
+    ],
     ["free-space", where(j["free-space"], "unjudged").map((v) => v.mount)],
     ["scratch", where(j.scratch, "unjudged").map((root) => root.path)],
   ];

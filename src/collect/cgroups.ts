@@ -1,6 +1,7 @@
 import { dirname, join, relative } from "node:path";
 import type { Group } from "../model/types";
 import { pairs, pressure, type Reader } from "./io";
+import type { MountInfo } from "./mounts";
 
 interface IoTotals {
   read: number;
@@ -65,6 +66,8 @@ export function collectGroups(
   root: string,
   previous: Group[],
   elapsedMs: number,
+  /** The root's resolved path and the cgroup v2 mount holding it, when known. */
+  mounted?: { path: string; mount: MountInfo },
 ): Group[] {
   const result: Group[] = [];
   const before = new Map(previous.map((g) => [g.path, g]));
@@ -158,5 +161,44 @@ export function collectGroups(
     for (const child of r.dirs(path)) visit(join(path, child));
   }
   visit(root);
+  const above = limitAbove(r, mounted?.path ?? root, mounted?.mount);
+  const top = result.find((g) => g.path === ".");
+  if (top) top.above = above;
+  // The root's own memory.max went unread with it, so every group below
+  // carries the limits above it as unknown.
+  else for (const g of result) g.above = { max: above.max, read: false };
   return result;
+}
+/**
+ * The tightest memory.max on the cgroups above the configured root, which
+ * limit every group below it. They are all known only once the walk reaches
+ * the top of the hierarchy through a mount list that was read: the mount
+ * point of a mount of the whole hierarchy, which has no memory.max. A
+ * subtree mount hides the cgroups above it, a missing memory.max below the
+ * top proves nothing about its parents, and a read the reader recorded as
+ * failed is unknown, so every other ending leaves the limit unknown.
+ */
+function limitAbove(
+  r: Reader,
+  root: string,
+  mount: MountInfo | undefined,
+): { max: number | null; read: boolean } {
+  const whole = mount?.root === "/";
+  let max: number | null = null;
+  for (let dir = dirname(root); ; dir = dirname(dir)) {
+    if (
+      mount &&
+      dir !== mount.mount &&
+      !dir.startsWith(mount.mount === "/" ? "/" : `${mount.mount}/`)
+    )
+      return { max, read: whole };
+    const errors = r.errors.length;
+    const limit = r.limit(join(dir, "memory.max"), true);
+    if (!limit.read) {
+      const top = whole && dir === mount?.mount;
+      return { max, read: top && r.errors.length === errors };
+    }
+    if (limit.value !== null) max = Math.min(max ?? limit.value, limit.value);
+    if (dir === dirname(dir)) return { max, read: false };
+  }
 }

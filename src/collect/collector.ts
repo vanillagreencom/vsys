@@ -17,7 +17,12 @@ import {
 import { collectDeviceWrites, collectGroups } from "./cgroups";
 import { Reader } from "./io";
 import { KernelLog, probeKernelLog } from "./kernel-log";
-import { kernelCgroupRoot, readMounts } from "./mounts";
+import {
+  cgroupMount,
+  kernelCgroupRoot,
+  type MountInfo,
+  readMounts,
+} from "./mounts";
 import { ProcessThread } from "./process-thread";
 import { ProcessCollector, type ProcessSource } from "./procs";
 import { SccacheCollector } from "./sccache";
@@ -217,11 +222,12 @@ export class Collector {
     const elapsed = this.previous ? time - this.previous.time : 0;
     const mountInfo = readMounts(r, c.procRoot);
     let kernelRoot: string | undefined;
+    let mounted: { path: string; mount: MountInfo } | undefined;
     try {
-      kernelRoot = kernelCgroupRoot(
-        realpathSync(c.cgroupRoot),
-        mountInfo ?? [],
-      );
+      const path = realpathSync(c.cgroupRoot);
+      kernelRoot = kernelCgroupRoot(path, mountInfo ?? []);
+      const mount = cgroupMount(path, mountInfo ?? []);
+      if (mount) mounted = { path, mount };
     } catch (error) {
       r.error(c.cgroupRoot, error);
     }
@@ -233,6 +239,7 @@ export class Collector {
       c.cgroupRoot,
       this.previous?.groups ?? [],
       elapsed,
+      mounted,
     );
     if (kernelRoot !== undefined)
       for (const group of groups)

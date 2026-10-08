@@ -1146,6 +1146,16 @@ test("an ancestor memory.max that cannot be read leaves the lane cap unknown", a
   const f = setup();
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope");
+  // The fixture mounts a subtree, which hides every limit above it; a mount
+  // of the whole hierarchy leaves nothing above the root.
+  const hidden = await new Collector(f.config, 100, 4096).sample();
+  const subtree = present(hidden.lanes[0], "lane under a subtree mount");
+  expect([subtree.memoryMax, subtree.memoryMaxKnown]).toEqual([null, false]);
+  f.write(
+    join(f.config.procRoot, "self/mountinfo"),
+    `2 1 0:2 / ${f.config.cgroupRoot} rw - cgroup2 cgroup rw\n`,
+  );
+  f.write(join(f.config.procRoot, "40/cgroup"), "0::/agents.slice/a.scope\n");
   const readable = await new Collector(f.config, 100, 4096).sample();
   const before = present(readable.lanes[0], "lane with a readable cap");
   expect([before.memoryMax, before.memoryMaxKnown]).toEqual([null, true]);
@@ -1153,6 +1163,15 @@ test("an ancestor memory.max that cannot be read leaves the lane cap unknown", a
   const s = await new Collector(f.config, 100, 4096).sample();
   const after = present(s.lanes[0], "lane with an unreadable cap");
   expect([after.memoryMax, after.memoryMaxKnown]).toEqual([null, false]);
+});
+test("a mount list that cannot be read leaves the limit above the root unknown", async () => {
+  const f = setup();
+  f.group("agents.slice/a.scope", [40]);
+  f.proc(40, "agents.slice/a.scope");
+  rmSync(join(f.config.procRoot, "self/mountinfo"));
+  const s = await new Collector(f.config, 100, 4096).sample();
+  const lane = present(s.lanes[0], "lane with no mount list");
+  expect([lane.memoryMax, lane.memoryMaxKnown]).toEqual([null, false]);
 });
 test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
   const f = setup();
