@@ -1,0 +1,1 @@
+- The warden refuses process moves when it cannot read agents.slice and reports its memory as unreadable.

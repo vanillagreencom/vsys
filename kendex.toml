@@ -195,12 +195,6 @@ harnesses = [
     "copilot",
 ]
 
-[hooks.skill-load-check]
-source = "kendex"
-
-[hooks.skill-load-record]
-source = "kendex"
-
 [hooks.session-start-row]
 source = "kendex"
 
