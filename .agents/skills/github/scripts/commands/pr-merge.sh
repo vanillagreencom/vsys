@@ -8,8 +8,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/../lib/github-api.sh"
-# Issue prefixes that resolve on their own once GitHub finishes computing or
-# CI completes. Callers wait before the direct attempt, or explicitly queue.
 TRANSIENT_PREFIXES='unknown:|ci_pending:|ci_unconfigured:|ci_fetch_failed:'
 
 # Scope a `gh pr checks` array to the current authoritative substantive run per
@@ -247,10 +245,12 @@ Terminal and mutation rules:
   stdout is one object with these fields:
     can_merge   boolean readiness result
     issues      blocking issue strings
+                unknown: cause=computing when GitHub answers UNKNOWN;
+                unknown: cause=read-failed when the read fails or is invalid
     warnings    non-blocking issue strings
     mergeable   MERGEABLE, CONFLICTING, or UNKNOWN
     review      GitHub review decision
-    transient   true only when every blocker can clear by waiting
+    transient   retry classification; see issue prefixes below
     state       OPEN, MERGED, CLOSED, or UNKNOWN
     merged_at   merge timestamp, or an empty string
     head_runs   run IDs used for CI classification
@@ -470,16 +470,35 @@ run_checks() {
         return 0
     fi
 
-    local mergeable
-    mergeable=$(gh pr view "$pr_num" --json mergeable --jq '.mergeable' 2>/dev/null || echo "UNKNOWN")
+    local mergeable="UNKNOWN" mergeable_err mergeable_status=0 mergeable_detail=""
+    if ! mergeable_err=$(mktemp "${TMPDIR:-/tmp}/pr-merge-mergeable.XXXXXX"); then
+        mergeable_detail="could not create a temporary file for the mergeable lookup"
+    else
+        mergeable=$(gh pr view "$pr_num" --json mergeable --jq '.mergeable' 2>"$mergeable_err") || mergeable_status=$?
+        if [ "$mergeable_status" -ne 0 ]; then
+            mergeable_detail=$(sed -n '/[^[:space:]]/{p;q;}' "$mergeable_err") || mergeable_detail="gh pr view exited $mergeable_status; diagnostic read failed"
+            [ -n "$mergeable_detail" ] || mergeable_detail="gh pr view exited $mergeable_status with no diagnostic"
+        else
+            case "$mergeable" in
+            MERGEABLE | CONFLICTING | UNKNOWN) ;;
+            *) mergeable_detail="gh pr view returned invalid mergeable answer '$mergeable'" ;;
+            esac
+        fi
+        rm -f -- "$mergeable_err"
+    fi
+    if [ -n "$mergeable_detail" ]; then
+        mergeable="UNKNOWN"
+        can_merge=false
+        issues+=("unknown: cause=read-failed $mergeable_detail; retry, or arm with --auto")
+    elif [ "$mergeable" = "UNKNOWN" ]; then
+        can_merge=false
+        issues+=("unknown: cause=computing GitHub still computing mergeable status; retry, or arm with --auto")
+    fi
     if [ "$mergeable" = "MERGEABLE" ]; then
         : # ok
     elif [ "$mergeable" = "CONFLICTING" ]; then
         can_merge=false
         issues+=("conflicts: PR has merge conflicts. Resolve by rebasing onto your default branch and force-pushing")
-    else
-        can_merge=false
-        issues+=("unknown: GitHub still computing mergeable status; retry, or arm with --auto")
     fi
 
     # 2. Check CI status. The fetch tolerance (gh exit 8 with usable JSON)
@@ -584,9 +603,6 @@ run_checks() {
     issues_json=$(printf '%s\n' "${issues[@]:-}" | jq -R -s -c 'split("\n") | map(select(. != ""))')
     warnings_json=$(printf '%s\n' "${warnings[@]:-}" | jq -R -s -c 'split("\n") | map(select(. != ""))')
 
-    # Classify whether the blocking issues are entirely transient. A transient
-    # block clears by waiting, so --auto or a retry answers it; a permanent
-    # block needs human action (fix conflicts, push CI fix, dismiss review).
     local transient
     transient=$(echo "$issues_json" | jq --arg p "^($TRANSIENT_PREFIXES)" '
         (length > 0) and (all(. | test($p)))
@@ -622,7 +638,7 @@ print_blocked() {
 
     echo "BLOCKED PR #$pr_num — no merge attempted, none queued" >&2
     if [ "$transient" = "true" ]; then
-        echo "  (transient — GitHub still computing or CI pending)" >&2
+        echo "  (transient: GitHub read unavailable, mergeability computing or CI pending)" >&2
     else
         echo "  (permanent — needs fix or review action)" >&2
     fi

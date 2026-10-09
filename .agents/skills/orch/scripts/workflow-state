@@ -1412,7 +1412,7 @@ cmd_prune() {
     n_rows=$((n_log + n_lanes))
     if [[ "$n_rows" -gt 0 || "${#candidates[@]}" -gt 0 ]]; then
         root=$(project_root) || return 1
-        archive_write "$root" "prune-$now_epoch" "$rows" ${candidates[@]+"${candidates[@]}"} \
+        archive_write "$root" "$STATE_DIR" "prune-$now_epoch" "$rows" ${candidates[@]+"${candidates[@]}"} \
             || { state_message prune-archive-failed "$@" >&2; return 1; }
         archive="$ARCHIVE"
         # The rows reach jq on stdin, never argv: every row past the retention
@@ -1481,7 +1481,7 @@ cmd_remove() {
         now_epoch=$(date -u +%s) || { state_message clock-unreadable "$@" >&2; return 1; }
         local archive_root
         archive_root=$(project_root) || return 1
-        archive_write "$archive_root" "close-$item-$now_epoch" "" ${evidence[@]+"${evidence[@]}"} ${extra[@]+"${extra[@]}"} \
+        archive_write "$archive_root" "$STATE_DIR" "close-$item-$now_epoch" "" ${evidence[@]+"${evidence[@]}"} ${extra[@]+"${extra[@]}"} \
             || { state_message remove-archive-failed "$@" >&2; return 1; }
         archive="$ARCHIVE"
     fi
@@ -1665,8 +1665,10 @@ EOF
                                 lane mailbox and the fleet's own files. First
                                 archives what it deletes, those two kept
                                 entries and each --archive PATH that exists
-                                under FLEET_DIR/archive/REPO/oversee, as prune
-                                does; a failed archive deletes nothing and is
+                                under ORCH_ARCHIVE_ROOT/REPO/oversee, as prune
+                                does. A configured root needs Python and a
+                                readable Git worktree list. A failed archive
+                                deletes nothing and is
                                 refused as remove-archive-failed. Prints
                                 "removed path=PATH" per path, then
                                 "removed kept=ARCHIVE", or "removed kept=none"
@@ -1694,7 +1696,9 @@ EOF
                                 that ORCH_RECORD_RETENTION_DAYS sets (default
                                 5). Completes overseer mailbox compaction before
                                 the state/path archive. Each owner archives its
-                                own removals under FLEET_DIR/archive/REPO/oversee
+                                own removals under ORCH_ARCHIVE_ROOT/REPO/oversee
+                                (a configured root needs Python and a readable
+                                Git worktree list)
                                 before deleting them (FLEET_DIR defaults to
                                 ~/.fleet). A failed archive leaves that owner's
                                 data intact; it does not undo a completed

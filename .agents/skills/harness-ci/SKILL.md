@@ -25,7 +25,7 @@ Run the classifier to decide whether CI can skip product checks. Commit `.kendex
 
 Flags and exit codes: `harness-only --help`. Consumer setup: [README.md](README.md). Workflow shapes to copy: [references/wiring.md](references/wiring.md).
 
-Use `--mode render-candidate` only to gate the engine installation and mirror refresh. It prints `render_candidate=true|false`, permits new head-owned paths, and grants no CI skip. `change-class` must prove render before CI skips product checks.
+Use `--mode render-candidate` only to gate the engine installation and mirror refresh. It prints `render_candidate=true|false` and grants no CI skip. It permits new head-owned paths and the adopted caller under the [caller ownership contract](#shared-refresh-caller-ownership). `change-class` must prove render before CI skips product checks.
 
 Use `--mode docs` for the docs-only path set that `harness-only --help` defines. It prints `docs_only=true|false`.
 
@@ -39,7 +39,7 @@ Required-context aggregators call `scripts/aggregate-needs`. Pass the full `toJS
 
 ## Shared refresh caller ownership
 
-`scripts/change-class::render_paths_covered` owns the caller ownership check. It first accepts a recorded adopted caller owned by a passing verifier position. Without verifier ownership, it uses `released_workflow_owned` as a fallback. The fallback requires the caller's bytes to equal the template at the exact release tag its shared workflow pins. It fetches `refs/tags/<pin>` from the public catalog into its private store. A commit pin, edited caller or unavailable release grants no fallback ownership. The fallback covers only the caller. Other excluded paths still require a supporting verifier.
+`scripts/lib/change-class.sh` declares `HARNESS_CI_REFRESH_CALLER`, the adopted caller path shared by candidacy and ownership checks. Render candidacy permits that path without an inventory entry so CI can install the verifier. It grants no class. `scripts/change-class::render_paths_covered` first accepts a recorded adopted caller owned by a passing verifier position. Without verifier ownership, it uses `released_workflow_owned` as a fallback. The fallback fetches `refs/tags/<pin>` from the public catalog into its private store. It runs that release's `refresh/lib/caller.py` with `python3 -I` to validate the caller's configuration and compare the normalized caller with the release template. Only configuration blocks the release's adopter accepts may differ. A commit pin, any other byte difference, invalid configuration, unavailable release, missing caller module or missing Python grants no fallback ownership. The fallback covers only the caller. Other excluded paths still require a supporting verifier.
 
 ## This package never edits a workflow
 
