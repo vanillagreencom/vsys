@@ -117,15 +117,21 @@ export function distinctNames<T>(
   }
   return named.map((entry) => entry.name);
 }
+const utf8 = new TextDecoder("utf-8");
 /**
  * systemd escapes a byte it cannot carry in a unit name as `\xNN`. Only the
  * escapes are decoded here: the caller has already split the name on systemd's
- * own separator, so a decoded hyphen cannot be mistaken for one.
+ * own separator, so a decoded hyphen cannot be mistaken for one. systemd
+ * escapes each byte of a UTF-8 character on its own, so a run of escapes is
+ * decoded as one UTF-8 byte sequence.
  */
 function unescapeUnit(field: string): string {
-  return field.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
-    String.fromCharCode(Number.parseInt(hex, 16)),
-  );
+  return field.replace(/(?:\\x[0-9a-fA-F]{2})+/g, (run) => {
+    const bytes = new Uint8Array(run.length / 4);
+    for (let i = 0; i < bytes.length; i++)
+      bytes[i] = Number.parseInt(run.slice(i * 4 + 2, i * 4 + 4), 16);
+    return utf8.decode(bytes);
+  });
 }
 /** The suffix systemd adds to keep a generated unit name unique. */
 const generated = (field: string): boolean =>

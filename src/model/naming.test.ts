@@ -121,3 +121,10 @@ test("a unit name loses systemd's machinery and keeps what names it", () => {
     expect(label.startsWith("app-")).toBe(false);
   }
 });
+
+// systemd escapes each byte of a UTF-8 character on its own, so
+// `systemd-escape 'café'` prints `caf\xc3\xa9`.
+test("a UTF-8 character systemd escaped byte by byte decodes to that character", () => {
+  expect(unitLabel("app-niri-caf\\xc3\\xa9-1234.scope")).toBe("café");
+  expect(unitLabel("run-r\\xc3\\xa9sum\\xc3\\xa9.service")).toBe("run résumé");
+});
