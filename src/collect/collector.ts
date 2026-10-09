@@ -86,6 +86,8 @@ const processDeadlineMs = 2000;
 /** The scheduler awaits each sample, so ticks cannot overlap. */
 export class Collector {
   private previous?: Snapshot;
+  /** The previous sample's performance.now(), which rates divide over. */
+  private previousStart?: number;
   private storage: StorageCollector;
   /**
    * The kernel log this collector searches, null where it cannot. It is
@@ -283,7 +285,9 @@ export class Collector {
     };
     const r = new Reader();
     const c = this.config;
-    const elapsed = this.previous ? time - this.previous.time : 0;
+    // A wall-clock step would divide real counter deltas by the wrong time.
+    const elapsed =
+      this.previousStart === undefined ? 0 : start - this.previousStart;
     const mountInfo = readMounts(r, c.procRoot);
     let kernelRoot: string | undefined;
     let mounted: { path: string; mount: MountInfo } | undefined;
@@ -310,7 +314,7 @@ export class Collector {
         group.kernelPath = join(kernelRoot, group.path);
     mark("cgroups");
     const processes = await this.readProcesses(r, {
-      time,
+      time: start,
       uptime: system.uptime,
       groups: groups.map((g) => ({ pids: g.pids, kernelPath: g.kernelPath })),
     });
@@ -427,6 +431,7 @@ export class Collector {
     mark("model");
     s.durationMs = performance.now() - start;
     this.previous = s;
+    this.previousStart = start;
     return s;
   }
 }
