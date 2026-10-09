@@ -165,6 +165,37 @@ test("agent detail names the account, the charged resources, the limits and the 
   }
 });
 
+async function limitsLine(jobsKnown: boolean): Promise<string> {
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ jobs: null, jobserver: null, jobsKnown })];
+  s.groups = [groupSnapshot()];
+  s.procs = [processSnapshot({ env: {}, envAvailable: jobsKnown })];
+  const t = await mount(s, defaults(), { width: 200, height: 60 });
+  try {
+    await t.press("2");
+    await t.press("enter");
+    return (
+      t
+        .frame()
+        .split("\n")
+        .find((l) => l.includes("make jobs")) ?? ""
+    );
+  } finally {
+    await t.close();
+  }
+}
+
+test("make jobs and the jobserver stay unknown where the environment was not read", async () => {
+  const unread = await limitsLine(false);
+  expect(unread).toContain(`make jobs ${gap}`);
+  expect(unread).toContain(`jobserver ${gap}`);
+  // Control: a read environment without the variable is unset, not unknown.
+  const read = await limitsLine(true);
+  expect(read).toContain("make jobs");
+  expect(read).not.toContain(`make jobs ${gap}`);
+  expect(read).not.toContain(`jobserver ${gap}`);
+});
+
 test("a lane record from an older build opens in agent detail without throwing", async () => {
   const c = defaults();
   const s = emptySnapshot();
