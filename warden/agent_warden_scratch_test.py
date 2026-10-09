@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -402,10 +403,14 @@ class AgentWardenScratchRules(WardenRulesCase):
         # systemd-run transient (run-*) nor a contained job unit. Every other one counts, a live
         # lane scope whose own folder exists included: the launcher keeps the
         # inherited TMPDIR when its mkdir meets a folder of the same name,
-        # and every launch keeps the inherited current directory. The
-        # unreadable process in a row that tests its unit is LIVE, so it
-        # never reads as exited. A row's optional last field lists the pids
-        # whose current directory cannot be read.
+        # and every launch keeps the inherited current directory. A lane
+        # process here started after the folder was created, as one that
+        # inherited it did; test_unreadable_process_in_a_lane_scope_rows
+        # holds the lanes that started first. The unreadable process in a
+        # row that tests its unit is LIVE, so it never reads as exited. A
+        # member's optional sixth field is its start in clock ticks. A row's
+        # optional last field lists the pids whose current directory cannot
+        # be read.
         user = "/user.slice/user-1000.slice/user@1000.service"
         desktop = [("systemd", f"{user}/init.scope"),
                    ("ssh-agent", f"{user}/app.slice/ssh-agent.service"),
@@ -425,6 +430,7 @@ class AgentWardenScratchRules(WardenRulesCase):
         other = f"{user}/agents.slice/agent-confine-300-400.scope"
         manager = (700, 1, "systemd", f"{user}/init.scope", None)
         zombie = self._zombie()
+        later = int((time.clock_gettime(time.CLOCK_BOOTTIME) + 3600) * os.sysconf("SC_CLK_TCK"))
         rows = [
             ("a live process's TMPDIR resolves here",
              [(555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
@@ -444,13 +450,13 @@ class AgentWardenScratchRules(WardenRulesCase):
              [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
             ("an unreadable process in a live lane scope with its same-name folder, whose TMPDIR the "
              "launcher's collision fallback inherited",
-             [manager, (LIVE, 700, "op", other, None)], ["agent-confine-300-400.scope"],
+             [manager, (LIVE, 700, "op", other, None, later)], ["agent-confine-300-400.scope"],
              ["agent-confine-300-400"], "unknown"),
             ("an unreadable current directory in a live lane scope with its own folder as TMPDIR",
-             [manager, (LIVE, 700, "op", other, "TMPDIR={scratch}/agent-confine-300-400")],
+             [manager, (LIVE, 700, "op", other, "TMPDIR={scratch}/agent-confine-300-400", later)],
              ["agent-confine-300-400.scope"], ["agent-confine-300-400"], "unknown", {LIVE}),
             ("an orphaned unreadable daemon in another live lane scope with no folder",
-             [manager, (LIVE, 700, "op", other, None)], ["agent-confine-300-400.scope"], [], "unknown"),
+             [manager, (LIVE, 700, "op", other, None, later)], ["agent-confine-300-400.scope"], [], "unknown"),
             ("an unreadable child alone in a moved scope whose agent parents are gone",
              [manager, (LIVE, 700, "op", nested, None)], [], [], "unknown"),
             ("an unreadable process in a moved scope that has exited since the scan",
@@ -482,13 +488,13 @@ class AgentWardenScratchRules(WardenRulesCase):
                             (scratch_dir / folder).mkdir()
                         old_mtime = time.time() - self.w.SCRATCH_GRACE - 1
                         os.utime(moved, (old_mtime, old_mtime))
-                        procs = {pid: self.P(pid, ppid, comm, [comm], cg=cg)
-                                 for pid, ppid, comm, cg, _ in members}
+                        procs = {pid: self.P(pid, ppid, comm, [comm], cg=cg, start=start[0] if start else 1)
+                                 for pid, ppid, comm, cg, _, *start in members}
                         environs = {
                             f"/proc/{pid}/environ":
                                 None if env is None
                                 else env.format(moved=moved, scratch=scratch_dir) + "\0OTHER=1\0"
-                            for pid, _, _, _, env in members}
+                            for pid, _, _, _, env, *_ in members}
                         old_read = self.w.read
 
                         def flaky_read(path, default=None, environs=environs):
@@ -877,6 +883,86 @@ class AgentWardenScratchRules(WardenRulesCase):
                     self.assertEqual(self.w.reap_scratch_dirs(True, {pid: daemon}, set()), removed)
                 self.assertEqual(len(logs), len(removed) + kept_lines)
                 self.assertEqual(sum(str(pid) in line for line in logs), kept_lines)
+
+    def _lane_reap(self, module, members, birth_known=True):
+        """One correct-mode reap of another lane's gone folder,
+        agent-confine-100-200, beside the own folder of the live lane
+        agent-confine-300-400. members are (pid, unit, start), start in
+        seconds from the moment both folders were created. Returns the gone
+        folder's status, the names removed and whether the own folder is
+        still there."""
+        with scratch() as tmp:
+            base = Path(tmp)
+            (base / "cg" / module.SLICE / "agent-confine-300-400.scope").mkdir(parents=True)
+            own, gone = base / "scratch" / "agent-confine-300-400", base / "scratch" / "agent-confine-100-200"
+            for folder in (own, gone):
+                folder.mkdir(parents=True)
+                os.utime(folder, (0, 0))
+            now = time.clock_gettime(time.CLOCK_BOOTTIME)
+            procs = {pid: module.Proc(pid, ppid=1, comm="op", argv=["op", "daemon"], exe="/usr/bin/op",
+                                      cgroup=self._cg(unit), start=int((now + start) * os.sysconf("SC_CLK_TCK")))
+                     for pid, unit, start in members}
+            with patch.object(module, "CG_ROOT", base / "cg"), \
+                    patch.object(module, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                    (contextlib.nullcontext() if birth_known else patch.object(module, "_birth_time", return_value=None)), \
+                    patch.object(module, "log"):
+                status = module._scratch_in_use(os.path.realpath(gone), module._scratch_holders(procs))
+                removed = module.reap_scratch_dirs(True, procs, set())
+            return status, removed, own.is_dir()
+
+    def _lane_rows(self):
+        """(name, members, birth_known, status) for _lane_reap. op and
+        other are real non-dumpable processes; LIVE, this test, is readable
+        and names neither folder."""
+        op, other = self._non_dumpable_process(), self._non_dumpable_process()
+        lane, hour = "agent-confine-300-400.scope", 3600
+        return [
+            ("a lane that started before the folder was created", [(op, lane, -hour)], True, "free"),
+            ("a child cgroup of such a lane", [(op, f"{lane}/worker", -hour)], True, "free"),
+            ("a lane that started after the folder was created", [(op, lane, 5)], True, "unknown"),
+            ("a lane that started within the clock margin before it", [(op, lane, -30)], True, "unknown"),
+            ("the launcher alone in its lane", [(op, f"agent-confine-{op}-1.scope", -hour)], True, "unknown"),
+            ("a launcher whose lane has an older member",
+             [(op, f"agent-confine-{op}-1.scope", 5), (LIVE, f"agent-confine-{op}-1.scope", -hour)], True, "free"),
+            ("a folder whose creation time cannot be read", [(op, lane, -hour)], False, "unknown"),
+            ("an unreadable process in a moved scope", [(other, "agent-warden-1-2.scope", -hour)], True, "unknown"),
+            ("an old lane beside an unreadable process in a moved scope",
+             [(op, lane, -hour), (other, "agent-warden-1-2.scope", -hour)], True, "unknown"),
+        ]
+
+    def test_unreadable_process_in_a_lane_scope_rows(self):
+        # An orphaned op daemon in a live lane scope kept every gone folder
+        # of every lane for days (VSY-219). What its lane's launch handed it
+        # existed when the lane started, so another lane's folder created
+        # after that start goes. Its own lane's folder stays while the lane
+        # is live, and every older folder stays unknown.
+        for name, members, birth_known, status in self._lane_rows():
+            with self.subTest(name=name):
+                removed = ["agent-confine-100-200"] if status == "free" else []
+                self.assertEqual(self._lane_reap(self.w, members, birth_known), (status, removed, True))
+
+    def test_unreadable_process_in_a_lane_scope_mutants_fail(self):
+        text = WARDEN.read_text()
+        rows = [
+            ("the clock margin", "SCRATCH_LINEAGE_SLACK = 60\n", "SCRATCH_LINEAGE_SLACK = 0\n",
+             "a lane that started within the clock margin before it"),
+            ("the launcher's own start", "if p.pid != int(m.group(2))]", "]", "the launcher alone in its lane"),
+            ("an unknown creation time", "born is None or born <= born_by", "born is not None and born <= born_by",
+             "a folder whose creation time cannot be read"),
+            ("the creation bound", "born is None or born <= born_by", "born is None",
+             "a lane that started after the folder was created"),
+            ("the lane scope name", r"(agent-confine-(\d+)-\d+\.scope)", r"(agent-\w+-(\d+)-\d+\.scope)",
+             "an unreadable process in a moved scope"),
+            ("the bound over every process", "born_by = max(born_by,", "born_by = min(born_by,",
+             "an old lane beside an unreadable process in a moved scope"),
+        ]
+        lane_rows = {name: (members, birth_known, status) for name, members, birth_known, status in self._lane_rows()}
+        for name, old, new, row in rows:
+            with self.subTest(name=name):
+                self.assertEqual(text.count(old), 1)
+                mutant = self.load_mutant(text.replace(old, new), "agent_warden_mutant_lane")
+                members, birth_known, status = lane_rows[row]
+                self.assertNotEqual(self._lane_reap(mutant, members, birth_known)[0], status)
 
     def test_reap_scratch_dirs_sweeps_the_old_default_parent(self):
         # AGENT_TMPDIR moved to ~/dev/.scratch/agents and left 2,474 folders
