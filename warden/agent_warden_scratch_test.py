@@ -1,4 +1,6 @@
+import itertools
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -14,6 +16,12 @@ from agent_warden_testlib import WARDEN, WardenRulesCase, load_warden, materiali
 
 sys.dont_write_bytecode = True
 
+# A pid standing in for a live process whose /proc reads a test fakes: this
+# test process, so the reaper's /proc/<pid> check finds it running.
+LIVE = os.getpid()
+# Above the largest pid_max the kernel allows (2**22), so no process has it.
+GONE = 2**22 + 1
+
 
 class AgentWardenScratchRules(WardenRulesCase):
     def test_current_directory_guard_mutants_fail(self):
@@ -22,7 +30,7 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("membership", 'cwd = os.readlink(f"/proc/{pid}/cwd")', 'cwd = "/unrelated"', "in-use"),
             ("unreadable", "if (tmpdir is None or cwd is None) and", "if tmpdir is None and", "unknown"),
         ]
-        worker = self.P(700, 1, "bun", ["bun"], cg=self._cg("agent-warden-1-2.scope"))
+        worker = self.P(LIVE, 1, "bun", ["bun"], cg=self._cg("agent-warden-1-2.scope"))
         for name, old, replacement, expected in rows:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 self.assertEqual(text.count(old), 1)
@@ -32,7 +40,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(mutant.os, "readlink", return_value=tmp,
                                      side_effect=PermissionError("cwd unreadable") if expected == "unknown" else None):
                     with self.assertRaises(AssertionError):
-                        self.assertEqual(mutant._scratch_in_use(tmp, mutant._scratch_holders({700: worker})), expected)
+                        self.assertEqual(mutant._scratch_in_use(tmp, mutant._scratch_holders({LIVE: worker})), expected)
 
     def test_worker_current_directory_keeps_scratch(self):
         rows = [
@@ -43,7 +51,7 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("cwd confirms unreadable environment", None, "{lane}", "in-use"),
             ("tmpdir confirms unreadable cwd", "{lane}", None, "in-use"),
         ]
-        worker = self.P(700, 1, "bun", ["bun"], cg=self._cg("worker.scope"))
+        worker = self.P(LIVE, 1, "bun", ["bun"], cg=self._cg("worker.scope"))
         for name, tmpdir, cwd, status in rows:
             with self.subTest(name=name), scratch() as tmp:
                 base = Path(tmp)
@@ -56,7 +64,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 real_read = self.w.read
 
                 def read(path, default=None):
-                    return environ if str(path) == "/proc/700/environ" else real_read(path, default)
+                    return environ if str(path) == f"/proc/{LIVE}/environ" else real_read(path, default)
 
                 with patch.object(self.w, "CG_ROOT", base / "cg"), \
                         patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
@@ -64,8 +72,8 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(self.w.os, "readlink", return_value=cwd,
                                      side_effect=PermissionError("cwd unreadable") if cwd is None else None), \
                         patch.object(self.w.shutil, "rmtree") as remove:
-                    self.assertEqual(self.w._scratch_in_use(str(lane), self.w._scratch_holders({700: worker})), status)
-                    removed = self.w.reap_scratch_dirs(True, {700: worker}, set())
+                    self.assertEqual(self.w._scratch_in_use(str(lane), self.w._scratch_holders({LIVE: worker})), status)
+                    removed = self.w.reap_scratch_dirs(True, {LIVE: worker}, set())
                 if status == "free":
                     remove.assert_called_once()
                     self.assertEqual(removed, [lane.name])
@@ -365,6 +373,18 @@ class AgentWardenScratchRules(WardenRulesCase):
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
+    def _zombie(self):
+        """A real child that has exited and is not yet reaped, as a short
+        job in agents.slice is between its exit and its parent's wait."""
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        self.addCleanup(proc.wait)
+        deadline = time.monotonic() + 5
+        while self.w.read(f"/proc/{proc.pid}/stat", "").rpartition(")")[2].split()[:1] != ["Z"]:
+            if time.monotonic() >= deadline:
+                self.fail("the child did not exit in time")
+            time.sleep(0.01)
+        return proc.pid
+
     def test_reap_scratch_dirs_tmpdir_liveness_rows(self):
         # move() (the "nested session" plan() branch) relocates a process's
         # cgroup membership only; it never rewrites TMPDIR. A moved child can
@@ -390,6 +410,7 @@ class AgentWardenScratchRules(WardenRulesCase):
         build = f"{user}/agents.slice/agent-warden-build-555-1.scope"
         other = f"{user}/agents.slice/agent-confine-300-400.scope"
         manager = (700, 1, "systemd", f"{user}/init.scope", None)
+        zombie = self._zombie()
         rows = [
             ("a live process's TMPDIR resolves here",
              [(555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
@@ -402,18 +423,22 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("unreadable desktop daemons outside agents.slice",
              [manager, *desktop], [], [], "free"),
             ("an unreadable process in a contained job unit outside agents.slice",
-             [manager, (701, 700, "op", job, None)], [], [], "unknown"),
+             [manager, (LIVE, 700, "op", job, None)], [], [], "unknown"),
             ("an unreadable child of an agent shell whose TMPDIR names it",
              [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
             ("an orphaned unreadable daemon in another live lane scope with its own folder",
-             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"],
+             [manager, (LIVE, 700, "op", other, None)], ["agent-confine-300-400.scope"],
              ["agent-confine-300-400"], "free"),
             ("an orphaned unreadable daemon in another live lane scope with no folder",
-             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], [], "unknown"),
+             [manager, (LIVE, 700, "op", other, None)], ["agent-confine-300-400.scope"], [], "unknown"),
             ("an unreadable child alone in a moved scope whose agent parents are gone",
-             [manager, (556, 700, "op", nested, None)], [], [], "unknown"),
+             [manager, (LIVE, 700, "op", nested, None)], [], [], "unknown"),
+            ("an unreadable process in a moved scope that has exited since the scan",
+             [manager, (GONE, 700, "op", nested, None)], [], [], "free"),
+            ("an unreadable zombie in a moved scope",
+             [manager, (zombie, 700, "bash", nested, None)], [], [], "free"),
             ("an unreadable child alone in a moved build scope whose agent parents are gone",
-             [manager, (556, 700, "op", build, None)], [], [], "unknown"),
+             [manager, (LIVE, 700, "op", build, None)], [], [], "unknown"),
         ]
         for name, members, live_scopes, folders, status in rows:
             with self.subTest(name=name):
@@ -486,7 +511,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 now = 1000.0
                 expired = now - module.SCRATCH_GRACE - 1
                 os.utime(active, (expired, expired))
-                worker = module.Proc(700, ppid=1, comm="bun", argv=["bun", "worker.js"],
+                worker = module.Proc(LIVE, ppid=1, comm="bun", argv=["bun", "worker.js"],
                                      exe="/usr/bin/bun", cgroup=f"/agents.slice/{scope.name}",
                                      start=900, marked=True, tty=0)
                 with patch.object(module.time, "time", return_value=now), \
@@ -510,7 +535,7 @@ class AgentWardenScratchRules(WardenRulesCase):
     def _scratch_reads(self, module, gone):
         """One reap over `gone` scratch directories whose scopes are gone and
         whose grace has passed, beside one still in its grace, with two live
-        pids in a warden move scope: 700's environment is unreadable, as a
+        pids in a warden move scope: LIVE's environment is unreadable, as a
         non-dumpable process's is, so every gone directory reads as unknown
         and none stops the scan early. Returns the reads per /proc file and the names
         removed."""
@@ -530,7 +555,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 fresh = parent / "agent-confine-900-111"
                 fresh.mkdir()
                 os.utime(fresh, (now, now))
-                environs = {"/proc/700/environ": None, "/proc/701/environ": "TMPDIR=/unrelated\0"}
+                environs = {f"/proc/{LIVE}/environ": None, "/proc/701/environ": "TMPDIR=/unrelated\0"}
                 reads = {}
                 real_read, real_readlink = module.read, os.readlink
 
@@ -551,7 +576,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(module, "read", side_effect=counted_read), \
                         patch.object(module.os, "readlink", side_effect=counted_readlink), \
                         patch.object(module, "log"):
-                    procs = {pid: self.P(pid, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope")) for pid in (700, 701)}
+                    procs = {pid: self.P(pid, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope")) for pid in (LIVE, 701)}
                     removed = module.reap_scratch_dirs(True, procs, set())
                 return reads, removed
 
@@ -561,7 +586,7 @@ class AgentWardenScratchRules(WardenRulesCase):
         # machine 933 gone directories each rescanned about 970 processes,
         # 24 s of CPU per tick (VSY-216). A pass with no gone directory
         # past its grace reads no process at all.
-        once = {"/proc/700/environ": 1, "/proc/701/environ": 1, "/proc/700/cwd": 1, "/proc/701/cwd": 1}
+        once = {f"/proc/{LIVE}/environ": 1, "/proc/701/environ": 1, f"/proc/{LIVE}/cwd": 1, "/proc/701/cwd": 1}
         rows = [
             ("three gone directories, each unknown", 3, (once, [])),
             ("no gone directory past its grace", 0, ({}, [])),
@@ -578,7 +603,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                                   "agent_warden_mutant_scratch_reads")
         reads, removed = self._scratch_reads(mutant, 3)
         self.assertEqual(removed, [])
-        self.assertEqual(reads["/proc/700/environ"], 3)
+        self.assertEqual(reads[f"/proc/{LIVE}/environ"], 3)
 
     def test_worker_entering_a_later_directory_during_a_removal_keeps_it(self):
         # A known worker with no TMPDIR changes its current directory into
@@ -836,10 +861,10 @@ class AgentWardenScratchRules(WardenRulesCase):
             env = {**self.env, "AGENT_TMPDIR": str(base / "scratch"), "XDG_CACHE_HOME": str(base / "cache")}
             w = load_warden(env, "agent_warden_old_parent")
             old_parent, new_parent = base / "cache" / "agents" / "tmp", base / "scratch"
-            moved = self.P(700, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope"))
+            moved = self.P(LIVE, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope"))
             rows = [
                 ("no process holds them", {}, ["agent-confine-301-400", "agent-confine-300-400"]),
-                ("an unreadable process in a move scope", {700: moved}, []),
+                ("an unreadable process in a move scope", {LIVE: moved}, []),
             ]
             for name, procs, removed in rows:
                 with self.subTest(name=name):
@@ -855,24 +880,32 @@ class AgentWardenScratchRules(WardenRulesCase):
                     self.assertEqual([folder.name for folder in folders if folder.is_dir()],
                                      [folder.name for folder in folders if folder.name not in removed])
 
-    def test_reap_scratch_dirs_caps_removals_per_pass(self):
+    def test_reap_scratch_dirs_stops_removing_at_its_cpu_allowance(self):
         # Each removal re-reads every process first. The owner's backlog of
         # about 3,500 folders would take about 50 s in one pass, past the
-        # service's 25 s timeout, so a pass stops at its cap and the next
-        # pass takes the rest.
+        # service's 25 s timeout, so a pass starts no removal past its CPU
+        # allowance, always makes one, and later passes take the rest. The
+        # CPU clock here gains one second per read.
         with scratch() as tmp:
             base = Path(tmp)
             (base / "cg" / self.w.SLICE).mkdir(parents=True)
             names = ["agent-confine-300-400", "agent-confine-301-400", "agent-confine-302-400"]
-            for name in names:
-                (base / "scratch" / name).mkdir(parents=True)
-                os.utime(base / "scratch" / name, (0, 0))
-            with patch.object(self.w, "CG_ROOT", base / "cg"), \
-                    patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
-                    patch.object(self.w, "SCRATCH_REMOVALS_PER_PASS", 2), \
-                    patch.object(self.w, "log"):
-                passes = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(2)]
-            self.assertEqual(passes, [names[:2], names[2:]])
+            rows = [
+                ("the allowance is spent", 0.5, [names[:1], names[1:2], names[2:]]),
+                ("the allowance is never spent", math.inf, [names, [], []]),
+            ]
+            for name, allowance, expected in rows:
+                with self.subTest(name=name):
+                    for folder in names:
+                        (base / "scratch" / folder).mkdir(parents=True, exist_ok=True)
+                        os.utime(base / "scratch" / folder, (0, 0))
+                    with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                            patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                            patch.object(self.w, "SCRATCH_REMOVAL_CPU", allowance), \
+                            patch.object(self.w.time, "process_time", side_effect=itertools.count()), \
+                            patch.object(self.w, "log"):
+                        passes = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(3)]
+                    self.assertEqual(passes, expected)
 
     def _report_pass(self, folders):
         """CPU seconds and folders walked for one --report pass of the whole
