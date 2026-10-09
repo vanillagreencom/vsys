@@ -397,17 +397,26 @@ class AgentWardenScratchRules(WardenRulesCase):
         # survives a trailing slash on AGENT_TMPDIR, which agent-confine's
         # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
         # os.path.join (this candidate path's source) never does. An
-        # unreadable process counts only where its cgroup can tie it to
-        # agent work: a contained job unit outside the slice, or any scope in
-        # the slice. A live lane scope whose own folder exists is no
-        # exception: the launcher keeps the inherited TMPDIR when its mkdir
-        # meets a folder of the same name, and every launch keeps the
-        # inherited current directory. A row's optional last field lists
-        # the pids whose current directory cannot be read.
+        # unreadable process is ignored only in a desktop unit: init.scope,
+        # or an app.slice unit that is neither a systemd-run transient
+        # (run-*) nor a contained job unit. Every other one counts, a live
+        # lane scope whose own folder exists included: the launcher keeps the
+        # inherited TMPDIR when its mkdir meets a folder of the same name,
+        # and every launch keeps the inherited current directory. The
+        # unreadable process in a row that tests its unit is LIVE, so it
+        # never reads as exited. A row's optional last field lists the pids
+        # whose current directory cannot be read.
         user = "/user.slice/user-1000.slice/user@1000.service"
-        desktop = [(701, 700, "ssh-agent", f"{user}/app.slice/ssh-agent.service", None),
-                   (702, 700, "gpg-agent", f"{user}/app.slice/gpg-agent.service", None),
-                   (703, 700, "1Password-Brows", f"{user}/app.slice/app-org.chromium.Chromium-9.scope", None)]
+        desktop = [("systemd", f"{user}/init.scope"),
+                   ("ssh-agent", f"{user}/app.slice/ssh-agent.service"),
+                   ("gpg-agent", f"{user}/app.slice/gpg-agent.service"),
+                   ("1Password-Brows", f"{user}/app.slice/app-org.chromium.Chromium-9.scope"),
+                   ("Hyprland-app", f"{user}/app.slice/app-graphical.slice/app-foot-7.scope")]
+        undesktop = [("a raw systemd-run scope in app.slice", f"{user}/app.slice/run-u42.scope"),
+                     ("a systemd-run service in app.slice", f"{user}/app.slice/run-u43.service"),
+                     ("a login session scope", "/user.slice/user-1000.slice/session-2.scope"),
+                     ("app.slice with no unit", f"{user}/app.slice"),
+                     ("the root cgroup", "/")]
         job = f"{user}/app.slice/orch-validate.service"
         nested = f"{user}/agents.slice/agent-warden-555-1.scope"
         build = f"{user}/agents.slice/agent-warden-build-555-1.scope"
@@ -423,8 +432,10 @@ class AgentWardenScratchRules(WardenRulesCase):
              [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], [], "in-use"),
             ("a live process's TMPDIR follows other keys ending in TMPDIR",
              [(555, 1, "bash", nested, "AGENT_TMPDIR={scratch}\0TMUX_TMPDIR=/tmp\0TMPDIR={moved}")], [], [], "in-use"),
-            ("unreadable desktop daemons outside agents.slice",
-             [manager, *desktop], [], [], "free"),
+            *((f"an unreadable {comm} in its desktop unit",
+               [(LIVE, 1, comm, cg, None)], [], [], "free") for comm, cg in desktop),
+            *((f"an unreadable worker in {kind}",
+               [(LIVE, 1, "bun", cg, None)], [], [], "unknown") for kind, cg in undesktop),
             ("an unreadable process in a contained job unit outside agents.slice",
              [manager, (LIVE, 700, "op", job, None)], [], [], "unknown"),
             ("an unreadable child of an agent shell whose TMPDIR names it",
@@ -838,9 +849,10 @@ class AgentWardenScratchRules(WardenRulesCase):
     def test_unreadable_process_holds_scratch_only_through_its_cgroup(self):
         # A non-dumpable desktop process kept every gone folder on the
         # owner's machine: 932 of 933 each tick, one journal line each per
-        # run (VSY-218). Its cgroup ties it to no lane, so the folders go. A
-        # contained job unit a lane started can hold them; it keeps both and
-        # says so in one line per run, not one per folder.
+        # run (VSY-218). Its cgroup is a desktop unit, which no lane starts,
+        # so the folders go. A contained job unit in app.slice is not one: a
+        # lane started it, so it keeps both and says so in one line per run,
+        # not one per folder.
         pid = self._non_dumpable_process()
         user = f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service"
         rows = [

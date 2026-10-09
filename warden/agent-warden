@@ -980,18 +980,34 @@ def _exited(pid):
     return stat is None or stat.rpartition(")")[2].split()[:1] in (["Z"], ["X"])
 
 
+def _desktop_unit(cgroup):
+    """Whether cgroup is provably one of the desktop's own units, which no
+    lane starts: the user manager's init.scope (systemd --user, sd-pam), or a
+    unit in app.slice, through sub-slices only, that systemd-run did not
+    create (run-*.scope, run-*.service) and that is not a contained job unit
+    by contained_unit(): ssh-agent.service, gpg-agent.service, app-*.scope.
+    Anything else, a session scope or an unparsable path included, is not."""
+    if _unit_rel(cgroup).strip("/") == "init.scope":
+        return True
+    unit, unit_path = _unit_parts(cgroup)
+    if unit is None or unit_path is None or unit.startswith("run-"):
+        return False
+    slices = unit_path.split("/")[:-1]
+    return (slices[:1] == ["app.slice"] and all(s.endswith(".slice") for s in slices)
+            and not contained_unit(cgroup))
+
+
 def _unread_may_hold(proc):
     """Whether proc, whose environment or current directory could not be
     read, can hold a gone scope's scratch directory. Its cgroup decides, as
-    /proc/<pid>/cgroup stays readable for a non-dumpable process. Outside
-    agents.slice only a contained job unit can: a lane starts it with
-    systemd-run, and a scope inherits the lane's TMPDIR. The desktop's own
-    units (init.scope, ssh-agent.service, app-*.scope) never can. Any process
-    in the slice can hold any directory, its own lane's scope included: a
-    lane keeps its inherited TMPDIR when the launcher's mkdir meets a folder
-    of the same name, every launch keeps the inherited current directory,
-    and move() relocates a nested session by cgroup only."""
-    return proc.confined or contained_unit(proc.cgroup)
+    /proc/<pid>/cgroup stays readable for a non-dumpable process. Only a
+    desktop unit by _desktop_unit() cannot: no lane starts one. Every other
+    process can. A lane's own scope keeps its inherited TMPDIR when the
+    launcher's mkdir meets a folder of the same name, every launch keeps the
+    inherited current directory, move() relocates a nested session by cgroup
+    only, and an escaped worker in an uncontained systemd-run scope keeps the
+    lane's TMPDIR and current directory."""
+    return not _desktop_unit(proc.cgroup or "")
 
 
 def _scratch_holders(procs):
@@ -999,11 +1015,11 @@ def _scratch_holders(procs):
     TMPDIR and current directory, each resolved, with every ancestor of
     each, so a candidate directory is in use exactly when held contains it.
     unknown lists the pids whose environment or current directory could not
-    be read and that _unread_may_hold ties to a gone scope's directory.
-    A pass reads every pid here once, plus once per directory it removes,
-    not once per candidate directory: with one unreadable process, 933 gone
-    directories each rescanned about 970 processes, 24 s of CPU per 30 s
-    tick (VSY-216)."""
+    be read, that have not exited, and that sit outside a desktop unit by
+    _unread_may_hold. A pass reads every pid here once, plus once per
+    removal it attempts, not once per candidate directory: with one
+    unreadable process, 933 gone directories each rescanned about 970
+    processes, 24 s of CPU per 30 s tick (VSY-216)."""
     held = set()
     unknown = []
     for pid in procs:
