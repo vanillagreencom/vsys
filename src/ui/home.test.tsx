@@ -2003,3 +2003,32 @@ test("every kind of Home row is kept in view, and opened and chosen alike by the
     }
   }
 });
+test.each(["complete", "incomplete", "unknown"] as const)(
+  "Home counts agents as a fact only when every process was read: %s",
+  async (processRead) => {
+    const c = defaults();
+    // The collector's sample when the process read misses its deadline: no
+    // process, and only the agent lanes a watched slice names.
+    const s = emptySnapshot();
+    s.processRead = processRead;
+    s.procs = [];
+    s.lanes = [];
+    if (processRead !== "complete")
+      s.errors = [{ source: c.procRoot, message: "read missed its deadline" }];
+    const t = await mount(s, c, { width: 120, height: 40 });
+    try {
+      await t.settle();
+      const line = present(
+        t
+          .frame()
+          .split("\n")
+          .find((row) => row.includes(" cores · ")),
+        "count line",
+      );
+      expect(line.includes(gap)).toBe(processRead !== "complete");
+      expect(/\b0 agents\b/.test(line)).toBe(processRead === "complete");
+    } finally {
+      await t.close();
+    }
+  },
+);
