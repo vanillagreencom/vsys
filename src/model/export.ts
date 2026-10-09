@@ -104,6 +104,14 @@ export function summarySnapshot(
   }));
   if (options.scratchMeasured === false)
     verdict.push({ cause: "scratch", level: null, subject: null });
+  // Until a unit has an hour average, as in a `--once` run, the cause is
+  // unmeasured, not clear.
+  const units = s.services;
+  if (
+    units === null ||
+    (units.length > 0 && units.every((u) => u.cpuHourPercent === null))
+  )
+    verdict.push({ cause: "service-cpu", level: null, subject: null });
   return {
     schema: summarySchema,
     time: s.time,

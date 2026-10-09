@@ -6,10 +6,8 @@ const minuteMs = 60_000;
 const hourMs = 60 * minuteMs;
 /**
  * How far past an hour the oldest checkpoint may be and still give an hour's
- * average. A checkpoint ages in steps of the refresh interval, so this covers
- * every interval up to 15 minutes; past it, after a long interval or a gap in
- * sampling, the figure would spread an old burst over a span the card does
- * not name, so the average stays unknown until an hour-old checkpoint exists.
+ * average: the average comes from a checkpoint 60 to 75 minutes old. A unit
+ * with no such checkpoint has no average and raises nothing at any threshold.
  */
 const slackMs = 15 * minuteMs;
 interface Checkpoint {
