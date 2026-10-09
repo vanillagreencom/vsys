@@ -148,7 +148,10 @@ function branchAt(cwd: string): string | null {
 
 /** What process collection takes from the rest of one sample. */
 export interface ProcessRequest {
-  /** The sample's time in milliseconds, which tick deltas are divided over. */
+  /**
+   * The sample's performance.now() in the collector's thread, in milliseconds,
+   * which tick deltas are divided over. A wall-clock step would skew them.
+   */
   time: number;
   /** System uptime in seconds, which process ages are measured against. */
   uptime: number;

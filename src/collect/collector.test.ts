@@ -32,6 +32,12 @@ const setup = () => {
   fixtures.push(f);
   return f;
 };
+// Rates divide over performance.now(), so a test that sets the interval holds
+// the monotonic clock at the sample's time too.
+const sampleAt = (collector: Collector, time: number) => {
+  const now = spyOn(performance, "now").mockReturnValue(time);
+  return collector.sample(time).finally(() => now.mockRestore());
+};
 
 test("scope CPU, memory, environment and process identity survive sampling", async () => {
   const f = setup();
@@ -41,7 +47,7 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
     ticks: 10,
   });
   const collector = new Collector(f.config, 100, 4096);
-  const a = await collector.sample(1000);
+  const a = await sampleAt(collector, 1000);
   expect(a.errors).toEqual([]);
   expect(a.lanes[0]?.account).toBe("work");
   expect(a.procs[0]?.env).toEqual({
@@ -57,7 +63,7 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
     join(f.config.cgroupRoot, "agents.slice/run-lane.scope/cpu.stat"),
     "usage_usec 501000",
   );
-  const b = await collector.sample(2000);
+  const b = await sampleAt(collector, 2000);
   expect(b.lanes[0]?.cpu).toBe(50);
   expect(b.procs[0]?.cpuPercent).toBe(50);
   expect(b.lanes[0]?.rss).toBe(40960);
@@ -67,7 +73,7 @@ test("scope CPU, memory, environment and process identity survive sampling", asy
     ticks: 1,
     env: "CLAUDE_CONFIG_DIR=/accounts/new\0",
   });
-  const reused = await collector.sample(3000);
+  const reused = await sampleAt(collector, 3000);
   expect(reused.procs[0]?.cpuPercent).toBeNull();
   expect(reused.lanes[0]?.account).toBe("new");
 });
@@ -245,13 +251,13 @@ test("an agent is escaped only on a machine that has the agent slice", async () 
     }
     const collector = new Collector(f.config, 100, 4096);
     // An alert opens on the first sample that shows its rule and only then.
-    const first = await collector.sample(1000);
+    const first = await sampleAt(collector, 1000);
     for (const [, scope, usage] of scopes)
       f.write(
         join(f.config.cgroupRoot, scope, "cpu.stat"),
         `usage_usec ${usage}`,
       );
-    const s = await collector.sample(2000);
+    const s = await sampleAt(collector, 2000);
     const slice = s.capabilities.find((cap) => cap.id === "agent-slice");
     if (!slice) throw new Error("agent-slice: no capability in the sample");
     expect({
@@ -1184,7 +1190,7 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   );
   f.write(join(path, "memory.stat"), "anon 5\nfile 4096\nslab 1\n");
   const collector = new Collector(f.config, 100, 4096);
-  const a = await collector.sample(1000);
+  const a = await sampleAt(collector, 1000);
   const first = a.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(first).toMatchObject({ ioRead: 101, ioWrite: 202, cache: 4096 });
   // The first sample has no earlier counter, so a rate is unknown, not zero.
@@ -1193,14 +1199,14 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
     join(path, "io.stat"),
     "259:0 rbytes=100 wbytes=1200\n8:0 rbytes=1 wbytes=2\n",
   );
-  const b = await collector.sample(2000);
+  const b = await sampleAt(collector, 2000);
   const second = b.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(second?.writeRate).toBe(1000);
   expect(second?.readRate).toBe(0);
   // An unreadable or invalid counter stays unknown, never a measured zero.
   f.write(join(path, "io.stat"), "259:0 rbytes=x wbytes=200\n");
   rmSync(join(path, "memory.stat"));
-  const bad = await collector.sample(3000);
+  const bad = await sampleAt(collector, 3000);
   const group = bad.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(group?.ioWrite).toBeNull();
   expect(group?.cache).toBeNull();
@@ -1242,9 +1248,9 @@ test("a scope's first I/O after an empty io.stat gets a rate", async () => {
   const path = join(f.config.cgroupRoot, "agents.slice/quiet.scope");
   f.write(join(path, "io.stat"), "");
   const collector = new Collector(f.config, 100, 4096);
-  await collector.sample(1000);
+  await sampleAt(collector, 1000);
   f.write(join(path, "io.stat"), "259:0 rbytes=0 wbytes=4096 rios=0 wios=1\n");
-  const s = await collector.sample(2000);
+  const s = await sampleAt(collector, 2000);
   const g = s.groups.find((x) => x.path === "agents.slice/quiet.scope");
   expect(g?.writeRate).toBe(4096);
 });
