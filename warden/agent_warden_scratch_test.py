@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import re
+import resource
 import subprocess
 import sys
 import tempfile
@@ -18,8 +20,9 @@ class AgentWardenScratchRules(WardenRulesCase):
         text = WARDEN.read_text()
         rows = [
             ("membership", 'cwd = os.readlink(f"/proc/{pid}/cwd")', 'cwd = "/unrelated"', "in-use"),
-            ("unreadable", "if tmpdir is None or cwd is None:", "if tmpdir is None:", "unknown"),
+            ("unreadable", "if (tmpdir is None or cwd is None) and", "if tmpdir is None and", "unknown"),
         ]
+        worker = self.P(700, 1, "bun", ["bun"], cg=self._cg("agent-warden-1-2.scope"))
         for name, old, replacement, expected in rows:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
                 self.assertEqual(text.count(old), 1)
@@ -29,7 +32,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(mutant.os, "readlink", return_value=tmp,
                                      side_effect=PermissionError("cwd unreadable") if expected == "unknown" else None):
                     with self.assertRaises(AssertionError):
-                        self.assertEqual(mutant._scratch_in_use(tmp, mutant._scratch_holders({700: None})), expected)
+                        self.assertEqual(mutant._scratch_in_use(tmp, mutant._scratch_holders({700: worker})), expected)
 
     def test_worker_current_directory_keeps_scratch(self):
         rows = [
@@ -40,6 +43,7 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("cwd confirms unreadable environment", None, "{lane}", "in-use"),
             ("tmpdir confirms unreadable cwd", "{lane}", None, "in-use"),
         ]
+        worker = self.P(700, 1, "bun", ["bun"], cg=self._cg("worker.scope"))
         for name, tmpdir, cwd, status in rows:
             with self.subTest(name=name), scratch() as tmp:
                 base = Path(tmp)
@@ -60,8 +64,8 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(self.w.os, "readlink", return_value=cwd,
                                      side_effect=PermissionError("cwd unreadable") if cwd is None else None), \
                         patch.object(self.w.shutil, "rmtree") as remove:
-                    self.assertEqual(self.w._scratch_in_use(lane, self.w._scratch_holders({700: None})), status)
-                    removed = self.w.reap_scratch_dirs(True, {700: None}, set())
+                    self.assertEqual(self.w._scratch_in_use(str(lane), self.w._scratch_holders({700: worker})), status)
+                    removed = self.w.reap_scratch_dirs(True, {700: worker}, set())
                 if status == "free":
                     remove.assert_called_once()
                     self.assertEqual(removed, [lane.name])
@@ -373,34 +377,43 @@ class AgentWardenScratchRules(WardenRulesCase):
         # "agent-confine-100-200". The doubled-separator row proves the match
         # survives a trailing slash on AGENT_TMPDIR, which agent-confine's
         # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
-        # os.path.join (this candidate path's source) never does. The
-        # unreadable environment can belong to a worker that inherited
-        # TMPDIR before its launcher exited, regardless of its current scope.
+        # os.path.join (this candidate path's source) never does. An
+        # unreadable process counts only where its cgroup can tie it to
+        # agent work: a contained job unit outside the slice, or any scope in
+        # the slice but a live lane scope whose own folder exists.
         user = "/user.slice/user-1000.slice/user@1000.service"
-        app = f"{user}/app.slice/x.scope"
+        desktop = [(701, 700, "ssh-agent", f"{user}/app.slice/ssh-agent.service", None),
+                   (702, 700, "gpg-agent", f"{user}/app.slice/gpg-agent.service", None),
+                   (703, 700, "1Password-Brows", f"{user}/app.slice/app-org.chromium.Chromium-9.scope", None)]
+        job = f"{user}/app.slice/orch-validate.service"
         nested = f"{user}/agents.slice/agent-warden-555-1.scope"
         build = f"{user}/agents.slice/agent-warden-build-555-1.scope"
         other = f"{user}/agents.slice/agent-confine-300-400.scope"
         manager = (700, 1, "systemd", f"{user}/init.scope", None)
         rows = [
             ("a live process's TMPDIR resolves here",
-             [(555, 1, "bash", nested, "TMPDIR={moved}")], [], "in-use"),
+             [(555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
             ("a live process's TMPDIR names an unrelated sibling",
-             [(555, 1, "bash", nested, "TMPDIR={moved}0")], [], "free"),
+             [(555, 1, "bash", nested, "TMPDIR={moved}0")], [], [], "free"),
             ("a live process's TMPDIR has a doubled separator",
-             [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], "in-use"),
-            ("an unreadable desktop daemon outside agents.slice",
-             [manager, (701, 700, "ssh-agent", app, None)], [], "unknown"),
+             [(555, 1, "bash", nested, "TMPDIR={scratch}//agent-confine-100-200")], [], [], "in-use"),
+            ("unreadable desktop daemons outside agents.slice",
+             [manager, *desktop], [], [], "free"),
+            ("an unreadable process in a contained job unit outside agents.slice",
+             [manager, (701, 700, "op", job, None)], [], [], "unknown"),
             ("an unreadable child of an agent shell whose TMPDIR names it",
-             [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], "in-use"),
-            ("an orphaned unreadable daemon in another live agents.slice scope",
-             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], "unknown"),
+             [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
+            ("an orphaned unreadable daemon in another live lane scope with its own folder",
+             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"],
+             ["agent-confine-300-400"], "free"),
+            ("an orphaned unreadable daemon in another live lane scope with no folder",
+             [manager, (800, 700, "op", other, None)], ["agent-confine-300-400.scope"], [], "unknown"),
             ("an unreadable child alone in a moved scope whose agent parents are gone",
-             [manager, (556, 700, "op", nested, None)], [], "unknown"),
+             [manager, (556, 700, "op", nested, None)], [], [], "unknown"),
             ("an unreadable child alone in a moved build scope whose agent parents are gone",
-             [manager, (556, 700, "op", build, None)], [], "unknown"),
+             [manager, (556, 700, "op", build, None)], [], [], "unknown"),
         ]
-        for name, members, live_scopes, status in rows:
+        for name, members, live_scopes, folders, status in rows:
             with self.subTest(name=name):
                 with scratch() as tmp:
                     base = Path(tmp)
@@ -418,6 +431,8 @@ class AgentWardenScratchRules(WardenRulesCase):
                         scratch_dir.mkdir(parents=True)
                         moved = scratch_dir / "agent-confine-100-200"
                         moved.mkdir()
+                        for folder in folders:
+                            (scratch_dir / folder).mkdir()
                         old_mtime = time.time() - self.w.SCRATCH_GRACE - 1
                         os.utime(moved, (old_mtime, old_mtime))
                         procs = {pid: self.P(pid, ppid, comm, [comm], cg=cg)
@@ -483,9 +498,9 @@ class AgentWardenScratchRules(WardenRulesCase):
 
     def test_unreadable_worker_scratch_mutant_fails(self):
         text = WARDEN.read_text()
-        old = "            unknown = True\n"
+        old = "            unknown.append(pid)\n"
         self.assertEqual(text.count(old), 1)
-        mutant = self.load_mutant(text.replace(old, "            unknown = False\n"),
+        mutant = self.load_mutant(text.replace(old, "            pass\n"),
                                   "agent_warden_mutant_unknown_scratch")
         with self.assertRaises(AssertionError):
             self.assertEqual(self._detached_worker_scratch(mutant), ([], True))
@@ -493,9 +508,9 @@ class AgentWardenScratchRules(WardenRulesCase):
     def _scratch_reads(self, module, gone):
         """One reap over `gone` scratch directories whose scopes are gone and
         whose grace has passed, beside one still in its grace, with two live
-        pids: 700's environment is unreadable, as a non-dumpable desktop
-        process's is, so every gone directory reads as unknown and none
-        stops the scan early. Returns the reads per /proc file and the names
+        pids in a warden move scope: 700's environment is unreadable, as a
+        non-dumpable process's is, so every gone directory reads as unknown
+        and none stops the scan early. Returns the reads per /proc file and the names
         removed."""
         with scratch() as tmp:
             base = Path(tmp)
@@ -534,7 +549,8 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(module, "read", side_effect=counted_read), \
                         patch.object(module.os, "readlink", side_effect=counted_readlink), \
                         patch.object(module, "log"):
-                    removed = module.reap_scratch_dirs(True, {700: None, 701: None}, set())
+                    procs = {pid: self.P(pid, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope")) for pid in (700, 701)}
+                    removed = module.reap_scratch_dirs(True, procs, set())
                 return reads, removed
 
     def test_reap_scratch_dirs_reads_each_process_once(self):
@@ -631,7 +647,7 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                 mutant.read = flaky_read
                 try:
-                    mutant.reap_scratch_dirs(True, {555: None}, set())
+                    mutant.reap_scratch_dirs(True, {555: self.P(555, 1, "bash", ["bash"])}, set())
                 finally:
                     mutant.read = old_read
                 self.assertFalse(moved.is_dir())
@@ -677,7 +693,7 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                 self.w.read = flaky_read
                 try:
-                    removed = self.w.reap_scratch_dirs(True, {555: None}, set())
+                    removed = self.w.reap_scratch_dirs(True, {555: self.P(555, 1, "bash", ["bash"])}, set())
                 finally:
                     self.w.read = old_read
                 self.assertTrue(moved.is_dir())
@@ -762,6 +778,139 @@ class AgentWardenScratchRules(WardenRulesCase):
                     proc.wait(timeout=5)
             finally:
                 self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def _non_dumpable_process(self):
+        """A real process that cleared its dumpable flag, as ssh-agent,
+        gpg-agent and the 1Password helpers do: its environment and current
+        directory cannot be read even by its own user."""
+        code = ("import ctypes, sys, time; ctypes.CDLL(None).prctl(4, 0, 0, 0, 0); "
+                "sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)")
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.wait, 5)
+        self.addCleanup(proc.terminate)
+        self.assertEqual(proc.stdout.readline(), "ready\n")
+        proc.stdout.close()
+        if self.w._proc_tmpdir(proc.pid) is not None:
+            self.skipTest("this runner can read a non-dumpable process's environment (CAP_SYS_PTRACE)")
+        return proc.pid
+
+    def test_unreadable_process_holds_scratch_only_through_its_cgroup(self):
+        # A non-dumpable desktop process kept every gone folder on the
+        # owner's machine: 932 of 933 each tick, one journal line each per
+        # run (VSY-218). Its cgroup ties it to no lane, so the folders go. A
+        # contained job unit a lane started can hold them; it keeps both and
+        # says so in one line per run, not one per folder.
+        pid = self._non_dumpable_process()
+        user = f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service"
+        rows = [
+            ("a desktop daemon", f"{user}/app.slice/ssh-agent.service",
+             ["agent-confine-300-400", "agent-confine-301-400"], []),
+            ("a contained job unit", f"{user}/app.slice/orch-validate.service",
+             [], [f"scratch reap: kept 2 gone scope folder(s); unreadable pid(s) {pid} could hold them"]),
+        ]
+        for name, cgroup, removed, logged in rows:
+            with self.subTest(name=name), scratch() as tmp:
+                base = Path(tmp)
+                (base / "cg" / self.w.SLICE).mkdir(parents=True)
+                for folder in ("agent-confine-300-400", "agent-confine-301-400"):
+                    (base / "scratch" / folder).mkdir(parents=True)
+                    os.utime(base / "scratch" / folder, (0, 0))
+                daemon = self.P(pid, 1, "ssh-agent", ["ssh-agent"], cg=cgroup)
+                logs = []
+                with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                        patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                        patch.object(self.w, "log", side_effect=logs.append):
+                    self.assertEqual(self.w.reap_scratch_dirs(True, {pid: daemon}, set()), removed)
+                self.assertEqual(logs, [f"  removed scratch {folder}: scope gone" for folder in removed] + logged)
+
+    def test_reap_scratch_dirs_sweeps_the_old_default_parent(self):
+        # AGENT_TMPDIR moved to ~/dev/.scratch/agents and left 2,474 folders
+        # under agent-confine's default ${XDG_CACHE_HOME}/agents/tmp, which the
+        # warden never listed (VSY-218). Both parents take the same rule: a
+        # live scope's folder stays, and a tied unreadable process keeps both
+        # gone folders.
+        with scratch() as tmp:
+            base = Path(tmp)
+            env = {**self.env, "AGENT_TMPDIR": str(base / "scratch"), "XDG_CACHE_HOME": str(base / "cache")}
+            w = load_warden(env, "agent_warden_old_parent")
+            old_parent, new_parent = base / "cache" / "agents" / "tmp", base / "scratch"
+            moved = self.P(700, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope"))
+            rows = [
+                ("no process holds them", {}, ["agent-confine-301-400", "agent-confine-300-400"]),
+                ("an unreadable process in a move scope", {700: moved}, []),
+            ]
+            for name, procs, removed in rows:
+                with self.subTest(name=name):
+                    (base / "cg" / w.SLICE / "agent-confine-100-200.scope").mkdir(parents=True, exist_ok=True)
+                    folders = [old_parent / "agent-confine-100-200", old_parent / "agent-confine-300-400",
+                               new_parent / "agent-confine-301-400"]
+                    for folder in folders:
+                        folder.mkdir(parents=True, exist_ok=True)
+                        os.utime(folder, (0, 0))
+                    with patch.object(w, "CG_ROOT", base / "cg"), patch.object(w, "log"), \
+                            patch.object(w, "_proc_tmpdir", return_value=None):
+                        self.assertEqual(w.reap_scratch_dirs(True, procs, set()), removed)
+                    self.assertEqual([folder.name for folder in folders if folder.is_dir()],
+                                     [folder.name for folder in folders if folder.name not in removed])
+
+    def test_reap_scratch_dirs_caps_removals_per_pass(self):
+        # Each removal re-reads every process first. The owner's backlog of
+        # about 3,500 folders would take about 50 s in one pass, past the
+        # service's 25 s timeout, so a pass stops at its cap and the next
+        # pass takes the rest.
+        with scratch() as tmp:
+            base = Path(tmp)
+            (base / "cg" / self.w.SLICE).mkdir(parents=True)
+            names = ["agent-confine-300-400", "agent-confine-301-400", "agent-confine-302-400"]
+            for name in names:
+                (base / "scratch" / name).mkdir(parents=True)
+                os.utime(base / "scratch" / name, (0, 0))
+            logs = []
+            with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                    patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                    patch.object(self.w, "SCRATCH_REMOVALS_PER_PASS", 2), \
+                    patch.object(self.w, "log", side_effect=logs.append):
+                passes = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(2)]
+            self.assertEqual(passes, [names[:2], names[2:]])
+            self.assertIn("scratch reap: removed 2 this pass; the rest wait for the next", logs)
+
+    def test_report_pass_over_5000_gone_folders_stays_under_its_cpu_budget(self):
+        # One --report pass of the whole script, this machine's real process
+        # list included, over 5,000 gone folders in a private parent. VSY-216
+        # set 0.3 s of CPU per 30 s tick. CG_ROOT points at a private
+        # agents.slice so no live scope is read, and PATH is empty so no
+        # notice can be sent.
+        driver = (
+            "import importlib.machinery, importlib.util, sys\n"
+            "from pathlib import Path\n"
+            "loader = importlib.machinery.SourceFileLoader('agent_warden_cpu', sys.argv[1])\n"
+            "module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))\n"
+            "loader.exec_module(module)\n"
+            "module.CG_ROOT = Path(sys.argv[2])\n"
+            "sys.exit(module.main(['agent-warden', '--report']))\n"
+        )
+        with scratch() as tmp:
+            base = Path(tmp)
+            for directory in ("home", "run", "cache", "bin", "cg/agents.slice", "scratch"):
+                (base / directory).mkdir(parents=True)
+            for index in range(5000):
+                folder = base / "scratch" / f"agent-confine-{9000000 + index}-1"
+                folder.mkdir()
+                os.utime(folder, (0, 0))
+            env = {"HOME": str(base / "home"), "XDG_RUNTIME_DIR": str(base / "run"),
+                   "XDG_CACHE_HOME": str(base / "cache"), "AGENT_TMPDIR": str(base / "scratch"),
+                   "PATH": str(base / "bin"), "PYTHONDONTWRITEBYTECODE": "1"}
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            result = subprocess.run([sys.executable, "-c", driver, str(WARDEN), str(base / "cg")],
+                                    env=env, capture_output=True, text=True, timeout=60)
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        kept = re.search(r"^scratch reap: kept (\d+) ", result.stdout, re.M)
+        walked = sum(line.endswith("would remove (report mode)") for line in lines) + (int(kept.group(1)) if kept else 0)
+        self.assertEqual(walked, 5000)
+        cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+        self.assertLess(cpu, 0.3)
 
     def test_scope_units_skips_one_vanished_entry(self):
         # scope_units() must not discard scopes it already read just because
