@@ -94,6 +94,7 @@ import fnmatch
 import json
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -929,11 +930,14 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
-# Each removal first re-reads every process (VSY-216), about 15 ms over the
-# owner's 800. A backlog of 3,500 folders would cost about 50 s in one pass,
-# past the service's TimeoutStartSec=25, and the kill would land before that
-# tick's moves. 20 removals measured about 0.48 s of tick CPU idle and 0.67 s
-# loaded, well inside 25 s, and the rest wait for later ticks.
+# Each removal attempt first re-reads every process (VSY-216), about 15 ms
+# over the owner's 800. A backlog of 3,500 folders would cost about 50 s in
+# one pass, past the service's TimeoutStartSec=25, and the kill would land
+# before that tick's moves. So a pass attempts at most this many, whether the
+# removal succeeds or fails, chosen at random when more are free, so folders
+# that keep failing cannot take every slot on every tick. 20 removals
+# measured about 0.48 s of tick CPU idle and 0.67 s loaded, well inside 25 s,
+# and the rest wait for later ticks.
 SCRATCH_REMOVALS_PER_PASS = 20
 
 
@@ -1114,9 +1118,8 @@ def reap_scratch_dirs(correct, procs, failed):
         return []
     live_units = set(live_units)
     now = time.time()
-    removed = []
+    candidates = []
     holders = None
-    unknown = 0
     for parent, name in entries:
         if not SCRATCH_UNIT_RE.match(name):
             continue
@@ -1136,11 +1139,19 @@ def reap_scratch_dirs(correct, procs, failed):
             continue
         if holders is None:
             holders = _scratch_holders(procs)
-        status = _scratch_in_use(path, holders)
+        candidates.append((name, path, _scratch_in_use(path, holders)))
+    free = [path for _, path, status in candidates if status == "free"]
+    attempts = set(free)
+    if correct and len(free) > SCRATCH_REMOVALS_PER_PASS:
+        attempts = set(random.sample(free, SCRATCH_REMOVALS_PER_PASS))
+        log(f"scratch reap: {len(free)} folder(s) free; attempting {len(attempts)} this pass, "
+            f"the rest wait for the next")
+    removed = []
+    unknown = 0
+    for name, path, status in candidates:
         if status == "free" and correct:
-            if len(removed) >= SCRATCH_REMOVALS_PER_PASS:
-                log(f"scratch reap: removed {len(removed)} this pass; the rest wait for the next")
-                break
+            if path not in attempts:
+                continue
             # holders can predate an earlier removal in this pass, and a
             # worker can enter this directory while that removal runs.
             # Re-read every pid right before a removal, as the per-directory

@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import random
 import re
 import resource
 import subprocess
@@ -878,24 +879,72 @@ class AgentWardenScratchRules(WardenRulesCase):
                     self.assertEqual([folder.name for folder in folders if folder.is_dir()],
                                      [folder.name for folder in folders if folder.name not in removed])
 
-    def test_reap_scratch_dirs_caps_removals_per_pass(self):
-        # Each removal re-reads every process first. The owner's backlog of
-        # about 3,500 folders would take about 50 s in one pass, past the
-        # service's 25 s timeout, so a pass stops at its cap and the next
-        # pass takes the rest.
+    def _capped_passes(self, passes, cap, failing=(), sample=None):
+        """Runs `passes` correct-mode reaps over three gone folders past
+        their grace with the cap at `cap`. A folder in `failing` cannot be
+        removed. Returns the names each pass removed, every removal attempt
+        in order, and the number of holder reads."""
+        names = ["agent-confine-300-400", "agent-confine-301-400", "agent-confine-302-400"]
+        attempts, reads = [], [0]
+        real_holders = self.w._scratch_holders
+
+        def rmtree(path, *args, **kwargs):
+            attempts.append(os.path.basename(path))
+            if os.path.basename(path) in failing:
+                raise PermissionError(13, "Permission denied", path)
+            os.rmdir(path)
+
+        def holders(procs):
+            reads[0] += 1
+            return real_holders(procs)
+
         with scratch() as tmp:
             base = Path(tmp)
             (base / "cg" / self.w.SLICE).mkdir(parents=True)
-            names = ["agent-confine-300-400", "agent-confine-301-400", "agent-confine-302-400"]
             for name in names:
                 (base / "scratch" / name).mkdir(parents=True)
                 os.utime(base / "scratch" / name, (0, 0))
             with patch.object(self.w, "CG_ROOT", base / "cg"), \
                     patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
-                    patch.object(self.w, "SCRATCH_REMOVALS_PER_PASS", 2), \
+                    patch.object(self.w, "SCRATCH_REMOVALS_PER_PASS", cap), \
+                    patch.object(self.w.shutil, "rmtree", side_effect=rmtree), \
+                    patch.object(self.w, "_scratch_holders", side_effect=holders), \
+                    patch.object(self.w.random, "sample", side_effect=sample or self.w.random.sample), \
                     patch.object(self.w, "log"):
-                passes = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(2)]
-            self.assertEqual(passes, [names[:2], names[2:]])
+                removed = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(passes)]
+        return names, removed, attempts, reads[0]
+
+    def test_reap_scratch_dirs_caps_removals_per_pass(self):
+        # Each removal re-reads every process first. The owner's backlog of
+        # about 3,500 folders would take about 50 s in one pass, past the
+        # service's 25 s timeout, so a pass stops at its cap and the next
+        # pass takes the rest.
+        names, removed, _, _ = self._capped_passes(2, 2)
+        self.assertEqual([len(names) for names in removed], [2, 1])
+        self.assertEqual(sorted(removed[0] + removed[1]), names)
+
+    def test_reap_scratch_dirs_caps_failed_attempts_per_pass(self):
+        # A folder that cannot be removed (an agent's read-only fixture
+        # outside its owner's reach) still costs its process re-read, so the
+        # cap counts attempts, not successes: three failing folders under a
+        # cap of 2 take two attempts and three reads, the pass's first read
+        # and one before each attempt.
+        _, removed, attempts, reads = self._capped_passes(
+            1, 2, failing={"agent-confine-300-400", "agent-confine-301-400", "agent-confine-302-400"})
+        self.assertEqual(removed, [[]])
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(reads, 3)
+
+    def test_reap_scratch_dirs_failing_folders_do_not_starve_the_rest(self):
+        # Two folders that keep failing sort ahead of a removable one. With
+        # a cap of 1, a pass that always took the first free folder would
+        # attempt the same failing one forever; a pass picks at random, so
+        # the removable folder goes within a few passes.
+        failing = {"agent-confine-300-400", "agent-confine-301-400"}
+        _, removed, attempts, _ = self._capped_passes(
+            8, 1, failing=failing, sample=random.Random(0).sample)
+        self.assertEqual(len(attempts), 8)
+        self.assertIn(["agent-confine-302-400"], removed)
 
     def _report_pass(self, folders):
         """CPU seconds and folders walked for one --report pass of the whole
