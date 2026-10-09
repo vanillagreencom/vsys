@@ -2,6 +2,7 @@ import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Reader } from "../collect/io";
 import { scratchFiles } from "../collect/procs";
+import { agentScratchDirs, scratchRoots } from "../collect/scratch";
 import { switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
 import { type LaneIntent, laneIntent, laneTarget } from "../model/actions";
@@ -273,7 +274,9 @@ export function Agent({
    */
   onSwitch?: (paneId: string) => Promise<void>;
 }) {
-  const [files, setFiles] = useState<string[]>([]);
+  // Null until the section is open on a live sample: a list never read has
+  // no count.
+  const [files, setFiles] = useState<string[] | null>(null);
   const [loaded, setLoaded] = useState<{
     id: string;
     samples: LaneSample[];
@@ -288,18 +291,23 @@ export function Agent({
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
+  const filesOpen = open.has("Open files");
   useEffect(() => {
-    if (!live) {
-      setFiles([]);
+    if (!live || !filesOpen) {
+      setFiles(null);
       return;
     }
     const reader = new Reader();
-    const opened = scratchFiles(reader, c, lane.pids);
+    const dirs = scratchRoots(
+      c.scratchDirs,
+      agentScratchDirs(snapshot.procs),
+    ).map((root) => root.path);
+    const opened = scratchFiles(reader, c, dirs, lane.pids);
     setFiles([
       ...opened.map((f) => `${f.pid}: ${f.path}`),
       ...reader.errors.map((e) => `${e.source}: ${e.message}`),
     ]);
-  }, [lane.pids, c, live]);
+  }, [lane.pids, snapshot.procs, c, live, filesOpen]);
   const terminalOpen = open.has("Terminal");
   // A pane vsys could read: the lane has one, it belongs to the server vsys
   // talks to, and vsys settled it is not the pane it draws in, which is read
@@ -525,13 +533,13 @@ export function Agent({
       : Object.entries(lane.builds)
           .map(([kind, n]) => `${n} ${kind}`)
           .join(", ");
-  const unique = [...new Set(files)];
+  const unique = files === null ? null : [...new Set(files)];
   const tree = processTree(members);
   const count = (name: SectionName) =>
     name === "Processes"
       ? tree.length
       : name === "Open files"
-        ? unique.length
+        ? unique?.length
         : undefined;
   return (
     <scrollbox
@@ -772,7 +780,7 @@ export function Agent({
                         )}
                         {row.name === "Open files" &&
                           (live ? (
-                            unique.length ? (
+                            unique === null ? null : unique.length ? (
                               unique.map((file) => (
                                 <Line key={file} height={1} truncate>
                                   {safe(file)}
