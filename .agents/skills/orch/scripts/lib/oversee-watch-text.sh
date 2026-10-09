@@ -27,8 +27,10 @@ Two passes run on one clock. The mail pass starts every
 ORCH_WATCH_MAIL_INTERVAL seconds, reads every lane mailbox, the overseer
 mailbox and the lane records one after another, and prints what it finds as
 it finds it: lane-question, lane-notice, directive-read, directive-unread,
-peer-note, owner-note, owner-ask-resolved and owner-ask-closed. Before the
-overseer mailbox is read, `lane-mail resolve --default` closes due owner asks.
+peer-note, owner-note, owner-ask-resolved and owner-ask-closed. Hosted mail
+uses `lane-host read-many` once per provider per mail pass, as
+schemas/lane-host.md specifies. Before the overseer mailbox is read,
+`lane-mail resolve --default` closes due owner asks.
 Only an unanswered ask receives a recommendation answer. The interval is
 counted start to start and kept across runs in the state directory. Between
 two mail passes, and through a --repeat sleep, the overseer mailbox's size is
@@ -225,7 +227,11 @@ The long pass's events, checked and reported in this order:
                              issue in the first, whose author is outside the
                              fleet: not an app or bot account, and not a
                              login GitHub associates with the repository as
-                             OWNER, MEMBER or COLLABORATOR. A pull request
+                             OWNER, MEMBER or COLLABORATOR, and not a login
+                             GitHub's collaborator permission read, made once
+                             per pass per repository and login, answers
+                             admin, maintain or write; a 404 is outside and
+                             any other failed read exits. A pull request
                              carries head=, its head commit on the list.
                              Reported once while it stays open, and a pull
                              request again once per new head; a

@@ -38,14 +38,25 @@ lane_gitfile_common_dir() { # GITFILE_CONTENT
 # under the ambient setting.
 # ---------------------------------------------------------------------------
 
-# lane_host_fetch LANE_HOST_CLI ITEM PATH DEST ERRF — `lane-host cat --item
-# ITEM PATH` into DEST: 0 read, 1 not there, 2 failed, 4 lane-host refused the
-# call at its per-home cap, which says nothing about the host. Exit 2 is also
-# the dispatcher's own refusal, so it reads as a missing file only once `touch`
-# answers (schemas/lane-host.md). A failed read leaves no DEST; ERRF holds
-# what lane-host said.
+# lane_host_fetch LANE_HOST_CLI ITEM PATH DEST ERRF: read PATH into DEST from
+# the cached batch reply, or through `lane-host cat --item ITEM PATH` for a
+# single read. Returns 0 read, 1 not there, 2 failed, 4 dispatcher cap refusal.
+# Cached missing-file rows need no probe. A single-read exit 2 can also be a
+# dispatcher refusal, so only a successful `touch` confirms absence
+# (schemas/lane-host.md). A failed read leaves no DEST; ERRF holds the cause.
 lane_host_fetch() {
   local rc=0
+  if [[ -n "${LANE_HOST_READ_DIR:-}" ]]; then
+    source "$LANE_GITFILE_LIB/lane-host-read.sh" || return 2
+    lane_host_cached_read "$LANE_HOST_READ_DIR" "$2" "$3" "$4" "$5" || rc=$?
+    [[ "$rc" -ne 0 ]] || return 0
+    rm -f -- "${4:?}"
+    case "$rc" in
+      2) return 1 ;;
+      "$LANE_HOST_BUSY_EXIT") return 4 ;;
+      *) return 2 ;;
+    esac
+  fi
   "$1" cat --item "$2" "$3" >"$4" 2>"$5" || rc=$?
   [[ "$rc" -ne 0 ]] || return 0
   rm -f -- "$4"
