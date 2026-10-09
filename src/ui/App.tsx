@@ -472,7 +472,9 @@ export function App({
         config={c}
         height={contentHeight}
         width={width}
-        target={target?.kind === "group" ? target.path : null}
+        target={
+          target?.kind === "group" || target?.kind === "service" ? target : null
+        }
         onTargetUsed={clearTarget}
         onNotice={notice}
       />

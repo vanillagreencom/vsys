@@ -7,16 +7,18 @@ import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
 import type { Group, Lane, Snapshot } from "../model/types";
-import { meters } from "../model/verdict";
+import { causes, meters } from "../model/verdict";
 import {
   emptySnapshot,
   fixture,
   groupSnapshot,
   laneSnapshot,
+  serviceSnapshot,
 } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
-import { meterTile } from "./attention";
+import { attention, meterTile } from "./attention";
+import { osc52 } from "./clipboard";
 import { gap } from "./format";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
@@ -27,6 +29,9 @@ import {
   groupRows,
   idle,
   Resources,
+  resourceRows,
+  type ServiceState,
+  serviceState,
   treePrefixes,
 } from "./resources";
 
@@ -472,7 +477,7 @@ test("a target whose group has gone is said out loud, not dropped", async () => 
   const s = emptySnapshot();
   s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
   /** Resources rendered with a target, reporting what it did with it. */
-  async function landOn(target: string) {
+  async function landOn(target: { kind: "group"; path: string }) {
     const notices: [string, string][] = [];
     let used = 0;
     const handlers = new Set<KeyHandler>();
@@ -507,7 +512,7 @@ test("a target whose group has gone is said out loud, not dropped", async () => 
   // the card named. The request is still consumed, so it cannot fire again on
   // a later sample, and the reader is told rather than left on a screen that
   // looks like they never pressed anything.
-  const gone = await landOn("/gone");
+  const gone = await landOn({ kind: "group", path: "/gone" });
   expect(gone.used).toBe(1);
   expect(gone.notices).toEqual([["/gone is no longer in the sample", "warn"]]);
 });
@@ -523,7 +528,10 @@ test.each(["alpha", "beta"])(
     const handlers = new Set<KeyHandler>();
     let used = 0;
     function Requested() {
-      const [target, setTarget] = useState<string | null>(`${name}.scope`);
+      const [target, setTarget] = useState<{
+        kind: "group";
+        path: string;
+      } | null>({ kind: "group", path: `${name}.scope` });
       return (
         <KeyProvider handlers={handlers}>
           <Resources
@@ -589,6 +597,124 @@ test("a group with an unread threshold input is graded a warning, not clear", as
         .split("\n")
         .find((line) => line.includes("Status")) ?? "";
     expect(status).toContain(gap);
+  } finally {
+    await t.close();
+  }
+});
+
+test("Resources lists system services busiest first, an unread or unmeasured hour never as a number", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({ path: "a.scope", name: "a.scope", cpuPercent: 1 }),
+  ];
+  const unit = (name: string, o: Parameters<typeof serviceSnapshot>[0]) =>
+    serviceSnapshot({
+      path: `system.slice/${name}.service`,
+      name: `${name}.service`,
+      ...o,
+    });
+  const hot = c.serviceCpuPercent * 2;
+  const cool = c.serviceCpuPercent / 5;
+  const rows: [ReturnType<typeof serviceSnapshot>, ServiceState][] = [
+    [
+      unit("unread", { read: false, cpuHourPercent: null }),
+      { kind: "unread", level: "warn" },
+    ],
+    [
+      unit("cool", { cpuHourPercent: cool }),
+      { kind: "clear", level: "ok", hour: cool },
+    ],
+    [
+      unit("young", { cpuHourPercent: null }),
+      { kind: "measuring", level: "ok" },
+    ],
+    [
+      unit("hot", { cpuHourPercent: hot }),
+      {
+        kind: "busy",
+        level: "warn",
+        hour: hot,
+        threshold: c.serviceCpuPercent,
+      },
+    ],
+  ];
+  s.services = rows.map(([service]) => service);
+  // The row is graded by the units the service cause raised, so the table and
+  // the card cannot disagree about which unit is busy.
+  const busy = new Set(
+    causes(s, c)
+      .find((cause) => cause.id === "service-cpu")
+      ?.groups.map((g) => g.path),
+  );
+  for (const [service, expected] of rows)
+    expect(serviceState(service, busy, c), service.name).toEqual(expected);
+  expect(resourceRows(s, false).map((row) => [row.kind, row.path])).toEqual([
+    ["group", "a.scope"],
+    ["service", "system.slice/hot.service"],
+    ["service", "system.slice/cool.service"],
+    ["service", "system.slice/unread.service"],
+    ["service", "system.slice/young.service"],
+  ]);
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press(c.keys.resources);
+    const lines = t.frame().split("\n");
+    const row = (name: string) =>
+      present(
+        lines.find((line) => line.trimStart().startsWith(name)),
+        `the ${name} row`,
+      );
+    expect(row("hot")).toContain("50.0%");
+    expect(row("cool")).toContain("5.0%");
+    for (const name of ["unread", "young"])
+      expect(row(name)).not.toMatch(/\d%/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the service CPU card copies its journal read and Enter lands on the unit's row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = ["a", "b"].map((name) =>
+    groupSnapshot({
+      path: `${name}.scope`,
+      name: `${name}.scope`,
+      cpuPercent: 1,
+    }),
+  );
+  s.services = [
+    serviceSnapshot({
+      path: "system.slice/calm.service",
+      name: "calm.service",
+      cpuHourPercent: 1,
+    }),
+    serviceSnapshot({
+      path: "system.slice/loop.service",
+      name: "loop.service",
+      cpuHourPercent: c.serviceCpuPercent * 2,
+    }),
+  ];
+  const card = present(
+    attention(s, c).find((item) => item.id === "service-cpu"),
+    "the service CPU card",
+  );
+  expect(card.target).toEqual({
+    kind: "service",
+    path: "system.slice/loop.service",
+  });
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press(c.keys.home);
+    await t.press(c.keys.copy);
+    // The shell reads the copied line, so it is pinned whole: a read of the
+    // unit's journal, and no restart.
+    expect(t.written).toEqual([
+      osc52("journalctl -u loop.service --since '1 hour ago'"),
+    ]);
+    await t.press("enter");
+    expect(selectedRow(t.frame())).toMatch(/^loop\b/);
   } finally {
     await t.close();
   }
