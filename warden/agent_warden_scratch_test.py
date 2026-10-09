@@ -822,6 +822,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
                         patch.object(self.w, "log", side_effect=logs.append):
                     self.assertEqual(self.w.reap_scratch_dirs(True, {pid: daemon}, set()), removed)
+                self.assertEqual(len(logs), len(removed) + kept_lines)
                 self.assertEqual(sum(str(pid) in line for line in logs), kept_lines)
 
     def test_reap_scratch_dirs_sweeps_the_old_default_parent(self):
