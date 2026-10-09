@@ -39,6 +39,13 @@ REVIEW_GATE_STANDARD_APP = "vanillagreen-fleet-lanes"
 REVIEW_GATE_STANDARD_ENVIRONMENT = "kendex"
 REVIEW_GATE_STANDARD_SECRETS = "FLEET_GH_APP_ID;FLEET_GH_APP_PRIVATE_KEY"
 
+# Refresh review route, read by orch's approval-wait from the base checkout.
+# "overseer" sends a pull request on the refresh branch, opened by the
+# refresh app (type Bot), to the overseer's approval with no Copilot request.
+REVIEW_GATE_REFRESH_REVIEW = "overseer"
+REVIEW_GATE_REFRESH_BRANCH = "kendex/refresh"
+REVIEW_GATE_REFRESH_AUTHOR = "vanillagreen-fleet-lanes[bot]"
+
 # Total review-wait budget in seconds before the on-timeout policy applies;
 # an explicit max_wait argument always wins.
 PR_REVIEW_WAIT_SECS = "900"
