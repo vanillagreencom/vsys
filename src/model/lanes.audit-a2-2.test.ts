@@ -24,6 +24,7 @@ const mount = (point: string, root: string): MountInfo => ({
   device: "cgroup",
   type: "cgroup2",
   options: [],
+  superOptions: [],
 });
 const tree = (rest: Partial<Tree> = {}): Tree => ({
   parent: "/sys/fs/cgroup/user.slice/user-1000.slice",

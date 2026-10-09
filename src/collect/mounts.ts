@@ -7,6 +7,8 @@ export interface MountInfo {
   device: string;
   type: string;
   options: string[];
+  /** The superblock options alone: only these say the kernel forced the filesystem read-only. */
+  superOptions: string[];
 }
 const unescapePath = (s: string) =>
   s.replace(/\\([0-7]{3})/g, (_, n: string) =>
@@ -40,6 +42,7 @@ export function parseMounts(raw: string): MountInfo[] {
         options: [
           ...new Set([...mountOptions.split(","), ...superOptions.split(",")]),
         ],
+        superOptions: superOptions.split(","),
       };
     });
 }

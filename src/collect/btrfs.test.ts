@@ -513,6 +513,24 @@ test("mount options retain both mount and superblock read-only flags", () => {
     btrfsMounts(parseMounts("1 0 0:1 / / rw - ext4 /dev/test rw")),
   ).toEqual([]);
 });
+// Fedora Atomic on Btrfs mounts /sysroot and the /usr bind mount read-only
+// per mount while the superblock stays rw, because /var/home on the same
+// filesystem is written. Btrfs forcing a filesystem read-only after an error
+// sets SB_RDONLY, which mountinfo shows only in the superblock options.
+test("a mount read-only by design is not a filesystem forced read-only", () => {
+  const atomic = [
+    "60 1 0:31 /root /sysroot ro,relatime shared:4 - btrfs /dev/nvme0n1p3 rw,seclabel,compress=zstd:1,ssd,space_cache=v2,subvolid=256,subvol=/root",
+    "61 60 0:31 /root/ostree/deploy/fedora/deploy/abc.0/usr /usr ro,relatime shared:5 - btrfs /dev/nvme0n1p3 rw,seclabel,compress=zstd:1,ssd,space_cache=v2,subvolid=256,subvol=/root",
+    "62 1 0:31 /home /var/home rw,relatime shared:6 - btrfs /dev/nvme0n1p3 rw,seclabel,compress=zstd:1,ssd,space_cache=v2,subvolid=257,subvol=/home",
+  ].join("\n");
+  expect(
+    btrfsMounts(parseMounts(atomic)).map((m) => [m.mount, m.readOnly]),
+  ).toEqual([
+    ["/sysroot", false],
+    ["/usr", false],
+    ["/var/home", false],
+  ]);
+});
 test("counter deltas use device identity and preserve startup baseline", async () => {
   const f = fixture();
   fixtures.push(f);
