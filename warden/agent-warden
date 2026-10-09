@@ -94,6 +94,7 @@ import fnmatch
 import json
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -124,8 +125,9 @@ MISE_DATA = os.environ.get("MISE_DATA_DIR") or os.path.join(
 # under. Same default as the launcher's AGENT_DEFAULT_TMPDIR; kept in sync by
 # test_agent_confine_and_warden_scratch_parent_agree in
 # warden/agent_confine_test.py.
-AGENT_TMPDIR_PARENT = os.environ.get("AGENT_TMPDIR") or os.path.join(
+AGENT_TMPDIR_DEFAULT = os.path.join(
     os.environ.get("XDG_CACHE_HOME") or os.path.join(HOME, ".cache"), "agents", "tmp")
+AGENT_TMPDIR_PARENT = os.environ.get("AGENT_TMPDIR") or AGENT_TMPDIR_DEFAULT
 
 class AgentToolsError(Exception):
     def __init__(self, kind, path, reason="", paths=()):
@@ -928,6 +930,15 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
+# Each removal attempt first re-reads every process (VSY-216), about 15 ms
+# over the owner's 800. A backlog of 3,500 folders would cost about 50 s in
+# one pass, past the service's TimeoutStartSec=25, and the kill would land
+# before that tick's moves. So a pass attempts at most this many, whether the
+# removal succeeds or fails, chosen at random when more are free, so folders
+# that keep failing cannot take every slot on every tick. 20 removals
+# measured about 0.48 s of tick CPU idle and 0.67 s loaded, well inside 25 s,
+# and the rest wait for later ticks.
+SCRATCH_REMOVALS_PER_PASS = 20
 
 
 def _proc_tmpdir(pid):
@@ -941,28 +952,79 @@ def _proc_tmpdir(pid):
     env = read(f"/proc/{pid}/environ")
     if env is None:
         return None
-    for entry in env.split("\0"):
-        if entry.startswith("TMPDIR="):
-            return entry[len("TMPDIR="):]
-    return ""
+    # One search, not a split of every entry: a holders read runs before
+    # every removal, and this cut one over 800 processes from 22 ms to 15 ms.
+    start = ("\0" + env).find("\0TMPDIR=")
+    if start < 0:
+        return ""
+    start += len("TMPDIR=")
+    end = env.find("\0", start)
+    return env[start:] if end < 0 else env[start:end]
+
+
+def _scratch_parents():
+    """AGENT_TMPDIR, then agent-confine's default parent when AGENT_TMPDIR
+    names another directory: lanes started before AGENT_TMPDIR moved left
+    their folders there. Scope names share one namespace, so one rule sweeps
+    both. Each is resolved once here, not once per folder under it."""
+    return list(dict.fromkeys(os.path.realpath(parent) for parent in (AGENT_TMPDIR_PARENT, AGENT_TMPDIR_DEFAULT)))
+
+
+def _exited(pid):
+    """Whether pid has exited since scan(): /proc/<pid> is gone, or it is a
+    zombie (state Z or X) whose current directory is already released. Its
+    reads fail as a non-dumpable process's do, but it holds nothing; short
+    jobs in agents.slice exit between the scan and these reads on most
+    ticks."""
+    stat = read(f"/proc/{pid}/stat")
+    return stat is None or stat.rpartition(")")[2].split()[:1] in (["Z"], ["X"])
+
+
+def _desktop_unit(cgroup):
+    """Whether cgroup is provably one of the desktop's own units, which no
+    lane starts: the user manager's init.scope (systemd --user, sd-pam), or a
+    unit in app.slice or session.slice, through sub-slices only, that
+    systemd-run did not create (run-*.scope, run-*.service) and that is not a
+    contained job unit by contained_unit(): ssh-agent.service,
+    gpg-agent.service, app-*.scope, xdg-document-portal.service, pipewire.
+    systemd-run --user places work in app.slice unless told otherwise, and
+    names it run-*. Anything else, a login session scope or an unparsable
+    path included, is not."""
+    if _unit_rel(cgroup).strip("/") == "init.scope":
+        return True
+    unit, unit_path = _unit_parts(cgroup)
+    if unit is None or unit_path is None or unit.startswith("run-"):
+        return False
+    slices = unit_path.split("/")[:-1]
+    return (slices[:1] in (["app.slice"], ["session.slice"]) and all(s.endswith(".slice") for s in slices)
+            and not contained_unit(cgroup))
+
+
+def _unread_may_hold(proc):
+    """Whether proc, whose environment or current directory could not be
+    read, can hold a gone scope's scratch directory. Its cgroup decides, as
+    /proc/<pid>/cgroup stays readable for a non-dumpable process. Only a
+    desktop unit by _desktop_unit() cannot: no lane starts one. Every other
+    process can. A lane's own scope keeps its inherited TMPDIR when the
+    launcher's mkdir meets a folder of the same name, every launch keeps the
+    inherited current directory, move() relocates a nested session by cgroup
+    only, and an escaped worker in an uncontained systemd-run scope keeps the
+    lane's TMPDIR and current directory."""
+    return not _desktop_unit(proc.cgroup or "")
 
 
 def _scratch_holders(procs):
     """The directories procs hold: (held, unknown). held is every pid's
     TMPDIR and current directory, each resolved, with every ancestor of
     each, so a candidate directory is in use exactly when held contains it.
-    unknown is True when some pid's environment or current
-    directory could not be read. A worker can inherit TMPDIR and enter any
-    scope before its launcher exits. Its current scope cannot prove that it
-    released the directory. Every unreadable environment or current
-    directory keeps unclaimed directories, including when an unrelated
-    non-dumpable desktop process delays cleanup.
-    A pass reads every pid here once, plus once per directory it removes,
-    not once per candidate directory: with one unreadable process, 933 gone
-    directories each rescanned about 970 processes, 24 s of CPU per 30 s
-    tick (VSY-216)."""
+    unknown lists the pids whose environment or current directory could not
+    be read, that have not exited, and that sit outside a desktop unit by
+    _unread_may_hold. A pass reads every pid here once, plus once per
+    removal it attempts, not once per candidate directory: with one
+    unreadable process, 933 gone directories each rescanned about 970
+    processes, 24 s of CPU per 30 s tick (VSY-216)."""
     held = set()
-    unknown = False
+    unknown = []
     for pid in procs:
         tmpdir = _proc_tmpdir(pid)
         # Detached workers can clear TMPDIR while keeping their work here.
@@ -977,18 +1039,18 @@ def _scratch_holders(procs):
             while resolved not in held:
                 held.add(resolved)
                 resolved = os.path.dirname(resolved)
-        if tmpdir is None or cwd is None:
-            unknown = True
+        if (tmpdir is None or cwd is None) and not _exited(pid) and _unread_may_hold(procs[pid]):
+            unknown.append(pid)
     return held, unknown
 
 
 def _scratch_in_use(path, holders):
     """Whether any pid _scratch_holders read has TMPDIR or its current
     directory inside path: "in-use" when one does, "unknown" when none does
-    but a pid's environment or current directory could not be read, "free"
-    otherwise. "in-use" beats "unknown": one confirmed user is enough to keep
-    path.
-    Both sides are resolved with os.path.realpath before comparing, not just
+    but a pid that can hold it could not be read, "free" otherwise.
+    "in-use" beats "unknown": one confirmed user is enough to keep path.
+    path is already resolved: reap_scratch_dirs joins a resolved parent and
+    a name that is not a symlink. Both sides are resolved, not just
     lexically normalized: a trailing slash on AGENT_TMPDIR makes
     agent-confine's bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit")
     double a separator in the live process's real TMPDIR string, while
@@ -997,9 +1059,9 @@ def _scratch_in_use(path, holders):
     unresolved compare would miss either kind of live match and wrongly read
     the directory as free. realpath never raises on a component that does not
     exist or that this user cannot stat -- it resolves as far as it can and
-    leaves the rest lexical -- so it needs no exception handling here."""
+    leaves the rest lexical -- so neither side needs exception handling."""
     held, unknown = holders
-    if os.path.realpath(path) in held:
+    if path in held:
         return "in-use"
     return "unknown" if unknown else "free"
 
@@ -1034,9 +1096,9 @@ def _rmtree_writable(root):
 
 
 def reap_scratch_dirs(correct, procs, failed):
-    """Remove a per-scope scratch directory agent-confine created under
-    AGENT_TMPDIR once its scope unit is gone from agents.slice AND no live
-    process this user owns has TMPDIR or its current directory there. procs must be a
+    """Remove a per-scope scratch directory agent-confine created under a
+    _scratch_parents() entry once its scope unit is gone from agents.slice
+    AND no live process this user owns has TMPDIR or its current directory there. procs must be a
     snapshot taken immediately before this call, not reused from earlier in
     the tick: a process that started since an older snapshot was taken is
     simply absent from it, which _scratch_in_use cannot tell apart from "no
@@ -1054,9 +1116,15 @@ def reap_scratch_dirs(correct, procs, failed):
     names whose removal failure is already logged, kept in the state file so a
     folder that keeps failing is logged once, not at every sweep; it is updated
     in place. Returns the directory names removed."""
-    try:
-        entries = os.listdir(AGENT_TMPDIR_PARENT)
-    except OSError:
+    entries = []
+    listed = False
+    for parent in _scratch_parents():
+        try:
+            entries += [(parent, name) for name in sorted(os.listdir(parent))]
+            listed = True
+        except OSError:
+            continue
+    if not listed:
         return []
     live_units = scope_units()
     if live_units is None:
@@ -1064,28 +1132,40 @@ def reap_scratch_dirs(correct, procs, failed):
         return []
     live_units = set(live_units)
     now = time.time()
-    removed = []
+    candidates = []
     holders = None
-    for name in sorted(entries):
+    for parent, name in entries:
         if not SCRATCH_UNIT_RE.match(name):
             continue
         if f"{name}.scope" in live_units:
             continue
-        path = os.path.join(AGENT_TMPDIR_PARENT, name)
+        path = os.path.join(parent, name)
         try:
-            age = now - os.stat(path).st_mtime
+            st = os.lstat(path)
         except OSError:
             continue
+        age = now - st.st_mtime
         if age < SCRATCH_GRACE:
             log(f"scratch {name}: scope not listed but only {int(age)}s old "
                 f"(< {int(SCRATCH_GRACE)}s grace); not reaping yet")
             continue
-        if not os.path.isdir(path):
+        if not stat.S_ISDIR(st.st_mode):
             continue
         if holders is None:
             holders = _scratch_holders(procs)
-        status = _scratch_in_use(path, holders)
+        candidates.append((name, path, _scratch_in_use(path, holders)))
+    free = [path for _, path, status in candidates if status == "free"]
+    attempts = set(free)
+    if correct and len(free) > SCRATCH_REMOVALS_PER_PASS:
+        attempts = set(random.sample(free, SCRATCH_REMOVALS_PER_PASS))
+        log(f"scratch reap: {len(free)} folder(s) free; attempting {len(attempts)} this pass, "
+            f"the rest wait for the next")
+    removed = []
+    unknown = 0
+    for name, path, status in candidates:
         if status == "free" and correct:
+            if path not in attempts:
+                continue
             # holders can predate an earlier removal in this pass, and a
             # worker can enter this directory while that removal runs.
             # Re-read every pid right before a removal, as the per-directory
@@ -1096,7 +1176,7 @@ def reap_scratch_dirs(correct, procs, failed):
             log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")
             continue
         if status == "unknown":
-            log(f"scratch {name}: scope gone but a process's environment or current directory could not be read; not reaping this tick")
+            unknown += 1
             continue
         if not correct:
             log(f"scratch {name}: scope gone; would remove (report mode)")
@@ -1110,7 +1190,10 @@ def reap_scratch_dirs(correct, procs, failed):
             if name not in failed:
                 failed.add(name)
                 log(f"  scratch remove failed: kind={type(e).__name__} name={name} path={e.filename or path}")
-    failed.intersection_update(entries)
+    if unknown:
+        pids = " ".join(map(str, holders[1][:5]))
+        log(f"scratch reap: kept {unknown} gone scope folder(s); unreadable pid(s) {pids} could hold them")
+    failed.intersection_update(name for _, name in entries)
     return removed
 
 
