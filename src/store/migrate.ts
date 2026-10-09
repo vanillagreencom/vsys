@@ -63,6 +63,9 @@ function laneUnknowns(): Lane {
  */
 export function normalizeLane(stored: Partial<Lane>): Lane {
   const lane = { ...laneUnknowns(), ...stored };
+  // A make reading stored before the flag came from a read environment.
+  if (stored.jobsKnown === undefined)
+    lane.jobsKnown = lane.jobs !== null || lane.jobserver !== null;
   return memberless(stored.mainPid) ? { ...lane, rss: null, age: null } : lane;
 }
 /** Snapshot replay and chart projections share the stored reading evidence. */
