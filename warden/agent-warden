@@ -1005,22 +1005,28 @@ def _birth_time(path):
     return None if failed or not mask & STATX_BTIME else sec + nsec / 1e9
 
 
-def _lineage_born_by(proc, scopes, boot):
+def _lineage_born_by(proc, scopes, readable, boot):
     """The newest creation time of a gone lane's folder that proc, whose
-    environment or current directory could not be read, may hold: math.inf
-    unless proc is in a live agent-confine scope or a child cgroup of one.
-    A lane's processes hold its own folder and what its launch handed down:
-    the launcher's inherited TMPDIR when its mkdir failed, its inherited
-    current directory, and paths below either. Every one of those already
-    existed when the scope started. Every member but the launcher, the pid
-    in the scope's name, forked inside the scope after systemd-run moved the
-    launcher there, so the earliest such start in scopes comes after the
-    scope started; with no such member nothing bounds it. boot is the
-    wall-clock time of boot, which start times count from."""
+    environment or current directory could not be read, may hold beyond what
+    the pids in readable hold: math.inf unless proc is in a live
+    agent-confine scope or a child cgroup of one. A lane's processes hold its
+    own folder, which reap_scratch_dirs skips while the scope is live, and
+    what its launch handed down: the launcher's inherited TMPDIR when its
+    mkdir failed, its inherited current directory, and paths below either.
+    A readable member of the scope carries those, so with one proc adds
+    nothing: -math.inf. Without one, every one of those already existed when
+    the scope started. Every member but the launcher, the pid in the scope's
+    name, forked inside the scope after systemd-run moved the launcher
+    there, so the earliest such start in scopes comes after the scope
+    started; with no such member nothing bounds it. boot is the wall-clock
+    time of boot, which start times count from."""
     m = LANE_SCOPE_RE.search(proc.cgroup or "")
     if m is None:
         return math.inf
-    starts = [p.start for p in scopes.get(m.group(1), ()) if p.pid != int(m.group(2))]
+    members = scopes.get(m.group(1), ())
+    if any(p.pid in readable for p in members):
+        return -math.inf
+    starts = [p.start for p in members if p.pid != int(m.group(2))]
     return boot + min(starts) / CLK_TCK + SCRATCH_LINEAGE_SLACK if starts else math.inf
 
 
@@ -1064,16 +1070,15 @@ def _scratch_holders(procs):
     of each, so a candidate directory is in use exactly when held contains
     it. unknown lists the pids whose environment or current directory could
     not be read, that have not exited, and that sit outside a desktop unit
-    by _unread_may_hold. born_by is the newest creation time of a folder any
-    of them may hold, by _lineage_born_by. A pass reads every pid here once,
+    by _unread_may_hold, less those that hold nothing beyond held by
+    _lineage_born_by. born_by is the newest creation time of a folder any
+    of them may hold, by the same rule. A pass reads every pid here once,
     plus once per removal it attempts, not once per candidate directory:
     with one unreadable process, 933 gone directories each rescanned about
     970 processes, 24 s of CPU per 30 s tick (VSY-216)."""
     held = set()
-    unknown = []
-    born_by = -math.inf
-    scopes = None
-    boot = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
+    readable = set()
+    unread = []
     for pid in procs:
         tmpdir = _proc_tmpdir(pid)
         # Detached workers can clear TMPDIR while keeping their work here.
@@ -1088,10 +1093,19 @@ def _scratch_holders(procs):
             while resolved not in held:
                 held.add(resolved)
                 resolved = os.path.dirname(resolved)
-        if (tmpdir is None or cwd is None) and not _exited(pid) and _unread_may_hold(procs[pid]):
+        if tmpdir is not None and cwd is not None:
+            readable.add(pid)
+        elif not _exited(pid) and _unread_may_hold(procs[pid]):
+            unread.append(pid)
+    unknown = []
+    born_by = -math.inf
+    scopes = scope_members(procs) if unread else {}
+    boot = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
+    for pid in unread:
+        born = _lineage_born_by(procs[pid], scopes, readable, boot)
+        if born > -math.inf:
             unknown.append(pid)
-            scopes = scope_members(procs) if scopes is None else scopes
-            born_by = max(born_by, _lineage_born_by(procs[pid], scopes, boot))
+            born_by = max(born_by, born)
     return held, unknown, born_by
 
 
