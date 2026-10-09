@@ -3,14 +3,15 @@ import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import { coveringGroup, dangerousCap, effectiveMax } from "../model/lanes";
 import { distinctNames, unitLabel } from "../model/naming";
-import type { Group, Snapshot } from "../model/types";
-import { type Level, meters } from "../model/verdict";
-import { meterTile } from "./attention";
+import type { Group, Service, Snapshot } from "../model/types";
+import { causes, type Level, meters } from "../model/verdict";
+import { meterTile, type Target } from "./attention";
 import { screenPad, sideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
   amount,
   bytes,
+  count,
   floorText,
   gap,
   percent,
@@ -48,6 +49,82 @@ export function idle(g: Group): boolean {
 /** The rows Resources lists, in tree order, with idle leaves hidden unless asked. */
 export function groupRows(s: Snapshot, all: boolean): Group[] {
   return s.groups.filter((g) => all || !idle(g));
+}
+/**
+ * One selectable row: a group of the user manager's tree, or a system service
+ * listed below it. A service sits under `cgroupTop` and a group under
+ * `cgroupRoot`, so a path alone does not say which table holds it.
+ */
+export type ResourceRow =
+  | { kind: "group"; path: string; group: Group }
+  | { kind: "service"; path: string; service: Service };
+/** The identity a row is selected and targeted by. */
+const rowKey = (row: { kind: string; path: string }): string =>
+  `${row.kind}:${row.path}`;
+/** Every selectable row in the order drawn: the groups, then the services busiest first. */
+export function resourceRows(s: Snapshot, all: boolean): ResourceRow[] {
+  const services = [...(s.services ?? [])].sort(
+    (a, b) => (b.cpuHourPercent ?? -1) - (a.cpuHourPercent ?? -1),
+  );
+  return [
+    ...groupRows(s, all).map(
+      (group) => ({ kind: "group", path: group.path, group }) as const,
+    ),
+    ...services.map(
+      (service) => ({ kind: "service", path: service.path, service }) as const,
+    ),
+  ];
+}
+/** What a system service's row says about its last hour. */
+export type ServiceState =
+  | { kind: "unread"; level: "warn" }
+  /** Read, with no hour behind it yet in this cgroup. */
+  | { kind: "measuring"; level: "ok" }
+  | { kind: "busy"; level: "warn"; hour: number; threshold: number }
+  | { kind: "clear"; level: "ok"; hour: number };
+/**
+ * A service's state. `busy` is the units the service CPU cause raised, so the
+ * row and the card are graded by one judgment.
+ */
+export function serviceState(
+  service: Service,
+  busy: ReadonlySet<string>,
+  c: Config,
+): ServiceState {
+  if (!service.read) return { kind: "unread", level: "warn" };
+  const hour = service.cpuHourPercent;
+  if (hour === null) return { kind: "measuring", level: "ok" };
+  return busy.has(service.path)
+    ? { kind: "busy", level: "warn", hour, threshold: c.serviceCpuPercent }
+    : { kind: "clear", level: "ok", hour };
+}
+/** The hour column's text: a number only where the hour was measured. */
+function hourText(state: ServiceState): string {
+  switch (state.kind) {
+    case "unread":
+      return "unread";
+    case "measuring":
+      return "measuring";
+    case "busy":
+    case "clear":
+      return percent(state.hour);
+    default:
+      return state satisfies never;
+  }
+}
+function serviceStatusText(state: ServiceState): string {
+  switch (state.kind) {
+    case "unread":
+      return `CPU use ${gap}: cpu.stat could not be read`;
+    case "measuring":
+      return "vsys has less than an hour of readings for this unit";
+    case "busy":
+      return `averaged ${percent(state.hour)} of a core over the last hour, at or above ${percent(state.threshold)}`;
+    case "clear":
+      return `averaged ${percent(state.hour)} of a core over the last hour`;
+    default:
+      return state satisfies never;
+  }
 }
 /**
  * The name each group shows, distinct across the whole tree. Three scopes of
@@ -217,7 +294,10 @@ function causeText(cause: GroupCause | null, c: Config): string {
   }
 }
 
-/** The machine's meters, then the resource groups as a tree. */
+/**
+ * The machine's meters, then the resource groups as a tree, then the system
+ * services with their CPU average over the last hour.
+ */
 export function Resources({
   snapshot: s,
   config: c,
@@ -231,16 +311,18 @@ export function Resources({
   config: Config;
   height: number;
   width: number;
-  /** The group path a card asked this screen to land on. */
-  target: string | null;
+  /** The group or service a card asked this screen to land on. */
+  target: Extract<Target, { kind: "group" | "service" }> | null;
   onTargetUsed: () => void;
   onNotice: (text: string, level: Level) => void;
 }) {
   const [selection, setSelection] = useState(firstRow);
   const [all, setAll] = useState(false);
+  const items = resourceRows(s, all);
   const rows = groupRows(s, all);
+  const services = items.filter((row) => row.kind === "service");
   const { selected, choose, move } = useSelection(
-    rows.map((g) => g.path),
+    items.map(rowKey),
     selection,
     setSelection,
   );
@@ -252,19 +334,25 @@ export function Resources({
   // opening the same card twice lands twice.
   useEffect(() => {
     if (target === null) return;
-    const at = groupRows(s, all).findIndex((g) => g.path === target);
-    const hidden = s.groups.findIndex((g) => g.path === target);
+    const key = rowKey(target);
+    const at = resourceRows(s, all).findIndex((row) => rowKey(row) === key);
+    // Only a group can be hidden, and the groups come first, so its index
+    // among every group is its row once they are all shown.
+    const hidden =
+      target.kind === "group"
+        ? s.groups.findIndex((g) => g.path === target.path)
+        : -1;
     if (at >= 0) choose(at);
     else if (hidden >= 0) {
       setAll(true);
-      setSelection({ index: hidden, id: target });
-    } else onNotice(`${target} is no longer in the sample`, "warn");
+      setSelection({ index: hidden, id: key });
+    } else onNotice(`${target.path} is no longer in the sample`, "warn");
     onTargetUsed();
   }, [target, onTargetUsed, onNotice, s, all, choose]);
   const hidden = s.groups.length - rows.length;
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
-      move((i) => nextDown(rows.length, i));
+      move((i) => nextDown(items.length, i));
       return true;
     }
     if (name === c.keys.up || name === "up") {
@@ -289,8 +377,18 @@ export function Resources({
     SwapTotal === undefined || SwapFree === undefined
       ? null
       : SwapTotal - SwapFree;
-  const current = rows[selected];
-  const currentCause = current ? groupCause(current, s, c) : null;
+  const current = items[selected];
+  const currentGroup = current?.kind === "group" ? current.group : undefined;
+  const currentCause = currentGroup ? groupCause(currentGroup, s, c) : null;
+  const busy = new Set(
+    causes(s, c)
+      .find((cause) => cause.id === "service-cpu")
+      ?.groups.map((unit) => unit.path),
+  );
+  const currentState =
+    current?.kind === "service"
+      ? serviceState(current.service, busy, c)
+      : undefined;
   const topCpu = Math.max(100, ...rows.map((g) => g.cpuPercent ?? 0));
   const topMemory = Math.max(1, ...rows.map((g) => g.memory ?? 0));
   const cpuBar: Column = { label: "", width: 8 };
@@ -317,6 +415,17 @@ export function Resources({
     ),
   };
   const groupColumns: Column[] = [nameColumn, ...fixed];
+  const hourColumn: Column = {
+    label: "Hour average",
+    width: 13,
+    align: "right",
+  };
+  const serviceColumn: Column = { ...nameColumn, label: "Service" };
+  const serviceColumns: Column[] = [serviceColumn, cpuBar, hourColumn];
+  const topHour = Math.max(
+    100,
+    ...services.map((row) => row.service.cpuHourPercent ?? 0),
+  );
   const inner = width - 4;
   // The meters that are not builds, and the Swap tile beside them.
   const tileCount = tiles.length + 1;
@@ -325,6 +434,33 @@ export function Resources({
   // blank under them, the section with its margin, the table heading, and,
   // where the detail is not beside the list, its five fields and their margin.
   const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - (side ? 0 : 6);
+  // The services table's heading, its margin and its column heading take
+  // three rows. It takes the rows its list needs while the groups' list needs
+  // fewer than the rest, and never under a third. A list draws one row, and
+  // its counter when it holds more, whatever height it is given, so each
+  // keeps that much. Where both cannot, only the table holding the selection
+  // is drawn, so the lists never push the detail off the screen.
+  const shared = listHeight - 3;
+  const least = (n: number) => Math.min(Math.max(n, 1), 2);
+  const both = shared >= least(rows.length) + least(services.length);
+  const servicesHeight = Math.max(
+    least(services.length),
+    Math.min(
+      shared - least(rows.length),
+      services.length + 1,
+      Math.max(Math.floor(shared / 3), shared - (rows.length + 1)),
+    ),
+  );
+  const showGroups = both || current?.kind !== "service";
+  const showServices = both || current?.kind === "service";
+  // A table drawn alone names the other in its heading, so the reader knows
+  // the arrows walk on into it.
+  const servicesBelow =
+    !showServices && services.length
+      ? ` · ${count(services.length, "system service")} below`
+      : "";
+  const groupsAbove =
+    !showGroups && rows.length ? ` · ${count(rows.length, "group")} above` : "";
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
@@ -354,96 +490,180 @@ export function Resources({
       <box height={2} flexShrink={0} />
       <SplitPane
         side={side}
-        item={current?.path}
+        item={current && rowKey(current)}
         below
         detail={
-          current && (
+          current?.kind === "service" && currentState ? (
             <>
-              <Field label="Unit" value={current.name} wrap={side > 0} />
+              <Field
+                label="Unit"
+                value={current.service.name}
+                wrap={side > 0}
+              />
               <Field
                 label="Status"
-                value={causeText(currentCause, c)}
+                value={serviceStatusText(currentState)}
                 color={
-                  currentCause ? levelColor(currentCause.level) : undefined
+                  currentState.level === "ok"
+                    ? undefined
+                    : levelColor(currentState.level)
                 }
                 wrap={side > 0}
               />
               <Field
-                label="Limits"
-                value={`memory high ${current.highRead ? limit(current.high) : gap} · max ${current.maxRead ? limit(current.max) : gap} · swap ${amount(current.swap, c)} of ${current.swapMaxRead ? limit(current.swapMax) : gap} · tasks max ${current.tasksMaxRead ? (current.tasksMax ?? "none") : gap}`}
-                wrap={side > 0}
-              />
-              <Field
-                label="CPU"
-                value={`weight ${current.weight ?? gap} · quota ${current.cpuMax ?? gap} · page cache ${amount(current.cache, c)} · written ${current.writeRate === null ? gap : `${bytes(current.writeRate, c)}/s`}`}
-                wrap={side > 0}
-              />
-              <Field
-                label="Waiting"
-                value={Object.entries(current.pressure)
-                  .map(([kind, p]) => `${kind} ${percent(p?.some)}`)
-                  .join(" · ")}
+                label="Cgroup"
+                value={`${c.cgroupTop}/${current.path}`}
                 wrap={side > 0}
               />
             </>
+          ) : (
+            currentGroup && (
+              <>
+                <Field label="Unit" value={currentGroup.name} wrap={side > 0} />
+                <Field
+                  label="Status"
+                  value={causeText(currentCause, c)}
+                  color={
+                    currentCause ? levelColor(currentCause.level) : undefined
+                  }
+                  wrap={side > 0}
+                />
+                <Field
+                  label="Limits"
+                  value={`memory high ${currentGroup.highRead ? limit(currentGroup.high) : gap} · max ${currentGroup.maxRead ? limit(currentGroup.max) : gap} · swap ${amount(currentGroup.swap, c)} of ${currentGroup.swapMaxRead ? limit(currentGroup.swapMax) : gap} · tasks max ${currentGroup.tasksMaxRead ? (currentGroup.tasksMax ?? "none") : gap}`}
+                  wrap={side > 0}
+                />
+                <Field
+                  label="CPU"
+                  value={`weight ${currentGroup.weight ?? gap} · quota ${currentGroup.cpuMax ?? gap} · page cache ${amount(currentGroup.cache, c)} · written ${currentGroup.writeRate === null ? gap : `${bytes(currentGroup.writeRate, c)}/s`}`}
+                  wrap={side > 0}
+                />
+                <Field
+                  label="Waiting"
+                  value={Object.entries(currentGroup.pressure)
+                    .map(([kind, p]) => `${kind} ${percent(p?.some)}`)
+                    .join(" · ")}
+                  wrap={side > 0}
+                />
+              </>
+            )
           )
         }
       >
-        <Section
-          title="Groups"
-          width={listWidth - 4}
-          marginTop={0}
-          count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
-        />
-        <TableHeader columns={groupColumns} />
-        <List
-          items={rows}
-          selected={selected}
-          height={listHeight}
-          onSelect={choose}
-          empty="No resource group could be read."
-          render={(g, i, isSelected) => {
-            const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
-            return (
-              <Row
-                key={g.path}
-                selected={isSelected}
-                color={levelColor(groupLevel(g, s, c))}
-                onOpen={() => choose(i)}
-              >
-                {safe(cell(nameColumn, name))}
-                {columnGap}
-                <Bar
-                  value={g.cpuPercent}
-                  max={topCpu}
-                  width={cpuBar.width}
-                  color={metric.cpu}
-                />
-                {columnGap}
-                <Reading
-                  value={g.cpuPercent}
-                  text={cell(cpuColumn, share(g.cpuPercent))}
-                />
-                {columnGap}
-                <Bar
-                  value={g.memory}
-                  max={topMemory}
-                  width={memoryBar.width}
-                  color={metric.memory}
-                />
-                {columnGap}
-                <Reading
-                  value={g.memory}
-                  text={cell(memoryColumn, amount(g.memory, c))}
-                />
-                {columnGap}
-                <span attributes={ui.dim}>
-                  {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
-                </span>
-              </Row>
-            );
-          }}
-        />
+        {showGroups && (
+          <>
+            <Section
+              title="Groups"
+              width={listWidth - 4}
+              marginTop={0}
+              focused={current?.kind === "group"}
+              count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}${servicesBelow}`}
+            />
+            <TableHeader columns={groupColumns} />
+            <List
+              items={rows}
+              selected={current?.kind === "group" ? selected : -1}
+              height={both ? shared - servicesHeight : listHeight}
+              onSelect={choose}
+              empty="No resource group could be read."
+              render={(g, i, isSelected) => {
+                const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
+                return (
+                  <Row
+                    key={g.path}
+                    selected={isSelected}
+                    color={levelColor(groupLevel(g, s, c))}
+                    onOpen={() => choose(i)}
+                  >
+                    {safe(cell(nameColumn, name))}
+                    {columnGap}
+                    <Bar
+                      value={g.cpuPercent}
+                      max={topCpu}
+                      width={cpuBar.width}
+                      color={metric.cpu}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={g.cpuPercent}
+                      text={cell(cpuColumn, share(g.cpuPercent))}
+                    />
+                    {columnGap}
+                    <Bar
+                      value={g.memory}
+                      max={topMemory}
+                      width={memoryBar.width}
+                      color={metric.memory}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={g.memory}
+                      text={cell(memoryColumn, amount(g.memory, c))}
+                    />
+                    {columnGap}
+                    <span attributes={ui.dim}>
+                      {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
+                    </span>
+                  </Row>
+                );
+              }}
+            />
+          </>
+        )}
+        {showServices && (
+          <>
+            <Section
+              title="System services"
+              marginTop={both ? 1 : 0}
+              width={listWidth - 4}
+              focused={current?.kind === "service"}
+              count={
+                s.services === null
+                  ? undefined
+                  : `${services.length}${groupsAbove}`
+              }
+            />
+            <TableHeader columns={serviceColumns} />
+            <List
+              items={services}
+              selected={
+                current?.kind === "service" ? selected - rows.length : -1
+              }
+              height={both ? servicesHeight : listHeight}
+              onSelect={(i) => choose(rows.length + i)}
+              empty={
+                s.services === null
+                  ? `${c.cgroupTop}/system.slice could not be listed.`
+                  : "No system service has been read yet."
+              }
+              render={({ service }, i, isSelected) => {
+                const state = serviceState(service, busy, c);
+                return (
+                  <Row
+                    key={rowKey({ kind: "service", path: service.path })}
+                    selected={isSelected}
+                    color={levelColor(state.level)}
+                    onOpen={() => choose(rows.length + i)}
+                  >
+                    {safe(cell(serviceColumn, unitLabel(service.name)))}
+                    {columnGap}
+                    <Bar
+                      value={service.cpuHourPercent}
+                      max={topHour}
+                      width={cpuBar.width}
+                      color={metric.cpu}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={service.cpuHourPercent}
+                      text={cell(hourColumn, hourText(state))}
+                    />
+                  </Row>
+                );
+              }}
+            />
+          </>
+        )}
       </SplitPane>
     </box>
   );

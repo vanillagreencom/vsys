@@ -36,6 +36,8 @@ export type Target =
   | { kind: "lane"; id: string }
   | { kind: "group"; path: string }
   | { kind: "path"; path: string }
+  /** A system service, whose path sits under `cgroupTop`, not `cgroupRoot`. */
+  | { kind: "service"; path: string }
   /**
    * A moment, and which change at it. Every change found in one sample shares
    * that sample's time, so the time alone names the first of them and not the
@@ -615,8 +617,10 @@ function copy(
       };
     case "service-cpu": {
       const units = cause.groups.length;
-      // systemctl takes the unit name as systemd writes it, escapes included.
-      const unit = cause.groups[0]?.name ?? "";
+      // systemctl and journalctl take the unit name as systemd writes it,
+      // escapes included.
+      const [busiest] = cause.groups;
+      const unit = busiest?.name ?? "";
       return {
         word: "Busy",
         title:
@@ -627,7 +631,11 @@ function copy(
           `${cause.consumer} averaged ${percent(v.hour)} of one core over the last hour, at or above the threshold of ${percent(v.threshold)}. A service stuck in a loop looks like this.`,
         ],
         next: `Check the log of ${cause.consumer}, and restart it if it is stuck: ${shellLine(["sudo", "systemctl", "restart", unit])}`,
+        // The copy key offers only the read: a restart is a step the reader
+        // types after reading the log, never one the clipboard hands them.
+        command: shellLine(["journalctl", "-u", unit, "--since", "1 hour ago"]),
         view: "Resources",
+        target: busiest && { kind: "service", path: busiest.path },
       };
     }
     case "memory-high": {

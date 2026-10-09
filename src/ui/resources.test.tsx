@@ -7,16 +7,18 @@ import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
 import type { Group, Lane, Snapshot } from "../model/types";
-import { meters } from "../model/verdict";
+import { causes, meters } from "../model/verdict";
 import {
   emptySnapshot,
   fixture,
   groupSnapshot,
   laneSnapshot,
+  serviceSnapshot,
 } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { mount, selectedRow, shown } from "../test/harness";
 import { present } from "../test/present";
-import { meterTile } from "./attention";
+import { attention, meterTile } from "./attention";
+import { osc52 } from "./clipboard";
 import { gap } from "./format";
 import { type KeyHandler, KeyProvider } from "./keys";
 import {
@@ -27,8 +29,12 @@ import {
   groupRows,
   idle,
   Resources,
+  resourceRows,
+  type ServiceState,
+  serviceState,
   treePrefixes,
 } from "./resources";
+import { levelColor } from "./theme";
 
 test.each([
   { selected: "beta", removed: "alpha", expected: "beta", moves: 1 },
@@ -472,7 +478,7 @@ test("a target whose group has gone is said out loud, not dropped", async () => 
   const s = emptySnapshot();
   s.groups = [groupSnapshot({ path: "busy.scope", name: "busy.scope" })];
   /** Resources rendered with a target, reporting what it did with it. */
-  async function landOn(target: string) {
+  async function landOn(target: { kind: "group"; path: string }) {
     const notices: [string, string][] = [];
     let used = 0;
     const handlers = new Set<KeyHandler>();
@@ -507,7 +513,7 @@ test("a target whose group has gone is said out loud, not dropped", async () => 
   // the card named. The request is still consumed, so it cannot fire again on
   // a later sample, and the reader is told rather than left on a screen that
   // looks like they never pressed anything.
-  const gone = await landOn("/gone");
+  const gone = await landOn({ kind: "group", path: "/gone" });
   expect(gone.used).toBe(1);
   expect(gone.notices).toEqual([["/gone is no longer in the sample", "warn"]]);
 });
@@ -523,7 +529,10 @@ test.each(["alpha", "beta"])(
     const handlers = new Set<KeyHandler>();
     let used = 0;
     function Requested() {
-      const [target, setTarget] = useState<string | null>(`${name}.scope`);
+      const [target, setTarget] = useState<{
+        kind: "group";
+        path: string;
+      } | null>({ kind: "group", path: `${name}.scope` });
       return (
         <KeyProvider handlers={handlers}>
           <Resources
@@ -593,3 +602,226 @@ test("a group with an unread threshold input is graded a warning, not clear", as
     await t.close();
   }
 });
+
+test("Resources lists system services busiest first, an unread or unmeasured hour never as a number", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({ path: "a.scope", name: "a.scope", cpuPercent: 1 }),
+  ];
+  const unit = (name: string, o: Parameters<typeof serviceSnapshot>[0]) =>
+    serviceSnapshot({
+      path: `system.slice/${name}.service`,
+      name: `${name}.service`,
+      ...o,
+    });
+  const hot = c.serviceCpuPercent * 2;
+  const cool = c.serviceCpuPercent / 5;
+  const rows: [ReturnType<typeof serviceSnapshot>, ServiceState][] = [
+    [
+      unit("unread", { read: false, cpuHourPercent: null }),
+      { kind: "unread", level: "warn" },
+    ],
+    [
+      unit("cool", { cpuHourPercent: cool }),
+      { kind: "clear", level: "ok", hour: cool },
+    ],
+    [
+      unit("young", { cpuHourPercent: null }),
+      { kind: "measuring", level: "ok" },
+    ],
+    [
+      unit("hot", { cpuHourPercent: hot }),
+      {
+        kind: "busy",
+        level: "warn",
+        hour: hot,
+        threshold: c.serviceCpuPercent,
+      },
+    ],
+  ];
+  s.services = rows.map(([service]) => service);
+  // The row is graded by the units the service cause raised, so the table and
+  // the card cannot disagree about which unit is busy.
+  const busy = new Set(
+    causes(s, c)
+      .find((cause) => cause.id === "service-cpu")
+      ?.groups.map((g) => g.path),
+  );
+  for (const [service, expected] of rows)
+    expect(serviceState(service, busy, c), service.name).toEqual(expected);
+  expect(resourceRows(s, false).map((row) => [row.kind, row.path])).toEqual([
+    ["group", "a.scope"],
+    ["service", "system.slice/hot.service"],
+    ["service", "system.slice/cool.service"],
+    ["service", "system.slice/unread.service"],
+    ["service", "system.slice/young.service"],
+  ]);
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press(c.keys.resources);
+    const lines = t.frame().split("\n");
+    const row = (name: string) =>
+      present(
+        lines.find((line) => line.trimStart().startsWith(name)),
+        `the ${name} row`,
+      );
+    expect(row("hot")).toContain("50.0%");
+    expect(row("cool")).toContain("5.0%");
+    for (const name of ["unread", "young"])
+      expect(row(name)).not.toMatch(/\d%/);
+    // A unit vsys has watched for under an hour may have run for days, so
+    // the cell names the reading, never the unit's age.
+    expect(row("young")).toContain("measuring");
+    // The drawn row carries the same grade: the busy unit is marked, the one
+    // under the threshold is not.
+    const colour = (name: string) => {
+      for (const line of t.ui.captureSpans().lines) {
+        const span = line.spans.find((span) => span.text.includes(name));
+        if (span) return shown(span.fg, "fg");
+      }
+      return "missing";
+    };
+    const warn = shown(levelColor("warn"), "fg");
+    expect(colour("hot")).toBe(warn);
+    expect(colour("cool")).not.toBe(warn);
+    expect(colour("cool")).not.toBe("missing");
+    // The keyboard leaves the last group for the busiest service.
+    await t.press("down");
+    expect(selectedRow(t.frame())).toMatch(/^hot\b/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("the service CPU card copies its journal read and Enter lands on the unit's row", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // More groups than the screen holds: the services table keeps its share,
+  // so the unit the card names, and the one beside it, stay in view.
+  s.groups = Array.from({ length: 60 }, (_, i) => `g${i}`).map((name) =>
+    groupSnapshot({
+      path: `${name}.scope`,
+      name: `${name}.scope`,
+      cpuPercent: 1,
+    }),
+  );
+  s.services = [
+    serviceSnapshot({
+      path: "system.slice/calm.service",
+      name: "calm.service",
+      cpuHourPercent: 1,
+    }),
+    serviceSnapshot({
+      path: "system.slice/loop.service",
+      name: "loop.service",
+      cpuHourPercent: c.serviceCpuPercent * 2,
+    }),
+  ];
+  const card = present(
+    attention(s, c).find((item) => item.id === "service-cpu"),
+    "the service CPU card",
+  );
+  expect(card.target).toEqual({
+    kind: "service",
+    path: "system.slice/loop.service",
+  });
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press(c.keys.home);
+    await t.press(c.keys.copy);
+    // The shell reads the copied line, so it is pinned whole: a read of the
+    // unit's journal, and no restart.
+    expect(t.written).toEqual([
+      osc52("journalctl -u loop.service --since '1 hour ago'"),
+    ]);
+    await t.press("enter");
+    expect(selectedRow(t.frame())).toMatch(/^loop\b/);
+    expect(
+      t
+        .frame()
+        .split("\n")
+        .some((line) => /^\s*calm\b/.test(line)),
+    ).toBe(true);
+  } finally {
+    await t.close();
+  }
+});
+
+test.each([
+  { width: 80, height: 24, alone: true },
+  { width: 100, height: 28, alone: false },
+])(
+  "at $width x $height the selected row and every detail field stay on the screen",
+  async ({ alone, ...size }) => {
+    const c = defaults();
+    const s = emptySnapshot();
+    s.groups = Array.from({ length: 12 }, (_, i) =>
+      groupSnapshot({
+        path: `g${i}.scope`,
+        name: `g${i}.scope`,
+        cpuPercent: 1,
+      }),
+    );
+    s.services = Array.from({ length: 30 }, (_, i) =>
+      serviceSnapshot({
+        path: `system.slice/s${i}.service`,
+        name: `s${i}.service`,
+        cpuHourPercent: i,
+      }),
+    );
+    /** The heading line of the table titled `title`, if it is drawn. */
+    const heading = (frame: string, title: string) =>
+      frame.split("\n").find((line) => line.trimStart().startsWith(title));
+    /** Whether the detail draws the field `label`, at the start of a line. */
+    const field = (frame: string, label: string) =>
+      frame
+        .split("\n")
+        .some((line) => new RegExp(`^\\s*${label}\\b`).test(line));
+    const t = await mount(s, c, size);
+    try {
+      await t.press(c.keys.resources);
+      await t.press("down");
+      let frame = t.frame();
+      expect(selectedRow(frame)).toMatch(/g1\b/);
+      // A table drawn alone names the other, so the reader knows the arrows
+      // reach it; where both are drawn, neither heading carries the note.
+      expect({
+        groups: heading(frame, "Groups"),
+        services: heading(frame, "System services") !== undefined,
+      }).toEqual({
+        groups: expect.stringContaining(
+          alone ? "Groups  12 · 30 system services below " : "Groups  12 ─",
+        ),
+        services: !alone,
+      });
+      for (const label of ["Unit", "Status", "Waiting"])
+        expect({ label, drawn: field(frame, label) }).toEqual({
+          label,
+          drawn: true,
+        });
+      // Past the last group, the busiest service.
+      for (let i = 1; i < s.groups.length; i++) await t.press("down");
+      frame = t.frame();
+      expect(selectedRow(frame)).toMatch(/^s29\b/);
+      expect({
+        groups: heading(frame, "Groups") !== undefined,
+        services: heading(frame, "System services"),
+      }).toEqual({
+        groups: !alone,
+        services: expect.stringContaining(
+          alone
+            ? "System services  30 · 12 groups above "
+            : "System services  30 ─",
+        ),
+      });
+      for (const label of ["Unit", "Status", "Cgroup"])
+        expect({ label, drawn: field(frame, label) }).toEqual({
+          label,
+          drawn: true,
+        });
+    } finally {
+      await t.close();
+    }
+  },
+);
