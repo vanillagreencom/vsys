@@ -34,4 +34,3 @@ Provider-backed research and the report it produces. Not production code, not ar
 ## Additional Instructions
 
 - This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
-

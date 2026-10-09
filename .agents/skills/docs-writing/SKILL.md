@@ -18,7 +18,6 @@ tags: [docs]
 ## Project Instructions
 
 - Keep plans, research reports, measurements and handoffs in tmp/ or on the owning tracker issue. Attach final artifacts there. Preserve evidence there before removing a tracked copy during a rewrite. Keep durable product and architecture docs in the repository. (DW12)
-
 <!-- kendex:project-instructions:end -->
 
 # Docs Writing
