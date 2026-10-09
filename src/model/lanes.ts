@@ -265,9 +265,9 @@ export function lanes(
   function lane(id: string, members: Proc[], group?: Group) {
     if (!members.length && !group) return;
     const memberIndex = new Map(members.map((p) => [p.pid, p]));
-    const complete = group
-      ? descendants(group).every((g) => g.pids.every((pid) => byPid.has(pid)))
-      : processRead === "complete";
+    // The process walk reports what it could not read as "incomplete". A
+    // cgroup.procs pid missing from a complete walk exited between the reads.
+    const complete = processRead === "complete";
     const main =
       scopeMain(group ? group.pids : members.map((p) => p.pid), memberIndex) ??
       members.find((p) => p.tool) ??
