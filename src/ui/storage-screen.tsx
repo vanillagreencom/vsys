@@ -848,7 +848,7 @@ export function Storage({
         <Section
           {...heading(0)}
           width={listWidth}
-          count={st.volumes.length || undefined}
+          count={volumesByDevice(st.volumes).length || undefined}
         />
         {st.mountsAvailable === false && (
           <Empty text="Mount information is not available." />

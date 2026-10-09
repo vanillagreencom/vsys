@@ -553,3 +553,34 @@ test.each(["alpha", "beta"])(
     }
   },
 );
+
+test("a group with an unread threshold input is graded a warning, not clear", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const unread = groupSnapshot({
+    cpuPercent: 5,
+    memory: null,
+    high: 100,
+    pressure: { cpu: null, memory: null, io: null },
+  });
+  const partly = groupSnapshot({
+    pressure: { cpu: { some: 0, full: 0, total: 0 }, memory: null },
+  });
+  for (const g of [unread, partly]) {
+    expect(groupCause(g, s, c)).toEqual({ kind: "unread", level: "warn" });
+    expect(groupLevel(g, s, c)).toBe("warn");
+  }
+  s.groups = [unread];
+  const t = await mount(s, c, { width: 100, height: 40 });
+  try {
+    await t.press(c.keys.resources);
+    const status =
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Status")) ?? "";
+    expect(status).toContain(gap);
+  } finally {
+    await t.close();
+  }
+});
