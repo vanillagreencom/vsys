@@ -35,7 +35,12 @@ export class AlertEngine {
         `${p.tool} PID ${p.pid} runs outside ${c.agentSlice}`,
       );
     }
+    // An unread reading keeps an open alert open, as memory-high does below.
+    const keep = (key: string, unread: boolean) => {
+      if (unread && this.active.has(key)) next.add(key);
+    };
     for (const l of s.lanes) {
+      keep(`memory-cap:${l.id}`, !l.memoryMaxKnown);
       hit(
         "memory-cap",
         l.id,
@@ -44,8 +49,7 @@ export class AlertEngine {
       );
     }
     for (const { subject: g, judged } of memoryHighJudgments(s.groups)) {
-      const key = `memory-high:${g.path}`;
-      if (judged === "unjudged" && this.active.has(key)) next.add(key);
+      keep(`memory-high:${g.path}`, judged === "unjudged");
       hit(
         "memory-high",
         g.path,
@@ -54,7 +58,10 @@ export class AlertEngine {
       );
       for (const [kind, p] of Object.entries(g.pressure)) {
         const key = `${g.path}/${kind}`;
-        if (p && p.some > c.pressureAmber) {
+        if (p === null) {
+          keep(`pressure:${key}`, true);
+          if (this.pressureSince.has(key)) pressureKeys.add(key);
+        } else if (p.some > c.pressureAmber) {
           pressureKeys.add(key);
           const since = this.pressureSince.get(key) ?? s.time;
           this.pressureSince.set(key, since);
@@ -80,13 +87,15 @@ export class AlertEngine {
     }
     for (const scrub of s.storage.scrubs)
       hit("scrub", scrub.path, scrub.problem, `Scrub problem: ${scrub.path}`);
-    for (const scratch of s.storage.scratch)
+    for (const scratch of s.storage.scratch) {
+      keep(`scratch:${scratch.path}`, scratch.bytes === null);
       hit(
         "scratch",
         scratch.path,
         scratch.bytes !== null && scratch.bytes > c.scratchQuota,
         `${scratch.path} exceeds ${c.scratchQuota} bytes`,
       );
+    }
     // A sample that read no process cannot say an escaped agent was confined
     // or a process-named lane ended, so neither notification clears.
     if (processesUnread(s)) {
