@@ -2019,7 +2019,10 @@ test.each(["complete", "incomplete", "unknown"] as const)(
     try {
       await t.settle();
       const line = present(
-        t.frame().split("\n").find((row) => row.includes(" cores · ")),
+        t
+          .frame()
+          .split("\n")
+          .find((row) => row.includes(" cores · ")),
         "count line",
       );
       expect(line.includes(gap)).toBe(processRead !== "complete");
