@@ -53,13 +53,17 @@ export function windowTitle(
 ): string {
   return firstEnv(main, c.titleEnv) ?? "";
 }
-/** Make writes the job count and the token pool into the configured variable. */
+/**
+ * Make writes the job count and the token pool into the configured variable.
+ * Both stay unknown, not unset, when the environment was not read.
+ */
 export function jobserver(
   main: Proc | undefined,
   envNames: string[],
 ): {
   jobs: number | null;
   jobserver: string | null;
+  jobsKnown: boolean;
 } {
   const flags = firstEnv(main, envNames) ?? "";
   const jobs = flags.match(/(?:^|\s)-j\s*(\d+)/)?.[1];
@@ -67,6 +71,7 @@ export function jobserver(
   return {
     jobs: jobs === undefined ? null : Number(jobs),
     jobserver: auth ?? null,
+    jobsKnown: main !== undefined && main.envAvailable !== false,
   };
 }
 /**

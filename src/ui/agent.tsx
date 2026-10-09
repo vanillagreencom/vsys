@@ -557,7 +557,7 @@ export function Agent({
         <box height={1} flexShrink={0} />
         <Field
           label="Limits"
-          value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap} · make jobs ${lane.jobs ?? "not set"} · jobserver ${lane.jobserver ?? "not set"}`}
+          value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap} · make jobs ${lane.jobsKnown ? (lane.jobs ?? "not set") : gap} · jobserver ${lane.jobsKnown ? (lane.jobserver ?? "not set") : gap}`}
           color={lowCap(lane, c) ? ui.danger : undefined}
         />
         <Field

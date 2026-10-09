@@ -61,15 +61,32 @@ test("the make jobserver is read from the configured variable", () => {
       }),
       c.jobserverEnv,
     ),
-  ).toEqual({ jobs: 8, jobserver: "fifo:/tmp/GMfifo1" });
+  ).toEqual({ jobs: 8, jobserver: "fifo:/tmp/GMfifo1", jobsKnown: true });
   expect(jobserver(processSnapshot({ env: {} }), c.jobserverEnv)).toEqual({
     jobs: null,
     jobserver: null,
+    jobsKnown: true,
   });
   // The variable is configuration, so another build system can be watched.
   expect(
     jobserver(processSnapshot({ env: { NINJAFLAGS: " -j2" } }), ["NINJAFLAGS"]),
-  ).toEqual({ jobs: 2, jobserver: null });
+  ).toEqual({ jobs: 2, jobserver: null, jobsKnown: true });
+});
+
+test("an unread environment or lead process leaves make jobs unknown, not unset", () => {
+  const envNames = defaults().jobserverEnv;
+  expect(
+    jobserver(processSnapshot({ env: {}, envAvailable: false }), envNames),
+  ).toEqual({ jobs: null, jobserver: null, jobsKnown: false });
+  expect(jobserver(undefined, envNames)).toEqual({
+    jobs: null,
+    jobserver: null,
+    jobsKnown: false,
+  });
+  expect(
+    jobserver(processSnapshot({ env: {}, envAvailable: true }), envNames)
+      .jobsKnown,
+  ).toBe(true);
 });
 
 test("the pane address is kept as the handle the server gave, never rewritten", () => {

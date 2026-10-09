@@ -323,6 +323,7 @@ export function laneSnapshot(overrides: Partial<Lane> = {}): Lane {
     cpuWeight: 100,
     jobs: null,
     jobserver: null,
+    jobsKnown: true,
     age: 10,
     state: "sleeping",
     blocked: 0,
