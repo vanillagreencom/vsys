@@ -566,7 +566,16 @@ test("a group with an unread threshold input is graded a warning, not clear", as
   const partly = groupSnapshot({
     pressure: { cpu: { some: 0, full: 0, total: 0 }, memory: null },
   });
-  for (const g of [unread, partly]) {
+  const memoryOnly = groupSnapshot({
+    memory: null,
+    high: 100,
+    pressure: {
+      cpu: { some: 0, full: 0, total: 0 },
+      memory: { some: 0, full: 0, total: 0 },
+      io: { some: 0, full: 0, total: 0 },
+    },
+  });
+  for (const g of [unread, partly, memoryOnly]) {
     expect(groupCause(g, s, c)).toEqual({ kind: "unread", level: "warn" });
     expect(groupLevel(g, s, c)).toBe("warn");
   }
