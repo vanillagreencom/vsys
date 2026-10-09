@@ -1266,3 +1266,45 @@ test("a click on another row leaves an open editor where it is", async () => {
     await t.close();
   }
 });
+test("Settings saves a key binding only under a name a keypress carries", async () => {
+  const saves: Config[] = [];
+  const t = await mount(
+    emptySnapshot(),
+    defaults(),
+    { width: 140, height: 40 },
+    {
+      onSave: async (next) => {
+        saves.push(next);
+      },
+    },
+  );
+  const rebindOpen = async (text: string) => {
+    await t.press("enter");
+    await act(async () => {
+      t.ui.mockInput.pressKey("END");
+      for (let i = 0; i < 10; i++) t.ui.mockInput.pressBackspace();
+    });
+    await act(async () => {
+      await t.ui.mockInput.typeText(text);
+    });
+    await t.press("enter");
+  };
+  try {
+    await t.press("7");
+    await t.press("/");
+    for (const ch of "keys.open") await t.press(ch);
+    await t.press("enter");
+    // No key event is named pgdown, so the save is refused.
+    await rebindOpen("pgdown");
+    expect(saves).toEqual([]);
+    await t.press("escape");
+    // Enter still opens the editor, and the label every screen shows for it
+    // saves as the name OpenTUI gives the key.
+    await rebindOpen("enter");
+    expect(saves.map((c) => c.keys.open)).toEqual(["return"]);
+    await rebindOpen("ctrl+o");
+    expect(saves.map((c) => c.keys.open)).toEqual(["return", "ctrl+o"]);
+  } finally {
+    await t.close();
+  }
+});
