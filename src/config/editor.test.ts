@@ -20,6 +20,14 @@ test("modifier bindings use canonical names and retain punctuation", () => {
   expect(() => normalizeKey("ctrl+ctrl+q")).toThrow();
   expect(() => normalizeKey("control+q")).toThrow();
 });
+test("a key name binds only when OpenTUI emits it", () => {
+  expect(normalizeKey("enter")).toBe("return");
+  expect(normalizeKey("shift+esc")).toBe("shift+escape");
+  expect(normalizeKey("pagedown")).toBe("pagedown");
+  expect(normalizeKey("f12")).toBe("f12");
+  for (const name of ["pgdown", "f13", "kpenter", "ctrl+foo"])
+    expect(() => normalizeKey(name)).toThrow();
+});
 test("equivalent bindings and timer overflow are rejected", () => {
   expect(() => validate({ keys: { quit: "Q", down: "shift+q" } })).toThrow();
   expect(() => validate({ refreshMs: 2147483648 })).toThrow();

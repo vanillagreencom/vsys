@@ -393,7 +393,7 @@ const equalTabs = () =>
       agents: "alt+a",
       resources: "f1",
       builds: "alt+b",
-      storage: "pgup",
+      storage: "home",
       timeline: "f10",
       settings: "f11",
     },

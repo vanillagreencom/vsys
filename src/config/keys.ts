@@ -8,6 +8,27 @@ interface Stroke {
   hyper?: boolean;
 }
 const modifiers = ["ctrl", "alt", "shift", "super", "hyper"] as const;
+/** The multi-letter key names OpenTUI's key parser emits. */
+const namedKeys = new Set([
+  "return",
+  "escape",
+  "tab",
+  "space",
+  "backspace",
+  "delete",
+  "insert",
+  "up",
+  "down",
+  "left",
+  "right",
+  "home",
+  "end",
+  "pageup",
+  "pagedown",
+  ...Array.from({ length: 12 }, (_, i) => `f${i + 1}`),
+]);
+/** The labels every screen shows, written as the key name OpenTUI emits. */
+const keyAliases: Record<string, string> = { enter: "return", esc: "escape" };
 
 /** Settings chords and input events use the same modifier order. */
 export function keyName(key: Stroke): string {
@@ -25,8 +46,8 @@ export function normalizeKey(value: string): string {
   const [, modifiers, named] = match ?? [];
   if (named === undefined) throw new Error(`Invalid keybinding: ${value}`);
   const prefix = modifiers ? modifiers.slice(0, -1).split("+") : [];
-  let name = named;
-  if ([...name].length !== 1 && !/^[a-z][a-z0-9]*$/.test(name))
+  let name = keyAliases[named] ?? named;
+  if ([...name].length !== 1 && !namedKeys.has(name))
     throw new Error(`Invalid key name: ${name}`);
   if (/^[A-Z]$/.test(name)) {
     name = name.toLowerCase();
