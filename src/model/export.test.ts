@@ -44,6 +44,10 @@ test("summary meters keep unknown readings null and graded warn", () => {
   const s = emptySnapshot();
   s.system.pressure = {};
   s.system.memory = {};
+  // A running desktop slice whose swap could not be read.
+  s.groups = [
+    groupSnapshot({ path: c.desktopSlice, name: c.desktopSlice, swap: null }),
+  ];
   const summary = summarySnapshot(s, c);
   expect(summary.meters).toContainEqual({
     id: "cpu",

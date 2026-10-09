@@ -1276,3 +1276,21 @@ test("unjudged names each cause whose own reading could not be taken", () => {
     });
   }
 });
+
+test("memory meter agrees with desktop-swap cause when the desktop slice is absent", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.system.pressure = {
+    cpu: { some: 1, full: 0, total: 0 },
+    memory: { some: 0, full: 0, total: 0 },
+    io: { some: 1, full: 0, total: 0 },
+  };
+  s.groups = [g("agents.slice", "agents.slice", { swap: 0 })];
+  // The cause and unjudged() both say an absent slice has nothing to judge.
+  expect(causes(s, c).map((x) => x.id)).not.toContain("desktop-swap");
+  expect(unjudged(s, c)["desktop-swap"]).toBeUndefined();
+  expect(meters(s, c).find((m) => m.id === "memory")?.level).toBe("ok");
+  // A present slice whose swap could not be read still warns.
+  s.groups.push(g(c.desktopSlice, c.desktopSlice, { swap: null }));
+  expect(meters(s, c).find((m) => m.id === "memory")?.level).toBe("warn");
+});

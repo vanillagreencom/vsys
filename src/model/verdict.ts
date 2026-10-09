@@ -775,7 +775,11 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     },
     {
       id: "memory",
-      level: gauge(swap, c.swapFloor, c.swapFloor),
+      // A desktop slice the sample holds no root of is absent, not unread,
+      // the same judgement the desktop-swap cause makes.
+      level: sliceRoots(s.groups, c.desktopSlice).length
+        ? gauge(swap, c.swapFloor, c.swapFloor)
+        : "ok",
       consumer: consumerName(largest, s),
       holder: swapped ? consumerName(holder, s) : undefined,
       values: {
