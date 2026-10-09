@@ -398,8 +398,8 @@ class AgentWardenScratchRules(WardenRulesCase):
         # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
         # os.path.join (this candidate path's source) never does. An
         # unreadable process is ignored only in a desktop unit: init.scope,
-        # or an app.slice unit that is neither a systemd-run transient
-        # (run-*) nor a contained job unit. Every other one counts, a live
+        # or an app.slice or session.slice unit that is neither a
+        # systemd-run transient (run-*) nor a contained job unit. Every other one counts, a live
         # lane scope whose own folder exists included: the launcher keeps the
         # inherited TMPDIR when its mkdir meets a folder of the same name,
         # and every launch keeps the inherited current directory. The
@@ -411,9 +411,11 @@ class AgentWardenScratchRules(WardenRulesCase):
                    ("ssh-agent", f"{user}/app.slice/ssh-agent.service"),
                    ("gpg-agent", f"{user}/app.slice/gpg-agent.service"),
                    ("1Password-Brows", f"{user}/app.slice/app-org.chromium.Chromium-9.scope"),
-                   ("Hyprland-app", f"{user}/app.slice/app-graphical.slice/app-foot-7.scope")]
+                   ("Hyprland-app", f"{user}/app.slice/app-graphical.slice/app-foot-7.scope"),
+                   ("fusermount3", f"{user}/session.slice/xdg-document-portal.service")]
         undesktop = [("a raw systemd-run scope in app.slice", f"{user}/app.slice/run-u42.scope"),
                      ("a systemd-run service in app.slice", f"{user}/app.slice/run-u43.service"),
+                     ("a raw systemd-run scope in session.slice", f"{user}/session.slice/run-u44.scope"),
                      ("a login session scope", "/user.slice/user-1000.slice/session-2.scope"),
                      ("app.slice with no unit", f"{user}/app.slice"),
                      ("the root cgroup", "/")]

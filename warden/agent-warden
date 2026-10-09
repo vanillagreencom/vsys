@@ -983,17 +983,20 @@ def _exited(pid):
 def _desktop_unit(cgroup):
     """Whether cgroup is provably one of the desktop's own units, which no
     lane starts: the user manager's init.scope (systemd --user, sd-pam), or a
-    unit in app.slice, through sub-slices only, that systemd-run did not
-    create (run-*.scope, run-*.service) and that is not a contained job unit
-    by contained_unit(): ssh-agent.service, gpg-agent.service, app-*.scope.
-    Anything else, a session scope or an unparsable path included, is not."""
+    unit in app.slice or session.slice, through sub-slices only, that
+    systemd-run did not create (run-*.scope, run-*.service) and that is not a
+    contained job unit by contained_unit(): ssh-agent.service,
+    gpg-agent.service, app-*.scope, xdg-document-portal.service, pipewire.
+    systemd-run --user places work in app.slice unless told otherwise, and
+    names it run-*. Anything else, a login session scope or an unparsable
+    path included, is not."""
     if _unit_rel(cgroup).strip("/") == "init.scope":
         return True
     unit, unit_path = _unit_parts(cgroup)
     if unit is None or unit_path is None or unit.startswith("run-"):
         return False
     slices = unit_path.split("/")[:-1]
-    return (slices[:1] == ["app.slice"] and all(s.endswith(".slice") for s in slices)
+    return (slices[:1] in (["app.slice"], ["session.slice"]) and all(s.endswith(".slice") for s in slices)
             and not contained_unit(cgroup))
 
 
