@@ -155,10 +155,6 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
                 return 1000.0
 
             @staticmethod
-            def process_time():
-                return 0.0
-
-            @staticmethod
             def monotonic():
                 return 1000.0
 
@@ -314,10 +310,6 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
             @staticmethod
             def time():
                 return 1000.0
-
-            @staticmethod
-            def process_time():
-                return 0.0
 
         module.scan = lambda: {}
         module.plan = lambda _procs, only=None: ([], [], [], [])

@@ -929,13 +929,12 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
-# Each removal first re-reads every process, about 15 ms over the owner's
-# 800. A backlog of 3,500 folders would cost about 50 s in one pass, past the
-# service's 25 s timeout, and the kill would land before that tick's moves.
-# So a pass starts no further removal once the reaper has used this much CPU,
-# after at least one; the rest wait for later ticks. A CPU allowance, not a
-# count, follows the process count and the machine's load.
-SCRATCH_REMOVAL_CPU = 0.06
+# Each removal first re-reads every process (VSY-216), about 15 ms over the
+# owner's 800. A backlog of 3,500 folders would cost about 50 s in one pass,
+# past the service's TimeoutStartSec=25, and the kill would land before that
+# tick's moves. 20 removals measured about 0.48 s of tick CPU idle and 0.67 s
+# loaded, well inside 25 s, and the rest wait for later ticks.
+SCRATCH_REMOVALS_PER_PASS = 20
 
 
 def _proc_tmpdir(pid):
@@ -1099,7 +1098,6 @@ def reap_scratch_dirs(correct, procs, failed):
     names whose removal failure is already logged, kept in the state file so a
     folder that keeps failing is logged once, not at every sweep; it is updated
     in place. Returns the directory names removed."""
-    started = time.process_time()
     entries = []
     listed = False
     for parent in _scratch_parents():
@@ -1140,7 +1138,7 @@ def reap_scratch_dirs(correct, procs, failed):
             holders = _scratch_holders(procs)
         status = _scratch_in_use(path, holders)
         if status == "free" and correct:
-            if removed and time.process_time() - started > SCRATCH_REMOVAL_CPU:
+            if len(removed) >= SCRATCH_REMOVALS_PER_PASS:
                 log(f"scratch reap: removed {len(removed)} this pass; the rest wait for the next")
                 break
             # holders can predate an earlier removal in this pass, and a

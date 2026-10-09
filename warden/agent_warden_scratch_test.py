@@ -1,6 +1,4 @@
-import itertools
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -880,32 +878,24 @@ class AgentWardenScratchRules(WardenRulesCase):
                     self.assertEqual([folder.name for folder in folders if folder.is_dir()],
                                      [folder.name for folder in folders if folder.name not in removed])
 
-    def test_reap_scratch_dirs_stops_removing_at_its_cpu_allowance(self):
+    def test_reap_scratch_dirs_caps_removals_per_pass(self):
         # Each removal re-reads every process first. The owner's backlog of
         # about 3,500 folders would take about 50 s in one pass, past the
-        # service's 25 s timeout, so a pass starts no removal past its CPU
-        # allowance, always makes one, and later passes take the rest. The
-        # CPU clock here gains one second per read.
+        # service's 25 s timeout, so a pass stops at its cap and the next
+        # pass takes the rest.
         with scratch() as tmp:
             base = Path(tmp)
             (base / "cg" / self.w.SLICE).mkdir(parents=True)
             names = ["agent-confine-300-400", "agent-confine-301-400", "agent-confine-302-400"]
-            rows = [
-                ("the allowance is spent", 0.5, [names[:1], names[1:2], names[2:]]),
-                ("the allowance is never spent", math.inf, [names, [], []]),
-            ]
-            for name, allowance, expected in rows:
-                with self.subTest(name=name):
-                    for folder in names:
-                        (base / "scratch" / folder).mkdir(parents=True, exist_ok=True)
-                        os.utime(base / "scratch" / folder, (0, 0))
-                    with patch.object(self.w, "CG_ROOT", base / "cg"), \
-                            patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
-                            patch.object(self.w, "SCRATCH_REMOVAL_CPU", allowance), \
-                            patch.object(self.w.time, "process_time", side_effect=itertools.count()), \
-                            patch.object(self.w, "log"):
-                        passes = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(3)]
-                    self.assertEqual(passes, expected)
+            for name in names:
+                (base / "scratch" / name).mkdir(parents=True)
+                os.utime(base / "scratch" / name, (0, 0))
+            with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                    patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                    patch.object(self.w, "SCRATCH_REMOVALS_PER_PASS", 2), \
+                    patch.object(self.w, "log"):
+                passes = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(2)]
+            self.assertEqual(passes, [names[:2], names[2:]])
 
     def _report_pass(self, folders):
         """CPU seconds and folders walked for one --report pass of the whole
