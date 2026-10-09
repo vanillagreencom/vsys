@@ -4,6 +4,7 @@ import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
 import { fixture, groupSnapshot, processSnapshot } from "../test/fixture";
 import { present } from "../test/present";
+import { laneBuilds } from "./builds";
 import {
   effectiveMax,
   lanes,
@@ -12,9 +13,8 @@ import {
   processTree,
   sliceCompared,
 } from "./lanes";
-import { laneBuilds } from "./builds";
-import { buildLoad } from "./verdict";
 import type { Capability, Group, Lane, Proc, ProcessRead } from "./types";
+import { buildLoad } from "./verdict";
 
 /** What one tmux read gave, defaulting to a vsys that draws in no pane. */
 const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
@@ -285,13 +285,7 @@ test("lane totals require a complete process walk, while group counters remain m
     ["complete", [group], [a, b], [3072, 25, 50, 5]],
     // A complete walk that lacks a reported pid read it after that pid exited.
     ["a member exited before the walk", [group], [a], [1024, 10, 20, 2]],
-    [
-      "one unread member",
-      [group],
-      [a],
-      [null, null, null, null],
-      "incomplete",
-    ],
+    ["one unread member", [group], [a], [null, null, null, null], "incomplete"],
     ["all unread", [group], [], [null, null, null, null]],
     [
       "no reported member",
@@ -419,13 +413,17 @@ test("service lanes share scope completeness and preserve measured group counter
       swap: 30,
       threads: 3,
     });
-    const rows: [Proc[], Partial<Group>, (number | null)[], ProcessRead][] =
+    const rows: [Proc[], Partial<Group>, (number | null)[], ProcessRead][] = [
+      [[a, b], {}, [3072, 25, 50, 5], "complete"],
+      [[a], {}, [1024, 10, 20, 2], "complete"],
+      [[a], {}, [null, null, null, null], "incomplete"],
       [
-        [[a, b], {}, [3072, 25, 50, 5], "complete"],
-        [[a], {}, [1024, 10, 20, 2], "complete"],
-        [[a], {}, [null, null, null, null], "incomplete"],
-        [[a], { cpuPercent: 0, swap: 0, tasks: 0 }, [null, 0, 0, 0], "incomplete"],
-      ];
+        [a],
+        { cpuPercent: 0, swap: 0, tasks: 0 },
+        [null, 0, 0, 0],
+        "incomplete",
+      ],
+    ];
     for (const [procs, counters, expected, read] of rows) {
       const lane = present(
         lanes([{ ...group, ...counters }], procs, c, 0, undefined, [], read)[0],
