@@ -935,6 +935,9 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("a readable process in another lane", [(op, lane, hour), (LIVE, "agent-confine-500-600.scope", hour)],
              True, "unknown"),
             ("an orphan lane whose other member has exited", [(op, lane, hour), (GONE, lane, hour)], True, "unknown"),
+            ("an orphan lane whose newer member has exited", [(op, lane, -hour), (GONE, lane, hour)], True, "free"),
+            ("an orphan lane with an older daemon and a newer helper",
+             [(op, lane, -hour), (other, lane, hour)], True, "unknown"),
             ("an orphan lane that started before the folder was created", [(op, lane, -hour)], True, "free"),
             ("a child cgroup of such a lane", [(op, f"{lane}/worker", -hour)], True, "free"),
             ("an orphan lane that started after the folder was created", [(op, lane, 5)], True, "unknown"),
@@ -952,11 +955,11 @@ class AgentWardenScratchRules(WardenRulesCase):
         # An op daemon in a live lane scope kept every gone folder of every
         # lane for days (VSY-219). Beside a readable scope-mate it holds
         # only what that mate holds now, so every other gone folder goes,
-        # however old. In an orphan lane, with
-        # no readable mate, what the launch handed down existed when the
-        # lane started: another lane's folder created after that start
-        # goes, and every older one stays unknown. Its own lane's folder
-        # stays while the lane is live.
+        # however old. In an orphan lane, with no readable mate, what an
+        # unreadable member holds existed when it started: another lane's
+        # folder created after the latest such start goes, and every older
+        # one stays unknown. Its own lane's folder stays while the lane is
+        # live.
         for name, members, birth_known, status in self._lane_rows():
             with self.subTest(name=name):
                 removed = ["agent-confine-100-200"] if status == "free" else []
@@ -977,7 +980,10 @@ class AgentWardenScratchRules(WardenRulesCase):
              lane_member),
             ("the clock margin", "SCRATCH_LINEAGE_SLACK = 60\n", "SCRATCH_LINEAGE_SLACK = 0\n",
              "an orphan lane that started within the clock margin before it"),
-            ("the launcher's own start", "if p.pid != int(m.group(2))]", "]", "the launcher alone in its lane"),
+            ("the launcher's own start", " and p.pid != int(m.group(2))]", "]", "the launcher alone in its lane"),
+            ("the latest unreadable start", "max(starts)", "min(starts)",
+             "an orphan lane with an older daemon and a newer helper"),
+            ("an exited member's start", "p.pid in unread and ", "", "an orphan lane whose newer member has exited"),
             ("an unknown creation time", "born is None or born <= born_by", "born is not None and born <= born_by",
              "a folder whose creation time cannot be read"),
             ("the creation bound", "born is None or born <= born_by", "born is None",
