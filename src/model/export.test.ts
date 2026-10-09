@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
-import { emptySnapshot, groupSnapshot } from "../test/fixture";
+import { emptySnapshot, groupSnapshot, serviceSnapshot } from "../test/fixture";
 import { exportJson, safe, summarySnapshot } from "./export";
 
 test("JSON preserves evidence and display text removes terminal controls", () => {
@@ -67,4 +67,26 @@ test("summary meters keep unknown readings null and graded warn", () => {
     max: 100,
     level: "warn",
   });
+});
+
+test("summary keeps service-cpu unmeasured until a unit has an hour average", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.services = [serviceSnapshot({ cpuHourPercent: null })];
+  expect(summarySnapshot(s, c).verdict).toContainEqual({
+    cause: "service-cpu",
+    level: null,
+    subject: null,
+  });
+  // A failed unit listing is unmeasured too.
+  s.services = null;
+  expect(summarySnapshot(s, c).verdict).toContainEqual({
+    cause: "service-cpu",
+    level: null,
+    subject: null,
+  });
+  s.services = [serviceSnapshot({ cpuHourPercent: 0 })];
+  expect(
+    summarySnapshot(s, c).verdict.some((v) => v.cause === "service-cpu"),
+  ).toBe(false);
 });
