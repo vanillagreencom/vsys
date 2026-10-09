@@ -462,9 +462,12 @@ mailbox sits on its provider's disk, where this check cannot see it. A peer
 verb is judged the same way, once per mailbox it opens: the peer's, and the
 caller's own record.
 
-A hosted read that fails is never read as an empty mailbox. `lane-host cat`
-exits 2 for a file that is not there, and the dispatcher exits 2 for a host it
-refuses, so a failed read confirms the host with `lane-host touch` first. A
+A hosted read that fails is never read as an empty mailbox. The watch reads
+the cached `read-many` reply. A missing-file row means absence; any other
+failed row is `mail-read-failed`. Cached reads do not probe the host.
+Other single reads use `lane-host cat`. It exits 2 for a file that is not
+there, and the dispatcher exits 2 for a host it refuses, so a failed single
+read confirms the host with `lane-host touch` first. A
 successful read or probe proves later absent files in the same invocation;
 every other failed read still probes. A
 failed probe is `host-unreachable`, carrying the host's `state=` from
@@ -529,7 +532,7 @@ fix=run `oversee register` from the orch skill in the session that should read t
     archived) text='Expired mailbox rows are kept in this archive.' ;;
     host-append) text='The hosted mailbox could not be appended through lane-host append. The host answered the probe, so the provider declined the write and the line below is what it reported; a provider with no append verb fails here too. Nothing falls back to reading the mailbox and putting it back, which drops a line when two machines write one file.' ;;
     host-unreachable) text='The lane host could not be reached, so the mailbox state is unknown: a read is refused rather than reported as empty, and a write rather than reported as delivered. A stopped host is started; a gone one is relaunched.' ;;
-    mail-read-failed) text='The hosted mailbox could not be read and its host answers, so the read is refused rather than reported as empty. A send stopped here appended nothing: a mailbox no read could judge is one no send can be judged against.' ;;
+    mail-read-failed) text='The hosted mailbox could not be read, so the read is refused rather than reported as empty.' ;;
     lane-host-busy) text='lane-host refused the call at its per-home cap on provider calls, so the mailbox was neither read nor written and the host was not judged. Run the verb again; the line below is the one lane-host printed.' ;;
     timeout) text='No answer to this ask arrived before --timeout.' ;;
     mail) text='Overseer mail landed in this lane mailbox. Run the command below and act on every envelope it prints, answers and directives alike, as its text directs.' ;;
@@ -768,6 +771,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 . "$SCRIPT_DIR/lib/mailbox-append.sh"
 # shellcheck source=lib/lane-host-slots.sh
 . "$SCRIPT_DIR/lib/lane-host-slots.sh"
+# shellcheck source=lib/lane-host-read.sh
+. "$SCRIPT_DIR/lib/lane-host-read.sh"
 # shellcheck source=lib/tmux-server.sh
 . "$SCRIPT_DIR/lib/tmux-server.sh"
 
@@ -1081,13 +1086,14 @@ lm_one_spelling() {
 }
 [ "$HOST" -eq 1 ] || lm_one_spelling
 
-# A transport call that failed is a host out of reach or a provider that
-# answered and declined, and only the probe tells them apart. The dispatcher
+# A single transport call that failed is a host out of reach or a provider
+# that answered and declined, and only the probe tells them apart. The dispatcher
 # refuses a host it cannot use with the same 2 as an absent file. An unreachable
 # host is refused here, carrying the state an
 # operator acts on; a host that answers returns, and the caller names what its
 # own verb could not do. A successful read or probe also proves later missing
-# files in this invocation; a non-2 failure still takes a fresh probe.
+# files in this invocation; a non-2 single-read failure takes a fresh probe.
+# Cached batch reads prove absence or refuse failed rows without this probe.
 LM_HOST_ANSWERED=0
 lm_host_answers() {
   local probe_rc=0
@@ -1106,8 +1112,8 @@ lm_host_busy() { # STATUS ERR_FILE
 }
 
 # Fetch REMOTE_PATH into DEST, empty when the mailbox does not exist yet. A
-# failed hosted read probes the host, so an unreachable one is refused rather
-# than reported as an empty mailbox.
+# cached batch read accepts a missing-file row and refuses any other failure
+# without a probe. A failed single read probes the host before accepting absence.
 LM_FETCH_ABSENT=0
 lm_fetch() { # REMOTE_PATH DEST — LM_FETCH_ABSENT 1 where the file was not there
   local rc=0
@@ -1128,7 +1134,16 @@ lm_fetch() { # REMOTE_PATH DEST — LM_FETCH_ABSENT 1 where the file was not the
       || refuse file-unreadable "$1" "$(cat -- "$WORK_DIR/read.err")"
     return 0
   fi
-  "$SCRIPT_DIR/lane-host" cat --item "$ITEM" "$1" >"$2" 2>"$WORK_DIR/host.err" || rc=$?
+  if [ -n "${LANE_HOST_READ_DIR:-}" ]; then
+    lane_host_cached_read "$LANE_HOST_READ_DIR" "$ITEM" "$1" "$2" "$WORK_DIR/host.err" || rc=$?
+    lm_host_busy "$rc" "$WORK_DIR/host.err"
+    case "$rc" in
+      0 | 2) LM_HOST_ANSWERED=1 ;;
+      *) refuse mail-read-failed "$ITEM" "$(cat -- "$WORK_DIR/host.err")" ;;
+    esac
+  else
+    "$SCRIPT_DIR/lane-host" cat --item "$ITEM" "$1" >"$2" 2>"$WORK_DIR/host.err" || rc=$?
+  fi
   if [ "$rc" -eq 0 ]; then
     LM_HOST_ANSWERED=1
     case "$1" in

@@ -539,79 +539,6 @@ elif [[ "$TERMINAL_MODE" == "ghostty" && -n "${TMUX:-}" ]]; then
   # lane went and how to keep the next one in the workspace.
   ot_message mode-override "option=--ghostty" "detected=tmux" >&2
 fi
-# Each bound is validated wherever a tmux launch will READ it, and nowhere
-# else: a broken tmux-only setting must not abort a launch that never consults
-# it. The readers of ORCH_TMUX_VERIFY_SECS, and what reaches each:
-#   the brief waits    a claude launch with no --cmd, no resumed session and
-#                      no resume-or-fresh relaunch route, hosted or local
-#   tmux_wait_composer a cloud session, its composer wait with no brief, the
-#                      premise ahead of its account read
-#   tmux_wait_harness  two callers: the premise ahead of open_tmux's account
-#                      read, and the harness-screen wait of a hosted claude,
-#                      codex or pi relaunch with no --cmd and no brief
-#   lane_account_ok    a local claude, codex or copilot lane with a --lane and
-#                      no --cmd, and a cloud session
-#   cloud_cli_wait     a cloud session, before anything is typed after its
-#                      launch line
-# The account read and its premise are not reachable on an ssh-hosted lane:
-# LANE_FORM stays `unchecked` outside the local branch and the cloud session's
-# arm, which is what lane_account_readable answers on. A hosted --cmd lane
-# reads this setting nowhere. A hosted claude lane reads it for its brief or
-# resume-or-fresh wait; a hosted codex or pi relaunch reads it even after a
-# harness switch.
-# The session-file term of the
-# brief's condition is never filled on a hosted lane: its sessions are on its
-# host and this machine's session store is not scanned.
-#
-# ORCH_LANE_SSH_PROMPT_SECS is read by tmux_wait_remote_prompt and
-# tmux_wait_ssh_gone, which every ssh-hosted lane reaches whatever its harness
-# and whether or not it carries --cmd, and by cloud_session_read, a cloud
-# session's wait for its URL, which waits on the cloud provisioning it. This
-# is the one place that names its readers and the waits that spend it: a
-# hosted launch makes three at worst, the prompt wait after the first dial,
-# the wait for the pane's own shell after the interrupt, and the prompt wait
-# after the second dial; a cloud launch makes one.
-#
-# All of them are reached only from open_tmux. A --cmd template reaches none of
-# them locally: lane_launch_form answers `unchecked` for one, and the brief is
-# empty. A wake reaches neither setting, whatever its harness: it resumes an
-# existing session through open_wake, whose own wait is its own, so refusing
-# one over these settings would stop a resume that never consults them. `$LANE`
-# rather than the resolved `$LANE_ENV`, which the lane block below this gate
-# produces; a --lane that fails to resolve exits before any launch either way.
-TIMEOUT_IS_READ=false
-SSH_PROMPT_IS_READ=false
-if [[ "$TERMINAL_MODE" == "tmux" && "$WAKE" != true ]]; then
-  if [[ "$LANE_HOST" != local ]]; then
-    SSH_PROMPT_IS_READ=true
-    [[ -n "$CMD_TEMPLATE" || "$HARNESS" != claude ]] || TIMEOUT_IS_READ=true
-    if [[ -z "$CMD_TEMPLATE" && "$RELAUNCH" == true ]]; then
-      case "$HARNESS" in codex | pi) TIMEOUT_IS_READ=true ;; esac
-    fi
-  elif [[ -z "$CMD_TEMPLATE" ]]; then
-    case "$HARNESS" in
-      claude) TIMEOUT_IS_READ=true ;;
-      codex | copilot) [[ -z "$LANE" ]] || TIMEOUT_IS_READ=true ;;
-    esac
-  fi
-fi
-# 120 is a harness-screen ceiling that still fails fast against a program
-# starting on this machine. The ssh bound's ceiling is 300, because it waits on
-# a route and another machine's login; the gate above names the waits that
-# spend it, and 300 is what an unanswered host costs in each one.
-if [[ "$TIMEOUT_IS_READ" == true ]]; then
-  verify_seconds_ok ORCH_TMUX_VERIFY_SECS "$TMUX_VERIFY_SECS" 120 || exit 1
-  TMUX_VERIFY_SECS="$VERIFY_SECONDS"
-else
-  TMUX_VERIFY_SECS="$TMUX_VERIFY_DEFAULT"
-fi
-if [[ "$SSH_PROMPT_IS_READ" == true ]]; then
-  verify_seconds_ok ORCH_LANE_SSH_PROMPT_SECS "$LANE_SSH_PROMPT_SECS" 300 || exit 1
-  LANE_SSH_PROMPT_SECS="$VERIFY_SECONDS"
-else
-  LANE_SSH_PROMPT_SECS="$LANE_SSH_PROMPT_DEFAULT"
-fi
-
 # Every row field is read by the library that owns the table. The MODEL
 # spellings come back whether or not the table names this launch's harness: the
 # lane record carries the model every launch passes, and a launch naming no
@@ -858,6 +785,79 @@ fi
 }
 if [[ "$PREFERENCE_ACTIVE" == true ]]; then preference_select || exit 1
 else launch_judge || exit 1; fi
+
+# Each bound is validated wherever a tmux launch will READ it, and nowhere
+# else: a broken tmux-only setting must not abort a launch that never consults
+# it. The readers of ORCH_TMUX_VERIFY_SECS, and what reaches each:
+#   the brief waits    a claude launch with no --cmd, no resumed session and
+#                      no resume-or-fresh relaunch route, hosted or local
+#   tmux_wait_composer a cloud session, its composer wait with no brief, the
+#                      premise ahead of its account read
+#   tmux_wait_harness  two callers: the premise ahead of open_tmux's account
+#                      read, and the harness-screen wait of a hosted claude,
+#                      codex or pi relaunch with no --cmd and no brief
+#   lane_account_ok    a local claude, codex or copilot lane with a --lane,
+#                      including --cmd, and a cloud session
+#   cloud_cli_wait     a cloud session, before anything is typed after its
+#                      launch line
+# The account read and its premise are not reachable on an ssh-hosted lane:
+# LANE_FORM stays `unchecked` outside the local branch and the cloud session's
+# arm, which is what lane_account_readable answers on. A hosted --cmd lane
+# reads this setting nowhere. A hosted claude lane reads it for its brief or
+# resume-or-fresh wait; a hosted codex or pi relaunch reads it even after a
+# harness switch.
+# The session-file term of the
+# brief's condition is never filled on a hosted lane: its sessions are on its
+# host and this machine's session store is not scanned.
+#
+# ORCH_LANE_SSH_PROMPT_SECS is read by tmux_wait_remote_prompt and
+# tmux_wait_ssh_gone, which every ssh-hosted lane reaches whatever its harness
+# and whether or not it carries --cmd, and by cloud_session_read, a cloud
+# session's wait for its URL, which waits on the cloud provisioning it. This
+# is the one place that names its readers and the waits that spend it: a
+# hosted launch makes three at worst, the prompt wait after the first dial,
+# the wait for the pane's own shell after the interrupt, and the prompt wait
+# after the second dial; a cloud launch makes one.
+#
+# A local --cmd template with a
+# lane reaches the account read and its premise. A wake reaches neither
+# setting, whatever its harness: it resumes an
+# existing session through open_wake, whose own wait is its own, so refusing
+# one over these settings would stop a resume that never consults them. `$LANE`
+# rather than the resolved `$LANE_ENV`, which the lane block below this gate
+# produces; a --lane that fails to resolve exits before any launch either way.
+TIMEOUT_IS_READ=false
+SSH_PROMPT_IS_READ=false
+if [[ "$TERMINAL_MODE" == "tmux" && "$WAKE" != true ]]; then
+  if [[ "$LANE_HOST" != local ]]; then
+    SSH_PROMPT_IS_READ=true
+    [[ -n "$CMD_TEMPLATE" || "$HARNESS" != claude ]] || TIMEOUT_IS_READ=true
+    if [[ -z "$CMD_TEMPLATE" && "$RELAUNCH" == true ]]; then
+      case "$HARNESS" in codex | pi) TIMEOUT_IS_READ=true ;; esac
+    fi
+  elif [[ -z "$CMD_TEMPLATE" || -n "$LANE" ]]; then
+    case "$LAUNCH_HARNESS" in
+      claude) TIMEOUT_IS_READ=true ;;
+      codex | copilot) [[ -z "$LANE" ]] || TIMEOUT_IS_READ=true ;;
+    esac
+  fi
+fi
+# 120 is a harness-screen ceiling that still fails fast against a program
+# starting on this machine. The ssh bound's ceiling is 300, because it waits on
+# a route and another machine's login; the gate above names the waits that
+# spend it, and 300 is what an unanswered host costs in each one.
+if [[ "$TIMEOUT_IS_READ" == true ]]; then
+  verify_seconds_ok ORCH_TMUX_VERIFY_SECS "$TMUX_VERIFY_SECS" 120 || exit 1
+  TMUX_VERIFY_SECS="$VERIFY_SECONDS"
+else
+  TMUX_VERIFY_SECS="$TMUX_VERIFY_DEFAULT"
+fi
+if [[ "$SSH_PROMPT_IS_READ" == true ]]; then
+  verify_seconds_ok ORCH_LANE_SSH_PROMPT_SECS "$LANE_SSH_PROMPT_SECS" 300 || exit 1
+  LANE_SSH_PROMPT_SECS="$VERIFY_SECONDS"
+else
+  LANE_SSH_PROMPT_SECS="$LANE_SSH_PROMPT_DEFAULT"
+fi
 
 # Resolve the launch lane BEFORE creating any worktree. A fleet launch that
 # discovers "every account is full" after spawning three worktrees has already
@@ -1620,13 +1620,12 @@ start_cmd() { # ITEM MAIL_ID REPO [SESSION_ID] [WAKE_DIR] [BRIEF_PATH]
 
 # How a resolved lane reaches the launched harness, and whether the pane can be
 # read back to confirm it, are lib/lane-launch.sh's one decision, shared with
-# every other launcher. Asked once per item and answered for local claude and
-# codex launches only: a --host launch runs its command on another machine,
+# every other launcher. Asked once per item for local account launches:
+# a --host launch runs its command on another machine,
 # where this PATH answers about the wrong one, and a --cmd template is the
 # caller's own command, not ours to rewrite.
 #
-# A --cmd template keeps the env prefix, which lane_launch_line renders for it
-# under the `unchecked` form. A HOSTED launch carries no lane env prefix at
+# A HOSTED launch carries no lane env prefix at
 # all: its credential reaches the sandbox through `lane-host create`, which
 # takes the config dir as --account, so there is nothing local to prefix and
 # nothing local to read back.
@@ -2826,7 +2825,7 @@ launch_finish() {
         *) launch_var=CODEX_HOME; launch_home="$(launch_ambient_codex_home)" || return 1 ;;
       esac
     fi
-    if lane_trust_prepare "$HARNESS" "$launch_home" "$wt"; then
+    if lane_trust_prepare "$LAUNCH_HARNESS" "$launch_home" "$wt"; then
       launch_home="$LANE_TRUST_HOME"
       # A copilot command without a full allow-all spelling carries an empty
       # COPILOT_ALLOW_ALL (lib/lane-launch.sh § lane_copilot_env): nothing
@@ -2840,12 +2839,12 @@ launch_finish() {
       [[ -z "$LANE_TRUST_DETAIL" ]] || printf '%s\n' "$LANE_TRUST_DETAIL" >&2
       return 1
     fi
-    launch_form="$(lane_launch_form "$cmd" "$HARNESS" "$launch_home" "$CMD_TEMPLATE")" || return 1
+    launch_form="$(lane_launch_form "$cmd" "$LAUNCH_HARNESS" "$launch_home" "$CMD_TEMPLATE")" || return 1
     # The account check reads LANE_FORM, and it is about a lane that was PICKED.
     # A launch with none has no account to check and keeps the `unchecked` the
     # check reads as skip, whatever prefix the line below carries.
     [[ -z "$LANE_ENV" ]] || LANE_FORM="$launch_form"
-    cmd="$(lane_launch_line "$cmd" "$HARNESS" "$launch_var" "$launch_home" "$launch_form")" || return 1
+    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form")" || return 1
   fi
   if [[ "$WAKE" == true ]]; then
     open_wake "$wt" "$title" "$cmd" || return 1
@@ -3238,15 +3237,17 @@ launch_handoff() {
   ot_message lane-preparing "item=$item" "log=$log"
 }
 
-# Ends a foreground hosted relaunch in a fleet whose open_tmux failed after its
+# Ends a foreground relaunch in a fleet whose open_tmux failed after its
 # window opened, UNTAKEN_PANE. The window closes first, which retires its claim
 # and ends whatever the pane runs, and the record is written stopped only once
 # that close succeeded: a close that failed returns 1 with the record as it
 # read, tmux-failed naming the cause. lane_record_write keeps the fields the
 # next relaunch's route is judged on.
 launch_stop() {
+  local mail_root="$wt"
+  [[ "$LANE_HOST" == local ]] || mail_root="$remote_path"
   tmux_window_close "$UNTAKEN_PANE" "$title" || return 1
-  lane_record_write "$RECORD_MODE" "$wt_id" "$LAUNCH_SESSION:$title" "$remote_path" "" "$launched_at" stopped && return 0
+  lane_record_write "$RECORD_MODE" "$wt_id" "$LAUNCH_SESSION:$title" "$mail_root" "" "$launched_at" stopped && return 0
   ot_message record-stop-failed "item=$item" "state=oversee" >&2
   return 1
 }
@@ -3286,11 +3287,6 @@ launch_prepared() { # LOG
 # the gate.
 CAP_GATED=false
 [[ "$FLEET" != true || "$WAKE" == true ]] || CAP_GATED=true
-if [[ "$CAP_GATED" == true ]]; then
-  [[ -x "$SCRIPT_DIR/orch-env" ]] || { ot_message helper-missing "path=$SCRIPT_DIR/orch-env" >&2; exit 1; }
-  FLEET_CAP="$("$SCRIPT_DIR/orch-env" ORCH_OVERSEER_LANES 3)" || exit 1
-  FLEET_CAP=$((10#$FLEET_CAP))
-fi
 
 # Judges the launch lane again once a --wait-slot wait has let its usage
 # window move: `--lane auto` picks again, and a named lane goes back to
@@ -3337,6 +3333,15 @@ fi
 # checkout lists in ORCH_CONNECTED_REPOS; lib/lane-cap.sh's overseer_bind judges
 # it.
 [[ "$FLEET" != true ]] || overseer_bind || exit 1
+if [[ "$CAP_GATED" == true ]]; then
+  [[ -x "$SCRIPT_DIR/orch-env" ]] || { ot_message helper-missing "path=$SCRIPT_DIR/orch-env" >&2; exit 1; }
+  if [[ "$OVERSEER_BIND" == connected ]]; then
+    FLEET_CAP="$(cd -- "$OVERSEER_DIR" && unset ORCH_OVERSEER_LANES KENDEX_ENV_FILE && "$SCRIPT_DIR/orch-env" ORCH_OVERSEER_LANES 3)" || exit 1
+  else
+    FLEET_CAP="$("$SCRIPT_DIR/orch-env" ORCH_OVERSEER_LANES 3)" || exit 1
+  fi
+  FLEET_CAP=$((10#$FLEET_CAP))
+fi
 launched=0
 preparing=0
 failed=0
@@ -3697,11 +3702,11 @@ for raw in "${ITEMS[@]}"; do
         preparing=$((preparing + 1))
         continue
       fi
-      # Only a hosted relaunch whose open_tmux failed after its window opened
+      # Only a relaunch whose open_tmux failed after its window opened
       # ends through launch_stop. Any other failure keeps its record as it
       # read: a window that never opened started nothing, and one that opened
       # and took, record-write-failed after it, stands.
-      [[ "$HOST_RELAUNCH" != true || "$FLEET" != true || -z "$UNTAKEN_PANE" ]] || launch_stop || true
+      [[ "$RELAUNCH" != true || "$FLEET" != true || -z "$UNTAKEN_PANE" ]] || launch_stop || true
       [[ "$LANE_HOST" == local ]] || host_launch_ready || { failed=$((failed + 1)); continue; }
       failed=$((failed + 1))
       continue
