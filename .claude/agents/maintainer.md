@@ -27,3 +27,8 @@ Changes whose correctness is settled by reading: doc claims, references, links, 
 ## Output
 
 What changed, what you verified it against, and anything you deliberately left for a domain owner.
+
+## Additional Instructions
+
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+

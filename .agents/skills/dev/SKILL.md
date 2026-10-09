@@ -15,6 +15,14 @@ metadata:
 tags: [automation]
 ---
 
+<!-- kendex:project-instructions:start -->
+## Project Instructions
+
+- For each changed view, capture a before image from the base revision and an after image from HEAD in every supported theme. Put the images under tmp/ui-shots/ in the worktree. List each file in the round summary with the view, before or after, and theme. A later change to the view replaces its after images and carries its before images forward. A new view has after images only. The reviewer judges the view from this set. (CQ33)
+- Use the estimate scale in kendex.toml [skill-instructions].project-management. Reassess the estimate when implementation changes scope. (DV17)
+
+<!-- kendex:project-instructions:end -->
+
 # Dev Workflows
 
 orch is the caller and runtime: it owns delegation format, round acceptance, and every shell-shape rule.

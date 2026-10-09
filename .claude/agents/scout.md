@@ -40,3 +40,8 @@ Set by the caller; default **medium**.
 ## Output
 
 Answer four things: where the relevant code lives, how the key types and functions connect, which constraints in tests, docs, and conventions the next agent must respect, and what remains unknown or risky. Close with the one file or function to open first, and why. This is context for another agent, not a document: compress accordingly.
+
+## Additional Instructions
+
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+

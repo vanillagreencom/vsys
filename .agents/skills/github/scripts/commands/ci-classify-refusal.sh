@@ -34,17 +34,21 @@
 #                          line, with `ci-classify-refusal: threads=unread
 #                          pr=<N>` on stderr
 #   ci_optional_failed: ...  red checks the base branch does not require,
-#                          which block nothing. Printed under every
-#                          non-terminal cause, `none` included: a PR blocked
-#                          by nothing still carries them. `merged` and
+#                          which block nothing. Printed only after the required
+#                          set is resolved and the checks are classified,
+#                          under any non-terminal cause, `none` included.
+#                          Pending, failed or unreadable required workflow
+#                          evidence prints no optional classification. `merged` and
 #                          `closed` return before it, their check data being
 #                          meaningless
 #   head-run: <ids>        (ci_failed/ci_pending only) run ids the CI
 #                          classification was scoped to; "none" when no
 #                          run-correlated checks exist
 #   fail: ...              (ci_failed only) each failing check with its
-#                          state, workflow, and run id
-#   superseded: ...        (ci_failed only) runs on the head whose checks
+#                          state, workflow, and run id. A required workflow
+#                          run failure uses its issue: detail above; visible
+#                          optional failures are not attributed to that run
+#   superseded: ...        (classified check failures only) runs on the head whose checks
 #                          were NOT counted — workflow runs (`workflow=`)
 #                          and commit statuses (`status=`) alike. A status
 #                          lands here when a newer same-name status
@@ -211,6 +215,12 @@ fi
 # fail:/superseded: detail describe different states.
 check_head_run_line <<<"$check_json"
 
+# A run can fail before its jobs report a failure. The existing issue names
+# that workflow result; the visible rollup cannot name its failed job.
+if jq -e 'any(.issues[]?; . == "ci_failed: Required workflow")' >/dev/null <<<"$check_json"; then
+    exit 0
+fi
+
 ci_json=$(jq -c '.checks // []' <<<"$check_json")
 scoped_json=$(echo "$ci_json" | scope_current_run)
 
@@ -218,7 +228,7 @@ scoped_json=$(echo "$ci_json" | scope_current_run)
 # the `ci_failed:` issue counted. Re-deriving "this check blocks" here would
 # print a red optional check on `fail:` and on `ci_optional_failed:` with
 # opposite meanings, and orch routes on `fail:`.
-required_json=$(jq -c '.required_contexts // []' <<<"$check_json")
+required_json=$(jq -c '.requirements // .required_contexts // []' <<<"$check_json")
 
 jq -r --argjson scoped "$scoped_json" --argjson required "$required_json" "$CI_RUN_JQ_DEFS$SANITIZE_JQ"'
     $scoped[]

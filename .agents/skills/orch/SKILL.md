@@ -15,6 +15,28 @@ metadata:
 tags: [automation]
 ---
 
+<!-- kendex:project-instructions:start -->
+## Project Instructions
+
+- A worktree created as an orch lane follows the refresh-owner rule (ORCH-M03) in these instructions and respects the lane refresh restriction. A lane explicitly launched to refresh runs kendex refresh or kendex apply only with --lane-refresh, as its brief permits. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
+- The kendex-refresh Actions workflow and its rolling kendex/refresh pull request own kendex refresh outputs. A base-checkout refresh after merge reports generated changes and restores only outputs that workflow owns. Preserve unrelated tracked and untracked work. (ORCH-M03)
+- Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear. Read the live issue before changing its state. (ORCH-M09)
+- Use the estimate and post-merge observation policies in kendex.toml [skill-instructions].project-management. (ORCH-M22, ORCH-M23)
+- Route unattended lane questions through lane-mail. The master relays owner decision requests and critical notices to Slack and chat. Keep voice replies on their call, progress reports in open text media, and replies in the owner's message thread. (ORCH-D22)
+- Link each owner-summary item to the live tracker URL. Read issue identifiers from LINEAR_TEAM_PREFIX and GH_ISSUE_PATTERN. (ORCH-D25, ORCH-M11)
+- Complete internal review before opening a public or internal repository pull request. A private repository may open after its first validated implementation commit. Read live repository visibility before selecting the route. (ORCH-M01)
+- Apply the refresh identity and approval checks in kendex.toml [skill-instructions].review-gate. (ORCH-D26)
+- The vanillagreen-overseer GitHub App supplies fallback approval separately from lane credentials. Fleet supplies its private mode-600 token file outside lane roots and replaces it atomically before expiry. (ORCH-D27)
+- The fleet's Claude opus capacity is 1000000 on the configurations that measured it. Other providers and models need their own declared or measured capacity. (ORCH-M07)
+- The local fleet's shared Claude transcript store is HOME/.claude-shared/projects. Read relaunch evidence from the selected account and configured store. (ORCH-M17)
+- Keep .kendex-lock.json and .kendex-generated.json out of the micro change class. Keep the consumer queue paths in HARNESS_CI_QUEUE_PATHS. (ORCH-M06)
+- Report measured cycle time against these targets in seconds: render=300, trivial=300, micro=1200, small=1800, standard=5400. Review targets are micro=1, small=1, standard=2 rounds, with 600 seconds per round. A micro task targets about eight lane minutes and three overseer minutes. (ORCH-M12)
+- Request a process issue after the third qualifying miss of the same cycle phase. Include the miss evidence and phase. (ORCH-M13)
+- Compare recorded regressions against the week beginning 2026-09-28 for the organization review-cap experiment. Keep that baseline optional outside the experiment. (ORCH-M14)
+- Use Conventional Commit type syntax for commit subjects and pull-request titles. Keep the issue association. The installed commit gate decides accepted syntax. (ORCH-M26)
+
+<!-- kendex:project-instructions:end -->
+
 # Orchestration
 
 Load `github` and `worktree` before anything else; a Linear work item also needs `linear`. The dev and reviewer skills call orch scripts.

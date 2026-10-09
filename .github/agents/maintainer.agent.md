@@ -34,3 +34,8 @@ Read each before acting:
 - linear: .agents/skills/linear/SKILL.md
 - preflight: .agents/skills/preflight/SKILL.md
 - review-gate: .agents/skills/review-gate/SKILL.md
+
+## Additional Instructions
+
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+

@@ -104,6 +104,9 @@ ci_message() {
     head-read-failed|head-response-invalid)
       printf 'ci-wait: %s pr=%s repo=%s\n' "$_message_key" "$PR_NUM" "$REPO"
       ;;
+    required-workflow-unreadable)
+      printf 'ci-wait: required-workflow-unreadable pr=%s repo=%s\n' "$PR_NUM" "$REPO"
+      ;;
     actions-read-failed|actions-response-invalid)
       printf 'ci-wait: %s head=%s repo=%s\n' "$_message_key" "$head_sha" "$REPO"
       ;;
@@ -180,7 +183,7 @@ failures (max 1 retry).
   max_wait       total budget in seconds (default 600)
   --json         emit the machine-readable result object on stdout
   --item ID      the lane whose new mail exits 5; no mail check without it
-  --required-only  classify as GitHub gates the merge: only a context the
+  --required-only  classify as GitHub gates the merge: only a classic context or workflow check the
                  base branch requires counts as pending or failed, and a
                  required context with no check yet is pending as
                  "<context> (missing)"; passed_checks, which completes the
@@ -189,9 +192,12 @@ failures (max 1 retry).
                  the set unreadable, every check that passed or was
                  skipped), and rollup_key, which the stale window holds,
                  keys the required checks alone. The required set is the github
-                 skill's own read (lib/ci-run-correlation.sh
-                 required_contexts); where it cannot be read, every check
-                 counts, as without the flag
+                 skill's complete evidence read (lib/ci-run-correlation.sh
+                 required_contexts). Pending required workflows or unregistered
+                 jobs hold the wait. Unreadable workflow evidence holds even
+                 when visible jobs pass. Failed required runs fail the wait.
+                 Other unreadable protection or unnameable rule types count
+                 every check, as without the flag
 
 Verdicts (JSON "verdict"):
   pass     every current-head check settled green, only ever paired with
@@ -228,8 +234,10 @@ A missing replacement reaches the timeout rather than passing.
 In default mode, or when --required-only cannot narrow the required set,
 the head's Actions run list must also show no non-completed run and no
 failed latest workflow attempt before a settled green rollup can pass.
-Latest means greatest updated_at, then run id; a later all-skipped dispatch
-does not replace a substantive outcome. An active run or an unreadable
+The newest run replaces older attempts. A later rerun can replace a newer
+run through its execution time. A late completion alone cannot replace a
+newer run. A later all-skipped dispatch does not replace a substantive
+outcome. An active run or an unreadable
 head/run lookup keeps the verdict pending, even if the only visible check
 is a completed review-request check or earlier polls saw checks in progress.
 Failed and invalid lookups report their diagnostic category on stderr.
@@ -630,22 +638,20 @@ fi
 # shellcheck source=../../github/scripts/lib/ci-run-correlation.sh
 source "$CI_RUN_CORRELATION_LIB"
 
-# The contexts classify_checks counts as blocking; [] counts every check.
-REQUIRED_CONTEXTS='[]'
-if $REQUIRED_ONLY; then
-  REQUIRED_CONTEXTS=$(required_contexts "$PR_NUM" "$REPO") || REQUIRED_CONTEXTS='[]'
-fi
+# Shared requirement evidence for classification, confirmation and retries.
+# The default [] retains the all-check behavior outside --required-only.
+REQUIREMENTS='[]'
 
 # Failure check `link` is `https://github.com/owner/repo/actions/runs/<RUN_ID>/job/<JOB_ID>` —
 # extract RUN_ID, not the trailing JOB_ID (which `gh run rerun` won't accept as a workflow run).
 # Scope to the current run first so a rerun never targets a superseded/canceled
-# run, and, under --required-only, to a required context, so the retry never
+# run, and, under --required-only, to shared required evidence, so the retry never
 # re-runs optional CI the classification does not count.
 get_failed_run_id() {
   local pr="$1"
   gh pr checks "$pr" --repo "$REPO" --json name,state,bucket,link,startedAt,workflow 2>/dev/null | \
     scope_current_run | \
-    jq -r --argjson req "$REQUIRED_CONTEXTS" "$CI_RUN_JQ_DEFS"'
+    jq -r --argjson req "$REQUIREMENTS" "$CI_RUN_JQ_DEFS"'
       .[] | select(red and required_only($req)) | .link
     ' | \
     head -1 | sed -nE 's#.*/actions/runs/([0-9]+)(/.*)?$#\1#p'
@@ -727,14 +733,23 @@ superseding_run_state() {
     | [.[].workflow_runs[]] as $runs
     | select(($runs | length) < 1000)
     | select(all(.[]; .total_count == ($runs | length)))
-    | [$runs[] | {id, event, status, conclusion, workflow_id, run_attempt, updated_at}]
+    | [$runs[] | {id, event, status, conclusion, workflow_id, run_attempt, updated_at, run_started_at}]
   ' 2>/dev/null <<<"$runs_json"); then
     ci_message actions-response-invalid >&2
     echo '{"state":"unavailable","failed":[]}'
     return 0
   fi
-  jq -rs --arg repo "$REPO" "$CI_RUN_JQ_DEFS"'
-    .[0] as $runs | .[1]
+  jq -rs --arg repo "$REPO" --argjson ro "$REQUIRED_ONLY" --argjson req "$REQUIREMENTS" "$CI_RUN_JQ_DEFS"'
+    .[0] as $all_runs | .[1] as $classes
+    | requirement_set($req) as $requirements
+    | ([$requirements.workflows[]?.runs[]?.id] + ($requirements.failed_runs // [])) as $required_runs
+    | [$classes[][] | select(.name as $name | $requirements.contexts | index($name)) | runid] as $classic_runs
+    | [$all_runs[] | select(.id as $id | $classic_runs | index($id)) | .workflow_id] as $classic_workflows
+    | (if $ro and ($requirements.all_checks | not) then
+         [$all_runs[] | select((.id as $id | $required_runs | index($id))
+                               or (.workflow_id as $workflow | $classic_workflows | index($workflow)))]
+       else $all_runs end) as $runs
+    | $classes
     |
     def substantive:
       ((.event // "") | IN("pull_request", "pull_request_review", "pull_request_review_comment", "merge_group"));
@@ -744,7 +759,7 @@ superseding_run_state() {
           ($runs | group_by(.workflow_id) | map(
             (map(select(.conclusion != "skipped"))) as $substantive
             | (if ($substantive | length) > 0 then $substantive else . end)
-            | max_by([(.updated_at // ""), .id]))) as $latest
+            | latest_workflow_attempt)) as $latest
           | [$latest[] | select((.conclusion // "") | IN("success", "neutral", "skipped") | not)
              | {name: ("Actions run " + (.id | tostring)), state: ((.conclusion // "unknown") | ascii_upcase),
                 bucket: "fail", link: ("https://github.com/" + $repo + "/actions/runs/" + (.id | tostring))}] as $failed
@@ -767,7 +782,7 @@ superseding_run_state() {
                          and (.id > $rid
                               or ((.run_attempt // 1) > 1
                                   and ((.updated_at // "") > ($own.updated_at // "")))))]
-               | max_by([(.updated_at // ""), .id])) as $newest
+               | latest_workflow_attempt) as $newest
               | if $newest == null then "terminal"
                 elif ($newest.conclusion // "") == "success" then "superseded"
                 else "terminal"
@@ -785,12 +800,10 @@ $classes"
 }
 
 classify_checks() {
-  jq -c --argjson req "$REQUIRED_CONTEXTS" --argjson ro "$REQUIRED_ONLY" "$CI_RUN_JQ_DEFS"'
-    map(.name) as $names
-    | {
+  jq -c --argjson req "$REQUIREMENTS" --argjson ro "$REQUIRED_ONLY" "$CI_RUN_JQ_DEFS"'
+    . as $checks | {
       pending: ([.[] | select((bucket == "pending") and required_only($req))]
-                + [$req[] | . as $ctx | select(($names | index($ctx)) == null)
-                   | {name: (. + " (missing)"), state: "EXPECTED", bucket: "pending"}]),
+                + ($checks | missing_required($req))),
       failed: [.[] | select(red and required_only($req))],
       passed: [.[] | select(((bucket == "pass") or ($ro and (bucket == "skipping")))
                             and required_only($req))]
@@ -862,6 +875,39 @@ while [ "$elapsed" -lt "$MAX_WAIT" ] || [ "$no_checks_due" = true ]; do
     seen_in_progress=false
     stale_key=""
     confirmation_head="$checks_head"
+  fi
+
+  required_state=ready
+  if $REQUIRED_ONLY; then
+    required_evidence=$(required_contexts "$PR_NUM" "$REPO" "$checks_head") || required_evidence='{"state":"unreadable","contexts":[]}'
+    # The shared reader can fetch Actions after the checks snapshot. Bind
+    # its outcome before either a green or a failed result can finish the wait.
+    required_head=$(read_checks_head) || required_head=""
+    if [ -n "$checks_head" ] && [ "$required_head" != "$checks_head" ]; then
+      required_evidence='{"state":"pending","contexts":[]}'
+      confirmation_head=""
+      stale_key=""
+    fi
+    REQUIREMENTS="$required_evidence"
+    required_state=$(jq -r '.state' <<<"$required_evidence")
+    case "$required_state" in
+      ready) ;;
+      pending|unreadable)
+        if [ "$required_state" = unreadable ]; then
+          ci_message required-workflow-unreadable >&2
+        fi
+        seen_in_progress=true
+        last_check_classes='{"pending":[{"name":"required workflow","state":"EXPECTED"}],"failed":[],"passed":[]}'
+        poll_sleep "$POLL_INTERVAL"
+        continue
+        ;;
+      failed)
+        # The current required run failed even if its jobs all look green.
+        # Give that failure to the existing retry owner below.
+        checks_json=$(jq -c --arg repo "$REPO" '[.failed_runs[] | {name:"required workflow", state:"FAILURE", link:("https://github.com/" + $repo + "/actions/runs/" + tostring)}]' <<<"$required_evidence")
+        ;;
+      *) echo "ci-wait: required-state=$required_state" >&2; exit 1 ;;
+    esac
   fi
 
   # Handle no checks / empty response (only reached when gh succeeded)
@@ -975,8 +1021,8 @@ while [ "$elapsed" -lt "$MAX_WAIT" ] || [ "$no_checks_due" = true ]; do
   # entries: a check registering late as SKIPPED is a different rollup. Under
   # --required-only only the required checks key it, skipped ones included, so
   # an optional check registering or settling never restarts the window.
-  rollup_key=$(jq -cS --argjson req "$REQUIRED_CONTEXTS" "$CI_RUN_JQ_DEFS"'
-    [.[] | select(required_only($req)) | {name, state}] | sort_by(.name, .state)' <<<"$checks_json")
+  rollup_key=$(jq -cS --argjson req "$REQUIREMENTS" "$CI_RUN_JQ_DEFS"'
+    [.[] | select(required_only($req)) | {name, state, link}] | sort_by(.name, .state, .link)' <<<"$checks_json")
 
   # Count checks by GitHub's bucket classifier, with state fallbacks for older
   # gh output. By default the waiter counts EVERY red check, required or not:
@@ -1033,7 +1079,13 @@ while [ "$elapsed" -lt "$MAX_WAIT" ] || [ "$no_checks_due" = true ]; do
         # `gh pr checks` exits nonzero when checks have failed; without the
         # guard the pipefail status escapes the substitution and errexit kills
         # the script before any result is emitted.
-        failed_run=$(get_failed_run_id "$PR_NUM" || true)
+        if [ "$required_state" = failed ]; then
+          # Use the required reader's bound run, never a stale or optional
+          # job link from a second rollup read.
+          failed_run=$(jq -r '.failed_runs[0] // empty' <<<"$required_evidence")
+        else
+          failed_run=$(get_failed_run_id "$PR_NUM" || true)
+        fi
 
         # Try auto-retry for transient failures
         if [ -n "$failed_run" ] && [ $retries -lt $max_retries ] && is_transient_failure "$failed_run"; then
@@ -1057,7 +1109,7 @@ while [ "$elapsed" -lt "$MAX_WAIT" ] || [ "$no_checks_due" = true ]; do
     # green rollup nor progress seen on an earlier head proves CI has ended.
     # A known required set already names every context that blocks the merge;
     # optional workflows cannot postpone its passed result.
-    if [ -z "$checks_head" ] || ! $REQUIRED_ONLY || [ "$REQUIRED_CONTEXTS" = '[]' ]; then
+    if [ -z "$checks_head" ] || ! $REQUIRED_ONLY || jq -en --argjson req "$REQUIREMENTS" "$CI_RUN_JQ_DEFS"'(requirement_set($req) | .all_checks == true)' >/dev/null; then
       if ! confirm_actions_for_checks; then
         poll_sleep "$POLL_INTERVAL"
         continue

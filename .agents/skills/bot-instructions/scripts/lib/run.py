@@ -4,10 +4,11 @@
 render and read the scratch tree on both verbs. Repo-state validators judge
 the repository, so a scratch tree is the one place they cannot fail.
 
-`drift` and the file half of `orphan` are the checks with no question to
-answer at render time — a render exists to change the bytes `drift` compares,
-and it removes the files `orphan` names — and the run says each was skipped
-rather than counting it as passed.
+With a `[bot-instructions]` table, `drift` and the file half of `orphan` are
+the checks with no question to answer at render time — a render exists to
+change the bytes `drift` compares, and it removes the files `orphan` names —
+and the run says each was skipped rather than counting it as passed. With no
+table no validator runs; `validators.md` § `orphan` says what the run reports.
 """
 
 import contextlib
@@ -32,6 +33,8 @@ BYTE_VALIDATORS = (
 )
 REPO_VALIDATORS = (vr.agents_section, vr.orphan_file, vr.orphan_region, vr.drift)
 # What `render` does instead of each validator it skips, said in its output.
+# Holds with a `[bot-instructions]` table only: with none, `Context` stops
+# before any validator runs.
 RENDER_SKIPS = {
     vr.drift: "drift: skipped on render. A render exists to change the bytes it "
               "compares, so at render time it would red on its own purpose.",
@@ -78,6 +81,10 @@ class Context:
             resolved = manifest.resolve(tree)
         config_path = resolved.chosen
         if "bot-instructions" not in resolved.data:
+            # `validators.md` § `orphan`, the no-table case.
+            stranded = vr.unconfigured_orphans(tree, config_path)
+            if stranded:
+                raise ValidationFailed(stranded)
             raise Unconfigured(config_path)
         with _as_finding("toml-schema", config_path):
             self.config = config_mod.parse(
