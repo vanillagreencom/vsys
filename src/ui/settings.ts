@@ -6,7 +6,7 @@ import type {
   LifetimeSource,
   Snapshot,
 } from "../model/types";
-import { age, bytes, count } from "./format";
+import { bytes, count } from "./format";
 import { homeRegions, storageRegions } from "./regions";
 
 /**
@@ -588,15 +588,22 @@ export function settingHelp(key: string): string {
  * seconds, so a 500 ms refresh read `0s` and 1500 ms read `1s`, telling a
  * reader an interval they had set was zero. `validate()` accepts `refreshMs`
  * from 100, so sub-second and fractional-second intervals are ordinary values
- * and keep their own reading. A minute or more falls back to `age()`, which
- * every other span on screen is read in.
+ * and keep their own reading. A minute or more is written in every unit it
+ * holds, because `age()` floors to whole minutes and read 90 s as `1m`.
  */
 function interval(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  return seconds < 60
-    ? `${seconds.toFixed(1).replace(/\.0$/, "")}s`
-    : age(seconds);
+  const total = ms / 1000;
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  return [
+    hours ? `${hours}h` : "",
+    minutes ? `${minutes}m` : "",
+    seconds || total < 60 ? `${seconds.toFixed(1).replace(/\.0$/, "")}s` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 /**
  * A stored value as the reader reads it: a byte count in its unit, an interval
@@ -607,7 +614,9 @@ function interval(ms: number): string {
 export function settingDisplay(key: string, value: unknown, c: Config): string {
   if (typeof value === "boolean") return value ? "On" : "Off";
   if (Array.isArray(value)) {
-    if (!value.length) return "none";
+    // The collector watches every Btrfs mount when this list is empty.
+    if (!value.length)
+      return key === "btrfsMounts" ? "every Btrfs mount" : "none";
     const shown = value.slice(0, 3).join(", ");
     return value.length > 3 ? `${shown}, and ${value.length - 3} more` : shown;
   }
