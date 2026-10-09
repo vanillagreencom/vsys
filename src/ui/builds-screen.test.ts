@@ -254,3 +254,26 @@ test("the row for unwatched build work names no process id rather than nought", 
     await t.close();
   }
 });
+
+test("a lane whose build count is unknown draws no zero in its process heading", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.processRead = "incomplete";
+  s.lanes = [laneSnapshot({ builds: null })];
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press(c.keys.builds);
+    await t.press("enter");
+    const heading = present(
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Processes in")),
+      "the Processes in heading",
+    );
+    expect(heading).not.toMatch(/\s0\s/);
+    expect(heading).toContain(gap);
+  } finally {
+    await t.close();
+  }
+});

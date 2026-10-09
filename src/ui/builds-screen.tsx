@@ -314,7 +314,14 @@ export function Builds({
           <Section
             title={`Processes in ${current.name || "no watched lane"}`}
             width={width}
-            count={heldCount(procs.length, hold.held)}
+            count={heldCount(
+              current.builds !== null
+                ? procs.length
+                : procs.length
+                  ? `at least ${procs.length}`
+                  : gap,
+              hold.held,
+            )}
             marginTop={0}
           />
           <Line height={1} flexShrink={0} truncate attributes={ui.dim}>

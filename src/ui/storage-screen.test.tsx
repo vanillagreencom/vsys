@@ -1837,3 +1837,28 @@ test("two mounts stacked at one path are two rows a reader can stand on", async 
     await t.close();
   }
 });
+
+test("the Filesystems heading counts filesystems, not mounts", async () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const fsid = "4a1d9c0e-0000-4000-8000-000000000001";
+  s.storage.volumes = [
+    volumeSnapshot("/", { fsid, device: "/dev/nvme0n1p2" }),
+    volumeSnapshot("/home", { fsid, device: "/dev/nvme0n1p2" }),
+  ];
+  expect(volumesByDevice(s.storage.volumes)).toHaveLength(1);
+  const t = await mount(s, c, { width: 140, height: 40 });
+  try {
+    await t.press(c.keys.storage);
+    const heading = present(
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Filesystems")),
+      "the Filesystems heading",
+    );
+    expect(heading).toMatch(/Filesystems\s+1\s/);
+  } finally {
+    await t.close();
+  }
+});

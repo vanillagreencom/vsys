@@ -133,7 +133,8 @@ export type GroupCause =
       some: number;
       threshold: number;
     }
-  | { kind: "high"; level: "warn"; memory: number; high: number };
+  | { kind: "high"; level: "warn"; memory: number; high: number }
+  | { kind: "unread"; level: "warn" };
 /**
  * Whether a group is a lane or holds one. A group-less lane carries its
  * process's absolute kernel path, which resolves to its covering group first,
@@ -188,6 +189,11 @@ export function groupCause(
     };
   if (g.memory !== null && g.high !== null && g.memory >= g.high * 0.9)
     return { kind: "high", level: "warn", memory: g.memory, high: g.high };
+  if (
+    Object.values(g.pressure).some((p) => p === null) ||
+    (g.memory === null && g.high !== null)
+  )
+    return { kind: "unread", level: "warn" };
   return null;
 }
 export function groupLevel(g: Group, s: Snapshot, c: Config): Level {
@@ -204,6 +210,8 @@ function causeText(cause: GroupCause | null, c: Config): string {
       return waitText(cause.resource, cause.some, cause.threshold);
     case "high":
       return `memory ${bytes(cause.memory, c)} past 90% of memory high ${bytes(cause.high, c)}`;
+    case "unread":
+      return `a threshold reading is ${gap}`;
     default:
       return cause satisfies never;
   }
