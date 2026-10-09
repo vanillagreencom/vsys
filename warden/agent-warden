@@ -99,6 +99,7 @@ import re
 import shutil
 import subprocess
 import stat
+import struct
 import sys
 import tempfile
 import time
@@ -939,6 +940,15 @@ SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
 # measured about 0.48 s of tick CPU idle and 0.67 s loaded, well inside 25 s,
 # and the rest wait for later ticks.
 SCRATCH_REMOVALS_PER_PASS = 20
+# A gone lane's folder created this long after a live lane's unreadable
+# member started is still read as one it may hold: process start times
+# count from boot, folder creation times from the wall clock, and a
+# wall-clock step between the two must not make an older folder look newer.
+SCRATCH_LINEAGE_SLACK = 60
+LANE_SCOPE_RE = re.compile(r"/agents\.slice/(agent-confine-(\d+)-\d+\.scope)(?:/|$)")
+CLK_TCK = os.sysconf("SC_CLK_TCK")
+STATX_BTIME = 0x800
+_LIBC = ctypes.CDLL(None)
 
 
 def _proc_tmpdir(pid):
@@ -980,6 +990,51 @@ def _exited(pid):
     return stat is None or stat.rpartition(")")[2].split()[:1] in (["Z"], ["X"])
 
 
+def _birth_time(path):
+    """path's creation time, in seconds since the epoch, from statx(2)
+    without following a symlink: None when the C library has no statx, the
+    call fails, or the filesystem records no creation time. Modification and
+    change times never come earlier than creation, so neither stands in."""
+    buf = ctypes.create_string_buffer(256)
+    try:
+        failed = _LIBC.statx(-100, os.fsencode(path), 0x100, STATX_BTIME, buf)  # AT_FDCWD, AT_SYMLINK_NOFOLLOW
+    except AttributeError:
+        return None
+    mask, = struct.unpack_from("=I", buf, 0)
+    sec, nsec = struct.unpack_from("=qI", buf, 80)  # struct statx's stx_btime
+    return None if failed or not mask & STATX_BTIME else sec + nsec / 1e9
+
+
+def _lineage_born_by(proc, scopes, readable, unread, boot):
+    """The newest creation time of a gone lane's folder that proc, whose
+    environment or current directory could not be read, may hold beyond what
+    the pids in readable hold: math.inf unless proc is in a live
+    agent-confine scope or a child cgroup of one. A lane's processes hold its
+    own folder, which reap_scratch_dirs skips while the scope is live, and
+    what its launch handed down: the launcher's inherited TMPDIR when its
+    mkdir failed, its inherited current directory, and paths below either.
+    With a readable member of the scope proc adds nothing: -math.inf. That
+    member's TMPDIR and current directory are read as they are now, not as
+    the launch handed them down, so a path proc inherited that no member
+    still holds is not kept (docs/architecture/warden.md states the limit).
+    Without a readable member, each unreadable member, those in unread,
+    holds only paths that already existed when it started, so the latest
+    such start bounds them all. The earliest would free a folder a newer
+    helper inherited from a parent that has since exited. The launcher, the
+    pid in the scope's name, is left out: what it holds existed when the
+    scope started, before every other member forked inside it, and with no
+    other unreadable member nothing bounds it. boot is the wall-clock time
+    of boot, which start times count from."""
+    m = LANE_SCOPE_RE.search(proc.cgroup or "")
+    if m is None:
+        return math.inf
+    members = scopes.get(m.group(1), ())
+    if any(p.pid in readable for p in members):
+        return -math.inf
+    starts = [p.start for p in members if p.pid in unread and p.pid != int(m.group(2))]
+    return boot + max(starts) / CLK_TCK + SCRATCH_LINEAGE_SLACK if starts else math.inf
+
+
 def _desktop_unit(cgroup):
     """Whether cgroup is provably one of the desktop's own units, which no
     lane starts: the user manager's init.scope (systemd --user, sd-pam), or a
@@ -1009,22 +1064,26 @@ def _unread_may_hold(proc):
     launcher's mkdir meets a folder of the same name, every launch keeps the
     inherited current directory, move() relocates a nested session by cgroup
     only, and an escaped worker in an uncontained systemd-run scope keeps the
-    lane's TMPDIR and current directory."""
+    lane's TMPDIR and current directory. _lineage_born_by bounds what a
+    process in a lane scope can hold."""
     return not _desktop_unit(proc.cgroup or "")
 
 
 def _scratch_holders(procs):
-    """The directories procs hold: (held, unknown). held is every pid's
-    TMPDIR and current directory, each resolved, with every ancestor of
-    each, so a candidate directory is in use exactly when held contains it.
-    unknown lists the pids whose environment or current directory could not
-    be read, that have not exited, and that sit outside a desktop unit by
-    _unread_may_hold. A pass reads every pid here once, plus once per
-    removal it attempts, not once per candidate directory: with one
-    unreadable process, 933 gone directories each rescanned about 970
-    processes, 24 s of CPU per 30 s tick (VSY-216)."""
+    """The directories procs hold: (held, unknown, born_by). held is every
+    pid's TMPDIR and current directory, each resolved, with every ancestor
+    of each, so a candidate directory is in use exactly when held contains
+    it. unknown lists the pids whose environment or current directory could
+    not be read, that have not exited, and that sit outside a desktop unit
+    by _unread_may_hold, less those that hold nothing beyond held by
+    _lineage_born_by. born_by is the newest creation time of a folder any
+    of them may hold, by the same rule. A pass reads every pid here once,
+    plus once per removal it attempts, not once per candidate directory:
+    with one unreadable process, 933 gone directories each rescanned about
+    970 processes, 24 s of CPU per 30 s tick (VSY-216)."""
     held = set()
-    unknown = []
+    readable = set()
+    unread = []
     for pid in procs:
         tmpdir = _proc_tmpdir(pid)
         # Detached workers can clear TMPDIR while keeping their work here.
@@ -1039,15 +1098,28 @@ def _scratch_holders(procs):
             while resolved not in held:
                 held.add(resolved)
                 resolved = os.path.dirname(resolved)
-        if (tmpdir is None or cwd is None) and not _exited(pid) and _unread_may_hold(procs[pid]):
+        if tmpdir is not None and cwd is not None:
+            readable.add(pid)
+        elif not _exited(pid) and _unread_may_hold(procs[pid]):
+            unread.append(pid)
+    unknown = []
+    born_by = -math.inf
+    scopes = scope_members(procs) if unread else {}
+    boot = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
+    for pid in unread:
+        born = _lineage_born_by(procs[pid], scopes, readable, unread, boot)
+        if born > -math.inf:
             unknown.append(pid)
-    return held, unknown
+            born_by = max(born_by, born)
+    return held, unknown, born_by
 
 
 def _scratch_in_use(path, holders):
     """Whether any pid _scratch_holders read has TMPDIR or its current
     directory inside path: "in-use" when one does, "unknown" when none does
-    but a pid that can hold it could not be read, "free" otherwise.
+    but a pid that can hold it could not be read, "free" otherwise. A pid
+    that could not be read can hold path unless path was created after the
+    born_by bound, read only when that bound is finite.
     "in-use" beats "unknown": one confirmed user is enough to keep path.
     path is already resolved: reap_scratch_dirs joins a resolved parent and
     a name that is not a symlink. Both sides are resolved, not just
@@ -1060,10 +1132,13 @@ def _scratch_in_use(path, holders):
     the directory as free. realpath never raises on a component that does not
     exist or that this user cannot stat -- it resolves as far as it can and
     leaves the rest lexical -- so neither side needs exception handling."""
-    held, unknown = holders
+    held, unknown, born_by = holders
     if path in held:
         return "in-use"
-    return "unknown" if unknown else "free"
+    if not unknown:
+        return "free"
+    born = None if born_by == math.inf else _birth_time(path)
+    return "unknown" if born is None or born <= born_by else "free"
 
 
 def _rmtree_writable(root):
