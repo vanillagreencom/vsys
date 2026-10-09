@@ -399,7 +399,11 @@ class AgentWardenScratchRules(WardenRulesCase):
         # os.path.join (this candidate path's source) never does. An
         # unreadable process counts only where its cgroup can tie it to
         # agent work: a contained job unit outside the slice, or any scope in
-        # the slice but a live lane scope whose own folder exists.
+        # the slice. A live lane scope whose own folder exists is no
+        # exception: the launcher keeps the inherited TMPDIR when its mkdir
+        # meets a folder of the same name, and every launch keeps the
+        # inherited current directory. A row's optional last field lists
+        # the pids whose current directory cannot be read.
         user = "/user.slice/user-1000.slice/user@1000.service"
         desktop = [(701, 700, "ssh-agent", f"{user}/app.slice/ssh-agent.service", None),
                    (702, 700, "gpg-agent", f"{user}/app.slice/gpg-agent.service", None),
@@ -425,9 +429,13 @@ class AgentWardenScratchRules(WardenRulesCase):
              [manager, (LIVE, 700, "op", job, None)], [], [], "unknown"),
             ("an unreadable child of an agent shell whose TMPDIR names it",
              [(556, 555, "op", nested, None), (555, 1, "bash", nested, "TMPDIR={moved}")], [], [], "in-use"),
-            ("an orphaned unreadable daemon in another live lane scope with its own folder",
+            ("an unreadable process in a live lane scope with its same-name folder, whose TMPDIR the "
+             "launcher's collision fallback inherited",
              [manager, (LIVE, 700, "op", other, None)], ["agent-confine-300-400.scope"],
-             ["agent-confine-300-400"], "free"),
+             ["agent-confine-300-400"], "unknown"),
+            ("an unreadable current directory in a live lane scope with its own folder as TMPDIR",
+             [manager, (LIVE, 700, "op", other, "TMPDIR={scratch}/agent-confine-300-400")],
+             ["agent-confine-300-400.scope"], ["agent-confine-300-400"], "unknown", {LIVE}),
             ("an orphaned unreadable daemon in another live lane scope with no folder",
              [manager, (LIVE, 700, "op", other, None)], ["agent-confine-300-400.scope"], [], "unknown"),
             ("an unreadable child alone in a moved scope whose agent parents are gone",
@@ -439,7 +447,7 @@ class AgentWardenScratchRules(WardenRulesCase):
             ("an unreadable child alone in a moved build scope whose agent parents are gone",
              [manager, (LIVE, 700, "op", build, None)], [], [], "unknown"),
         ]
-        for name, members, live_scopes, folders, status in rows:
+        for name, members, live_scopes, folders, status, *unread_cwd in rows:
             with self.subTest(name=name):
                 with scratch() as tmp:
                     base = Path(tmp)
@@ -478,9 +486,16 @@ class AgentWardenScratchRules(WardenRulesCase):
                                 return default if found is None else found
                             return old_read(path, default)
 
+                        unread = {f"/proc/{pid}/cwd" for pid in (unread_cwd[0] if unread_cwd else ())}
+
+                        def readlink(path, *args, unread=unread, **kwargs):
+                            if str(path) in unread:
+                                raise PermissionError(13, "Permission denied", str(path))
+                            return "/unrelated"
+
                         self.w.read = flaky_read
                         try:
-                            with patch.object(self.w.os, "readlink", return_value="/unrelated"):
+                            with patch.object(self.w.os, "readlink", side_effect=readlink):
                                 self.assertEqual(self.w._scratch_in_use(str(moved), self.w._scratch_holders(procs)), status)
                                 removed = self.w.reap_scratch_dirs(True, procs, set())
                         finally:

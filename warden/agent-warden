@@ -986,17 +986,12 @@ def _unread_may_hold(proc):
     /proc/<pid>/cgroup stays readable for a non-dumpable process. Outside
     agents.slice only a contained job unit can: a lane starts it with
     systemd-run, and a scope inherits the lane's TMPDIR. The desktop's own
-    units (init.scope, ssh-agent.service, app-*.scope) never can. Inside the
-    slice, a process in an agent-confine scope whose own folder exists has
-    that folder as TMPDIR, since the launcher sets it only after its mkdir
-    succeeds, and that scope is live. Any other process in the slice can
-    hold any directory: move() relocates a nested session by cgroup only."""
-    if not proc.confined:
-        return contained_unit(proc.cgroup)
-    m = SCOPE_RE.search(proc.cgroup)
-    lane = m.group(1)[:-len(".scope")] if m else ""
-    return not (SCRATCH_UNIT_RE.match(lane) and any(
-        os.path.isdir(os.path.join(parent, lane)) for parent in _scratch_parents()))
+    units (init.scope, ssh-agent.service, app-*.scope) never can. Any process
+    in the slice can hold any directory, its own lane's scope included: a
+    lane keeps its inherited TMPDIR when the launcher's mkdir meets a folder
+    of the same name, every launch keeps the inherited current directory,
+    and move() relocates a nested session by cgroup only."""
+    return proc.confined or contained_unit(proc.cgroup)
 
 
 def _scratch_holders(procs):
