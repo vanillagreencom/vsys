@@ -1,8 +1,12 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { Collector } from "../collect/collector";
 import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
-import { groupSnapshot, processSnapshot } from "../test/fixture";
+import { fixture, groupSnapshot, processSnapshot } from "../test/fixture";
 import { present } from "../test/present";
+import { laneBuilds } from "./builds";
 import {
   effectiveMax,
   lanes,
@@ -11,7 +15,8 @@ import {
   processTree,
   sliceCompared,
 } from "./lanes";
-import type { Capability, Group, Lane, Proc } from "./types";
+import type { Capability, Group, Lane, Proc, ProcessRead } from "./types";
+import { buildLoad } from "./verdict";
 
 /** What one tmux read gave, defaulting to a vsys that draws in no pane. */
 const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
@@ -256,7 +261,7 @@ test("a scope with no readable member reads unknown CPU, swap, memory and age", 
   ]);
 });
 
-test("lane totals require every reported member, while group counters remain measured", () => {
+test("lane totals require a complete process walk, while group counters remain measured", () => {
   const c = defaults();
   const group = groupSnapshot({
     pids: [40, 41],
@@ -278,9 +283,11 @@ test("lane totals require every reported member, while group counters remain mea
     swap: 30,
     threads: 3,
   });
-  const rows: [string, Group[], Proc[], (number | null)[]][] = [
+  const rows: [string, Group[], Proc[], (number | null)[], ProcessRead?][] = [
     ["complete", [group], [a, b], [3072, 25, 50, 5]],
-    ["one unread member", [group], [a], [null, null, null, null]],
+    // A complete walk that lacks a reported pid read it after that pid exited.
+    ["a member exited before the walk", [group], [a], [1024, 10, 20, 2]],
+    ["one unread member", [group], [a], [null, null, null, null], "incomplete"],
     ["all unread", [group], [], [null, null, null, null]],
     [
       "no reported member",
@@ -293,6 +300,7 @@ test("lane totals require every reported member, while group counters remain mea
       [{ ...group, cpuPercent: 0, swap: 0, tasks: 0 }],
       [a],
       [null, 0, 0, 0],
+      "incomplete",
     ],
     [
       "unread child member",
@@ -306,6 +314,7 @@ test("lane totals require every reported member, while group counters remain mea
       ],
       [a],
       [null, null, null, null],
+      "incomplete",
     ],
     [
       "a member moved after the group read",
@@ -315,8 +324,11 @@ test("lane totals require every reported member, while group counters remain mea
     ],
   ];
   // collectGroups reports member IDs even when collectProcesses cannot read them.
-  for (const [name, groups, procs, totals] of rows) {
-    const lane = present(lanes(groups, procs, c)[0], name);
+  for (const [name, groups, procs, totals, read] of rows) {
+    const lane = present(
+      lanes(groups, procs, c, 0, undefined, [], read)[0],
+      name,
+    );
     expect({
       name,
       totals: [lane.rss, lane.cpu, lane.swap, lane.tasks],
@@ -403,14 +415,20 @@ test("service lanes share scope completeness and preserve measured group counter
       swap: 30,
       threads: 3,
     });
-    const rows: [Proc[], Partial<Group>, (number | null)[]][] = [
-      [[a, b], {}, [3072, 25, 50, 5]],
-      [[a], {}, [null, null, null, null]],
-      [[a], { cpuPercent: 0, swap: 0, tasks: 0 }, [null, 0, 0, 0]],
+    const rows: [Proc[], Partial<Group>, (number | null)[], ProcessRead][] = [
+      [[a, b], {}, [3072, 25, 50, 5], "complete"],
+      [[a], {}, [1024, 10, 20, 2], "complete"],
+      [[a], {}, [null, null, null, null], "incomplete"],
+      [
+        [a],
+        { cpuPercent: 0, swap: 0, tasks: 0 },
+        [null, 0, 0, 0],
+        "incomplete",
+      ],
     ];
-    for (const [procs, counters, expected] of rows) {
+    for (const [procs, counters, expected, read] of rows) {
       const lane = present(
-        lanes([{ ...group, ...counters }], procs, c)[0],
+        lanes([{ ...group, ...counters }], procs, c, 0, undefined, [], read)[0],
         suffix,
       );
       expect([lane.rss, lane.cpu, lane.swap, lane.tasks]).toEqual(expected);
@@ -1069,4 +1087,92 @@ test("only a slice the probe found absent or masked turns off the escape compari
         (l) => [l.id, l.unconfined],
       ),
     }).toEqual({ name, compared, lanes: shown });
+});
+
+const fixtures: ReturnType<typeof fixture>[] = [];
+afterEach(() => {
+  for (const f of fixtures.splice(0)) f.cleanup();
+});
+
+// cgroup.procs lists 40, 41 and 42. 42 is a short-lived command that exited
+// before the process walk reached it, so /proc has no directory for it. The
+// walk is complete: every process that exists was read.
+test("a member that exited before the process walk leaves the lane's totals known", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const scope = "agents.slice/run-lane.scope";
+  f.group(scope, [40, 41, 42]);
+  f.proc(40, scope, { ticks: 10 });
+  f.proc(41, scope, {
+    command: ["rustc", "--crate-name", "x"],
+    comm: "rustc",
+    parent: 40,
+  });
+  const s = await new Collector(f.config, 100, 4096).sample(1000);
+  expect([s.processRead, s.errors]).toEqual(["complete", []]);
+  const lane = s.lanes[0];
+  const fleet = buildLoad(s, f.config);
+  const row = laneBuilds(s, f.config).find((r) => r.id === scope);
+  expect({
+    fleetBuilds: fleet.builds,
+    laneRowBuilds: row?.builds,
+    rustc: lane?.rustc,
+    rss: lane?.rss,
+    age: lane?.age === null ? null : "known",
+    state: lane?.state,
+  }).toEqual({
+    fleetBuilds: 1,
+    laneRowBuilds: 1,
+    rustc: 1,
+    rss: 2 * 10 * 4096,
+    age: "known",
+    state: "sleeping",
+  });
+});
+
+// Every pid the lane's cgroup reports was read, but the walk as a whole is
+// incomplete: another process's stat could not be read, or the proc mount
+// may hide processes.
+test("a fully read lane keeps its totals when the walk misses another process", async () => {
+  for (const cause of ["unreadable process", "hidepid"]) {
+    const f = fixture();
+    fixtures.push(f);
+    const scope = "agents.slice/run-lane.scope";
+    f.group(scope, [40, 41]);
+    f.proc(40, scope, { ticks: 10 });
+    f.proc(41, scope, {
+      command: ["rustc", "--crate-name", "x"],
+      comm: "rustc",
+      parent: 40,
+    });
+    if (cause === "unreadable process")
+      mkdirSync(join(f.config.procRoot, "99/stat"), { recursive: true });
+    else
+      appendFileSync(
+        join(f.config.procRoot, "self/mountinfo"),
+        `3 1 0:3 / ${f.config.procRoot} rw - proc proc rw,hidepid=2\n`,
+      );
+    const s = await new Collector(f.config, 100, 4096).sample(1000);
+    const lane = s.lanes.find((l) => l.id === scope);
+    const row = laneBuilds(s, f.config).find((r) => r.id === scope);
+    expect({
+      cause,
+      processRead: s.processRead,
+      laneRowBuilds: row?.builds,
+      rustc: lane?.rustc,
+      rss: lane?.rss,
+      age: lane?.age === null ? null : "known",
+      state: lane?.state,
+      blocked: lane?.blocked,
+    }).toEqual({
+      cause,
+      processRead: "incomplete",
+      laneRowBuilds: 1,
+      rustc: 1,
+      rss: 2 * 10 * 4096,
+      age: "known",
+      state: "sleeping",
+      blocked: 0,
+    });
+  }
 });
