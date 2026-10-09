@@ -188,6 +188,20 @@ export function sliceSum(
     ? roots.reduce((sum, g) => sum + (pick(g) ?? 0), 0)
     : null;
 }
+/**
+ * Whether the sample read every cgroup under the root. A directory or group
+ * read that failed there leaves out the groups it would have found, so a
+ * slice the sample holds no root of is known to be absent only when this holds.
+ */
+export function groupsComplete(
+  s: Pick<Snapshot, "errors">,
+  root: string,
+): boolean {
+  const base = root.replace(/\/+$/, "");
+  return !s.errors.some(
+    (e) => e.source === base || e.source.startsWith(`${base}/`),
+  );
+}
 /** A lane running a configured agent tool, the one definition of "agent lane". */
 export function agentLanes(lanes: Lane[]): Lane[] {
   return lanes.filter((l) => l.tool !== "");
@@ -775,7 +789,14 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     },
     {
       id: "memory",
-      level: gauge(swap, c.swapFloor, c.swapFloor),
+      // A desktop slice the sample holds no root of is absent, not unread,
+      // once every cgroup under the root was read; a failed read may have
+      // hidden it, and then its swap is unread.
+      level:
+        sliceRoots(s.groups, c.desktopSlice).length ||
+        !groupsComplete(s, c.cgroupRoot)
+          ? gauge(swap, c.swapFloor, c.swapFloor)
+          : "ok",
       consumer: consumerName(largest, s),
       holder: swapped ? consumerName(holder, s) : undefined,
       values: {
