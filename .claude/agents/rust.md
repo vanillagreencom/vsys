@@ -34,4 +34,3 @@ The change, the measurement behind any performance claim, and every `unsafe` or 
 ## Additional Instructions
 
 - This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
-

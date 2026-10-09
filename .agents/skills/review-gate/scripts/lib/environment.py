@@ -39,6 +39,27 @@ def environment_secrets(names, secrets):
             "missing": ";".join(name for name in names if name not in held)}
 
 
+def secret_placement(names, scopes):
+    """Judge named secret copies; each caller supplies the scopes it reads."""
+    outside, unreadable, causes = [], [], []
+    for row in scopes:
+        label = row["scope"]
+        if "error" in row:
+            unreadable.append(label)
+            causes.append(label + ": " + row["error"])
+            continue
+        try:
+            held = environment_secrets(names, row["secrets"])["held"]
+        except ValueError:
+            unreadable.append(label)
+            causes.append(label + ": the response is not a list of named secrets")
+            continue
+        outside.extend(label + ":" + name for name in held.split(";") if name)
+    return {"cause": "read" if unreadable else "secrets-outside" if outside else "",
+            "outside": ";".join(outside), "unreadable": ",".join(unreadable),
+            "causes": "\n".join(causes)}
+
+
 def gh_api(*arguments):
     """Use the same explicit launch contract for every adopter API read."""
     # GitHub CLI config and credential-store inputs accompany Go's proxy and
@@ -75,8 +96,10 @@ def validate_environment(repository, config):
         except subprocess.CalledProcessError as error:
             print(error.stderr, file=sys.stderr, end="")
             refuse("read", endpoint)
+            raise
         except ValueError:
             refuse("read", endpoint)
+            raise
 
     def rows(endpoint, key):
         pages = read(endpoint)
@@ -98,9 +121,24 @@ def validate_environment(repository, config):
         if judgment["cause"]:
             refuse(judgment["cause"])
         secrets = rows(endpoint + "/secrets", "secrets")
-        judgment = environment_secrets(config.get("required_names", config["names"]), secrets)
-        if judgment["cause"]:
-            refuse(judgment["cause"])
+        # The shared job selects a complete fixed pair, never credentials
+        # from different pairs. Historical inline callers require all names.
+        pairs = config.get("pairs", [config["names"]])
+        if not any(not environment_secrets(pair, secrets)["cause"] for pair in pairs):
+            refuse("secrets")
+        # GitHub's same-name environment precedence cannot prevent an
+        # outside value from filling a name absent from that environment.
+        # Both token steps read fixed names, including the FLEET issue pair.
+        # The standard report owns the placement judgment. Only Actions
+        # repository/organization secrets can reach these caller mappings.
+        names = ["KENDEX_APP_ID", "KENDEX_APP_PRIVATE_KEY",
+                 "FLEET_GH_APP_ID", "FLEET_GH_APP_PRIVATE_KEY"] if "pairs" in config else config["names"]
+        scopes = [{"scope": label, "secrets": rows(scope, "secrets")}
+                  for label, scope in (("repository", "repos/" + repository + "/actions/secrets"),
+                                       ("organization", "orgs/" + repository.split("/", 1)[0] + "/actions/secrets"))]
+        placement = secret_placement(names, scopes)
+        if placement["cause"]:
+            refuse(placement["cause"], placement["outside"] or placement["unreadable"])
     except ValueError:
         refuse("read")
 
@@ -113,9 +151,11 @@ if __name__ == "__main__":
             result = environment_policy(sys.argv[2], sys.argv[3], data["environments"], data.get("policies"))
         elif sys.argv[1] == "secrets":
             result = environment_secrets(sys.argv[2].split(), data)
+        elif sys.argv[1] == "placement":
+            result = secret_placement(sys.argv[2].split(), data)
         else:
             raise ValueError("operation")
         print(json.dumps(result))
     except (ValueError, KeyError, TypeError) as error:
-        print("review-gate-error=environment-data value=" + str(error), file=sys.stderr)
+        print("review-gate-error=environment-data type=" + type(error).__name__, file=sys.stderr)
         raise SystemExit(2) from error

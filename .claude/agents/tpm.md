@@ -33,4 +33,3 @@ Findings the caller can act on without re-deriving them, structured as JSON when
 ## Additional Instructions
 
 - This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
-

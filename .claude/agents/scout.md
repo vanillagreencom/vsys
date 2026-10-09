@@ -44,4 +44,3 @@ Answer four things: where the relevant code lives, how the key types and functio
 ## Additional Instructions
 
 - This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
-

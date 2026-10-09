@@ -19,7 +19,6 @@ tags: [git]
 ## Project Instructions
 
 - Worktree ownership checks use live GitHub pull requests and Git refs before creation or reuse. Resolve the default branch from WORKTREE_DEFAULT_BRANCH or GitHub. (WT-026)
-
 <!-- kendex:project-instructions:end -->
 
 # Worktree Management

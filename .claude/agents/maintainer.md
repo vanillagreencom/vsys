@@ -31,4 +31,3 @@ What changed, what you verified it against, and anything you deliberately left f
 ## Additional Instructions
 
 - This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
-

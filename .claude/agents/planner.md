@@ -47,4 +47,3 @@ This section is the one home of that default, and it holds for every plan or res
 ## Additional Instructions
 
 - This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
-
