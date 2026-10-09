@@ -1013,9 +1013,12 @@ def _lineage_born_by(proc, scopes, readable, boot):
     own folder, which reap_scratch_dirs skips while the scope is live, and
     what its launch handed down: the launcher's inherited TMPDIR when its
     mkdir failed, its inherited current directory, and paths below either.
-    A readable member of the scope carries those, so with one proc adds
-    nothing: -math.inf. Without one, every one of those already existed when
-    the scope started. Every member but the launcher, the pid in the scope's
+    With a readable member of the scope proc adds nothing: -math.inf. That
+    member's TMPDIR and current directory are read as they are now, not as
+    the launch handed them down, so a path proc inherited that no member
+    still holds is not kept (docs/architecture/warden.md states the limit).
+    Without a readable member, every one of those already existed when the
+    scope started. Every member but the launcher, the pid in the scope's
     name, forked inside the scope after systemd-run moved the launcher
     there, so the earliest such start in scopes comes after the scope
     started; with no such member nothing bounds it. boot is the wall-clock

@@ -926,6 +926,8 @@ class AgentWardenScratchRules(WardenRulesCase):
         return [
             ("a lane with a readable member, started after the folder was created",
              [(op, lane, hour), (LIVE, lane, hour)], True, "free"),
+            ("a lane with a readable member, its folder's creation time unread",
+             [(op, lane, hour), (LIVE, lane, hour)], False, "free"),
             ("a readable member in a child cgroup of the lane",
              [(op, lane, hour), (LIVE, f"{lane}/worker", hour)], True, "free"),
             ("a readable member whose TMPDIR the launcher's collision fallback inherited",
@@ -948,9 +950,9 @@ class AgentWardenScratchRules(WardenRulesCase):
 
     def test_unreadable_process_in_a_lane_scope_rows(self):
         # An op daemon in a live lane scope kept every gone folder of every
-        # lane for days (VSY-219). Its TMPDIR and current directory come
-        # down its lane's launch, which its readable scope-mates carry, so
-        # every other gone folder goes, however old. In an orphan lane, with
+        # lane for days (VSY-219). Beside a readable scope-mate it holds
+        # only what that mate holds now, so every other gone folder goes,
+        # however old. In an orphan lane, with
         # no readable mate, what the launch handed down existed when the
         # lane started: another lane's folder created after that start
         # goes, and every older one stays unknown. Its own lane's folder
@@ -969,6 +971,8 @@ class AgentWardenScratchRules(WardenRulesCase):
              "a readable process in another lane"),
             ("a member that has exited", "p.pid in readable for p", "p.pid != proc.pid for p",
              "an orphan lane whose other member has exited"),
+            ("rule 1 reads no creation time", "if born > -math.inf:", "if born >= -math.inf:",
+             "a lane with a readable member, its folder's creation time unread"),
             ("the lane's own folder", '        if f"{name}.scope" in live_units:\n            continue\n', "",
              lane_member),
             ("the clock margin", "SCRATCH_LINEAGE_SLACK = 60\n", "SCRATCH_LINEAGE_SLACK = 0\n",
