@@ -468,10 +468,14 @@ function scriptPath(
   }
 }
 
-/** Open descriptors are read only on demand for the selected lane. */
+/**
+ * Open descriptors are read only on demand for the selected lane. `dirs` are
+ * the roots Storage measures, agents' own temporary directories included.
+ */
 export function scratchFiles(
   r: Reader,
   c: CollectionConfig,
+  dirs: string[],
   pids: number[],
 ): { pid: number; path: string }[] {
   const result: { pid: number; path: string }[] = [];
@@ -482,9 +486,7 @@ export function scratchFiles(
         const target = r.link(join(root, fd));
         if (
           target &&
-          c.scratchDirs.some(
-            (dir) => target === dir || target.startsWith(`${dir}/`),
-          )
+          dirs.some((dir) => target === dir || target.startsWith(`${dir}/`))
         )
           result.push({ pid, path: target });
       }

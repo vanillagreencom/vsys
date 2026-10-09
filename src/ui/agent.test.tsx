@@ -1,6 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
+import { Reader } from "../collect/io";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
@@ -1150,5 +1154,93 @@ test("two arrows that arrive before a render move the detail two rows", async ()
     expect(selectedRow(t.frame())).toContain("Terminal");
   } finally {
     await t.close();
+  }
+});
+
+/**
+ * A stand-in /proc where process 40, the fixture lane's one member, holds a
+ * file open in the temporary directory its environment names, as
+ * agent-confine gives each lane a TMPDIR of its own. The settings list names
+ * another directory, as the shipped list does not name that one. The caller
+ * removes `dir`.
+ */
+function heldInAgentTmp() {
+  const dir = mkdtempSync(join(tmpdir(), "vsys-open-files-"));
+  const procRoot = join(dir, "proc");
+  const agentTmp = join(dir, "cache/agents/tmp/agent-confine-40");
+  const held = join(agentTmp, "rustcXYZ/lib.rlib");
+  mkdirSync(join(procRoot, "40", "fd"), { recursive: true });
+  symlinkSync(held, join(procRoot, "40", "fd", "3"));
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot()];
+  s.groups = [groupSnapshot()];
+  s.procs = [processSnapshot({ env: { TMPDIR: agentTmp } })];
+  const c = {
+    ...defaults(),
+    procRoot,
+    scratchDirs: [join(dir, "dev/.scratch/agents")],
+  };
+  return { dir, procRoot, held, s, c };
+}
+
+/** Opens the lane's detail and leaves the reader on Open files, closed. */
+async function onOpenFiles(t: Awaited<ReturnType<typeof mount>>) {
+  await t.press("2");
+  await t.press("enter");
+  // Processes, Launch, Terminal, Open files.
+  for (let i = 0; i < 3; i++) await t.press("j");
+}
+
+test("Open files lists a file the agent holds in the temporary directory it names", async () => {
+  // Storage measures that directory as an agent scratch root, so the detail
+  // matches descriptors against the same roots.
+  const { dir, held, s, c } = heldInAgentTmp();
+  const t = await mount(s, c, { width: 160, height: 60 });
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    expect(t.frame().includes(held)).toBe(true);
+  } finally {
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Open files reads no descriptor while the section is closed", async () => {
+  const { dir, procRoot, held, s, c } = heldInAgentTmp();
+  const t = await mount(s, c, { width: 160, height: 60 });
+  // Each descriptor is resolved through the reader; a named fs import cannot
+  // be spied on, the prototype method can.
+  const linked = spyOn(Reader.prototype, "link");
+  const fdReads = () =>
+    linked.mock.calls.filter(([path]) =>
+      String(path).startsWith(`${procRoot}/`),
+    ).length;
+  try {
+    await onOpenFiles(t);
+    // A new sample hands the lane a new member list, which is what re-ran
+    // the read once a sample.
+    await t.update({ ...s, lanes: [laneSnapshot()] });
+    const closed = present(
+      t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Open files")),
+      "Open files row",
+    );
+    // A list never read has no count beside its name.
+    expect({ reads: fdReads(), counted: /\d/.test(closed) }).toEqual({
+      reads: 0,
+      counted: false,
+    });
+    await t.press("enter");
+    expect({ read: fdReads() > 0, listed: t.frame().includes(held) }).toEqual({
+      read: true,
+      listed: true,
+    });
+  } finally {
+    linked.mockRestore();
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
