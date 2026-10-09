@@ -1,0 +1,1 @@
+- A Btrfs mount that is read-only by design, such as the read-only `/sysroot` and `/usr` on Fedora Atomic or openSUSE MicroOS, no longer shows a danger card saying the kernel forced it read-only. Only the filesystem's own read-only flag counts now.

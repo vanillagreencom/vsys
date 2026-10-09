@@ -25,7 +25,11 @@ import {
 import type { CollectionConfig } from "./settings";
 import type { Udisks } from "./udisks";
 
-/** Either a mount restriction or a superblock restriction makes a mount read-only. */
+/**
+ * Only the superblock `ro` makes a mount read-only here: it is the flag Btrfs
+ * sets when an error forces the filesystem read-only. A per-mount `ro`, such
+ * as a read-only bind mount or ostree's `/sysroot`, is read-only by design.
+ */
 export function btrfsMounts(
   mountInfo: MountInfo[],
 ): Pick<Volume, "mount" | "device" | "options" | "readOnly">[] {
@@ -35,7 +39,7 @@ export function btrfsMounts(
       mount: m.mount,
       device: m.device,
       options: m.options,
-      readOnly: m.options.includes("ro"),
+      readOnly: m.superOptions.includes("ro"),
     }));
 }
 
