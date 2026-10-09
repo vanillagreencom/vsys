@@ -1,3 +1,5 @@
+import { terminalNamedSingleStrokeKeys } from "@opentui/core";
+
 interface Stroke {
   name: string;
   ctrl?: boolean;
@@ -8,25 +10,8 @@ interface Stroke {
   hyper?: boolean;
 }
 const modifiers = ["ctrl", "alt", "shift", "super", "hyper"] as const;
-/** The multi-letter key names OpenTUI's key parser emits. */
-const namedKeys = new Set([
-  "return",
-  "escape",
-  "tab",
-  "space",
-  "backspace",
-  "delete",
-  "insert",
-  "up",
-  "down",
-  "left",
-  "right",
-  "home",
-  "end",
-  "pageup",
-  "pagedown",
-  ...Array.from({ length: 12 }, (_, i) => `f${i + 1}`),
-]);
+/** Every key name OpenTUI's key parser emits. */
+const namedKeys = new Set(terminalNamedSingleStrokeKeys);
 /** The labels every screen shows, written as the key name OpenTUI emits. */
 const keyAliases: Record<string, string> = { enter: "return", esc: "escape" };
 
