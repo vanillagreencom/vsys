@@ -15,6 +15,16 @@ metadata:
 tags: [review]
 ---
 
+<!-- kendex:project-instructions:start -->
+## Project Instructions
+
+- The refresh author is vanillagreen-fleet-lanes[bot], type Bot, on kendex/refresh. Approval requires the exact head, passing render proof, passing CI aggregate and review-reply check. (review-gate-15)
+- The refresh app grants consumer repository access. Filing an upstream kendex issue also needs explicit access to vanillagreencom/kendex. Record credential names and private supply paths only. Keep the review finding open if filing fails. (consumer-refresh-13)
+- Use the repository's permitted merge method for refresh pull requests. Preserve squash while it is configured. (consumer-refresh-14)
+- Preserve the required-review workflow identity: vanillagreencom/kendex, repository ID 1190866154, .github/workflows/request-copilot-review.yml, ref refs/heads/main. Read its live approved full commit SHA before changing the ruleset. (review-gate-16)
+
+<!-- kendex:project-instructions:end -->
+
 # Review operations
 
 GitHub rulesets enforce approvals, stale-approval dismissal and review-thread resolution. This package watches pull requests, reports repository configuration and refreshes consumer installs. It posts no review status.
@@ -46,8 +56,8 @@ The overseer's fallback approval and emergency merge follow the managing reposit
 | `scripts/provision-environment.sh` | Provision the organization's declared app-secret environment. |
 | `refresh/adopt-refresh.sh` in the release checkout | Adopt the refresh workflow. `--retire-writer` opts into trusted retirement. |
 | `scripts/install-latest.sh` | Install the latest stable release for kendex CI and the retained writer template. |
-| `refresh/refresh-consumer.sh` in the release checkout | Rebuild the rolling refresh branch from the default branch and open or update its pull request at any measured class. Run the classifier from the same release checkout. Refuse held render edits before workflow adoption or publication. Preserve workflow edits under the [adoption contract](references/adoption.md#automatic-consumer-refresh). Disarm an armed pull request before pushing a new head; a disarm GitHub refuses stops the run unless the pull request is queued, merged or closed. Wait for GitHub to show the published head before arming app-token auto-merge. A head that stays unseen produces an unarmed warning. Confirm that the arm enabled auto-merge, queued or merged the pull request. The merge queue merges it once the required approval, thread resolution and checks pass. The body names the class, classifier cause and path. An unmeasured class stops publication. |
+| `refresh/refresh-consumer.sh` in the release checkout | Rebuild the rolling refresh branch from the default branch and open or update its pull request at any measured class or an unmeasured standard class. Run the classifier from the same release checkout. Refuse held render edits before workflow adoption or publication. Preserve workflow edits under the [adoption contract](references/adoption.md#automatic-consumer-refresh). Disarm an armed pull request before pushing a new head; a disarm GitHub refuses stops the run unless the pull request is queued, merged or closed. Wait for GitHub to show the published head before arming app-token auto-merge. A head that stays unseen produces an unarmed warning. Confirm that the arm enabled auto-merge, queued or merged the pull request. The merge queue merges it once the required approval, thread resolution and checks pass. The body names the class, classifier cause and path. An unmeasured standard class uses full review and CI. A failed classifier or missing class line stops publication. Render publication requires measurement. |
 | `refresh/refresh-reviews.sh` in the release checkout | Handle automatic review findings under the [thread-resolution rules](references/adoption.md#automatic-consumer-refresh). |
-| `refresh/dispatch-refresh.sh` in the catalog checkout | Signal consumers visible to the catalog app installation. |
+| `refresh/dispatch-refresh.sh` in the catalog checkout | Signal consumers visible to the catalog app installation through a manual `workflow_dispatch` run of `.github/workflows/kendex-dispatch.yml`. |
 
 Reviewer routing for installed packages: [references/vendored-paths.md](references/vendored-paths.md).

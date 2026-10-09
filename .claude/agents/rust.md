@@ -30,3 +30,8 @@ Non-Iced Rust implementation, including domain logic, systems work, and the benc
 ## Output
 
 The change, the measurement behind any performance claim, and every `unsafe` or ordering invariant a reviewer has to check by hand.
+
+## Additional Instructions
+
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+

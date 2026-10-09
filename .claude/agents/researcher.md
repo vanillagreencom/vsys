@@ -30,3 +30,8 @@ Provider-backed research and the report it produces. Not production code, not ar
 ## Output
 
 `findings.md` at the exact requested path, or given none at `tmp/plans/<slug>-research.md`, never under a tracked `docs/` path (the full rule is `agents/planner.md` § Plan Artifacts), raw provider metadata in its sidecar, and exactly one completion message, sent after the report exists and its validation passes. The caller attaches the report to the tracker issue it serves.
+
+## Additional Instructions
+
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+

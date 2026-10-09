@@ -15,6 +15,15 @@ metadata:
 tags: [planning]
 ---
 
+<!-- kendex:project-instructions:start -->
+## Project Instructions
+
+- Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear for planning, audits, cycles, roadmaps and research completion. (PM-038)
+- The team estimate scale is 1 for hours, 2 for half a day, 3 for a day, 4 for two to three days, and 5 for a week or more. Planned and review-created issues use this scale. (ORCH-M22)
+- Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
+
+<!-- kendex:project-instructions:end -->
+
 # Project Management
 
 Wrappers run in the primary session: they own the user dialog and every tracker mutation. TPM workflows analyze and return JSON inline; they never mutate the tracker. The fleet [proposal sweep](workflows/proposal-sweep.md) runs in a subagent the overseer launches and returns its analyzed JSON to the overseer.

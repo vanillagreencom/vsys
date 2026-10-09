@@ -33,3 +33,8 @@ Read each before acting:
 - github: .agents/skills/github/SKILL.md
 - linear: .agents/skills/linear/SKILL.md
 - project-management: .agents/skills/project-management/SKILL.md
+
+## Additional Instructions
+
+- This repository uses GitHub for code hosting and Linear for tracked work. Keep the GitHub and Linear skills available when the assigned task uses those services. (catalog-declarations-10)
+

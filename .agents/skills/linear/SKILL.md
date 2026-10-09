@@ -12,6 +12,16 @@ metadata:
 tags: [integration]
 ---
 
+<!-- kendex:project-instructions:start -->
+## Project Instructions
+
+- Use the team's live Backlog, Todo, In Progress, In Review, Verifying, Done and Canceled states. Read live states before a transition. Verifying holds merged work with open evidence checks. (LIN-027)
+- Keep tracker state writes in LINEAR_TEAM. Check the issue team before a write. Route another team's work through lane-mail peer send to its overseer. Comments and related links grant no state-write authority. (LIN-029)
+- Blocking relations connect issues with the same direct parent, or two top-level issues. Use related links across levels. Keep completed-blocker relations as history. (LIN-030)
+- Use the post-merge observation policy in kendex.toml [skill-instructions].project-management. (LIN-032)
+
+<!-- kendex:project-instructions:end -->
+
 # Linear CLI
 
 ```bash
@@ -116,7 +126,7 @@ Normalized issue lists, gets, bulk gets, bundles, recursive children, relation r
 
 What each option accepts: `issues --help`. Refused before any write, on the create and update paths alike: `--cycle` on a non-UUID, `--project`/`--milestone`/`--assignee` on a reference that matches nothing, and `--priority` on an out-of-range value. Resolve state names from `statuses list` for the issue's team. Verifying is a started state after In Review. It holds merged work with an open post-merge Done-when box. It is verification work for the overseer, not a development launch.
 
-A **name** selects one project on `issues create` / `update` / `bulk-update --project`, `projects get`, `projects list-dependencies`, `milestones --project`, and `initiatives add-project` / `remove-project`. There a canceled project sharing that name loses to the live one, and a name with no live match is refused, naming each match and its state; pass a UUID to reach a canceled project. Name **filters** never resolve: `issues list --project` and `documents list --project` match on the name alone, so their results can mix a live project with its canceled twin.
+A **name** selects one project on `issues create` / `update` / `bulk-update --project`, `projects get`, `projects list-dependencies`, `milestones --project`, and `initiatives add-project` / `remove-project`. Issue creation resolves the name within `LINEAR_TEAM` or `--team`. Updates and bulk updates resolve it within each issue's recorded team. Multiple live matches in that team refuse with each project's UUID and team name. A canceled project sharing the name loses to the live one, and a name with no live match is refused, naming each match and its state; pass a UUID to reach a canceled project. Name **filters** never resolve: `issues list --project` and `documents list --project` match on the name alone, so their results can mix a live project with its canceled twin.
 
 `--labels` REPLACES the whole issue-label set. Fetch current labels, compute the final set, validate it against `labels list --max --format=safe` (which reports `is_group` so parent/group labels can be rejected), then pass the complete set. `issues update --labels` and `issues activate --agent` resolve names live against the issue's own team and workspace labels. An unresolved name refuses before mutation and names the team and label. `--clear-labels` is the only way to empty the set.
 

@@ -15,6 +15,14 @@ metadata:
 tags: [review]
 ---
 
+<!-- kendex:project-instructions:start -->
+## Project Instructions
+
+- Under Trigger: needs-ui-review, judge the appearance of each changed view from the developer's screenshot set under tmp/ui-shots/ against docs/architecture/ui.md and the UI polish rules. Read the code diff to check that colour comes only from the role table in src/ui/theme.ts. Use the dev round summary, which lists each file with its view, before or after, and theme. For an existing changed view, a missing or unlabelled required before or after image in any supported theme is a finding. A new view requires labelled after images only. Later rounds carry before images forward and replace after images. The reviewer never captures or creates an image and writes only the review artifact. (CQ33)
+- Review findings use the estimate scale in kendex.toml [skill-instructions].project-management. Keep the numeric schema field and its consumer-defined meaning separate. (RV20)
+
+<!-- kendex:project-instructions:end -->
+
 # Reviewer
 
 Shared contract for every review specialist; each agent's domain and probes live in its own agent file. These workflows run orch scripts and do not stand alone.

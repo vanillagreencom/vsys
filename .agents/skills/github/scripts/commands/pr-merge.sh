@@ -256,7 +256,10 @@ Terminal and mutation rules:
     head_runs   run IDs used for CI classification
     checks      raw check rollup read by the classification
     required_contexts
-                base-branch contexts the classification may block on
+                classic base-branch context names
+    requirements
+                complete classic-context and required-workflow evidence used
+                by classification and refusal diagnosis
 
   stderr carries mergeable, blocked, merged, or closed, followed by
   head-run: <ids> when CI runs were classified. can_merge=false with an empty
@@ -273,9 +276,15 @@ Terminal and mutation rules:
   ci_optional_failed: warning, which blocks nothing — GitHub merges over it. A
   required context that has registered no check on the head is ci_pending:
   "<context> (missing)", the state GitHub itself is in while it waits. A base
-  that requires nothing, whose protection cannot be read, or whose ruleset
-  carries a rule gating the merge on a check it does not name, counts every
-  check as before.
+  that requires nothing, other unreadable protection or an unnameable rule
+  type counts every check. Required workflows contribute their check links
+  from current completed runs on the head in the consumer repository.
+  Their source repository, path and configured revision must be proved by
+  the workflow file metadata. Distinct definitions cannot share an execution.
+  Optional pending or queued checks hold nothing. A pending required workflow
+  or unregistered jobs hold as ci_pending. Unreadable workflow evidence
+  refuses as ci_fetch_failed even when visible jobs pass. A failed required
+  workflow holds as ci_failed.
 
   head_runs contains the authoritative workflow run plus runs referenced by
   custom commit statuses. checks is the same snapshot consumed by
@@ -447,7 +456,7 @@ run_checks() {
 
     local pr_state pr_merged_at
     if ! load_pr_state_json "$pr_num"; then
-        jq -n --arg issue "$PR_STATE_ERROR" '{can_merge: false, issues: [$issue], warnings: [], mergeable: "UNKNOWN", review: "", transient: false, state: "UNKNOWN", merged_at: "", head_runs: [], checks: [], required_contexts: []}'
+        jq -n --arg issue "$PR_STATE_ERROR" '{can_merge: false, issues: [$issue], warnings: [], mergeable: "UNKNOWN", review: "", transient: false, state: "UNKNOWN", merged_at: "", head_runs: [], checks: [], required_contexts: [], requirements: []}'
         return 0 # Return 0 so JSON is output, caller checks can_merge
     fi
     pr_state=$(jq -r '.state // "UNKNOWN"' <<<"$PR_STATE_JSON")
@@ -457,7 +466,7 @@ run_checks() {
     # check data is meaningless: `mergeable` is permanently UNKNOWN, post-merge
     # CI runs and bot comments are not blockers. Report the state, no issues.
     if [ "$pr_state" = "MERGED" ] || [ "$pr_state" = "CLOSED" ]; then
-        jq -n --arg state "$pr_state" --arg merged_at "$pr_merged_at" '{can_merge: false, issues: [], warnings: [], mergeable: "UNKNOWN", review: "", transient: false, state: $state, merged_at: $merged_at, head_runs: [], checks: [], required_contexts: []}'
+        jq -n --arg state "$pr_state" --arg merged_at "$pr_merged_at" '{can_merge: false, issues: [], warnings: [], mergeable: "UNKNOWN", review: "", transient: false, state: $state, merged_at: $merged_at, head_runs: [], checks: [], required_contexts: [], requirements: []}'
         return 0
     fi
 
@@ -485,33 +494,47 @@ run_checks() {
         # Mirrors orch ci-wait's pre-classification scoping; the shared
         # classify_checks_rollup carries the scoping and name-sanitization
         # contract, including the required contexts that registered no check.
-        local rollup pending failed optional_failed
-        required_json=$(required_contexts "$pr_num")
-        rollup=$(echo "$ci_json" | classify_checks_rollup "$required_json")
-        checks_json=$(jq -c '.checks' <<<"$rollup")
-        head_runs_json=$(jq -c '.head_runs' <<<"$rollup")
-        pending=$(jq -r '.pending' <<<"$rollup")
-        failed=$(jq -r '.failed' <<<"$rollup")
-        optional_failed=$(jq -r '.optional_failed' <<<"$rollup")
-        # An empty rollup is "no status checks configured" only where the base
-        # requires none. With a required context outstanding the checks ARE
-        # configured and none has reported yet, which the classification
-        # already names in `pending`.
-        if [ "$(jq 'length' <<<"$ci_json")" -eq 0 ] && [ -z "$pending" ]; then
-            warnings+=("ci_unconfigured: No status checks configured")
-        fi
-        if [ -n "$pending" ]; then
-            can_merge=false
-            issues+=("ci_pending: $pending")
-        fi
-        if [ -n "$failed" ]; then
-            can_merge=false
-            issues+=("ci_failed: $failed")
-        fi
-        # A warning, not an issue: the base branch does not require these, so
-        # GitHub merges over them and so must this gate.
-        if [ -n "$optional_failed" ]; then
-            warnings+=("ci_optional_failed: $optional_failed")
+        local rollup pending failed optional_failed required_evidence required_state
+        required_evidence=$(required_contexts "$pr_num") || required_evidence='{"state":"unreadable","contexts":[]}'
+        required_state=$(jq -r '.state' <<<"$required_evidence")
+        required_json="$required_evidence"
+        case "$required_state" in
+            ready) ;;
+            pending) can_merge=false; issues+=("ci_pending: Required workflow") ;;
+            failed) can_merge=false; issues+=("ci_failed: Required workflow") ;;
+            unreadable) can_merge=false; issues+=("ci_fetch_failed: Required workflow evidence unavailable") ;;
+            *) echo "pr-merge: required-state=$required_state" >&2; return 1 ;;
+        esac
+        if [ "$required_state" != ready ]; then
+            checks_json="$ci_json"
+            head_runs_json=$(scope_current_run <<<"$ci_json" | jq -c "$CI_RUN_JQ_DEFS"'head_runs')
+        else
+            rollup=$(echo "$ci_json" | classify_checks_rollup "$required_json")
+            checks_json=$(jq -c '.checks' <<<"$rollup")
+            head_runs_json=$(jq -c '.head_runs' <<<"$rollup")
+            pending=$(jq -r '.pending' <<<"$rollup")
+            failed=$(jq -r '.failed' <<<"$rollup")
+            optional_failed=$(jq -r '.optional_failed' <<<"$rollup")
+            # An empty rollup is "no status checks configured" only where the base
+            # requires none. With a required context outstanding the checks ARE
+            # configured and none has reported yet, which the classification
+            # already names in `pending`.
+            if [ "$(jq 'length' <<<"$ci_json")" -eq 0 ] && [ -z "$pending" ]; then
+                warnings+=("ci_unconfigured: No status checks configured")
+            fi
+            if [ -n "$pending" ]; then
+                can_merge=false
+                issues+=("ci_pending: $pending")
+            fi
+            if [ -n "$failed" ]; then
+                can_merge=false
+                issues+=("ci_failed: $failed")
+            fi
+            # A warning, not an issue: the base branch does not require these, so
+            # GitHub merges over them and so must this gate.
+            if [ -n "$optional_failed" ]; then
+                warnings+=("ci_optional_failed: $optional_failed")
+            fi
         fi
     fi
 
@@ -581,7 +604,7 @@ run_checks() {
         --argjson head_runs "$head_runs_json" \
         --argjson checks "$checks_json" \
         --argjson required_contexts "$required_json" \
-        '{can_merge: $can_merge, issues: $issues, warnings: $warnings, mergeable: $mergeable, review: $review, transient: $transient, state: $state, merged_at: $merged_at, head_runs: $head_runs, checks: $checks, required_contexts: $required_contexts}'
+        "$CI_RUN_JQ_DEFS"'{can_merge: $can_merge, issues: $issues, warnings: $warnings, mergeable: $mergeable, review: $review, transient: $transient, state: $state, merged_at: $merged_at, head_runs: $head_runs, checks: $checks, required_contexts: (requirement_set($required_contexts) | .contexts), requirements: $required_contexts}'
 }
 
 # True when --auto answers the readiness result no better than a merge: a
