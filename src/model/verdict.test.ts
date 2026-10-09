@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { collectGroups } from "../collect/cgroups";
+import { Reader } from "../collect/io";
 import { ProcessCollector } from "../collect/procs";
 import { type Config, defaults, validate } from "../config/config";
 import { History } from "../store/history";
@@ -1293,4 +1295,51 @@ test("memory meter agrees with desktop-swap cause when the desktop slice is abse
   // A present slice whose swap could not be read still warns.
   s.groups.push(g(c.desktopSlice, c.desktopSlice, { swap: null }));
   expect(meters(s, c).find((m) => m.id === "memory")?.level).toBe("warn");
+});
+
+/** A reader whose read of one path fails as a permission denial would. */
+class FailingReader extends Reader {
+  constructor(private readonly failing: string) {
+    super();
+  }
+  override text(path: string, optional = false): string | null {
+    if (path !== this.failing) return super.text(path, optional);
+    this.error(path, new Error("EACCES"));
+    return null;
+  }
+  override dirs(path: string, optional = false): string[] {
+    if (path !== this.failing) return super.dirs(path, optional);
+    this.error(path, new Error("EACCES"));
+    return [];
+  }
+}
+test("memory meter stays warn when a failed cgroup read may hide the desktop slice", () => {
+  const root = mkdtempSync(join(tmpdir(), "vsys-desktop-"));
+  try {
+    const c = { ...defaults(), cgroupRoot: root };
+    const desktop = join(root, "session.slice", c.desktopSlice);
+    for (const dir of [root, join(root, "session.slice"), desktop]) {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "cpu.stat"), "usage_usec 1\n");
+      writeFileSync(join(dir, "cgroup.procs"), "");
+    }
+    writeFileSync(join(desktop, "memory.swap.current"), "0\n");
+    const level = (r: Reader) => {
+      const s = emptySnapshot();
+      s.groups = collectGroups(r, root, [], 0);
+      s.errors = r.errors;
+      return meters(s, c).find((m) => m.id === "memory")?.level;
+    };
+    // Every read succeeds: the slice is found and its swap graded.
+    expect(level(new Reader())).toBe("ok");
+    // A failed group read leaves the slice out of the sample.
+    expect(level(new FailingReader(join(desktop, "cpu.stat")))).toBe("warn");
+    // A failed directory read never reaches the slice.
+    expect(level(new FailingReader(join(root, "session.slice")))).toBe("warn");
+    // With the slice gone and every read complete, it is absent.
+    rmSync(desktop, { recursive: true });
+    expect(level(new Reader())).toBe("ok");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
