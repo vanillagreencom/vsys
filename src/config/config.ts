@@ -131,6 +131,8 @@ export interface Config {
   pressureAmber: number;
   pressureRed: number;
   pressureHoldSeconds: number;
+  /** A system service's hour of CPU at which it raises a card, in percent of one core. */
+  serviceCpuPercent: number;
   laneNaming: "worktree" | "branch" | "env";
   laneEnv: string;
   laneNameParts: string[];
@@ -249,6 +251,7 @@ export function defaults(
     pressureAmber: 10,
     pressureRed: 25,
     pressureHoldSeconds: 10,
+    serviceCpuPercent: 25,
     laneNaming: "worktree",
     laneEnv: "VSYS_LANE",
     laneNameParts: [...nameParts],
@@ -398,6 +401,7 @@ export function validate(value: unknown, base = defaults()): Config {
     "pressureAmber",
     "pressureRed",
     "pressureHoldSeconds",
+    "serviceCpuPercent",
     "scratchQuota",
     "scratchRefreshMs",
     "scratchDutyPercent",

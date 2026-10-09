@@ -17,6 +17,7 @@ const phrases: Record<CauseId, string> = {
   stalls: "lanes stalled on a resource",
   "system-memory": "memory reclaim stalled tasks",
   "system-cpu": "tasks waited for CPU",
+  "service-cpu": "a system service used CPU for an hour",
   "memory-high": "a group neared its memory threshold",
   scrub: "a scrub reported a problem",
   unchecked: "a filesystem went unchecked for damage",
@@ -42,6 +43,8 @@ function measurement(e: TimelineEvent, c: Config): string {
     return `${amount(v.free, c)} free of ${amount(v.total, c)}`;
   if (e.cause === "disk") return `${share(v.some)} of the window stalled`;
   if (e.cause === "stalls") return `${share(v.worst)} at worst`;
+  if (e.cause === "service-cpu")
+    return `${share(v.hour)} of a core over the hour against ${share(v.threshold)}`;
   if (e.cause === "scratch")
     return `${amount(v.bytes, c)} against a quota of ${amount(v.quota, c)}`;
   return "";

@@ -9,6 +9,7 @@ import {
   agentLanes,
   type Cause,
   causes,
+  consumerName,
   type Level,
   type Meter,
 } from "../model/verdict";
@@ -612,6 +613,23 @@ function copy(
         next: "Open Agents and sort by CPU to find the lane to pause.",
         view: "Agents",
       };
+    case "service-cpu": {
+      const units = cause.groups.length;
+      // systemctl takes the unit name as systemd writes it, escapes included.
+      const unit = cause.groups[0]?.name ?? "";
+      return {
+        word: "Busy",
+        title:
+          units > 1
+            ? `${units} system services used CPU for an hour: ${list(cause.groups.map((g) => consumerName(g, s)))}`
+            : `${cause.consumer} used ${percent(v.hour)} of a core for an hour`,
+        ways: [
+          `${cause.consumer} averaged ${percent(v.hour)} of one core over the last hour, at or above the threshold of ${percent(v.threshold)}. A service stuck in a loop looks like this.`,
+        ],
+        next: `Check the log of ${cause.consumer}, and restart it if it is stuck: ${shellLine(["sudo", "systemctl", "restart", unit])}`,
+        view: "Resources",
+      };
+    }
     case "memory-high": {
       const groups = cause.groups.length;
       return {

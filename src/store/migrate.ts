@@ -110,6 +110,8 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     // empty list is the unknown value: no reading claims a missing interface.
     capabilities: s.capabilities ?? [],
     processRead: s.processRead ?? "unknown",
+    // A build older than the service read measured no unit.
+    services: s.services ?? null,
     groups: s.groups.map((group) => ({
       ...group,
       identity: group.identity ?? null,

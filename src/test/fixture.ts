@@ -14,6 +14,7 @@ import type {
   Group,
   Lane,
   Proc,
+  Service,
   Snapshot,
   Volume,
 } from "../model/types";
@@ -251,6 +252,17 @@ export function emptySnapshot(time = 1000): Snapshot {
     lanes: [],
     alerts: [],
     errors: [],
+    services: [],
+  };
+}
+export function serviceSnapshot(overrides: Partial<Service> = {}): Service {
+  return {
+    path: "system.slice/loop.service",
+    name: "loop.service",
+    identity: "1:2",
+    read: true,
+    cpuHourPercent: null,
+    ...overrides,
   };
 }
 export function groupSnapshot(overrides: Partial<Group> = {}): Group {
@@ -486,6 +498,7 @@ export function everyCauseSnapshot(c: Config): Snapshot {
   s.storage.scratch = [
     { path: "/scratch", bytes, age: 0, error: null, origin: "configured" },
   ];
+  s.services = [serviceSnapshot({ cpuHourPercent: c.serviceCpuPercent * 2 })];
   return s;
 }
 /**

@@ -449,6 +449,7 @@ test("the cause order table is the ladder's own tie order", () => {
     "scrub",
     "system-memory",
     "system-cpu",
+    "service-cpu",
     "memory-high",
     "unchecked",
     "integrity-unknown",

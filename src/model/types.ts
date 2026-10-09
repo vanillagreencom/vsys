@@ -506,6 +506,24 @@ export interface Capability {
    */
   belowSlice?: boolean;
 }
+/**
+ * A `.service` unit under the system's own `system.slice`, outside the user
+ * manager the groups come from, read once a minute for its hour of CPU.
+ */
+export interface Service {
+  /** The cgroup path below `cgroupTop`, which is what an alert names. */
+  path: string;
+  /** The unit name as systemd writes it. */
+  name: string;
+  identity: string | null;
+  /** Whether the last checkpoint read the unit's `cpu.stat`. */
+  read: boolean;
+  /**
+   * Percent of one logical core over the last 60 minutes, null until the unit
+   * has a checkpoint that old in this cgroup, and while it is unread.
+   */
+  cpuHourPercent: number | null;
+}
 /** A complete sample carries failures rather than converting them to zero. */
 export type ProcessRead = "complete" | "incomplete" | "unknown";
 export interface Snapshot {
@@ -521,6 +539,11 @@ export interface Snapshot {
   lanes: Lane[];
   alerts: Alert[];
   errors: SourceError[];
+  /**
+   * The units the last checkpoint read, null where `system.slice` could not
+   * be listed or the record predates the read.
+   */
+  services: Service[] | null;
   /** Absent in snapshots recorded before the build-cache reading existed. */
   sccache?: Sccache;
 }

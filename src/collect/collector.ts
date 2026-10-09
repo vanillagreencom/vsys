@@ -34,6 +34,7 @@ import {
 import { SccacheCollector } from "./sccache";
 import { agentScratchDirs } from "./scratch";
 import type { ScrubUnits } from "./scrub-timers";
+import { ServiceCpu } from "./services";
 import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
@@ -158,6 +159,8 @@ export class Collector {
     sharedFinishedScrub?: FinishedScrubMemory,
     /** Absent unless a caller supplies them, so no test reads systemd's units. */
     scrubUnits?: ScrubUnits,
+    /** A predecessor's checkpoints, so a settings change keeps each window. */
+    readonly serviceCpu = new ServiceCpu(),
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -360,6 +363,8 @@ export class Collector {
     storage.deviceWrites = collectDeviceWrites(r, c.cgroupTop);
     this.controller.signal.throwIfAborted();
     mark("storage");
+    const services = this.serviceCpu.read(r, c.cgroupTop, start);
+    mark("services");
     const sccache = await this.sccache?.collect(r, time);
     this.controller.signal.throwIfAborted();
     mark("sccache");
@@ -425,6 +430,7 @@ export class Collector {
       ),
       alerts: [],
       errors: r.errors,
+      services,
       ...(sccache ? { sccache } : {}),
     };
     s.alerts = this.engine.evaluate(s, c);
@@ -457,6 +463,7 @@ export async function createCollector(
     sccache?: SccacheCollector;
     kernelLog?: KernelLog | null;
     lastFinishedScrub?: FinishedScrubMemory;
+    serviceCpu?: ServiceCpu;
   },
   toolsPath = agentToolsPath,
   /** Injected so no test reads this machine's journal. */
@@ -506,5 +513,6 @@ export async function createCollector(
     new Udisks(),
     previous?.lastFinishedScrub,
     scrubUnits,
+    previous?.serviceCpu,
   );
 }
