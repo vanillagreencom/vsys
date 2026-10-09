@@ -11,6 +11,7 @@ import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
   amount,
   bytes,
+  count,
   floorText,
   gap,
   percent,
@@ -103,7 +104,7 @@ function hourText(state: ServiceState): string {
     case "unread":
       return "unread";
     case "measuring":
-      return "under an hour";
+      return "measuring";
     case "busy":
     case "clear":
       return percent(state.hour);
@@ -440,7 +441,7 @@ export function Resources({
   // keeps that much. Where both cannot, only the table holding the selection
   // is drawn, so the lists never push the detail off the screen.
   const shared = listHeight - 3;
-  const least = (count: number) => Math.min(Math.max(count, 1), 2);
+  const least = (n: number) => Math.min(Math.max(n, 1), 2);
   const both = shared >= least(rows.length) + least(services.length);
   const servicesHeight = Math.max(
     least(services.length),
@@ -452,6 +453,14 @@ export function Resources({
   );
   const showGroups = both || current?.kind !== "service";
   const showServices = both || current?.kind === "service";
+  // A table drawn alone names the other in its heading, so the reader knows
+  // the arrows walk on into it.
+  const servicesBelow =
+    !showServices && services.length
+      ? ` · ${count(services.length, "system service")} below`
+      : "";
+  const groupsAbove =
+    !showGroups && rows.length ? ` · ${count(rows.length, "group")} above` : "";
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
@@ -548,7 +557,7 @@ export function Resources({
               width={listWidth - 4}
               marginTop={0}
               focused={current?.kind === "group"}
-              count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
+              count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}${servicesBelow}`}
             />
             <TableHeader columns={groupColumns} />
             <List
@@ -608,7 +617,11 @@ export function Resources({
               marginTop={both ? 1 : 0}
               width={listWidth - 4}
               focused={current?.kind === "service"}
-              count={s.services === null ? undefined : services.length}
+              count={
+                s.services === null
+                  ? undefined
+                  : `${services.length}${groupsAbove}`
+              }
             />
             <TableHeader columns={serviceColumns} />
             <List

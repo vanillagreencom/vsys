@@ -670,6 +670,9 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
     expect(row("cool")).toContain("5.0%");
     for (const name of ["unread", "young"])
       expect(row(name)).not.toMatch(/\d%/);
+    // A unit vsys has watched for under an hour may have run for days, so
+    // the cell names the reading, never the unit's age.
+    expect(row("young")).toContain("measuring");
     // The drawn row carries the same grade: the busy unit is marked, the one
     // under the threshold is not.
     const colour = (name: string) => {
@@ -746,11 +749,11 @@ test("the service CPU card copies its journal read and Enter lands on the unit's
 });
 
 test.each([
-  { width: 80, height: 24 },
-  { width: 100, height: 28 },
+  { width: 80, height: 24, alone: true },
+  { width: 100, height: 28, alone: false },
 ])(
   "at $width x $height the selected row and every detail field stay on the screen",
-  async (size) => {
+  async ({ alone, ...size }) => {
     const c = defaults();
     const s = emptySnapshot();
     s.groups = Array.from({ length: 12 }, (_, i) =>
@@ -767,6 +770,9 @@ test.each([
         cpuHourPercent: i,
       }),
     );
+    /** The heading line of the table titled `title`, if it is drawn. */
+    const heading = (frame: string, title: string) =>
+      frame.split("\n").find((line) => line.trimStart().startsWith(title));
     /** Whether the detail draws the field `label`, at the start of a line. */
     const field = (frame: string, label: string) =>
       frame
@@ -778,6 +784,17 @@ test.each([
       await t.press("down");
       let frame = t.frame();
       expect(selectedRow(frame)).toMatch(/g1\b/);
+      // A table drawn alone names the other, so the reader knows the arrows
+      // reach it; where both are drawn, neither heading carries the note.
+      expect({
+        groups: heading(frame, "Groups"),
+        services: heading(frame, "System services") !== undefined,
+      }).toEqual({
+        groups: expect.stringContaining(
+          alone ? "Groups  12 · 30 system services below " : "Groups  12 ─",
+        ),
+        services: !alone,
+      });
       for (const label of ["Unit", "Status", "Waiting"])
         expect({ label, drawn: field(frame, label) }).toEqual({
           label,
@@ -787,6 +804,17 @@ test.each([
       for (let i = 1; i < s.groups.length; i++) await t.press("down");
       frame = t.frame();
       expect(selectedRow(frame)).toMatch(/^s29\b/);
+      expect({
+        groups: heading(frame, "Groups") !== undefined,
+        services: heading(frame, "System services"),
+      }).toEqual({
+        groups: !alone,
+        services: expect.stringContaining(
+          alone
+            ? "System services  30 · 12 groups above "
+            : "System services  30 ─",
+        ),
+      });
       for (const label of ["Unit", "Status", "Cgroup"])
         expect({ label, drawn: field(frame, label) }).toEqual({
           label,
