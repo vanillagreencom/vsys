@@ -46,13 +46,16 @@ function host(o: { paths?: string[]; serviceCpuPercent?: number } = {}) {
     events.push(...log.advance(s, c));
     return s;
   };
-  /** `percent` of a core for `minutes`, or no counter write at all. */
-  const run = (percent: number | null, minutes: number) => {
+  /**
+   * `percent` of a core for `minutes`, or no counter write at all, sampled
+   * every `stepMs`.
+   */
+  const run = (percent: number | null, minutes: number, stepMs = 10_000) => {
     let s = sample();
-    for (let step = 0; step < minutes * 6; step++) {
-      now += 10_000;
+    for (let step = 0; step < (minutes * minute) / stepMs; step++) {
+      now += stepMs;
       if (percent !== null) {
-        usec += percent * 10_000 * 10;
+        usec += percent * stepMs * 10;
         stat();
       }
       s = sample();
@@ -104,6 +107,25 @@ test("at a threshold of zero a unit with no hour yet raises nothing", () => {
   expect(s.services?.[0]?.cpuHourPercent).toBeNull();
   expect(h.card(s)).toBeUndefined();
   expect(h.opened()).toEqual([]);
+});
+
+test("a refresh interval longer than the window gives no hour average", () => {
+  // Samples two hours apart, as the longest refresh interval takes them: half
+  // a core across two hours can be one busy hour and one idle hour.
+  const sparse = host();
+  const s = sparse.run(50, 360, 120 * minute);
+  expect(s.services?.[0]?.cpuHourPercent).toBeNull();
+  expect(sparse.card(s)).toBeUndefined();
+});
+
+test("a gap in sampling gives no hour average until an hour follows it", () => {
+  const gap = host();
+  gap.run(0, 5);
+  const after = gap.run(50, 120, 120 * minute);
+  expect(after.services?.[0]?.cpuHourPercent).toBeNull();
+  expect(gap.card(after)).toBeUndefined();
+  const recovered = gap.run(0, 61);
+  expect(recovered.services?.[0]?.cpuHourPercent).toBe(0);
 });
 
 test("a busy scope or mount under system.slice raises nothing", () => {
@@ -256,6 +278,30 @@ test("a settings change keeps each unit's hour", async () => {
   try {
     const s = await at(after, 60 * minute);
     expect(s.services?.[0]?.cpuHourPercent).toBeCloseTo(50, 5);
+  } finally {
+    before.close();
+    after.close();
+  }
+});
+
+test("a settings change that moves the cgroup root reads the new root at once", async () => {
+  const f = fixture();
+  fixtures.push(f);
+  const at = async (collector: Collector, time: number) => {
+    const now = spyOn(performance, "now").mockReturnValue(time);
+    return collector.sample(time).finally(() => now.mockRestore());
+  };
+  f.write(join(f.config.cgroupTop, unit, "cpu.stat"), "usage_usec 0\n");
+  const before = new Collector(f.config, 100, 4096);
+  await at(before, 0);
+  const moved = { ...f.config, cgroupTop: join(f.root, "other-root") };
+  const other = "system.slice/other.service";
+  f.write(join(moved.cgroupTop, other, "cpu.stat"), "usage_usec 0\n");
+  const after = await createCollector(moved, false, before, f.agentToolsPath);
+  try {
+    // A second on, well inside the minute the old root's reading covers.
+    const s = await at(after, 1000);
+    expect(s.services?.map((u) => u.path)).toEqual([other]);
   } finally {
     before.close();
     after.close();

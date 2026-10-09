@@ -4,6 +4,14 @@ import { pairs, type Reader } from "./io";
 
 const minuteMs = 60_000;
 const hourMs = 60 * minuteMs;
+/**
+ * How far past an hour the oldest checkpoint may be and still give an hour's
+ * average. A checkpoint ages in steps of the refresh interval, so this covers
+ * every interval up to 15 minutes; past it, after a long interval or a gap in
+ * sampling, the figure would spread an old burst over a span the card does
+ * not name, so the average stays unknown until an hour-old checkpoint exists.
+ */
+const slackMs = 15 * minuteMs;
 interface Checkpoint {
   at: number;
   cpuUsec: number;
@@ -23,11 +31,18 @@ export class ServiceCpu {
   private units = new Map<string, Checkpoint[]>();
   private last: Service[] | null = null;
   private lastAt?: number;
+  /** The root the cached figures were read under. */
+  private lastTop?: string;
   /** `now` is monotonic, so a wall-clock step cannot stretch the hour. */
   read(r: Reader, top: string, now: number): Service[] | null {
-    if (this.lastAt !== undefined && now - this.lastAt < minuteMs)
+    if (
+      this.lastTop === top &&
+      this.lastAt !== undefined &&
+      now - this.lastAt < minuteMs
+    )
       return this.last;
     this.lastAt = now;
+    this.lastTop = top;
     const errors = r.errors.length;
     const slice = join(top, "system.slice");
     const service = (name: string) => name.endsWith(".service");
@@ -83,9 +98,10 @@ export class ServiceCpu {
       name,
       identity,
       read: true,
-      cpuHourPercent: base
-        ? (cpuUsec - base.cpuUsec) / ((now - base.at) * 10)
-        : null,
+      cpuHourPercent:
+        base && now - base.at <= hourMs + slackMs
+          ? (cpuUsec - base.cpuUsec) / ((now - base.at) * 10)
+          : null,
     };
   }
 }
