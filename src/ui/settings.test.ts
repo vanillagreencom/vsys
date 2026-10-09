@@ -89,7 +89,7 @@ test("a stored value reads in the unit the reader reads, not the unit it is stor
       ["name", "account", "cwd", "branch", "tool"],
       "name, account, cwd, and 2 more",
     ],
-    ["btrfsMounts", [], "none"],
+    ["notifications", [], "none"],
   ];
   for (const [key, value, expected] of rows)
     expect({ key, shown: settingDisplay(key, value, c) }).toEqual({
@@ -117,11 +117,33 @@ test("an interval under a second reads as itself, never as zero", () => {
   expect(settingDisplay("refreshMs", 999, c)).toBe("999ms");
   expect(settingDisplay("refreshMs", 1500, c)).toBe("1.5s");
   expect(settingDisplay("refreshMs", 2250, c)).toBe("2.3s");
-  // A whole number of seconds keeps the shorter reading it already had, and a
-  // minute or more still reads in the unit every other span uses.
+  // A whole number of seconds keeps the shorter reading it already had.
   expect(settingDisplay("refreshMs", 1000, c)).toBe("1s");
   expect(settingDisplay("scratchRefreshMs", 30000, c)).toBe("30s");
   expect(settingDisplay("scratchRefreshMs", 60000, c)).toBe("1m");
+});
+
+test("an interval of a minute or more is not shown shorter than it is", () => {
+  const c = defaults();
+  // Through `age()` a minute or more floored to whole minutes, so a valid
+  // 90 s read the same as 60 s and 3599 s the same as 3540 s.
+  const shown = (ms: number) => settingDisplay("scratchRefreshMs", ms, c);
+  expect(shown(90000)).not.toBe(shown(60000));
+  expect(shown(3599000)).not.toBe(shown(3540000));
+  expect(shown(5400000)).not.toBe(shown(3600000));
+  expect(shown(90000)).toBe("1m 30s");
+  expect(shown(3600000)).toBe("1h");
+  expect(shown(86400000)).toBe("24h");
+});
+
+test("an empty Watched Btrfs mounts list does not read as an empty list", () => {
+  const c = defaults();
+  // The collector watches every Btrfs mount when the list is empty, and empty
+  // is the shipped default, so it must not read as another empty list does.
+  expect(c.btrfsMounts).toEqual([]);
+  expect(settingDisplay("btrfsMounts", c.btrfsMounts, c)).not.toBe(
+    settingDisplay("notifications", [], c),
+  );
 });
 
 test("Settings states each capability and why a missing one is missing", () => {
