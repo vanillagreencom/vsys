@@ -59,6 +59,22 @@ PR_REVIEW_ON_TIMEOUT = "proceed"
 # values: on | off
 PR_COPILOT_REQUESTS = "on"
 
+# Who reviews this repository's own kendex refresh pull request when no
+# approval reached it. "overseer" sends that head, matched by the exact
+# branch and the app's bot login below, to the overseer instead of Copilot;
+# every other pull request keeps its route. Read from the consumer's base
+# checkout. "overseer" with either identity key empty is refused.
+# values: copilot | overseer
+REVIEW_GATE_REFRESH_REVIEW = "copilot"
+
+# Exact head branch of this repository's kendex refresh pull request.
+# Required when REVIEW_GATE_REFRESH_REVIEW is overseer.
+REVIEW_GATE_REFRESH_BRANCH = ""
+
+# App bot login that authors this repository's kendex refresh pull request.
+# Required when REVIEW_GATE_REFRESH_REVIEW is overseer.
+REVIEW_GATE_REFRESH_AUTHOR = ""
+
 # Seconds to keep waiting for the build to start before treating its
 # absence as a failure. Raise it where a build needs approval before it
 # begins. A value that is not a whole number of seconds waits the default.
@@ -236,6 +252,11 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # point. This setting never marks a Codex account running on its credits.
 # ORCH_HANDOFF_HEADROOM_PCT = "3"
 
+# Who relaunches a lane its account walled. "auto" has oversee-watch relaunch
+# it at once on an account with room for its model; "ask" reports the wall to
+# the overseer with that pick's answer.
+# ORCH_WALL_RELAUNCH = "auto"
+
 # Earlier context handoff percentage. Shared rule and boundary behavior:
 # references/oversee-events.md, Judgement rules.
 # ORCH_HANDOFF_CONTEXT_PCT = "90"
@@ -349,6 +370,12 @@ ORCH_OVERSEER_SUCCESSOR_ACCOUNTS = "1"
 # status file may still be missing before oversee-watch reports it as
 # start-stalled, on every harness.
 # ORCH_WATCH_START_STALL_SECS = "600"
+
+# Minutes a stalled Claude cloud lane may leave its one directive unanswered,
+# nothing pushed, before oversee-watch closes it as cloud-stall-closed for a
+# hosted relaunch on its branch. A fleet that sees repeated cloud stalls drops
+# cloud from ORCH_LANE_PREFERENCE instead of raising this.
+# ORCH_CLOUD_STALL_MINUTES = "30"
 
 # Age threshold in seconds for lane-long on a running or parked lane.
 # Repeat schedule: oversee-watch --help, event lane-long.
