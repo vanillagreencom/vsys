@@ -562,6 +562,43 @@ class AgentWardenScratchRules(WardenRulesCase):
         self.assertEqual(removed, [])
         self.assertEqual(reads["/proc/700/environ"], 3)
 
+    def test_worker_entering_a_later_directory_during_a_removal_keeps_it(self):
+        # A known worker with no TMPDIR changes its current directory into
+        # the next gone directory while the warden removes the one before
+        # it. The pass's first holder read predates that move, so the
+        # directory must be read again before its own removal.
+        with scratch() as tmp:
+            base = Path(tmp)
+            (base / "cg" / self.w.SLICE).mkdir(parents=True)
+            first = base / "scratch" / "agent-confine-300-400"
+            later = base / "scratch" / "agent-confine-301-400"
+            for directory in (first, later):
+                directory.mkdir(parents=True)
+                os.utime(directory, (0, 0))
+            cwd = ["/unrelated"]
+            real_read, real_readlink, real_rmtree = self.w.read, os.readlink, self.w.shutil.rmtree
+
+            def read(path, default=None):
+                return "HOME=/home\0" if str(path) == "/proc/700/environ" else real_read(path, default)
+
+            def readlink(path, *args, **kwargs):
+                return cwd[0] if str(path) == "/proc/700/cwd" else real_readlink(path, *args, **kwargs)
+
+            def rmtree(path, *args, **kwargs):
+                if path == str(first):
+                    cwd[0] = str(later)
+                real_rmtree(path, *args, **kwargs)
+
+            with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                    patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                    patch.object(self.w, "read", side_effect=read), patch.object(self.w, "log"), \
+                    patch.object(self.w.os, "readlink", side_effect=readlink), \
+                    patch.object(self.w.shutil, "rmtree", side_effect=rmtree):
+                removed = self.w.reap_scratch_dirs(True, {700: None}, set())
+            self.assertEqual(removed, [first.name])
+            self.assertFalse(first.exists())
+            self.assertTrue(later.is_dir())
+
     def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
         text = WARDEN.read_text()
         old = (

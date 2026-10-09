@@ -948,18 +948,19 @@ def _proc_tmpdir(pid):
 
 
 def _scratch_holders(procs):
-    """The directories procs hold, read once per pass: (held, unknown). held
-    is every pid's TMPDIR and current directory, each resolved, with every
-    ancestor of each, so a candidate directory is in use exactly when held
-    contains it. unknown is True when some pid's environment or current
+    """The directories procs hold: (held, unknown). held is every pid's
+    TMPDIR and current directory, each resolved, with every ancestor of
+    each, so a candidate directory is in use exactly when held contains it.
+    unknown is True when some pid's environment or current
     directory could not be read. A worker can inherit TMPDIR and enter any
     scope before its launcher exits. Its current scope cannot prove that it
     released the directory. Every unreadable environment or current
     directory keeps unclaimed directories, including when an unrelated
     non-dumpable desktop process delays cleanup.
-    Each pass reads every pid once here, not once per candidate directory:
-    with one unreadable process, 933 gone directories each rescanned about
-    970 processes, 24 s of CPU per 30 s tick (VSY-216)."""
+    A pass reads every pid here once, plus once per directory it removes,
+    not once per candidate directory: with one unreadable process, 933 gone
+    directories each rescanned about 970 processes, 24 s of CPU per 30 s
+    tick (VSY-216)."""
     held = set()
     unknown = False
     for pid in procs:
@@ -1084,6 +1085,13 @@ def reap_scratch_dirs(correct, procs, failed):
         if holders is None:
             holders = _scratch_holders(procs)
         status = _scratch_in_use(path, holders)
+        if status == "free" and correct:
+            # holders can predate an earlier removal in this pass, and a
+            # worker can enter this directory while that removal runs.
+            # Re-read every pid right before a removal, as the per-directory
+            # scan did; a pass that removes nothing still reads each pid once.
+            holders = _scratch_holders(procs)
+            status = _scratch_in_use(path, holders)
         if status == "in-use":
             log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")
             continue
