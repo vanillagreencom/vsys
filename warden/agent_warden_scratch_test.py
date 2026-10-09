@@ -29,7 +29,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(mutant.os, "readlink", return_value=tmp,
                                      side_effect=PermissionError("cwd unreadable") if expected == "unknown" else None):
                     with self.assertRaises(AssertionError):
-                        self.assertEqual(mutant._scratch_in_use(tmp, {700: None}), expected)
+                        self.assertEqual(mutant._scratch_in_use(tmp, mutant._scratch_holders({700: None})), expected)
 
     def test_worker_current_directory_keeps_scratch(self):
         rows = [
@@ -60,7 +60,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(self.w.os, "readlink", return_value=cwd,
                                      side_effect=PermissionError("cwd unreadable") if cwd is None else None), \
                         patch.object(self.w.shutil, "rmtree") as remove:
-                    self.assertEqual(self.w._scratch_in_use(lane, {700: None}), status)
+                    self.assertEqual(self.w._scratch_in_use(lane, self.w._scratch_holders({700: None})), status)
                     removed = self.w.reap_scratch_dirs(True, {700: None}, set())
                 if status == "free":
                     remove.assert_called_once()
@@ -440,7 +440,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         self.w.read = flaky_read
                         try:
                             with patch.object(self.w.os, "readlink", return_value="/unrelated"):
-                                self.assertEqual(self.w._scratch_in_use(str(moved), procs), status)
+                                self.assertEqual(self.w._scratch_in_use(str(moved), self.w._scratch_holders(procs)), status)
                                 removed = self.w.reap_scratch_dirs(True, procs, set())
                         finally:
                             self.w.read = old_read
@@ -489,6 +489,115 @@ class AgentWardenScratchRules(WardenRulesCase):
                                   "agent_warden_mutant_unknown_scratch")
         with self.assertRaises(AssertionError):
             self.assertEqual(self._detached_worker_scratch(mutant), ([], True))
+
+    def _scratch_reads(self, module, gone):
+        """One reap over `gone` scratch directories whose scopes are gone and
+        whose grace has passed, beside one still in its grace, with two live
+        pids: 700's environment is unreadable, as a non-dumpable desktop
+        process's is, so every gone directory reads as unknown and none
+        stops the scan early. Returns the reads per /proc file and the names
+        removed."""
+        with scratch() as tmp:
+            base = Path(tmp)
+            with patch.object(module, "CG_ROOT", base / "cg"), \
+                    patch.object(module, "AGENT_TMPDIR_PARENT", str(base / "scratch")):
+                (module.CG_ROOT / module.SLICE).mkdir(parents=True)
+                parent = Path(module.AGENT_TMPDIR_PARENT)
+                parent.mkdir()
+                now = 1000.0
+                expired = now - module.SCRATCH_GRACE - 1
+                for index in range(gone):
+                    directory = parent / f"agent-confine-{300 + index}-400"
+                    directory.mkdir()
+                    os.utime(directory, (expired, expired))
+                fresh = parent / "agent-confine-900-111"
+                fresh.mkdir()
+                os.utime(fresh, (now, now))
+                environs = {"/proc/700/environ": None, "/proc/701/environ": "TMPDIR=/unrelated\0"}
+                reads = {}
+                real_read, real_readlink = module.read, os.readlink
+
+                def counted_read(path, default=None):
+                    if str(path) not in environs:
+                        return real_read(path, default)
+                    reads[str(path)] = reads.get(str(path), 0) + 1
+                    found = environs[str(path)]
+                    return default if found is None else found
+
+                def counted_readlink(path, *args, **kwargs):
+                    if not str(path).startswith("/proc/"):
+                        return real_readlink(path, *args, **kwargs)
+                    reads[str(path)] = reads.get(str(path), 0) + 1
+                    return "/unrelated"
+
+                with patch.object(module.time, "time", return_value=now), \
+                        patch.object(module, "read", side_effect=counted_read), \
+                        patch.object(module.os, "readlink", side_effect=counted_readlink), \
+                        patch.object(module, "log"):
+                    removed = module.reap_scratch_dirs(True, {700: None, 701: None}, set())
+                return reads, removed
+
+    def test_reap_scratch_dirs_reads_each_process_once(self):
+        # Each live pid's environment and current directory are read once
+        # per pass, whatever the number of gone directories: on the owner's
+        # machine 933 gone directories each rescanned about 970 processes,
+        # 24 s of CPU per tick (VSY-216). A pass with no gone directory
+        # past its grace reads no process at all.
+        once = {"/proc/700/environ": 1, "/proc/701/environ": 1, "/proc/700/cwd": 1, "/proc/701/cwd": 1}
+        rows = [
+            ("three gone directories, each unknown", 3, (once, [])),
+            ("no gone directory past its grace", 0, ({}, [])),
+        ]
+        for name, gone, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(self._scratch_reads(self.w, gone), expected)
+
+    def test_reap_scratch_dirs_per_directory_read_mutant_fails(self):
+        text = WARDEN.read_text()
+        old = "        if holders is None:\n            holders = _scratch_holders(procs)\n"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, "        holders = _scratch_holders(procs)\n"),
+                                  "agent_warden_mutant_scratch_reads")
+        reads, removed = self._scratch_reads(mutant, 3)
+        self.assertEqual(removed, [])
+        self.assertEqual(reads["/proc/700/environ"], 3)
+
+    def test_worker_entering_a_later_directory_during_a_removal_keeps_it(self):
+        # A known worker with no TMPDIR changes its current directory into
+        # the next gone directory while the warden removes the one before
+        # it. The pass's first holder read predates that move, so the
+        # directory must be read again before its own removal.
+        with scratch() as tmp:
+            base = Path(tmp)
+            (base / "cg" / self.w.SLICE).mkdir(parents=True)
+            first = base / "scratch" / "agent-confine-300-400"
+            later = base / "scratch" / "agent-confine-301-400"
+            for directory in (first, later):
+                directory.mkdir(parents=True)
+                os.utime(directory, (0, 0))
+            cwd = ["/unrelated"]
+            real_read, real_readlink, real_rmtree = self.w.read, os.readlink, self.w.shutil.rmtree
+
+            def read(path, default=None):
+                return "HOME=/home\0" if str(path) == "/proc/700/environ" else real_read(path, default)
+
+            def readlink(path, *args, **kwargs):
+                return cwd[0] if str(path) == "/proc/700/cwd" else real_readlink(path, *args, **kwargs)
+
+            def rmtree(path, *args, **kwargs):
+                if path == str(first):
+                    cwd[0] = str(later)
+                real_rmtree(path, *args, **kwargs)
+
+            with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                    patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                    patch.object(self.w, "read", side_effect=read), patch.object(self.w, "log"), \
+                    patch.object(self.w.os, "readlink", side_effect=readlink), \
+                    patch.object(self.w.shutil, "rmtree", side_effect=rmtree):
+                removed = self.w.reap_scratch_dirs(True, {700: None}, set())
+            self.assertEqual(removed, [first.name])
+            self.assertFalse(first.exists())
+            self.assertTrue(later.is_dir())
 
     def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
         text = WARDEN.read_text()

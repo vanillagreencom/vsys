@@ -947,46 +947,60 @@ def _proc_tmpdir(pid):
     return ""
 
 
-def _scratch_in_use(path, procs):
-    """Whether any pid in procs has TMPDIR or its current directory inside path:
-    "in-use" when one does, "unknown" when none does but a pid that could
-    hold path has an environment or current directory that cannot be read,
-    "free" otherwise.
-    "in-use" beats "unknown": one confirmed user is enough to keep path.
-    A worker can inherit TMPDIR and enter any scope before its launcher exits.
-    Its current scope cannot prove that it released the directory. Every
-    unreadable environment or current directory keeps unclaimed directories, including
-    when an unrelated non-dumpable desktop process delays cleanup. Both sides are
-    resolved with os.path.realpath before comparing, not just lexically
-    normalized: a trailing slash on AGENT_TMPDIR makes agent-confine's bash
-    concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") double a separator in
-    the live process's real TMPDIR string, while os.path.join (path's
-    caller) never does, and AGENT_TMPDIR can also reach its target through
-    a symlink (a symlinked HOME or XDG_CACHE_HOME); an unresolved compare
-    would miss either kind of live match and wrongly read the directory as
-    free. realpath never raises on a component that does not exist or that
-    this user cannot stat -- it resolves as far as it can and leaves the
-    rest lexical -- so it needs no exception handling here."""
-    candidate = os.path.realpath(path)
-    prefix = candidate + os.sep
+def _scratch_holders(procs):
+    """The directories procs hold: (held, unknown). held is every pid's
+    TMPDIR and current directory, each resolved, with every ancestor of
+    each, so a candidate directory is in use exactly when held contains it.
+    unknown is True when some pid's environment or current
+    directory could not be read. A worker can inherit TMPDIR and enter any
+    scope before its launcher exits. Its current scope cannot prove that it
+    released the directory. Every unreadable environment or current
+    directory keeps unclaimed directories, including when an unrelated
+    non-dumpable desktop process delays cleanup.
+    A pass reads every pid here once, plus once per directory it removes,
+    not once per candidate directory: with one unreadable process, 933 gone
+    directories each rescanned about 970 processes, 24 s of CPU per 30 s
+    tick (VSY-216)."""
+    held = set()
     unknown = False
     for pid in procs:
         tmpdir = _proc_tmpdir(pid)
-        if tmpdir:
-            resolved = os.path.realpath(tmpdir)
-            if resolved == candidate or resolved.startswith(prefix):
-                return "in-use"
         # Detached workers can clear TMPDIR while keeping their work here.
         try:
             cwd = os.readlink(f"/proc/{pid}/cwd")
         except OSError:
             cwd = None
-        if cwd is not None:
-            resolved = os.path.realpath(cwd)
-            if resolved == candidate or resolved.startswith(prefix):
-                return "in-use"
+        for used in (tmpdir, cwd):
+            if not used:
+                continue
+            resolved = os.path.realpath(used)
+            while resolved not in held:
+                held.add(resolved)
+                resolved = os.path.dirname(resolved)
         if tmpdir is None or cwd is None:
             unknown = True
+    return held, unknown
+
+
+def _scratch_in_use(path, holders):
+    """Whether any pid _scratch_holders read has TMPDIR or its current
+    directory inside path: "in-use" when one does, "unknown" when none does
+    but a pid's environment or current directory could not be read, "free"
+    otherwise. "in-use" beats "unknown": one confirmed user is enough to keep
+    path.
+    Both sides are resolved with os.path.realpath before comparing, not just
+    lexically normalized: a trailing slash on AGENT_TMPDIR makes
+    agent-confine's bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit")
+    double a separator in the live process's real TMPDIR string, while
+    os.path.join (path's caller) never does, and AGENT_TMPDIR can also reach
+    its target through a symlink (a symlinked HOME or XDG_CACHE_HOME); an
+    unresolved compare would miss either kind of live match and wrongly read
+    the directory as free. realpath never raises on a component that does not
+    exist or that this user cannot stat -- it resolves as far as it can and
+    leaves the rest lexical -- so it needs no exception handling here."""
+    held, unknown = holders
+    if os.path.realpath(path) in held:
+        return "in-use"
     return "unknown" if unknown else "free"
 
 
@@ -1051,6 +1065,7 @@ def reap_scratch_dirs(correct, procs, failed):
     live_units = set(live_units)
     now = time.time()
     removed = []
+    holders = None
     for name in sorted(entries):
         if not SCRATCH_UNIT_RE.match(name):
             continue
@@ -1067,7 +1082,16 @@ def reap_scratch_dirs(correct, procs, failed):
             continue
         if not os.path.isdir(path):
             continue
-        status = _scratch_in_use(path, procs)
+        if holders is None:
+            holders = _scratch_holders(procs)
+        status = _scratch_in_use(path, holders)
+        if status == "free" and correct:
+            # holders can predate an earlier removal in this pass, and a
+            # worker can enter this directory while that removal runs.
+            # Re-read every pid right before a removal, as the per-directory
+            # scan did; a pass that removes nothing still reads each pid once.
+            holders = _scratch_holders(procs)
+            status = _scratch_in_use(path, holders)
         if status == "in-use":
             log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")
             continue
