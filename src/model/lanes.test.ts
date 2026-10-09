@@ -1,4 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { Collector } from "../collect/collector";
 import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
@@ -1126,4 +1128,51 @@ test("a member that exited before the process walk leaves the lane's totals know
     age: "known",
     state: "sleeping",
   });
+});
+
+// Every pid the lane's cgroup reports was read, but the walk as a whole is
+// incomplete: another process's stat could not be read, or the proc mount
+// may hide processes.
+test("a fully read lane keeps its totals when the walk misses another process", async () => {
+  for (const cause of ["unreadable process", "hidepid"]) {
+    const f = fixture();
+    fixtures.push(f);
+    const scope = "agents.slice/run-lane.scope";
+    f.group(scope, [40, 41]);
+    f.proc(40, scope, { ticks: 10 });
+    f.proc(41, scope, {
+      command: ["rustc", "--crate-name", "x"],
+      comm: "rustc",
+      parent: 40,
+    });
+    if (cause === "unreadable process")
+      mkdirSync(join(f.config.procRoot, "99/stat"), { recursive: true });
+    else
+      appendFileSync(
+        join(f.config.procRoot, "self/mountinfo"),
+        `3 1 0:3 / ${f.config.procRoot} rw - proc proc rw,hidepid=2\n`,
+      );
+    const s = await new Collector(f.config, 100, 4096).sample(1000);
+    const lane = s.lanes.find((l) => l.id === scope);
+    const row = laneBuilds(s, f.config).find((r) => r.id === scope);
+    expect({
+      cause,
+      processRead: s.processRead,
+      laneRowBuilds: row?.builds,
+      rustc: lane?.rustc,
+      rss: lane?.rss,
+      age: lane?.age === null ? null : "known",
+      state: lane?.state,
+      blocked: lane?.blocked,
+    }).toEqual({
+      cause,
+      processRead: "incomplete",
+      laneRowBuilds: 1,
+      rustc: 1,
+      rss: 2 * 10 * 4096,
+      age: "known",
+      state: "sleeping",
+      blocked: 0,
+    });
+  }
 });
