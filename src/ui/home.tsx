@@ -3,7 +3,12 @@ import { type ReactNode, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
-import { type Level, type Meter, meters } from "../model/verdict";
+import {
+  type Level,
+  type Meter,
+  meters,
+  processesComplete,
+} from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import {
   type Attention,
@@ -33,7 +38,15 @@ import {
   pidColumn,
   wrapLines,
 } from "./columns";
-import { amount, plural, share, sortLanes, sparkline } from "./format";
+import {
+  amount,
+  count,
+  gap,
+  plural,
+  share,
+  sortLanes,
+  sparkline,
+} from "./format";
 import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import {
@@ -225,6 +238,11 @@ export function Home({
   // after a full stop and would split `agents.slice` across a row these
   // never counted.
   const verdict = wrapLines(verdictLine(items, s), width);
+  // Without every process, the lanes miss each escaped agent, so the count
+  // is not a fact.
+  const agentCount = processesComplete(s)
+    ? count(s.lanes.length, "agent")
+    : `agents ${gap}`;
   const above = verdict.length;
   const tiles = tilesHeight(gauges.length, width, tileLines);
   const room = { screen: height, verdict: above, tiles };
@@ -556,7 +574,7 @@ export function Home({
           </Line>
         ))}
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
-          {`${s.lanes.length} ${plural(s.lanes.length, "agent", "agents")} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
+          {`${agentCount} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
         </Line>
         <box height={1} flexShrink={0} />
         <Tiles width={width} id={tileRowId}>
