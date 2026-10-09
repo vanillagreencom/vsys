@@ -258,7 +258,7 @@ export function Footer({
 }) {
   return (
     <box flexDirection="row" height={1} flexShrink={0} paddingX={1}>
-      <Line height={1} flexGrow={1} truncate>
+      <Line height={1} flexGrow={1} flexShrink={1} minWidth={0} truncate>
         {hints.map(([key, action], i) => (
           <span key={key}>
             <span fg={ui.accent}>
@@ -275,7 +275,7 @@ export function Footer({
         fg={statusDim ? undefined : statusColor}
         attributes={statusDim ? ui.dim : ui.none}
       >
-        {safe(status)}
+        {`  ${safe(status)}`}
       </Line>
     </box>
   );
