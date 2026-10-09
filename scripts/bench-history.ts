@@ -17,6 +17,7 @@ import {
   emptySnapshot,
   groupSnapshot,
   processSnapshot,
+  serviceSnapshot,
 } from "../src/test/fixture";
 import { percentile } from "./percentile";
 
@@ -91,6 +92,13 @@ for (let scope = 0; scope < 50; scope++) {
       }),
     );
 }
+// The system services one checkpoint reads, on a host with a busy system.slice.
+snapshot.services = Array.from({ length: 60 }, (_, n) =>
+  serviceSnapshot({
+    path: `system.slice/unit-${n}.service`,
+    name: `unit-${n}.service`,
+  }),
+);
 /**
  * Counters that move by a different amount per row at every sample, because a
  * uniform series deltas away to almost nothing and understates what an archive
@@ -129,6 +137,10 @@ function advance(i: number): void {
     g.memory = 100000000 + ((n * 23 + i * 61) % 8192) * 4096;
   }
   snapshot.lanes = lanes(snapshot.groups, snapshot.procs, c);
+  // A checkpoint is once a minute, so the service figures hold in between.
+  if ((i * c.refreshMs) % 60000 === 0)
+    for (const [n, u] of (snapshot.services ?? []).entries())
+      u.cpuHourPercent = ((n * 13 + i * 7) % 1000) / 10;
 }
 
 /** A timing as the report prints it, to the microsecond. */

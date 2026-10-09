@@ -4,6 +4,7 @@ import { createCollector } from "./collect/collector";
 import type { KernelLog } from "./collect/kernel-log";
 import type { SccacheCollector } from "./collect/sccache";
 import { packagedScrubUnits } from "./collect/scrub-timers";
+import type { ServiceCpu } from "./collect/services";
 import { collectionKeys } from "./collect/settings";
 import {
   type AgentToolNamesSave,
@@ -41,6 +42,8 @@ interface Source {
    * finishes updating it.
    */
   lastFinishedScrub?: FinishedScrubMemory;
+  /** Each system service's CPU checkpoints, handed on the same way. */
+  serviceCpu?: ServiceCpu;
 }
 type SourceFactory = (config: Config, previous: Source) => Promise<Source>;
 interface SessionOptions {

@@ -67,9 +67,11 @@ test("legacy replay and both chart paths share reading evidence and retain measu
         cgroup: row.absolute ? "/agents.slice/a.scope" : "agents.slice/a.scope",
       }),
     ];
-    const { processRead: _outcome, ...legacy } = s;
+    const { processRead: _outcome, services: _services, ...legacy } = s;
     const stored = JSON.parse(JSON.stringify(row.legacy ? legacy : s));
     const replay = normalizeSnapshot(stored);
+    // A record from before the service read measured no unit, not zero units.
+    expect(replay.services).toEqual(row.legacy ? null : []);
     const lane = present(replay.lanes[0], "replayed lane");
     expect([lane?.cpu, lane?.rss]).toEqual([row.cpu, row.rss]);
     expect([lane?.swap, lane?.tasks, lane?.builds, lane?.linkers]).toEqual(

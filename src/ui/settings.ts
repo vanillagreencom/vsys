@@ -126,6 +126,11 @@ export const settingInfo: Record<string, SettingInfo> = {
     help: "How long a stall must hold before it becomes an alert.",
     unit: "seconds",
   },
+  serviceCpuPercent: {
+    label: "Busy system service",
+    help: "A system service whose average CPU over the last hour reaches this share of one core raises a card.",
+    unit: "percent",
+  },
   laneNaming: {
     label: "Lane name source",
     help: "Which fact names a lane's workspace: its worktree, its branch or a variable.",
@@ -242,6 +247,7 @@ export const settingGroups: [string, string[]][] = [
       "pressureAmber",
       "pressureRed",
       "pressureHoldSeconds",
+      "serviceCpuPercent",
       "memoryFloor",
       "swapFloor",
       "freeFloor",

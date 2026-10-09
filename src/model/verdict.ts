@@ -4,7 +4,15 @@ import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
 import { coveringGroup, inSlice, lanePressure, sliceCompared } from "./lanes";
 import { laneText, unitLabel } from "./naming";
-import type { Group, Lane, Proc, ScratchRoot, Snapshot, Volume } from "./types";
+import type {
+  Group,
+  Lane,
+  Proc,
+  ScratchRoot,
+  Service,
+  Snapshot,
+  Volume,
+} from "./types";
 
 export type Level = "ok" | "warn" | "danger";
 /** Every cause is detected once. The verdict, the meters and the cards read it. */
@@ -21,6 +29,7 @@ export type CauseId =
   | "stalls"
   | "system-memory"
   | "system-cpu"
+  | "service-cpu"
   | "memory-high"
   | "scrub"
   | "unchecked"
@@ -46,12 +55,13 @@ export const causeOrder: Record<CauseId, number> = {
   stalls: 9,
   "system-memory": 10,
   "system-cpu": 11,
-  "memory-high": 12,
-  scrub: 13,
-  unchecked: 14,
-  "integrity-unknown": 15,
-  "unconfirmed-tool": 16,
-  scratch: 17,
+  "service-cpu": 12,
+  "memory-high": 13,
+  scrub: 14,
+  unchecked: 15,
+  "integrity-unknown": 16,
+  "unconfirmed-tool": 17,
+  scratch: 18,
 };
 export function causeRank(id: CauseId): number {
   return causeOrder[id];
@@ -78,6 +88,8 @@ export const causeEvidence: Record<CauseId, "level" | "event"> = {
   stalls: "level",
   "system-memory": "level",
   "system-cpu": "level",
+  // An hour's average moves slowly, so the hold never drops a real one.
+  "service-cpu": "level",
   "memory-high": "level",
   // A report stays on disk until the next check replaces it, so the hold
   // delays its alert and never drops it, and a report that failed to read
@@ -120,7 +132,8 @@ export interface Cause {
    * on Timeline rise for something that never went wrong. Use `at` for that.
    */
   lanes: Lane[];
-  groups: Group[];
+  /** A system service is a cgroup outside the watched tree, so it sits here. */
+  groups: (Group | Service)[];
   paths: string[];
   /**
    * Processes this cause is about that named no lane and no group, because
@@ -306,7 +319,10 @@ export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number | null {
   ).length;
 }
 /** A scope's lane name when it has one, otherwise the decoded unit name. */
-export function consumerName(group: Group | undefined, s: Snapshot): string {
+export function consumerName(
+  group: Pick<Group, "path" | "name"> | undefined,
+  s: Snapshot,
+): string {
   if (!group) return "";
   const lane = s.lanes.find((l) => l.id === group.path);
   return lane ? laneText(lane) : unitLabel(group.name);
@@ -377,6 +393,7 @@ interface Judgments {
   "memory-high": Judgment<Group>[];
   "free-space": Judgment<Volume>[];
   scratch: Judgment<ScratchRoot>[];
+  "service-cpu": Judgment<Service>[];
 }
 function judgments(s: Snapshot, c: Config): Judgments {
   const io = s.system.pressure.io?.some ?? null;
@@ -419,6 +436,14 @@ function judgments(s: Snapshot, c: Config): Judgments {
       subject: root,
       judged: judge([root.bytes], (n) => n > c.scratchQuota),
     })),
+    // A unit read with no hour behind it yet is not measurable: absent, not
+    // unread, so it raises nothing and holds nothing open.
+    "service-cpu": (s.services ?? []).map((service) => ({
+      subject: service,
+      judged: !service.read
+        ? "unjudged"
+        : judge([service.cpuHourPercent ?? 0], (n) => n >= c.serviceCpuPercent),
+    })),
   };
 }
 const where = <T>(rows: Judgment<T>[], judged: Judged): T[] =>
@@ -452,12 +477,14 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
     ],
     ["free-space", where(j["free-space"], "unjudged").map((v) => v.mount)],
     ["scratch", where(j.scratch, "unjudged").map((root) => root.path)],
+    ["service-cpu", where(j["service-cpu"], "unjudged").map((u) => u.path)],
   ];
   for (const id of hostCauses)
     if (j.host[id] === "unjudged") subjects.push([id, held]);
   const out: Unjudged = {};
   for (const [id, ids] of subjects) if (ids.length) out[id] = new Set(ids);
   if (s.storage.mountsAvailable === false) out["free-space"] = "all";
+  if (s.services === null) out["service-cpu"] = "all";
   // No process was read, so none is known to be confined, and none known to
   // have stopped running an unconfirmed tool.
   if (processesUnread(s)) {
@@ -670,6 +697,19 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       lanes: owned("cpu"),
       consumer: laneOrNone(busiest(s.lanes)),
       values: { some: cpu },
+    });
+  const busyUnits = where(j["service-cpu"], "fired").sort(
+    (a, b) => (b.cpuHourPercent ?? 0) - (a.cpuHourPercent ?? 0),
+  );
+  const [busiestUnit] = busyUnits;
+  if (busiestUnit)
+    add("service-cpu", "warn", {
+      groups: busyUnits,
+      consumer: consumerName(busiestUnit, s),
+      values: {
+        hour: busiestUnit.cpuHourPercent,
+        threshold: c.serviceCpuPercent,
+      },
     });
   const near = where(j["memory-high"], "fired");
   const [firstNear] = near;

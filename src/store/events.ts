@@ -92,6 +92,11 @@ function subjectValues(
       total: volume?.total ?? null,
     };
   }
+  if (cause.id === "service-cpu")
+    return {
+      ...cause.values,
+      hour: s.services?.find((u) => u.path === id)?.cpuHourPercent ?? null,
+    };
   if (cause.id === "stalls") {
     const lane = cause.lanes.find((l) => l.id === id);
     return { ...cause.values, worst: lane ? lanePressure(lane) : null };
