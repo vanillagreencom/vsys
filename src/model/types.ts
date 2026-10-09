@@ -507,8 +507,8 @@ export interface Capability {
   belowSlice?: boolean;
 }
 /**
- * A unit under the system's own `system.slice`, outside the user manager the
- * groups come from, read once a minute for its hour of CPU.
+ * A `.service` unit under the system's own `system.slice`, outside the user
+ * manager the groups come from, read once a minute for its hour of CPU.
  */
 export interface Service {
   /** The cgroup path below `cgroupTop`, which is what an alert names. */

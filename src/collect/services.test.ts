@@ -18,22 +18,25 @@ const minute = 60_000;
 const unit = "system.slice/bpftune.service";
 
 /**
- * A host whose system.slice holds one unit, its CPU counter driven at a share
- * of one core per stretch of minutes, sampled every ten seconds through the
- * checkpoints, the ladder, the cards and the event log.
+ * A host whose system.slice holds `paths`, one unit unless given, their CPU
+ * counters driven at a share of one core per stretch of minutes, sampled every
+ * ten seconds through the checkpoints, the ladder, the cards and the event log.
  */
-function host() {
+function host(o: { paths?: string[]; serviceCpuPercent?: number } = {}) {
   const f = fixture();
   fixtures.push(f);
   const c = defaults();
+  c.serviceCpuPercent = o.serviceCpuPercent ?? c.serviceCpuPercent;
   const top = f.config.cgroupTop;
   const services = new ServiceCpu();
   const log = new EventLog();
   const events: TimelineEvent[] = [];
   let now = 0;
   let usec = 0;
-  const stat = (path = unit) =>
-    f.write(join(top, path, "cpu.stat"), `usage_usec ${usec}\n`);
+  const stat = () => {
+    for (const path of o.paths ?? [unit])
+      f.write(join(top, path, "cpu.stat"), `usage_usec ${usec}\n`);
+  };
   stat();
   const sample = () => {
     const s = emptySnapshot(now + 1000);
@@ -95,6 +98,30 @@ test("a unit at half a core for an hour raises its card and one alert; at 5% non
   }
 });
 
+test("at a threshold of zero a unit with no hour yet raises nothing", () => {
+  const h = host({ serviceCpuPercent: 0 });
+  const s = h.run(5, 59);
+  expect(s.services?.[0]?.cpuHourPercent).toBeNull();
+  expect(h.card(s)).toBeUndefined();
+  expect(h.opened()).toEqual([]);
+});
+
+test("a busy scope or mount under system.slice raises nothing", () => {
+  // A container under Docker's systemd cgroup driver, a FUSE daemon in its
+  // mount unit, and a transient scope inside a nested slice.
+  const h = host({
+    paths: [
+      "system.slice/docker-0123abcd.scope",
+      "system.slice/data.mount",
+      "system.slice/system-run.slice/run-1.scope",
+    ],
+  });
+  const s = h.run(50, 62);
+  expect(s.services).toEqual([]);
+  expect(h.card(s)).toBeUndefined();
+  expect(h.opened()).toEqual([]);
+});
+
 test("a unit that drops below clears its card, and a second rise is a second alert", () => {
   const h = host();
   h.run(50, 62);
@@ -111,8 +138,12 @@ test("a unit that drops below clears its card, and a second rise is a second ale
 test("a restarted unit or a counter that went back starts a new hour", () => {
   const restart = (h: ReturnType<typeof host>) => {
     // Both directories exist at once, so the new cgroup cannot reuse the
-    // inode of the one it replaces.
-    h.f.write(join(h.top, `${unit}.new`, "cpu.stat"), "usage_usec 0\n");
+    // inode of the one it replaces. Its counter is above the old one, so only
+    // the new identity can start the new hour.
+    h.f.write(
+      join(h.top, `${unit}.new`, "cpu.stat"),
+      "usage_usec 9000000000\n",
+    );
     rmSync(join(h.top, unit), { recursive: true });
     renameSync(join(h.top, `${unit}.new`), join(h.top, unit));
   };
@@ -127,6 +158,9 @@ test("a restarted unit or a counter that went back starts a new hour", () => {
     expect(s.services?.[0]?.read).toBe(true);
     expect(s.services?.[0]?.cpuHourPercent).toBeNull();
     expect(h.card(s)).toBeUndefined();
+    // A unit with no hour is absent, not unread, so its alert closes.
+    h.run(null, 1);
+    expect(h.closed()).toHaveLength(1);
   }
 });
 

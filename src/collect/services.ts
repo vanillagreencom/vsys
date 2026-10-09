@@ -11,9 +11,11 @@ interface Checkpoint {
 }
 /**
  * The system's own services, which the user manager's tree does not hold.
- * Each minute it reads the `cpu.stat` of every unit directly under
+ * Each minute it reads the `cpu.stat` of every `.service` unit directly under
  * `system.slice` or one level inside a slice there; a unit's children are
- * already inside its own counter. The checkpoints stay in memory, at most an
+ * already inside its own counter. A scope, such as a container, or a mount
+ * holding a FUSE daemon is not one `systemctl restart` can safely restart, so
+ * it is never read. The checkpoints stay in memory, at most an
  * hour and a minute of them per unit, and a settings change hands this object
  * to the replacement collector so an alert's window does not restart.
  */
@@ -28,13 +30,16 @@ export class ServiceCpu {
     this.lastAt = now;
     const errors = r.errors.length;
     const slice = join(top, "system.slice");
+    const service = (name: string) => name.endsWith(".service");
     const paths = r.dirs(slice, true).flatMap((name) =>
       name.endsWith(".slice")
         ? r
             .dirs(join(slice, name))
-            .filter((child) => !child.endsWith(".slice"))
+            .filter(service)
             .map((child) => join("system.slice", name, child))
-        : [join("system.slice", name)],
+        : service(name)
+          ? [join("system.slice", name)]
+          : [],
     );
     this.last =
       r.errors.length > errors

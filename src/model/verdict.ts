@@ -437,12 +437,15 @@ function judgments(s: Snapshot, c: Config): Judgments {
       judged: judge([root.bytes], (n) => n > c.scratchQuota),
     })),
     // A unit read with no hour behind it yet is not measurable: absent, not
-    // unread, so it raises nothing and holds nothing open.
+    // unread, so it raises nothing and holds nothing open, whatever the
+    // threshold.
     "service-cpu": (s.services ?? []).map((service) => ({
       subject: service,
       judged: !service.read
         ? "unjudged"
-        : judge([service.cpuHourPercent ?? 0], (n) => n >= c.serviceCpuPercent),
+        : service.cpuHourPercent === null
+          ? "absent"
+          : judge([service.cpuHourPercent], (n) => n >= c.serviceCpuPercent),
     })),
   };
 }
