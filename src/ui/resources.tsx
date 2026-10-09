@@ -293,7 +293,10 @@ function causeText(cause: GroupCause | null, c: Config): string {
   }
 }
 
-/** The machine's meters, then the resource groups as a tree. */
+/**
+ * The machine's meters, then the resource groups as a tree, then the system
+ * services with their CPU average over the last hour.
+ */
 export function Resources({
   snapshot: s,
   config: c,
@@ -432,13 +435,23 @@ export function Resources({
   const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - (side ? 0 : 6);
   // The services table's heading, its margin and its column heading take
   // three rows. It takes the rows its list needs while the groups' list needs
-  // fewer than the rest, and never under a third, so neither list can push
-  // the other off the screen.
+  // fewer than the rest, and never under a third. A list draws one row, and
+  // its counter when it holds more, whatever height it is given, so each
+  // keeps that much. Where both cannot, only the table holding the selection
+  // is drawn, so the lists never push the detail off the screen.
   const shared = listHeight - 3;
-  const servicesHeight = Math.min(
-    services.length + 1,
-    Math.max(Math.floor(shared / 3), shared - (rows.length + 1)),
+  const least = (count: number) => Math.min(Math.max(count, 1), 2);
+  const both = shared >= least(rows.length) + least(services.length);
+  const servicesHeight = Math.max(
+    least(services.length),
+    Math.min(
+      shared - least(rows.length),
+      services.length + 1,
+      Math.max(Math.floor(shared / 3), shared - (rows.length + 1)),
+    ),
   );
+  const showGroups = both || current?.kind !== "service";
+  const showServices = both || current?.kind === "service";
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
@@ -528,105 +541,116 @@ export function Resources({
           )
         }
       >
-        <Section
-          title="Groups"
-          width={listWidth - 4}
-          marginTop={0}
-          focused={current?.kind === "group"}
-          count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
-        />
-        <TableHeader columns={groupColumns} />
-        <List
-          items={rows}
-          selected={current?.kind === "group" ? selected : -1}
-          height={listHeight - 3 - servicesHeight}
-          onSelect={choose}
-          empty="No resource group could be read."
-          render={(g, i, isSelected) => {
-            const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
-            return (
-              <Row
-                key={g.path}
-                selected={isSelected}
-                color={levelColor(groupLevel(g, s, c))}
-                onOpen={() => choose(i)}
-              >
-                {safe(cell(nameColumn, name))}
-                {columnGap}
-                <Bar
-                  value={g.cpuPercent}
-                  max={topCpu}
-                  width={cpuBar.width}
-                  color={metric.cpu}
-                />
-                {columnGap}
-                <Reading
-                  value={g.cpuPercent}
-                  text={cell(cpuColumn, share(g.cpuPercent))}
-                />
-                {columnGap}
-                <Bar
-                  value={g.memory}
-                  max={topMemory}
-                  width={memoryBar.width}
-                  color={metric.memory}
-                />
-                {columnGap}
-                <Reading
-                  value={g.memory}
-                  text={cell(memoryColumn, amount(g.memory, c))}
-                />
-                {columnGap}
-                <span attributes={ui.dim}>
-                  {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
-                </span>
-              </Row>
-            );
-          }}
-        />
-        <Section
-          title="System services"
-          width={listWidth - 4}
-          focused={current?.kind === "service"}
-          count={s.services === null ? undefined : services.length}
-        />
-        <TableHeader columns={serviceColumns} />
-        <List
-          items={services}
-          selected={current?.kind === "service" ? selected - rows.length : -1}
-          height={servicesHeight}
-          onSelect={(i) => choose(rows.length + i)}
-          empty={
-            s.services === null
-              ? `${c.cgroupTop}/system.slice could not be listed.`
-              : "No system service has been read yet."
-          }
-          render={({ service }, i, isSelected) => {
-            const state = serviceState(service, busy, c);
-            return (
-              <Row
-                key={rowKey({ kind: "service", path: service.path })}
-                selected={isSelected}
-                color={levelColor(state.level)}
-                onOpen={() => choose(rows.length + i)}
-              >
-                {safe(cell(serviceColumn, unitLabel(service.name)))}
-                {columnGap}
-                <Bar
-                  value={service.cpuHourPercent}
-                  max={topHour}
-                  width={cpuBar.width}
-                  color={metric.cpu}
-                />
-                {columnGap}
-                <Reading
-                  value={service.cpuHourPercent}
-                  text={cell(hourColumn, hourText(state))}
-                />
-              </Row>
-            );
-          }}
-        />
+        {showGroups && (
+          <>
+            <Section
+              title="Groups"
+              width={listWidth - 4}
+              marginTop={0}
+              focused={current?.kind === "group"}
+              count={`${rows.length}${hidden ? ` shown · ${hidden} idle hidden · ${c.keys.details} shows all` : ""}`}
+            />
+            <TableHeader columns={groupColumns} />
+            <List
+              items={rows}
+              selected={current?.kind === "group" ? selected : -1}
+              height={both ? shared - servicesHeight : listHeight}
+              onSelect={choose}
+              empty="No resource group could be read."
+              render={(g, i, isSelected) => {
+                const name = `${prefixes.get(g.path) ?? ""}${labels.get(g.path) ?? unitLabel(g.name)}`;
+                return (
+                  <Row
+                    key={g.path}
+                    selected={isSelected}
+                    color={levelColor(groupLevel(g, s, c))}
+                    onOpen={() => choose(i)}
+                  >
+                    {safe(cell(nameColumn, name))}
+                    {columnGap}
+                    <Bar
+                      value={g.cpuPercent}
+                      max={topCpu}
+                      width={cpuBar.width}
+                      color={metric.cpu}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={g.cpuPercent}
+                      text={cell(cpuColumn, share(g.cpuPercent))}
+                    />
+                    {columnGap}
+                    <Bar
+                      value={g.memory}
+                      max={topMemory}
+                      width={memoryBar.width}
+                      color={metric.memory}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={g.memory}
+                      text={cell(memoryColumn, amount(g.memory, c))}
+                    />
+                    {columnGap}
+                    <span attributes={ui.dim}>
+                      {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
+                    </span>
+                  </Row>
+                );
+              }}
+            />
+          </>
+        )}
+        {showServices && (
+          <>
+            <Section
+              title="System services"
+              marginTop={both ? 1 : 0}
+              width={listWidth - 4}
+              focused={current?.kind === "service"}
+              count={s.services === null ? undefined : services.length}
+            />
+            <TableHeader columns={serviceColumns} />
+            <List
+              items={services}
+              selected={
+                current?.kind === "service" ? selected - rows.length : -1
+              }
+              height={both ? servicesHeight : listHeight}
+              onSelect={(i) => choose(rows.length + i)}
+              empty={
+                s.services === null
+                  ? `${c.cgroupTop}/system.slice could not be listed.`
+                  : "No system service has been read yet."
+              }
+              render={({ service }, i, isSelected) => {
+                const state = serviceState(service, busy, c);
+                return (
+                  <Row
+                    key={rowKey({ kind: "service", path: service.path })}
+                    selected={isSelected}
+                    color={levelColor(state.level)}
+                    onOpen={() => choose(rows.length + i)}
+                  >
+                    {safe(cell(serviceColumn, unitLabel(service.name)))}
+                    {columnGap}
+                    <Bar
+                      value={service.cpuHourPercent}
+                      max={topHour}
+                      width={cpuBar.width}
+                      color={metric.cpu}
+                    />
+                    {columnGap}
+                    <Reading
+                      value={service.cpuHourPercent}
+                      text={cell(hourColumn, hourText(state))}
+                    />
+                  </Row>
+                );
+              }}
+            />
+          </>
+        )}
       </SplitPane>
     </box>
   );

@@ -15,7 +15,7 @@ import {
   laneSnapshot,
   serviceSnapshot,
 } from "../test/fixture";
-import { mount, selectedRow } from "../test/harness";
+import { mount, selectedRow, shown } from "../test/harness";
 import { present } from "../test/present";
 import { attention, meterTile } from "./attention";
 import { osc52 } from "./clipboard";
@@ -34,6 +34,7 @@ import {
   serviceState,
   treePrefixes,
 } from "./resources";
+import { levelColor } from "./theme";
 
 test.each([
   { selected: "beta", removed: "alpha", expected: "beta", moves: 1 },
@@ -669,6 +670,22 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
     expect(row("cool")).toContain("5.0%");
     for (const name of ["unread", "young"])
       expect(row(name)).not.toMatch(/\d%/);
+    // The drawn row carries the same grade: the busy unit is marked, the one
+    // under the threshold is not.
+    const colour = (name: string) => {
+      for (const line of t.ui.captureSpans().lines) {
+        const span = line.spans.find((span) => span.text.includes(name));
+        if (span) return shown(span.fg, "fg");
+      }
+      return "missing";
+    };
+    const warn = shown(levelColor("warn"), "fg");
+    expect(colour("hot")).toBe(warn);
+    expect(colour("cool")).not.toBe(warn);
+    expect(colour("cool")).not.toBe("missing");
+    // The keyboard leaves the last group for the busiest service.
+    await t.press("down");
+    expect(selectedRow(t.frame())).toMatch(/^hot\b/);
   } finally {
     await t.close();
   }
@@ -677,7 +694,9 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
 test("the service CPU card copies its journal read and Enter lands on the unit's row", async () => {
   const c = defaults();
   const s = emptySnapshot();
-  s.groups = ["a", "b"].map((name) =>
+  // More groups than the screen holds: the services table keeps its share,
+  // so the unit the card names, and the one beside it, stay in view.
+  s.groups = Array.from({ length: 60 }, (_, i) => `g${i}`).map((name) =>
     groupSnapshot({
       path: `${name}.scope`,
       name: `${name}.scope`,
@@ -715,7 +734,66 @@ test("the service CPU card copies its journal read and Enter lands on the unit's
     ]);
     await t.press("enter");
     expect(selectedRow(t.frame())).toMatch(/^loop\b/);
+    expect(
+      t
+        .frame()
+        .split("\n")
+        .some((line) => /^\s*calm\b/.test(line)),
+    ).toBe(true);
   } finally {
     await t.close();
   }
 });
+
+test.each([
+  { width: 80, height: 24 },
+  { width: 100, height: 28 },
+])(
+  "at $width x $height the selected row and every detail field stay on the screen",
+  async (size) => {
+    const c = defaults();
+    const s = emptySnapshot();
+    s.groups = Array.from({ length: 12 }, (_, i) =>
+      groupSnapshot({
+        path: `g${i}.scope`,
+        name: `g${i}.scope`,
+        cpuPercent: 1,
+      }),
+    );
+    s.services = Array.from({ length: 30 }, (_, i) =>
+      serviceSnapshot({
+        path: `system.slice/s${i}.service`,
+        name: `s${i}.service`,
+        cpuHourPercent: i,
+      }),
+    );
+    /** Whether the detail draws the field `label`, at the start of a line. */
+    const field = (frame: string, label: string) =>
+      frame
+        .split("\n")
+        .some((line) => new RegExp(`^\\s*${label}\\b`).test(line));
+    const t = await mount(s, c, size);
+    try {
+      await t.press(c.keys.resources);
+      await t.press("down");
+      let frame = t.frame();
+      expect(selectedRow(frame)).toMatch(/g1\b/);
+      for (const label of ["Unit", "Status", "Waiting"])
+        expect({ label, drawn: field(frame, label) }).toEqual({
+          label,
+          drawn: true,
+        });
+      // Past the last group, the busiest service.
+      for (let i = 1; i < s.groups.length; i++) await t.press("down");
+      frame = t.frame();
+      expect(selectedRow(frame)).toMatch(/^s29\b/);
+      for (const label of ["Unit", "Status", "Cgroup"])
+        expect({ label, drawn: field(frame, label) }).toEqual({
+          label,
+          drawn: true,
+        });
+    } finally {
+      await t.close();
+    }
+  },
+);
