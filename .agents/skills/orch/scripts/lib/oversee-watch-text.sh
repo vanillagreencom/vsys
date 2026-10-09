@@ -329,18 +329,28 @@ The long pass's events, checked and reported in this order:
   EVENT lane-ready <item>    a lane open-terminal handed to a background job
                              while its host prepared it is launched: its
                              record reads running, and the watch carries it
-  EVENT lane-prepare-failed <item> reason=<reason> log=<path>
+  EVENT lane-prepare-failed <item> reason=<reason> [exit=<N>] log=<path>
+                             reason=relaunch-failed is a completed automatic
+                             recovery failure. exit is its status. Its
+                             window can survive: read the log and keep it
+                             while fixing the cause. Other reasons mean
                              that job failed and closed its window: reason
                              wait-failed is the host's preparation,
                              launch-failed a launch step, each named in the
                              job's log. The record reads stopped, which
                              lane-close closes
-  EVENT lane-prepare-stuck <item> age=<secs>s log=<path>
+  EVENT lane-prepare-stuck <item> age=<secs>s log=<path> [reason=relaunch-pending]
+                             reason=relaunch-pending means automatic recovery
+                             exceeded ORCH_WATCH_PREPARE_SECS. Read the log.
+                             Keep its window and let its job finish before
+                             starting another recovery. Other outcomes mean
                              that record has read preparing for longer than
                              ORCH_WATCH_PREPARE_SECS with no outcome written;
                              lane-close closes it.
-                             These three are read from --state records and
-                             reported once per preparation
+                             Hosted preparation outcomes come from --state
+                             records. Automatic recovery completion comes
+                             from its detached launch status. Each outcome
+                             is reported once
   EVENT start-stalled <item> age=<secs>
                              a running --state record names a mail_root whose
                              tmp/lane-status-<item>.md does not exist
@@ -369,6 +379,16 @@ The long pass's events, checked and reported in this order:
                              digest. Reported once
                              and again every ORCH_OVERSEER_MARK_REPEAT passes
                              while it stands; a change starts a fresh window
+  EVENT cloud-stall-closed <item> directive_age=<secs>
+                             in place of a start-stalled or lane-stalled line:
+                             the lane's record carries the directive_send
+                             lane-mail wrote, sent at or after the lane last
+                             moved, ORCH_CLOUD_STALL_MINUTES ago, and nothing
+                             was pushed since, so the watch closed the lane
+                             through lane-close, whose lane-closed lines come
+                             first and whose fleet-log row names the send's
+                             cause; the item waits on a hosted relaunch on its
+                             branch
   EVENT lane-long <item> age=<secs> review_rounds=<n> repeated_class_rounds=<n> stage=<step>
                              a running or parked --state record is
                              ORCH_WATCH_LANE_AGE_SECS past its launched_at,
@@ -437,7 +457,29 @@ The long pass's events, checked and reported in this order:
                              that sees the banner gone, replaced or its window
                              gone keeps the wall, from that first pass, in the
                              `pauses` of the last fleet record naming the
-                             window
+                             window. Where the watch asked `lanes pick` for the
+                             lane's harness and model, the spent account
+                             excluded, its answer is the line right under the
+                             event: `pick lane=<config-dir>`, `pick none` or
+                             `pick unjudged exit=<N>`. Under
+                             ORCH_WALL_RELAUNCH=auto a qualifying account is
+                             relaunched onto and reported as lane-relaunched,
+                             so this event carries `pick lane=` only where the
+                             relaunch was refused
+  EVENT lane-relaunched <item> lane=<config-dir> from=<config-dir>
+                             under ORCH_WALL_RELAUNCH=auto, the walled lane's
+                             record's own `open-terminal --relaunch` started
+                             detached on the picked account; `log=<path>`
+                             follows, the launch's output. It keeps the
+                             original launch choices. The launcher replaces
+                             the window and keeps its tmux session alive.
+                             The notice needs no operator launch action.
+                             A detached failure reports lane-prepare-failed
+                             with reason=relaunch-failed, exit and log,
+                             including when the window survives. Reported in place
+                             of usage-limit, never beside it. Until that
+                             launch exits, inside ORCH_WATCH_PREPARE_SECS, the
+                             lane's missing window is no window-gone
   EVENT usage-limit-passed <lane> [<config-dir>] resets=<utc>
                              the same banner, naming a reset that has gone by:
                              the screen is remembering a spent window that has
@@ -943,6 +985,10 @@ Environment:
                               dialog arrive whole; the Codex model picker's
                               slice is 19 lines, so it keeps its bottom 12 and
                               loses the startup box above them
+  ORCH_WALL_RELAUNCH          `auto` (default) relaunches a walled lane on an
+                              account `lanes pick` qualifies, as
+                              lane-relaunched; `ask` reports usage-limit with
+                              the pick's answer and relaunches nothing
   ORCH_WATCH_PREPARE_SECS     seconds a lane handed to a background launch
                               job may read preparing before
                               lane-prepare-stuck goes out, a positive whole
@@ -958,7 +1004,9 @@ Environment:
                               heartbeat roster; a missing one exits 2. The read
                               takes the same 60 second ceiling and usage age as
                               the overseer's own mark judgement
-  OVERSEE_WATCH_REPORT        path to oversee-report, whose `due` judges the
+  OVERSEE_WATCH_OPEN_TERMINAL path to open-terminal, which a lane-relaunched
+                              relaunch runs
+  OVERSEE_WATCH_REPORT       path to oversee-report, whose `due` judges the
                               report-due event; with --state a missing one
                               exits 2
   OVERSEE_WATCH_SUCCEED       path to oversee-succeed, which records the
@@ -1025,6 +1073,10 @@ Environment:
                               lane-stalled goes out, a positive whole number,
                               default 3600, provisional until a cloud lane run
                               measures one
+  ORCH_CLOUD_STALL_MINUTES    minutes a stalled cloud lane may leave its
+                              recorded directive unanswered before the watch
+                              closes it, cloud-stall-closed, a positive whole
+                              number, default 30
   ORCH_WATCH_LANE_AGE_SECS    seconds after a record's launched_at a running
                               or parked lane is reported lane-long, a positive
                               whole number, default 12600
@@ -1046,7 +1098,7 @@ USAGE
 OW_REPLAY_RULE='A death replays the held line only where the record names this pane by server, server start and pane id: the last line a launch, a succession or a watch start recorded for it, which a session restarted by hand may not have started with. A record naming another pane, or no line, means a death with no successor.'
 
 ow_message() { # REASON FIELD=VALUE...
-  local reason="$1" text field
+  local reason="$1" text field fields=""
   shift
   case "$reason" in
     missing-value) text='The option requires a value.' ;;
@@ -1057,7 +1109,7 @@ ow_message() { # REASON FIELD=VALUE...
     handoff-invalid) text='The handoff path takes letters, digits and ./_- only, as oversee-succeed reads it.' ;;
     mail-interval-invalid) text='ORCH_WATCH_MAIL_INTERVAL takes a whole number of seconds, with no leading zero.' ;;
     start-stall-secs-invalid) text='ORCH_WATCH_START_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
-    start-stall-unread) text='The lane status file could not be read through lane-host, so whether the lane started settles nothing this pass: no start-stalled goes out for it and its row stands. The exit is lane_host_fetch'"'"'s: 2 a failed read, 4 no lane-host slot.' ;;
+    start-stall-unread) text='The lane start could not be read from its status file or GitHub. This pass cannot establish whether it started. No start-stalled event goes out and the row stands. The exit names the failed read.' ;;
     refresh-unread) text='The refresh run list or failed-step log could not be read. A failed run-list read leaves the baseline intact; a failed log read reports cause=unread. The watch continues.' ;;
     main-push-unread) text='The main-push run list, jobs or failed-step log could not be read. An unread run list or jobs leaves the incident intact; an unread log reports cause=unread. The watch continues.' ;;
     refresh-stale) text='GitHub answered the refresh run list with a page that judges nothing: newest= is the run it was checked against, the one the watch last read or, for a pair opening an incident or with none read, the newest completed run in the unfiltered list, none when it has none, and read= the newest run the page holds, none for an empty page. No pair is reported and none is cleared. The watch continues.' ;;
@@ -1132,11 +1184,15 @@ ow_message() { # REASON FIELD=VALUE...
     root-duplicate) text='Name each --root item once: two roots for one lane would read one mailbox and drain the other.' ;;
     hosted-duplicate) text='Name each hosted item once.' ;;
     host-capabilities-unread) text='lane-host could not declare the capability line of a host a lane record names, or declared a value this watch has no arm for, so nothing says where that lane is read or how it is judged; lane-host'"'"'s own words are above this line. Nothing of the fleet is carried.' ;;
+    wall-relaunch-invalid) text='ORCH_WALL_RELAUNCH takes auto or ask.' ;;
+    wall-relaunch-refused) text='The watch did not relaunch this walled lane, and reports usage-limit in its place. The reason names the rule or the step that stopped it: lane-working (the judge did not read the lane walled), record-unnamed (no running lane record names its item, harness and model), account-unknown (neither a live claim nor the record names the spent account), spent-account (the pick handed back the account that walled), context-unavailable (the original launch choices cannot be recovered; cause names missing permission choices or checkout), marker-unwritten (the pending marker of the relaunch could not be written), or stop-failed (the hosted harness did not confirm its stop).' ;;
     lane-age-secs-invalid) text='ORCH_WATCH_LANE_AGE_SECS takes a positive whole number of seconds, with no leading zero.' ;;
     lane-long-rounds-unread) text='The lane workflow state or its round counts could not be read. The lane-long event carries unavailable counts.' ;;
+    cloud-stall-minutes-invalid) text='ORCH_CLOUD_STALL_MINUTES takes a positive whole number of minutes, with no leading zero.' ;;
     lane-stall-secs-invalid) text='ORCH_WATCH_LANE_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
     lane-stall-unread) text='The digest of a lane pull request body could not be taken, so whether the lane moved is unknown. The watch stops rather than report a stall it did not measure.' ;;
     pr-read-failed) text='The open pull request on the item branch could not be listed, so this pass settles nothing about a lane whose kind writes no file this watch reads: no start-stalled or lane-stalled goes out for it and its rows stand. gh'"'"'s own words follow.' ;;
+    branch-read-failed) text='The item branch could not be read. This pass cannot establish progress or close the cloud lane. The lane rows stand. gh or jq gives the cause below.' ;;
     hosted-without-host) text='A hosted lane is carried, and lane-host resolves this host to local, so its mailbox, state and close would be read on this disk where the lane is not. Set ORCH_LANE_HOST to the provider the lane was launched through, in kendex.settings.toml [env] or .env.local.' ;;
     host-resolve-failed) text='lane-host could not say which host the hosted lanes live on, so none of them is read. Its own words follow.' ;;
     session-resolved) text='The tmux session every bare lane window name is read in, and its server: ORCH_TMUX_SESSION, else the session of the pane that started this watch, resolved once while it exists.' ;;
@@ -1180,13 +1236,14 @@ ow_message() { # REASON FIELD=VALUE...
     long-pass-unfinished) text='The long pass exited 0 without writing its status, so whether it found news is unknown.' ;;
     *) printf 'oversee-watch: message-invalid reason=%s\n' "$reason" >&2; return 2 ;;
   esac
-  printf 'oversee-watch: %s' "$reason"
   for field in "$@"; do
     field="${field//\\/\\\\}"
     field="${field//$'\t'/\\t}"
     field="${field//$'\r'/\\r}"
     field="${field//$'\n'/\\n}"
-    printf ' %s' "$field"
+    fields+=" $field"
   done
-  printf '\n%s\n' "$text"
+  # One printf, so one write: a succession helper appends its own keyed lines
+  # to the same oversee-watch.err, and a split write lets them tear this one.
+  printf 'oversee-watch: %s%s\n%s\n' "$reason" "$fields" "$text"
 }

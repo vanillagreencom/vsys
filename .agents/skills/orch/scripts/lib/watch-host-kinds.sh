@@ -6,10 +6,11 @@
 # judgement of a lane whose kind declares status=none, which no process read
 # reaches, and the lane-long age of every running or parked lane. Sourced by oversee-watch, and like the rest of its lib/ it reads
 # that script's globals (SCRIPT_DIR, HOSTED, ROOTS, REPOS, WORK_DIR, PW_SEEN,
-# PASS_NOW, MARK_REPEAT, LANE_STALL_SECS, LANE_AGE_SECS, LANE_AGES,
-# RECORDED_ITEMS) and calls its `die`, `ow_message`,
-# `lane_failure_set` and lane row helpers, and those of lib/lane-gitfile.sh and
-# lib/lane-capabilities.sh, which that script sources before this file.
+# PASS_NOW, MARK_REPEAT, LANE_STALL_SECS, CLOUD_STALL_SECS, LANE_AGE_SECS,
+# LANE_AGES, RECORDED_ITEMS, FLEET_STATE) and calls its `die`, `ow_message`,
+# `close_hosted_lane`, `lane_failure_set` and lane row helpers, and those of
+# lib/lane-gitfile.sh and lib/lane-capabilities.sh, which that script sources
+# before this file.
 
 # The records host_route sorts by their host kind: the host each hosted record
 # names, as `<item>=<host>`, the items whose kind declares no mailbox channel,
@@ -190,7 +191,10 @@ host_capabilities() { # HOST — sets LANE_CAPABILITIES
 
 # The lane's own open pull request on ITEM's branch, in the first repository
 # that holds one: its head commit as OPEN_PR_HEAD and a digest of its body as
-# OPEN_PR_DIGEST. Only a head the repository owner holds is the lane's,
+# OPEN_PR_DIGEST. With none open, OPEN_PR_BRANCH_HEAD holds the item branch's
+# heads by repository, including an empty value when no branch exists. A
+# branch head is observed progress; a commit date cannot date its push.
+# Only a head the repository owner holds is the lane's,
 # lib/lane-state.sh's lane_own rule, so a fork's pull request on a guessable
 # branch name stands for nothing. One `gh pr list` per repository per item per
 # long pass: the answer is kept, keyed on the item, for that pass's second
@@ -198,15 +202,16 @@ host_capabilities() { # HOST — sets LANE_CAPABILITIES
 # for none open, 2 for a list that failed, its words noted.
 OPEN_PR_HEAD=""
 OPEN_PR_DIGEST=""
+OPEN_PR_BRANCH_HEAD=""
 OPEN_PR_SEEN=()
 item_open_pr() { # ITEM
-  local branch repo list row rc=1 entry
+  local branch repo list row branch_head rc=1 entry
   for entry in ${OPEN_PR_SEEN[@]+"${OPEN_PR_SEEN[@]}"}; do
     [[ "${entry%%|*}" == "$1" ]] || continue
-    IFS='|' read -r _ rc OPEN_PR_HEAD OPEN_PR_DIGEST <<<"$entry"
+    IFS='|' read -r _ rc OPEN_PR_HEAD OPEN_PR_DIGEST OPEN_PR_BRANCH_HEAD <<<"$entry"
     return "$rc"
   done
-  OPEN_PR_HEAD="" OPEN_PR_DIGEST=""
+  OPEN_PR_HEAD="" OPEN_PR_DIGEST="" OPEN_PR_BRANCH_HEAD=""
   branch="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   for repo in "${REPOS[@]}"; do
     if ! list="$(gh pr list --repo "$repo" --head "$branch" --state open --json headRefName,headRepositoryOwner,headRefOid,body 2>"$WORK_DIR/pr.err")"; then
@@ -214,14 +219,28 @@ item_open_pr() { # ITEM
     fi
     row="$(jq -c --arg branch "$branch" --arg owner "${repo%%/*}" "$LANE_MERGED_JQ"'
       [.[] | lane_own($branch; $owner; null)] | first // empty' <<<"$list")" || { rc=2; break; }
-    [[ -n "$row" ]] || continue
+    if [[ -z "$row" ]]; then
+      if ! list="$(gh api graphql -f owner="${repo%%/*}" -f name="${repo#*/}" -f ref="refs/heads/$branch" \
+        -f query='query($owner:String!, $name:String!, $ref:String!) {
+          repository(owner:$owner, name:$name) { ref(qualifiedName:$ref) { target { ... on Commit { oid } } } }
+        }' 2>"$WORK_DIR/pr.err")" || ! branch_head="$(jq -er '
+          .data.repository | if type != "object" then error("repository unread")
+          elif (has("ref") | not) then error("branch unread")
+          elif .ref == null then ""
+          elif (.ref.target.oid | type == "string" and test("^[0-9a-f]{40}$")) then .ref.target.oid
+          else error("branch head unread") end' <<<"$list" 2>"$WORK_DIR/pr.err")"; then
+        ow_message branch-read-failed "item=$1" "repo=$repo" >&2; cat -- "$WORK_DIR/pr.err" >&2; rc=2; break
+      fi
+      [[ -z "$branch_head" ]] || OPEN_PR_BRANCH_HEAD+="${OPEN_PR_BRANCH_HEAD:+,}$repo:$branch_head"
+      continue
+    fi
     OPEN_PR_HEAD="$(jq -r '.headRefOid // ""' <<<"$row")" && OPEN_PR_DIGEST="$(jq -r '.body // ""' <<<"$row" | cksum)" \
       || die lane-stall-unread "" "item=$1"
     OPEN_PR_DIGEST="${OPEN_PR_DIGEST%% *}"
     rc=0
     break
   done
-  OPEN_PR_SEEN+=("$1|$rc|$OPEN_PR_HEAD|$OPEN_PR_DIGEST")
+  OPEN_PR_SEEN+=("$1|$rc|$OPEN_PR_HEAD|$OPEN_PR_DIGEST|$OPEN_PR_BRANCH_HEAD")
   return "$rc"
 }
 
@@ -255,6 +274,11 @@ check_lane_stall() {
     IFS='|' read -r head digest since passes <<<"$prior"
     age=$((PASS_NOW - since))
     (( age >= LANE_STALL_SECS )) || continue
+    if cloud_stall_close "$item" "$since"; then
+      lane_row_commit "$rows"
+      [[ -z "$CLOSE_TERMED" ]] || exit 143
+      continue
+    fi
     if [[ -z "$passes" ]]; then passes=0
     else passes=$(( passes + 1 )); (( passes < MARK_REPEAT )) || passes=0; fi
     if (( passes == 0 )); then
@@ -265,6 +289,26 @@ check_lane_stall() {
   done
   rows="$(lane_row_prune lane-stalled "$rows" ${items[@]+"${items[@]}"})"
   lane_row_commit "$rows"
+}
+
+# A stalled cloud lane that answered no directive: the directive_send
+# lane-mail recorded on its record is at or after SINCE, the last move the
+# stall check saw, and CLOUD_STALL_SECS old with nothing pushed since. No read
+# of a cloud session's state tells a long step from a dead session (Claude
+# Code 2.1.295 documents none), so the bound decides: close_hosted_lane closes
+# the record through lane-close, whose fleet-log row carries the send's cause
+# readings, and cloud-stall-closed hands the item to the overseer's hosted
+# relaunch on its branch. Status 0 for a lane closed, 1 for one the bound does
+# not reach or whose close did not close it.
+cloud_stall_close() { # ITEM SINCE
+  local at
+  at="$(jq -r --arg item "$1" '[.lanes[]? | objects | select(.item == $item) | .directive_send.at | numbers] | first // empty' <<<"$FLEET_STATE")" \
+    || die state-invalid "" "item=$1" "field=directive_send"
+  [[ -n "$at" ]] && (( at >= $2 && PASS_NOW - at >= CLOUD_STALL_SECS )) || return 1
+  close_hosted_lane "$1" || { PASS_FAILED=1; return 1; }
+  [[ "$CLOSE_RESULT" == closed ]] || return 1
+  echo "EVENT cloud-stall-closed $1 directive_age=$((PASS_NOW - at))"
+  PASS_EVENT=1
 }
 
 # A running or parked lane LANE_AGE_SECS past its record's launched_at, which
