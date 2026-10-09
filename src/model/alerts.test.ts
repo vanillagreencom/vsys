@@ -223,3 +223,74 @@ test("each new escaped agent is reported even in an already alarmed scope", () =
     [],
   );
 });
+
+test("scratch notification does not repeat after one failed scan", () => {
+  const c = defaults();
+  const engine = new AlertEngine();
+  const root = (bytes: number | null, time: number) => {
+    const s = emptySnapshot(time);
+    s.storage.scratch = [
+      {
+        path: "/scratch",
+        bytes,
+        age: 0,
+        error: bytes === null ? "ENOENT" : null,
+        origin: "configured",
+      },
+    ];
+    return s;
+  };
+  const over = c.scratchQuota + 1;
+  expect(engine.evaluate(root(over, 1000), c).map((a) => a.rule)).toEqual([
+    "scratch",
+  ]);
+  const u = unjudged(root(null, 2000), c).scratch;
+  expect(u !== undefined && u !== "all" && u.has("/scratch")).toBe(true);
+  expect(engine.evaluate(root(null, 2000), c)).toEqual([]);
+  expect(engine.evaluate(root(over, 3000), c)).toEqual([]);
+});
+
+test("memory-cap notification does not repeat after one failed memory.max read", () => {
+  const c = defaults();
+  const engine = new AlertEngine();
+  const at = (known: boolean, time: number) => {
+    const s = emptySnapshot(time);
+    s.lanes = [
+      laneSnapshot({
+        dangerous: known,
+        memoryMaxKnown: known,
+        memoryMax: known ? 1 : null,
+      }),
+    ];
+    return s;
+  };
+  expect(engine.evaluate(at(true, 1000), c).map((a) => a.rule)).toEqual([
+    "memory-cap",
+  ]);
+  expect(unjudged(at(false, 2000), c)["memory-cap"]).toBeDefined();
+  expect(engine.evaluate(at(false, 2000), c)).toEqual([]);
+  expect(engine.evaluate(at(true, 3000), c)).toEqual([]);
+});
+
+test("pressure notification keeps its hold through one unread pressure file", () => {
+  const c = { ...defaults(), pressureHoldSeconds: 5 };
+  const engine = new AlertEngine();
+  const at = (time: number, read: boolean) => {
+    const s = emptySnapshot(time);
+    s.groups = [
+      groupSnapshot({
+        pressure: { cpu: read ? { some: 15, full: 0, total: 1 } : null },
+      }),
+    ];
+    return s;
+  };
+  expect(engine.evaluate(at(0, true), c)).toEqual([]);
+  expect(engine.evaluate(at(3000, false), c)).toEqual([]);
+  // The hold kept its start through the unread sample.
+  expect(engine.evaluate(at(5000, true), c).map((a) => a.rule)).toEqual([
+    "pressure",
+  ]);
+  expect(engine.evaluate(at(6000, false), c)).toEqual([]);
+  expect(engine.evaluate(at(11000, true), c)).toEqual([]);
+  expect(engine.evaluate(at(16000, true), c)).toEqual([]);
+});
