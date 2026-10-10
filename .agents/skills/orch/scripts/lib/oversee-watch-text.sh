@@ -571,9 +571,9 @@ The long pass's events, checked and reported in this order:
                              Repeat the same check after that fix merges.
                              A merged item never returns to In Progress.
                              No deadline moves. An owner-only box goes once
-                             to the master, naming item, box, check, Where and
-                             deadline. The master sends one list a day and
-                             repeats open lines until a reading is recorded.
+                             to the owner as an ask on the same item, naming
+                             box, check, Where and deadline. The overseer
+                             records the person's reading and closes the ask.
   verifying <item> box=<N> trigger=<JSON> status=<due|overdue|blocked|waiting> deadline=<UTC|+Nh> reading=<JSON> where=<JSON> why=<JSON>
                              every open post-merge box on every long pass,
                              before active/queued lane filtering. Due means
@@ -782,9 +782,11 @@ Options:
                       while `lane-host resolve` answers local is refused as
                       hosted-without-host rather than read on this disk
   --root ITEM=PATH    the item's lane worktree on this disk, where its
-                      mailbox is read; a lane whose worktree sits outside
-                      this checkout is read nowhere else. Repeatable, once per
-                      item; a --hosted entry for the same item wins
+                      mailbox is read. After removal, the watch reads the
+                      mailbox at the main checkout it learned while the
+                      worktree stood. With no saved checkout, it skips
+                      that mailbox. Repeatable, once per item; a --hosted
+                      entry for the same item wins
   --handoff PATH      the overseer handoff file a successor's brief names,
                       passed through to `oversee-succeed` when this watch
                       records the overseer's launch line (default
