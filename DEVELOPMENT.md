@@ -59,7 +59,7 @@ bun run bench:writes     # the write budget alone; in the check contract
 
 `AUR_SSH_PRIVATE_KEY` holds the AUR key's contents, which CI uses to push `vsys` and `vsys-git` to the AUR. Running `packaging/publish-aur.sh` by hand takes `AUR_SSH_KEY_FILE` instead, the path to a key already on disk, so no private key is copied anywhere. The script connects with that key and verifies the AUR against the host keys pinned in `packaging/aur-known-hosts`.
 
-`AUR_SSH_PRIVATE_KEY` is a secret of the `aur` environment, which admits only the `main` branch and `v*` tags. It is not a repository secret, so a branch run cannot read it. To rotate it, set it in that environment: `gh secret set AUR_SSH_PRIVATE_KEY --env aur`.
+`AUR_SSH_PRIVATE_KEY` is a secret of the `aur` environment, not a repository secret: only a run on the `main` branch or on a `v*` tag can read it. To rotate it, set it in that environment: `gh secret set AUR_SSH_PRIVATE_KEY --env aur`.
 
 ### AUR packages
 
