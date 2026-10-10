@@ -289,7 +289,7 @@ orch = """
 - Use Conventional Commit type syntax for commit subjects and pull-request titles. Keep the issue association. The installed commit gate decides accepted syntax. (ORCH-M26)
 - Every vsys lane launches and relaunches on claude-opus-5-5 at high effort or gpt-6.1-sol at high effort, and never copies a model from an older lane record. (VSYS-ORCH-01; owner 1791067953)
 - The vsys repository has no bot token, so a lane merges as the keyring user bmethod with --expected-head, and only on the exact head the overseer cleared. (VSYS-ORCH-02; standing fleet ruling 2026-10-08)
-- The overseer second opinion runs gpt-6.1-sol at high effort on the 2codex account, read-only and with project hooks off, at every pushed head and before any arm, and never on 1codex or 1copilot. (VSYS-ORCH-03; owner 1790876473, 1790910316, 1791349877; master 1791179688, 1791469938)
+- At every pushed head and before any arm, the overseer runs its second opinion with SECOND_OPINION_CODEX_CMD set for that run to `env -u GH_TOKEN 2codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=high --ephemeral` and SECOND_OPINION_CODEX_MODEL=gpt-6.1-sol, and never runs it on 1codex or 1copilot. (VSYS-ORCH-03; owner 1790876473, 1790910316, 1791349877; master 1791179688, 1791469938)
 - Never hold a refresh pull request: give it no requested-changes review and do not disable its auto-merge; a wrong render is a kendex finding sent to the master. (VSYS-ORCH-04; owner 1791397764)
 """
 
