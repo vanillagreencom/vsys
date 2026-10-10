@@ -22,28 +22,26 @@ NEITHER = "lane_application=false\nlane_package=false"
 # What the change-class action answers for each diff, and what the workflow
 # must do with it. Columns: name, change_class, lanes (None: the classify step
 # published nothing), lane_verdicts, changed_paths, the changes job's result,
-# then the expected application run, arch-package run, package_readme, CI
-# acceptance, and the jobs whose skip CI still waives although they run.
+# then the expected application run, arch-package run, package_readme and CI
+# acceptance.
 # Expected results are independent of the expressions under test.
 ROWS = (
-    ("render refresh", "render", "false", NEITHER, ".codex/config.toml", "success", False, False, "false", True, ()),
-    ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, "false", True, ()),
-    ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, "false", True, ()),
-    # The lanes waiver covers arch-package here too, so CI cannot tell its
-    # skip from its run; its condition is true, so it does not skip.
-    ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, True, "true", True, ("arch-package",)),
-    ("docs-only docs/README.md", "small", "false", NEITHER, "docs/README.md", "success", False, False, "false", True, ()),
-    ("other docs-only", "trivial", "false", NEITHER, "docs/architecture/ui.md", "success", False, False, "false", True, ()),
+    ("render refresh", "render", "false", NEITHER, ".codex/config.toml", "success", False, False, "false", True),
+    ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, "false", True),
+    ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, "false", True),
+    ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, True, "true", True),
+    ("docs-only docs/README.md", "small", "false", NEITHER, "docs/README.md", "success", False, False, "false", True),
+    ("other docs-only", "trivial", "false", NEITHER, "docs/architecture/ui.md", "success", False, False, "false", True),
     # A merge group on a passing pull request's tree: application is
     # event-uniform and stands down on its proof; package is not.
-    ("merge-group proof reuse", "small", "true", "lane_application=false\nlane_package=true", "src/main.ts", "success", False, True, "false", True, ()),
+    ("merge-group proof reuse", "small", "true", "lane_application=false\nlane_package=true", "src/main.ts", "success", False, True, "false", True),
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
-    ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, "false", True, ()),
-    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, "false", True, ()),
-    ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, "false", True, ()),
-    ("failed classifier", "render", "false", NEITHER, ".codex/config.toml", "failure", True, True, "false", False, ()),
-    ("cancelled classifier", "", None, "", "", "cancelled", True, True, "", False, ()),
+    ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, "false", True),
+    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, "false", True),
+    ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, "false", True),
+    ("failed classifier", "render", "false", NEITHER, ".codex/config.toml", "failure", True, True, "false", False),
+    ("cancelled classifier", "", None, "", "", "cancelled", True, True, "", False),
 )
 
 
@@ -128,7 +126,7 @@ class CiWorkflow(unittest.TestCase):
         copy.write_text(defective)
         return copy.read_text()
 
-    def assert_jobs_and_aggregate(self, outputs, status, application, package, accepted, waived, workflow):
+    def assert_jobs_and_aggregate(self, outputs, status, application, package, accepted, workflow):
         fields = {"needs.changes.result": status}
         fields.update({f"needs.changes.outputs.{key}": value for key, value in outputs.items()})
         needs = {"changes": {"result": status, "outputs": outputs}, "bot-instructions": {"result": "success"}}
@@ -140,13 +138,16 @@ class CiWorkflow(unittest.TestCase):
             needs[job] = {"result": "success" if expected else "skipped"}
         aggregate_step = self.step(block(workflow, "  ci:", 2), "name: Require every needed job to succeed or to skip on its verdict")
         aggregate = command(aggregate_step)
-        waiver = expression(scalar(aggregate_step, "WAIVER"), fields)
-        env = {"NEEDS": json.dumps(needs), "WAIVER": str(waiver).lower()}
+        env = {"NEEDS": json.dumps(needs)}
+        for line in block(aggregate_step, "        env:", 8).splitlines():
+            key, value = line.strip().split(": ", 1)
+            if key != "NEEDS":
+                env[key] = str(expression(value, fields)).lower()
         result = self.shell(aggregate, env)
         self.assertEqual(result.returncode == 0, accepted, result.stderr)
         if accepted:
             # Every required product job must reject an unauthorized skip.
-            rejections = [(job, "skipped") for job, required in products if required and job not in waived]
+            rejections = [(job, "skipped") for job, required in products if required]
             rejections.extend((("application", "failure"), ("bot-instructions", "skipped")))
             for job, failure in rejections:
                 rejected = {**needs, job: {"result": failure}}
@@ -154,7 +155,7 @@ class CiWorkflow(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, (job, failure, outputs))
 
     def check_row(self, workflow, row):
-        name, kind, lanes, verdicts, paths, status, application, package, readme, accepted, waived = row
+        name, kind, lanes, verdicts, paths, status, application, package, readme, accepted = row
         changes = block(workflow, "  changes:", 2)
         steps = {}
         if lanes is not None:
@@ -168,7 +169,7 @@ class CiWorkflow(unittest.TestCase):
             steps["lanes"] = step_outputs(output)
         outputs = mapping(block(changes, "    outputs:", 4), steps)
         self.assertEqual(outputs["package_readme"], readme, name)
-        self.assert_jobs_and_aggregate(outputs, status, application, package, accepted, waived, workflow)
+        self.assert_jobs_and_aggregate(outputs, status, application, package, accepted, workflow)
 
     def test_lane_conditions_and_aggregate_accept_only_authorized_skips(self):
         for row in ROWS:
@@ -187,6 +188,8 @@ class CiWorkflow(unittest.TestCase):
             ("package-no-readme", " || needs.changes.outputs.package_readme == 'true'", ""),
             ("waiver-success", "WAIVER: ${{ needs.changes.outputs.lanes == 'false' }}", "WAIVER: ${{ needs.changes.result == 'success' }}"),
             ("waiver-true", '--waiver "$WAIVER"', "--waiver true"),
+            ("readme-waived", 'if [ "$PACKAGE_README" = true ]; then package=(); fi', ""),
+            ("readme-not-forwarded", "PACKAGE_README: ${{ needs.changes.outputs.package_readme == 'true' }}", "PACKAGE_README: ${{ needs.changes.outputs.lanes == 'true' }}"),
         )
         for control, old, new in controls:
             with self.subTest(control=control):
