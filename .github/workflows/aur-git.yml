@@ -26,6 +26,7 @@ jobs:
   aur:
     name: Update vsys-git
     runs-on: ubuntu-latest
+    environment: aur
     timeout-minutes: 15
     container: archlinux:base-devel
     steps:

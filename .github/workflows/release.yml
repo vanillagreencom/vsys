@@ -175,6 +175,7 @@ jobs:
     name: Update the AUR package
     needs: publish
     runs-on: ubuntu-latest
+    environment: aur
     timeout-minutes: 15
     container: archlinux:base-devel
     steps:
