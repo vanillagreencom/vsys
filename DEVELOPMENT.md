@@ -53,11 +53,13 @@ bun run bench:writes     # the write budget alone; in the check contract
 2. Set `version` in `package.json` to the release's version, picked by [the commit-guards release-version rule](.agents/skills/commit-guards/CHECKS.md#release-versions).
 3. Move the collated entries under a new `## [<version>] - <date>` heading in `CHANGELOG.md`, leaving an empty `## [Unreleased]` above it. Confirm every breaking change carries its **Breaking** call-out and its migration note.
 4. Commit with `COMMIT_GUARDS_CHANGELOG_COLLATE=1` set. That declaration is what lets the `commit-msg` lane count the `CHANGELOG.md` change as the entry the version bump owes.
-5. Tag `v<version>` and push the tag. `.github/workflows/release.yml` runs on the tag: it builds the archives, publishes the GitHub Release and updates the `vsys` AUR package.
+5. Tag `v<version>` and push the tag. `.github/workflows/release.yml` runs on the tag: it builds the archives, publishes the GitHub Release and updates the `vsys` AUR package. Only a repository admin can push a `v*` tag: tag ruleset 24851637 restricts creating, updating and deleting `refs/tags/v*` to admins. A non-admin push is refused, and no release runs.
 
 ### Secrets
 
 `AUR_SSH_PRIVATE_KEY` holds the AUR key's contents, which CI uses to push `vsys` and `vsys-git` to the AUR. Running `packaging/publish-aur.sh` by hand takes `AUR_SSH_KEY_FILE` instead, the path to a key already on disk, so no private key is copied anywhere. The script connects with that key and verifies the AUR against the host keys pinned in `packaging/aur-known-hosts`.
+
+`AUR_SSH_PRIVATE_KEY` is a secret of the `aur` environment, not a repository secret: only a run on the `main` branch or on a `v*` tag can read it. To rotate it, set it in that environment: `gh secret set AUR_SSH_PRIVATE_KEY --env aur`.
 
 ### AUR packages
 
