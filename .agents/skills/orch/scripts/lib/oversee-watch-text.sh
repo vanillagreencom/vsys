@@ -429,14 +429,14 @@ The long pass's events, checked and reported in this order:
                              record names the harness.
                              Closing lines follow. Failed provider reads stay
                              unjudged; unusable local probes keep the lane watched
-  EVENT lane-closed <item>   under a lane-exited whose window watches a --hosted
-                             item already reported merged, once the pass finds
+  EVENT lane-closed <item>   for a --hosted item already reported merged, after
+                             lane-exited or two idle passes, once the pass finds
                              its worktree gone: `lane-close` succeeded; its
                              `kept=` line follows, its `closed=absent item=ID`
                              line where the host no longer held the item and
                              ran no archive pass, or else `kept=none` because
-                             the close kept no archive. A lane exiting while its
-                             worktree stands is not closed
+                             the close kept no archive. An exited or idle lane
+                             whose worktree stands is not closed
   EVENT lane-close-refused <item>
                              the same close exited 3: its clone or worktree
                              has user-owned changes. Generated whole-file render
@@ -515,8 +515,8 @@ The long pass's events, checked and reported in this order:
                              at capacity. Nothing follows the line: the
                              remedy is one continuation line back to the lane
   EVENT idle-after-return <lane> [<copilot note>]
-                             Codex sits idle after a submitted turn on the
-                             first long pass; other idle screens take two
+                             A local Codex lane sits idle after a submitted turn
+                             on the first long pass; hosted and other idle screens take two
                              passes. The
                              lane's closing lines follow, and the note is
                              lane-asking's. A Pi lane is idle,
@@ -582,6 +582,8 @@ The long pass's events, checked and reported in this order:
                              blocker; waiting means the trigger has not fired.
                              A missing Trigger means merge. Release triggers
                              use the first matching publication after merge.
+                             In a repository where the item merged, that
+                             release must contain its latest merge commit.
                              Printed with the event block or heartbeat. An item
                              with none prints verifying <item> boxes=0.
   EVENT heartbeat            --max-loops long passes with no event, after
