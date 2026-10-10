@@ -38,6 +38,8 @@ REVIEW_GATE_MODE = "enforce"
 REVIEW_GATE_STANDARD_APP = "vanillagreen-fleet-lanes"
 REVIEW_GATE_STANDARD_ENVIRONMENT = "kendex"
 REVIEW_GATE_STANDARD_SECRETS = "FLEET_GH_APP_ID;FLEET_GH_APP_PRIVATE_KEY"
+# Required status contexts on main, ";"-separated, compared by the standard report.
+REVIEW_GATE_STANDARD_CONTEXTS = "CI"
 
 # Refresh review route, read by orch's approval-wait from the base checkout.
 # "overseer" sends a pull request on the refresh branch, opened by the
