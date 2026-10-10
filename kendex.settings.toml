@@ -40,6 +40,14 @@ REVIEW_GATE_STANDARD_ENVIRONMENT = "kendex"
 REVIEW_GATE_STANDARD_SECRETS = "FLEET_GH_APP_ID;FLEET_GH_APP_PRIVATE_KEY"
 # Required status contexts on main, ";"-separated, compared by the standard report.
 REVIEW_GATE_STANDARD_CONTEXTS = "CI"
+# Bypass actors the standard report admits, TYPE:ID:MODE ";"-separated: QUEUE
+# on a ruleset holding merge_queue alone, CHECKS on one holding
+# required_status_checks alone. 4925608 is vanillagreen-fleet-lanes, 5115517
+# vanillagreen-overseer; "always" bypasses on a push or a pull request,
+# "pull_request" on a pull request only. The rulesets grant that access;
+# these keys grant none.
+REVIEW_GATE_STANDARD_QUEUE_BYPASS = "Integration:4925608:always;Integration:5115517:pull_request"
+REVIEW_GATE_STANDARD_CHECKS_BYPASS = "Integration:5115517:pull_request"
 
 # Refresh review route, read by orch's approval-wait from the base checkout.
 # "overseer" sends a pull request on the refresh branch, opened by the
