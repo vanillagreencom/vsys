@@ -71,7 +71,7 @@ List Options:
   --project <name>      Filter by project name
   --project-id <uuid>   Filter by project ID
   --team <ref>          Filter by team key or name (no default; omit = all teams)
-  --assignee <name|me>  Filter by assignee
+  --assignee <name|me|email>  Filter by assignee; addresses match exactly, ignoring case
   --updated-since <Nd>  Filter by updated date (e.g., "7d")
   --created-since <Nd>  Filter by created date
   --limit <n>           Max results (default: 75); a larger value spans pages,
@@ -167,6 +167,7 @@ Update Options:
   --estimate <0-5>      Effort estimate (points); 0 clears the estimate (unset)
   --clear-estimate      Clear the estimate (unset; e.g. coordination parents = no estimate)
   --assignee <name|me|email|id>  Change assignee (matched as on create)
+  --clear-assignee     Remove the assignee
   --parent <id>         Set parent issue (convert to sub-issue)
   --remove-parent       Remove parent (convert to top-level issue)
   --milestone <name|uuid> Set project milestone (a name resolves in --project,
@@ -1597,6 +1598,7 @@ update_issue() {
     local estimate=""
     local clear_estimate="false"
     local clear_labels="false"
+    local clear_assignee="false"
     local sort_order=""
     local output_format=""
     local attach_paths=()
@@ -1712,6 +1714,10 @@ update_issue() {
             clear_estimate="true"
             shift
             ;;
+        --clear-assignee)
+            clear_assignee="true"
+            shift
+            ;;
         --clear-labels)
             clear_labels="true"
             shift
@@ -1789,6 +1795,10 @@ update_issue() {
     # Same rule as the label resolution below, applied to the pure argument
     # check: a combination that can only be refused must be refused before any
     # upload, or the refusal strands the uploaded asset in Linear storage.
+    if [ "$clear_assignee" = "true" ] && [ -n "$assignee" ]; then
+        echo '{"error": "Use either --assignee or --clear-assignee"}' >&2
+        return 1
+    fi
     if [ "$clear_labels" = "true" ] && [ -n "$labels" ]; then
         echo '{"error": "Use either --labels <names> or --clear-labels, not both"}' >&2
         return 1
@@ -1961,6 +1971,9 @@ update_issue() {
     # Resolved above, before the attachment upload.
     if [ -n "$assignee_id" ]; then
         input_parts+=("\"assigneeId\": \"$assignee_id\"")
+    fi
+    if [ "$clear_assignee" = "true" ]; then
+        input_parts+=('"assigneeId": null')
     fi
 
     # Handle parent (set or remove) - resolve identifier to UUID
@@ -2496,35 +2509,23 @@ add_relation() {
         related_issue_uuid="$temp"
     fi
 
-    # Validation for blocking relations: the blocking-level rule
-    # (blocking relations connect peers of one bundle — see issue-validation.sh)
+    # issue-validation.sh owns the blocking-level rule and the query facts.
     if [ "$relation_type" = "blocks" ]; then
-        # The rule reads one level: each issue's own direct parent. One query,
-        # no ancestor walk. issue1 = blocker (from), issue2 = blocked (to).
         local validation_query="
         query ValidateBlocking(\$id1: String!, \$id2: String!) {
-            issue1: issue(id: \$id1) { id identifier parent { id identifier } }
-            issue2: issue(id: \$id2) { id identifier parent { id identifier } }
+            issue1: issue(id: \$id1) { id $BLOCKING_PARENT_FIELDS }
+            issue2: issue(id: \$id2) { id $BLOCKING_PARENT_FIELDS $BLOCKING_CHILD_FIELDS }
         }"
         local validation_result
-        validation_result=$(graphql_query "$validation_query" "{\"id1\": \"$issue_id\", \"id2\": \"$related_issue_uuid\"}")
+        validation_result=$(graphql_query "$validation_query" "{\"id1\": \"$issue_id\", \"id2\": \"$related_issue_uuid\"}") || return 1
 
-        local issue1_id issue2_id parent1_id parent2_id
-        issue1_id=$(jq -r '.issue1.identifier? // ""' <<<"$validation_result" 2>/dev/null)
-        issue2_id=$(jq -r '.issue2.identifier? // ""' <<<"$validation_result" 2>/dev/null)
-        # An absent side would otherwise read as "no parent" and pass as a
-        # top-level pair, so the missing issue refuses instead.
-        if [ -z "$issue1_id" ] || [ -z "$issue2_id" ]; then
-            echo "{\"error\": \"Hierarchy validation failed closed: Linear returned no issue for one side of the blocking relation.\"}" >&2
-            return 1
-        fi
-        parent1_id=$(jq -r '.issue1.parent.identifier? // ""' <<<"$validation_result" 2>/dev/null)
-        parent2_id=$(jq -r '.issue2.parent.identifier? // ""' <<<"$validation_result" 2>/dev/null)
-
-        if ! blocking_level_ok "$parent1_id" "$parent2_id"; then
+        local facts nodes
+        nodes=$(jq -c '{blocker: .issue1, blocked: .issue2}' <<<"$validation_result") || return 1
+        facts=$(blocking_level_facts "$nodes") || return 1
+        if ! blocking_level_ok "$facts"; then
             local violation_message
-            violation_message=$(blocking_level_violation_message "$issue1_id" "$issue2_id" "$parent1_id" "$parent2_id")
-            echo "{\"error\": \"$violation_message\"}" >&2
+            violation_message=$(blocking_level_violation_message "$facts") || return 1
+            printf '%s\n' "$violation_message" >&2
             return 1
         fi
     fi
@@ -2576,17 +2577,17 @@ add_relation() {
 }
 
 # A Done or Canceled blocker's relation is history, ../../SKILL.md § Blocked Label vs Issue Relations
-# says; $2 = true is tpm-audit's structural repair, for a pair the peer rule refuses.
+# says; $2 = true is tpm-audit's structural repair, for a pair the rule refuses.
 refuse_completed_blocker() {
-    local relation blocker parents
-    relation=$(graphql_query 'query RelationBlocker($id: String!) { issueRelation(id: $id) { type issue { identifier state { name type } parent { identifier } } relatedIssue { parent { identifier } } } }' \
+    local relation blocker facts nodes
+    relation=$(graphql_query "query RelationBlocker(\$id: String!) { issueRelation(id: \$id) { type issue { state { name type } $BLOCKING_PARENT_FIELDS } relatedIssue { $BLOCKING_PARENT_FIELDS $BLOCKING_CHILD_FIELDS } } }" \
         "$(jq -cn --arg id "$1" '{id: $id}')") || return 1
-    # Both parents, which hold no space or slash, lead; the free-text state name trails.
-    blocker=$(jq -r "$ISSUE_RELATION_JQ"'.issueRelation | select(.type == "blocks" and (.issue | issue_is_open | not)) | "\(.issue.parent.identifier // "")/\(.relatedIssue.parent.identifier // "") blocker=\(.issue.identifier) state=\(.issue.state.name)"' <<<"$relation") || return 1
+    blocker=$(jq -r "$ISSUE_RELATION_JQ"'.issueRelation | select(.type == "blocks" and (.issue | issue_is_open | not)) | "blocker=\(.issue.identifier) state=\(.issue.state.name)"' <<<"$relation") || return 1
     [ -n "$blocker" ] || return 0
-    parents="${blocker%% *}"
-    if [ "$2" = "true" ] && ! blocking_level_ok "${parents%/*}" "${parents#*/}"; then return 0; fi
-    echo "linear: refused=completed-blocker ${blocker#* } section=\"linear SKILL.md § Blocked Label vs Issue Relations\"" >&2
+    nodes=$(jq -c '.issueRelation | {blocker: .issue, blocked: .relatedIssue}' <<<"$relation") || return 1
+    facts=$(blocking_level_facts "$nodes") || return 1
+    if [ "$2" = "true" ] && ! blocking_level_ok "$facts"; then return 0; fi
+    echo "linear: refused=completed-blocker $blocker section=\"linear SKILL.md § Blocked Label vs Issue Relations\"" >&2
     return 1
 }
 
