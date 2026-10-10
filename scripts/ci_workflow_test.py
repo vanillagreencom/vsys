@@ -40,6 +40,7 @@ ROWS = (
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
     ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, "false", True, ()),
+    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, "false", True, ()),
     ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, "false", True, ()),
     ("failed classifier", "render", "false", NEITHER, ".codex/config.toml", "failure", True, True, "false", False, ()),
     ("cancelled classifier", "", None, "", "", "cancelled", True, True, "", False, ()),
