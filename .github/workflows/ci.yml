@@ -20,17 +20,31 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # The default branch owns the classifier so a pull request cannot edit
-  # the script that stands its own jobs down. Calling the shared script
-  # keeps SHA-pinned actions and needs no proof-reuse API permission.
+  # kendex's change-class action classifies the diff:
+  # .agents/skills/harness-ci/references/wiring.md § Through the composite action.
   changes:
     name: Classify the diff
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # `actions: read` is what the action reads this workflow's earlier runs
+    # with, to stand down the lanes a passing run of the same tree already
+    # ran: .agents/skills/harness-ci/references/wiring.md § Proof reuse.
+    permissions:
+      contents: read
+      actions: read
     outputs:
-      change_class: ${{ steps.change-class.outputs.change_class }}
+      change_class: ${{ steps.classify.outputs.change_class }}
+      # Whether the lanes run at all, as the action answered it: what every
+      # lane condition and CI's waiver read. The classify step's `lanes:`
+      # log line says why.
+      lanes: ${{ steps.classify.outputs.lanes }}
+      # One output per lane .github/ci-lanes.conf declares, its verdict as
+      # the action answered it. The classify step's `lane:` log lines say
+      # why.
       lane_application: ${{ steps.lanes.outputs.lane_application }}
       lane_package: ${{ steps.lanes.outputs.lane_package }}
+      # Whether the diff changes README.md, which arch-package installs.
+      package_readme: ${{ steps.lanes.outputs.package_readme }}
     env:
       EVENT: ${{ github.event_name }}
       BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
@@ -72,41 +86,42 @@ jobs:
           MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
         run: >-
           echo "::warning title=render proof may be unavailable::kendex install $KENDEX_OUTCOME, source refresh $MIRROR_OUTCOME"
-      - id: change-class
-        run: >-
-          classifier/.agents/skills/harness-ci/scripts/change-class
-          --repo subject --event "$EVENT" --base "$BASE" --head "$HEAD"
       - id: classify
-        run: >-
-          classifier/.agents/skills/harness-ci/scripts/harness-only
-          --mode docs --repo subject --event "$EVENT" --base "$BASE" --head "$HEAD"
-          --paths-output "$RUNNER_TEMP/changed-paths"
-      # arch-package stands down only where README.md is unchanged too,
-      # because the package installs README.md, and a lane that reads a file
-      # in the docs set must not skip on it.
+        uses: vanillagreencom/kendex/.github/actions/change-class@main
+        env:
+          ORCH_SIZE_RENDER_ROOTS: .agents .claude .codex .pi
+          # ORCH_SIZE_TEST_PATHS: <globs>
+          # Test globs outside orch's defaults belong in the default branch's
+          # kendex.settings.toml, which a lane's own classifier run reads too.
+        with:
+          repo: subject
+          # The lane declaration is the default branch's: the pull request's
+          # own copy could stand its lanes down.
+          lanes-from: classifier
+          # covers-all-lanes stays unset: the package lane is not event-uniform.
+          event: ${{ env.EVENT }}
+          base: ${{ env.BASE }}
+          head: ${{ env.HEAD }}
+      # A composite action publishes only the outputs it declares, so the
+      # verdicts arrive as one `lane_<name>=true|false` line per lane and are
+      # published here as step outputs, one per lane, beside package_readme.
       - id: lanes
         env:
-          DOCS_ONLY: ${{ steps.classify.outputs.docs_only }}
+          LANE_VERDICTS: ${{ steps.classify.outputs.lane_verdicts }}
+          CHANGED_PATHS: ${{ steps.classify.outputs.changed_paths }}
         run: |
           set -euo pipefail
-          application=true
-          package=true
-          if [ "$DOCS_ONLY" = true ]; then
-            application=false
-            found=0
-            grep -qxF README.md "$RUNNER_TEMP/changed-paths" || found=$?
-            case "$found" in
-              0) ;;
-              1) package=false ;;
-              *) echo "::error::Could not read the changed paths"; exit "$found" ;;
-            esac
-          fi
-          printf 'lane_application=%s\nlane_package=%s\n' "$application" "$package" | tee -a "$GITHUB_OUTPUT"
+          printf '%s\n' "$LANE_VERDICTS" >>"$GITHUB_OUTPUT"
+          case $'\n'"$CHANGED_PATHS"$'\n' in
+            *$'\n'README.md$'\n'*) readme=true ;;
+            *) readme=false ;;
+          esac
+          printf 'package_readme=%s\n' "$readme" | tee -a "$GITHUB_OUTPUT"
 
   application:
     name: Bun (lint, types, tests, build)
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.change_class != 'render' && needs.changes.outputs.lane_application != 'false')) }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.lanes != 'false' && needs.changes.outputs.lane_application != 'false')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -119,10 +134,12 @@ jobs:
       - name: Check the application
         run: python3 scripts/ci.py
 
+  # The package installs README.md, so a docs-only diff that changes it runs
+  # this lane; a render refresh or any other docs-only diff does not.
   arch-package:
     name: Arch package warden status
     needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.change_class != 'render' && needs.changes.outputs.lane_package != 'false')) }}
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || (needs.changes.outputs.lanes != 'false' && needs.changes.outputs.lane_package != 'false') || needs.changes.outputs.package_readme == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container: archlinux:base-devel
@@ -215,10 +232,9 @@ jobs:
     name: CI
     # The aggregate the main ruleset is to require in place of the per-job
     # checks. It fails when the classifier, or any other needed job, fails or
-    # is cancelled, and when a job skips that neither the render class nor
-    # its lane verdict from the changes job stood down. application and
-    # arch-package are the only jobs a verdict may stand down, on a proved
-    # render or docs diff.
+    # is cancelled, and when a job skips that neither the `lanes` waiver nor
+    # its own lane verdict from the changes job stood down. application and
+    # arch-package are the only jobs either may stand down.
     needs: [changes, application, arch-package, bot-instructions]
     if: always()
     runs-on: ubuntu-latest
@@ -254,9 +270,9 @@ jobs:
       - name: Require every needed job to succeed or to skip on its verdict
         env:
           NEEDS: ${{ toJSON(needs) }}
-          RENDER_ONLY: ${{ needs.changes.outputs.change_class == 'render' }}
+          WAIVER: ${{ needs.changes.outputs.lanes == 'false' }}
         run: >-
           classifier/.agents/skills/harness-ci/scripts/aggregate-needs
           --results "$NEEDS" --classifier changes
-          --waiver "$RENDER_ONLY" --skippable application --skippable arch-package
+          --waiver "$WAIVER" --skippable application --skippable arch-package
           --lane application=application --lane arch-package=package
