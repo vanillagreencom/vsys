@@ -241,12 +241,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: This workflow, from the tree under judgement
+      # The last step scans the pull request's merge ref, with full history,
+      # for credentials. Its scanner, installer and exclusion policy come
+      # from the default branch, so a pull request cannot disable it. It runs
+      # on every pull request, whatever the classifier said:
+      # .agents/skills/harness-ci/references/wiring.md § The CI template.
+      - name: The credential guards, from the default branch
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: guards
+          persist-credentials: false
+      - name: The tree under judgement
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
           path: subject
-          sparse-checkout: .github/workflows/ci.yml
-          sparse-checkout-cone-mode: false
           persist-credentials: false
       - name: The aggregate helper, from the default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -282,3 +293,9 @@ jobs:
             --results "$NEEDS" --classifier changes \
             --waiver "$WAIVER" --skippable application \
             --lane application=application "${package[@]}"
+      - name: Scan the pull request's commits for credentials
+        if: always() && github.event_name == 'pull_request'
+        working-directory: subject
+        run: |
+          "$GITHUB_WORKSPACE/guards/.agents/skills/commit-guards/scripts/install-gitleaks" "$RUNNER_TEMP/gitleaks"
+          PATH="$RUNNER_TEMP/gitleaks:$PATH" "$GITHUB_WORKSPACE/guards/.agents/skills/commit-guards/scripts/secrets" --against HEAD^1 --policy-root "$GITHUB_WORKSPACE/guards"
