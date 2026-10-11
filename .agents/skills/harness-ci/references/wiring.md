@@ -6,6 +6,27 @@ Every shape passes the event and the endpoints through `env:` rather than interp
 
 Every classifier checkout uses `fetch-depth: 0`. The classifier diffs two real commits; a shallow clone holds neither endpoint. An aggregate checkout does not need history.
 
+## Action pinning
+
+Review holds these rules when a consumer adopts or changes a workflow:
+
+- GitHub-owned `actions/*` use a major tag, such as `actions/checkout@v7`. A moved tag can execute changed code without a consumer commit. A harmful move by GitHub is unlikely. The cost is trust in GitHub's tag updates and review of major upgrades.
+- Third-party actions use a full commit SHA with the version in a trailing comment. A moved third-party tag can execute unreviewed code with the job's permissions. Its likelihood depends on the publisher and its account security. The cost is a reviewed pin update for each release.
+- This organization's own actions use the default-branch ref, such as `vanillagreencom/kendex/.github/actions/change-class@main`. That ref has the same trust as the default-branch checkout. A harmful change needs an incorrect or compromised merge to that branch. The cost is accepting its reviewed updates before the consumer's next refresh.
+
+Enable GitHub's Dependabot `github-actions` ecosystem in the consumer's `.github/dependabot.yml`. Dependabot opens update pull requests for action tags and commit pins. Review those updates under the rules above. Add this entry to an existing `updates` list, or use this file when none exists:
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+```
+
+[GitHub's Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference) define the configuration.
+
 ## The endpoint expressions
 
 ```yaml
@@ -48,7 +69,7 @@ jobs:
     outputs:
       harness_only: ${{ steps.classify.outputs.harness_only }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: classify
@@ -100,7 +121,7 @@ jobs:
     name: CI
     runs-on: ${{ vars.CI_RUNNER_2V || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: classify
@@ -137,14 +158,21 @@ Two rules, both about a check that never appears.
     if: always()
     runs-on: ${{ vars.CI_RUNNER_2V || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: guards
           persist-credentials: false
       - name: the classifier ran and every lane that skipped was told to
+        working-directory: guards
         env:
           RESULTS: ${{ toJSON(needs) }}
           HARNESS_ONLY: ${{ needs.changes.outputs.harness_only }}
         run: |
+          if [ ! -x .agents/skills/harness-ci/scripts/aggregate-needs ]; then
+            echo "::error::missing default-branch helper: guards/.agents/skills/harness-ci/scripts/aggregate-needs"
+            exit 1
+          fi
           printf '%s\n' "$RESULTS" |
             jq -c 'to_entries | map({job: .key, result: .value.result})'
           .agents/skills/harness-ci/scripts/aggregate-needs \
@@ -153,6 +181,8 @@ Two rules, both about a check that never appears.
 ```
 
 Both halves close a fail-open. Without `if: always()` a skipped lane skips the aggregate too, and a skipped required context satisfies the ruleset with no lane having run. `aggregate-needs` rejects a classifier that did not succeed and any skipped job that a true verdict did not authorize.
+
+Run `aggregate-needs` from the default branch on every event, including `pull_request`, `merge_group` and an adopted `push` trigger. A missing default-branch helper fails `CI` with one `::error::` line naming its path. Keep the trusted checkout unconditional. A pull request must not change the helper that judges its own skipped jobs. Land a new `aggregate-needs` flag in the helper on the default branch first. Then add the flag to `ci.yml`. A pull request that changes both fails its own CI because the default-branch helper cannot read the new flag.
 
 Every trigger the ruleset requires the context on must appear under `on:`, `merge_group` included. A required context that a merge group never produces blocks the queue forever.
 
@@ -181,12 +211,12 @@ The shape has TWO checkouts, and that is the whole point of it. The verdict deci
       HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after || github.sha }}
     steps:
       - name: the classifier, from the default branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: classifier
       - name: the tree under judgement
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           path: subject
@@ -256,7 +286,7 @@ The classify step can instead call the composite action kendex publishes, which 
           head: ${{ env.HEAD }}
 ```
 
-- **The classifier is kendex's, at the ref the step names.** The action reads `skills/harness-ci/scripts` out of its own tree, so a fix to the classifier reaches the consumer with no pull request of its own, and the class is never read out of the `classifier` checkout above. A repository outside the organization pins a tag in place of `@main`.
+- **The classifier is kendex's, at the ref the step names.** The action reads `skills/harness-ci/scripts` out of its own tree, so a fix to the classifier reaches the consumer with no pull request of its own, and the class is never read out of the `classifier` checkout above. Select the ref under [§ Action pinning](#action-pinning).
 - **`classifier` names another checkout root to read those scripts from.** kendex's own CI passes its default-branch checkout there, because in kendex the action's tree is the pull request's tree. No input carries a class.
 - **Its outputs** are `change_class`; `queue_only`, the value of `change-class`'s `queue-only:` line, which `github.sh pr-merge` asks again before the admin route; `docs_only`, the `--mode docs` verdict for the same diff; `lanes` and `lanes_cause`, below; `lane_verdicts`, one verdict per declared lane, [§ Per-lane verdicts](#per-lane-verdicts); `changed_skills`, `changed_crates` and `changed_workflows`, the blank-separated first path segments under `skills/`, `crates/` and `.github/workflows/`; `changed_paths`, one changed path per line; and `proof_reuse`, `proof_reason`, `proof_run`, `proof_tree` and `proof_record`, [§ Proof reuse](#proof-reuse). Publish the ones the lanes read as job outputs, as with `change_class` above.
 - **`lanes` is the action's answer to whether the diff runs the lanes.** It is `false` on a `render` or `trivial` class, on `docs_only=true` at any class, and where a passing run already tested the tree and covered every lane the diff would run, and `true` on every other diff. `lanes_cause` names why: `render`, `trivial`, `docs-only` or `proof-reused`, or the class where `lanes` is `true`. The classify step also prints both on a `lanes:` line in its log. A workflow gates its lanes on `lanes` and its aggregate's waiver on `lanes == 'false'`, and names no class; one that declares its lanes adds each lane's verdict as [§ Per-lane verdicts](#per-lane-verdicts) sets out. The rule lives in the action, so a change to it reaches every consumer at the ref the step names, with no workflow edit. A refused step publishes no `lanes`, and the Shape 1 status function then runs every lane.
@@ -330,7 +360,7 @@ The pieces:
 
 `standard` needs nothing and is what every unproven diff answers, so a consumer reading `standard` on every pull request is reading a missing prerequisite, not a judgement about its code.
 
-- **`render` needs a `kendex` on the runner AND a primed source mirror**, which is what the two steps above give it. `kendex verify` re-renders out of the local mirror and never fetches it, at the commits the install record names, each of those on the history of the revision the mirror resolves its source to and no older than the commit the base's record names. On a runner that has never fetched the source every package reports that where it comes from is unavailable, the proof fails and the answer is `standard`. The priming step fetches the marketplaces the judged tree's own manifest declares into the runner's cache and installs nothing in `subject`. `kendex verify` weighs a private checkout of `--head` that the classifier makes itself, never `subject`'s working tree, which here sits at the pull request's merge ref because the `subject` checkout names no `ref:`. The proof reads row, position and count evidence only from the document `kendex verify --scope project --json` prints, under a `version` the classifier pins. On a failed call, it also reads stderr for the stable remedy fields `verb=source operation=refresh`. Those fields select `cause=source-mirror-missing`; human prose grants no proof. The shared refresh caller can instead obtain the released-caller ownership proof in [SKILL.md](../SKILL.md). That proof owns only the caller. Other excluded paths still need a supporting verifier. The install step uses review-gate's `install-latest.sh` from the trusted default branch. It selects the latest stable release and resolves its installer commit. A fixed old build can reject a newer refresh's content or install record. The selected release must support `verify --json` with document version 1 and `verify --at-record`. An unsupported release answers `standard cause=verify-refused` or `standard cause=verify-document-unreadable` and runs product checks. A refresh produced by an unreleased engine needs a compatible release before it can obtain the render waiver. The candidate answer from `harness-only --mode render-candidate` gates only the install and mirror steps and grants no CI skip.
+- **`render` needs a `kendex` on the runner AND a primed source mirror**, which is what the two steps above give it. `kendex verify` re-renders out of the local mirror and never fetches it, at the commits the install record names, each of those on the history of the revision the mirror resolves its source to and no older than the commit the base's record names. On a runner that has never fetched the source every package reports that where it comes from is unavailable, the proof fails and the answer is `standard`. The priming step fetches the marketplaces the judged tree's own manifest declares into the runner's cache and installs nothing in `subject`. `kendex verify` weighs a private checkout of `--head` that the classifier makes itself, never `subject`'s working tree, which here sits at the pull request's merge ref because the `subject` checkout names no `ref:`. The proof reads row, position and count evidence only from the document `kendex verify --scope project --json` prints, under a `version` the classifier pins. On a failed call, it also reads stderr for the stable remedy fields `verb=source operation=refresh`. Those fields select `cause=source-mirror-missing`; human prose grants no proof. The shared refresh caller can instead obtain the released-caller ownership proof in [SKILL.md](../SKILL.md). That proof owns only the caller. Other excluded paths still need a supporting verifier. The install step uses review-gate's `install-latest.sh` from the trusted default branch. It selects the stable release on the trusted checkout's refresh caller major-tag commit. A checkout with no refresh caller uses the latest stable release. It fetches the installer at the selected commit. A fixed old build can reject a newer refresh's content or install record. The selected release must support `verify --json` with document version 1 and `verify --at-record`. An unsupported release answers `standard cause=verify-refused` or `standard cause=verify-document-unreadable` and runs product checks. A refresh produced by an unreleased engine needs a compatible release before it can obtain the render waiver. The candidate answer from `harness-only --mode render-candidate` gates only the install and mirror steps and grants no CI skip.
 
 **The class is never asserted by the change's author.** The script reads no label, branch name or pull request title, takes no flag that would carry one, and reads no configuration out of the tree it judges.
 
@@ -351,7 +381,7 @@ Use [GitHub's native cache controls](https://docs.github.com/en/actions/referenc
 
 Every consumer publishes `change_class` from its `changes` job and installs the render prerequisites in Shape 4. Product jobs skip only when the classifier succeeds and reports `render`. Use a status function in each job condition so a failed classifier cannot skip product checks. Feed `needs.changes.outputs.change_class == 'render'` to `aggregate-needs` as the waiver and list each product job it may skip with `--skippable`. A composite-action consumer can use its `lanes` and per-lane verdicts instead, under § Per-lane verdicts.
 
-A non-product guard job skips on `render` only when the render proof covers what it checks. The proof covers the bot instruction files comparison through the trusted sibling `bot-instructions` checker only when `kendex verify --help` advertises `--bot-instructions-from`. Every release since v1.12.2 advertises this option. The CI template installs the latest release, so its consumers may skip their bot-instructions check on `render`. A consumer that pins a verifier older than v1.12.2 keeps that check running. CodeQL, launcher or script tests, and every other guard job keep running on `render`: the proof compares rendered files only. The credential scan runs on every pull request, as the secrets bullet in [§ The CI template](#the-ci-template) states.
+A non-product guard job skips on `render` only when the render proof covers what it checks. The proof covers the bot instruction files comparison through the trusted sibling `bot-instructions` checker only when `kendex verify --help` advertises `--bot-instructions-from`. Every release since v1.12.2 advertises this option. The CI template selects the stable release on the trusted refresh caller's major-tag commit. A checkout with no refresh caller uses the latest stable release. A consumer may skip its bot-instructions check on `render` when the selected verifier advertises this option. A consumer that pins a verifier older than v1.12.2 keeps that check running. CodeQL, launcher or script tests, and every other guard job keep running on `render`: the proof compares rendered files only. The credential scan runs on every pull request, as the secrets bullet in [§ The CI template](#the-ci-template) states.
 
 Keep the classifier and required aggregate unconditional on both `pull_request` and `merge_group`. The classifier's passing render proof is the required evidence for a render-only refresh. Product jobs add no result on that class. A failed or unavailable proof grants no render waiver and keeps the product checks active. A branch name, author or label cannot replace this proof.
 
@@ -366,13 +396,14 @@ The order of this change and the ruleset change, and the check that confirms bot
 
 [`../templates/ci.yml`](../templates/ci.yml) is the workflow a repository copies to `.github/workflows/ci.yml`. Every repository reports `CI`, per [§ The CI context](#the-ci-context), so the template fixes the names every repository reports: the job carrying `CI`, and the classifying job `Classify the diff`. Keep both names and change the rest to fit.
 
+- **Adopt the package first.** Land `harness-ci` on the default branch before adopting `.github/workflows/ci.yml`. The aggregate needs the default branch's `aggregate-needs` helper on every event, per [§ Shape 3](#shape-3--merge-queues-where-the-required-context-must-report). A pull request that adds both fails `CI` because the default branch has no helper.
 - **Every lane goes in this workflow.** A job can wait only on jobs in its own workflow, so a lane left in another workflow is a lane no required context holds. Replace the placeholder `test` job with the repository's lanes, one job each: declare each in `.github/ci-lanes.conf`, marked `:event-uniform` where it does the same work on every event, publish its `lane_<name>` output from the `changes` job, and give it the same `needs:`, and the condition and aggregate arguments [§ Per-lane verdicts](#per-lane-verdicts) sets out. Name each lane in CI's `needs:`. A lane that reads a file in the docs set is the exception: it drops the `lanes` and verdict terms, runs on every diff and stays out of `--skippable` and `--lane`, per [§ Through the composite action](#through-the-composite-action). Copied as it stands, the placeholder fails, and `CI` fails with it.
 - **Each event runs the lanes its own diff calls for, less the ones a passing run of the same tree already ran.** The template runs on `pull_request` and `merge_group`, the classifier judges each event's own diff, and every gated lane reads the same answers on both, per [§ Per-lane verdicts](#per-lane-verdicts). A merge group whose tree its pull request's run tested stands down what that run covered, per [§ Proof reuse](#proof-reuse), so the template passes `covers-all-lanes: true` for a workflow with no declaration, and each lane the adopter declares carries `:event-uniform` where it does the same work on every event, as [§ Per-lane verdicts](#per-lane-verdicts) defines it. The declaration is read from the `classifier` checkout, the default branch. No line of the template reads the change class. A merge queue can batch several pull requests into one merge group, so the group classifies their combined diff, and a docs-only pull request batched with a code change runs every lane the group calls for.
 - **Superseded PR runs cancel.** The workflow groups runs by workflow, event, and pull request number. Only `pull_request` runs cancel an in-progress run in their group. Other events use their own run id, so neither running nor pending runs replace each other under [GitHub's concurrency rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency). A release or publication workflow keeps its own serialization and takes no PR cancellation.
-- **The render prerequisites are Shape 4's.** The template uses review-gate's latest-release installer from the trusted default branch. The released engine must support the render verifier's document and flags. Neither network step fails the job, and neither does the step ahead of them that reads `harness-only` out of the default branch, which the adoption pull request and its merge group do not have yet. Without any of the three the `render` class is out of reach, and every other class is judged as usual.
+- **The render prerequisites are Shape 4's.** The template uses review-gate's `install-latest.sh` from the trusted default branch. It selects the stable release on the refresh caller's major-tag commit. A checkout with no refresh caller uses the latest stable release. The released engine must support the render verifier's document and flags. The network steps and the render-candidate step permit failure in the classifier job. A missing prerequisite prevents the `render` class. Every other class is judged as usual.
 - **Every job runs on `vars.CI_RUNNER_2V`, falling back to `ubuntu-latest`.** The organization variable names the shared runner; a repository without it runs on GitHub's hosted runner.
-- **CI is Shape 3's aggregate.** It runs under `always()`, and `aggregate-needs` accepts a skipped lane only where the classifier succeeded and a verdict stood it down, per [§ Per-lane verdicts](#per-lane-verdicts).
-- **The secrets step scans each pull request's commits with default-branch code.** Land commit-guards on the default branch before adopting the template. An adoption pull request that adds both fails the secrets step because the `guards` checkout has no installer or scanner. The `guards` checkout supplies the pinned gitleaks installer and the scanner, including its libraries. The separate `subject` checkout holds the pull request's merge ref and full history. The step runs in `subject` and executes the scripts by their absolute paths in `guards`, so an edit to the pull request's scanner cannot disable the scan. Its `--policy-root` reads the exclusion list and its setting from `guards` too, so a pull request that excludes its own credential is still refused. A scanner without `--policy-root` refuses the flag on every pull request, so a repository that updates its copy of the template first merges the kendex refresh that gives the default branch a commit-guards with the flag. It runs on every pull request, including one the classifier clears. A repository without commit-guards deletes this step and the `guards` checkout.
+- **CI is Shape 3's aggregate.** It runs under `always()`. Its `guards` checkout supplies the default-branch helper on every event, under [§ Shape 3](#shape-3--merge-queues-where-the-required-context-must-report). `aggregate-needs` accepts a skipped lane only where the classifier succeeded and a verdict stood it down, per [§ Per-lane verdicts](#per-lane-verdicts).
+- **The secrets step scans each pull request's commits with default-branch code.** Land commit-guards on the default branch before adopting the template. An adoption pull request that adds both fails the secrets step because the `guards` checkout has no installer or scanner. The `guards` checkout supplies the pinned gitleaks installer and the scanner, including its libraries. The separate `subject` checkout holds the pull request's merge ref and full history. The step runs in `subject` and executes the scripts by their absolute paths in `guards`, so an edit to the pull request's scanner cannot disable the scan. Its `--policy-root` reads the exclusion list and its setting from `guards` too, so a pull request that excludes its own credential is still refused. A scanner without `--policy-root` refuses the flag on every pull request, so a repository that updates its copy of the template first merges the kendex refresh that gives the default branch a commit-guards with the flag. It runs on every pull request, including one the classifier clears. A repository without commit-guards deletes only the secrets step. Keep `guards` for the aggregate helper.
 
 [`tests/ci-template.test.sh`](https://github.com/vanillagreencom/kendex/blob/main/skills/harness-ci/tests/ci-template.test.sh) runs the template's `lanes` step, evaluates its job outputs and conditions per event and action answer, and hands its waiver and aggregate arguments to the real `aggregate-needs`. It also runs the secrets step against a pull request that replaces its scanner and installer with successful exits, excludes every path, and adds a test credential. The trusted scanner still refuses that credential.
 
