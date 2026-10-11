@@ -186,11 +186,32 @@ BOT_REMOTE_NAME = ""
 # Where the decider skill keeps architecture decision records.
 DECISIONS_DIR = "docs/decisions"
 
-# Full validation runs at development completion. Submit reuses that result
-# for the same commit; CI runs the full suites independently. scripts/ci.py
-# holds the Python suites and the dependency, lint, type, test and build
-# checks.
+# Full validation runs at development completion, except in a round that
+# DEV_VALIDATE_CI_CONTEXT below leaves to CI. Submit reuses the round's
+# result for the same commit; CI runs the full suites independently.
+# scripts/ci.py holds the Python suites and the dependency, lint, type, test
+# and build checks.
 DEV_VALIDATE_CMD = "python3 scripts/ci.py && .agents/skills/bot-instructions/scripts/bot-instructions check"
+
+# The required status check whose pull request run covers DEV_VALIDATE_CMD
+# (.agents/skills/dev/README.md; orch's `dev-validate-run --help`, mode ci).
+# CI is the context ruleset "main required checks" (24148612) requires on
+# main, and it runs everything DEV_VALIDATE_CMD runs. Empty, dev-validate-run
+# validates locally (ci-fallback=setting-empty) and push-first saves no
+# validation time; only the submit CI wait still shrinks. dev-validate-run
+# --help (mode ci, cause class-uncovered) and its ci_class_covered name the
+# diffs that keep local validation; a change to this file is one of them.
+# A covered fix round on an open pull request also leaves validation to CI.
+DEV_VALIDATE_CI_CONTEXT = "CI"
+
+# Publication order, read by orch's pr-order (`pr-order --help`). push-first
+# publishes a draft pull request after the implementation commit and runs
+# internal review while CI runs; submit waits for required CI on the
+# published head, and review completes before merge. Enabled on VSY-224's
+# measured result: in a covered round, the local full run (median 100 s per
+# passing run) leaves the critical path, and pull request CI (median 175 s)
+# runs during review.
+ORCH_PR_ORDER = "push-first"
 
 # Queue-only paths beside the shipped list, which already names
 # .github/workflows/*, this file and the harness-ci scripts: a change to one
