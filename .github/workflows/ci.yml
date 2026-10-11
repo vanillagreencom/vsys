@@ -19,13 +19,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Each action from outside vanillagreencom is pinned to a commit SHA: its
+# owner can move a tag to other code, but a SHA names one fixed tree.
 jobs:
   # kendex's change-class action classifies the diff:
   # .agents/skills/harness-ci/references/wiring.md § Through the composite action.
   changes:
     name: Classify the diff
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The render proof re-renders every installed item, so its cost grows
+    # with the install rather than with the diff.
+    timeout-minutes: 20
     # `actions: read` is what the action reads this workflow's earlier runs
     # with, to stand down the lanes a passing run of the same tree already
     # ran: .agents/skills/harness-ci/references/wiring.md § Proof reuse.
@@ -246,6 +250,8 @@ jobs:
       # from the default branch, so a pull request cannot disable it. It runs
       # on every pull request, whatever the classifier said:
       # .agents/skills/harness-ci/references/wiring.md § The CI template.
+      # It runs last under always(), so a scan failure skips no aggregate
+      # step, and a scan failure and an aggregate failure show in one run.
       - name: The credential guards, from the default branch
         if: github.event_name == 'pull_request'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -259,6 +265,8 @@ jobs:
           fetch-depth: 0
           path: subject
           persist-credentials: false
+      # aggregate-needs decides which skipped jobs pass, so it runs from the
+      # default branch: a pull request cannot edit the helper that judges it.
       - name: The aggregate helper, from the default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
