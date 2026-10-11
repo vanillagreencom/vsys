@@ -24,7 +24,10 @@ Standalone: synthesize from conversation context, reading the relevant files fir
 #[N] | [conversation] | [location or "TBD"]
 Description: "[WHAT IS WRONG]"
 Recommendation: "[HOW TO FIX]"
+Owner: [OWNER]
 ```
+
+Include the `Owner:` line only when the finding has an `owner`.
 
 Output: [Lane Output](../references/skill-rules.md#lane-output).
 
@@ -133,7 +136,7 @@ Before stamping or delegating the round, check its base:
    .agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json --source [SOURCE] --pr-open [PR_OPEN] [--adds "[REPO_RELATIVE_PATHS]"]
    ```
 
-   A `repeat-location` exit takes [finding-disposition.md § Recurrence](../references/finding-disposition.md#recurrence). Add its answer to the items file and retry the same round id: the refusal wrote no record. Every other nonzero exit names a usage or environment failure. Report it and stop.
+   A `repeat-location` exit takes [finding-disposition.md § Recurrence](../references/finding-disposition.md#recurrence). Add its answer to the items file and retry the same round id: the refusal wrote no round record. Every other nonzero exit names a usage or environment failure. Report it and stop.
 
    When a reviewer or the orchestrator decides a cut, mint a fresh round id, delegate cutting back to the Done-when as its items, and stamp the record with `--cut`:
 
@@ -208,7 +211,7 @@ Before stamping or delegating the round, check its base:
    | `accept` | fail | The artifact claims done but the worktree is dirty or the commit is missing. Re-read git ONCE after a brief pause, then re-delegate only the missing step: commit, or revert leftover work. |
    | `wait` | pass | Do NOT re-run the fix and do NOT accept on git alone. Send ONE report-only nudge: *"re-run only your completion tail — write your dev-return artifact (`dev-return-write --kind fix … --round-id [DEV_ROUND_ID]` with one `--item` per review item; if the delegation is gone from your context, your item set is on disk at `tmp/dev-round-[ISSUE_ID]-[DEV_ROUND_ID].json`) and re-report your item decisions; do NOT re-run the fix."* Accept only when a valid artifact for THIS round appears. |
    | `wait` | fail | **Not done.** Wait to the deadline, then escalate per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure). |
-| `retry` | any | An artifact for THIS round exists but fails a gate. The check's `reason` names it. `unapproved_additions` also returns every refused path in `files`; start a fresh round that names each deliberate path in `Adds:`, or order the files cut. For a structurally valid artifact with a failing `validate`, run [dev-start.md § Store Proposed Rules](dev-start.md#store-proposed-rules) and [dev-start.md § Store Near-Ceiling Lines](dev-start.md#store-near-ceiling-lines), then end the workflow and report without another validation round. An identity/schema failure gets the report-only tail-rewrite nudge. `comparison_failed` means git cannot compare the round's recorded base commit against HEAD, so the dev agent has nothing to repair; mint a fresh round. `additions_unattributable` means a rebase moved that base off the branch, so the round's additions were never gated and no path is named. A fresh round does not recover the gate — `dev-round-write` stamps its `base_sha` at the rebased HEAD, which already contains anything this round added — so read the blocked round's own commits for paths in [`../schemas/dev-round.md` § Protected additions](../schemas/dev-round.md#protected-additions), name each deliberate one in the fresh round's `Adds:` line, and cut the rest before delegating it. That `Adds:` line is the authorization itself here, not something the fresh round's gate re-derives from its base, which is why the reading is not optional. The blocked round then closes through the fresh round, as it does for any other retry reason. `mode_mismatch` means the receipt records another validation mode than this round runs, so its pass does not cover the round the way submit reads it; send ONE nudge to validate as [dev-fix.md § 3](../../dev/workflows/dev-fix.md#3-validate-and-commit) starts the run and rewrite the artifact, without re-running the fix. |
+| `retry` | any | An artifact for THIS round exists but fails a gate. The check's `reason` names it. `unapproved_additions` also returns every refused path in `files`; start a fresh round that names each deliberate path in `Adds:`, or order the files cut. For a structurally valid artifact with a failing `validate`, treat that verdict as final under [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate), after any permitted in-round correction and rerun. Run [dev-start.md § Store Proposed Rules](dev-start.md#store-proposed-rules) and [dev-start.md § Store Near-Ceiling Lines](dev-start.md#store-near-ceiling-lines), then end the workflow and report without another validation round. An identity/schema failure gets the report-only tail-rewrite nudge. `comparison_failed` means git cannot compare the round's recorded base commit against HEAD, so the dev agent has nothing to repair; mint a fresh round. `additions_unattributable` means a rebase moved that base off the branch, so the round's additions were never gated and no path is named. A fresh round does not recover the gate — `dev-round-write` stamps its `base_sha` at the rebased HEAD, which already contains anything this round added — so read the blocked round's own commits for paths in [`../schemas/dev-round.md` § Protected additions](../schemas/dev-round.md#protected-additions), name each deliberate one in the fresh round's `Adds:` line, and cut the rest before delegating it. That `Adds:` line is the authorization itself here, not something the fresh round's gate re-derives from its base, which is why the reading is not optional. The blocked round then closes through the fresh round, as it does for any other retry reason. `mode_mismatch` means the receipt records another validation mode than this round runs, so its pass does not cover the round the way submit reads it; send ONE nudge to validate as [dev-fix.md § 3](../../dev/workflows/dev-fix.md#3-validate-and-commit) starts the run and rewrite the artifact, without re-running the fix. |
 
 6. **Record the outcome** — one write per item, and the item's own text never enters a shell word:
 
@@ -239,14 +242,14 @@ Before stamping or delegating the round, check its base:
    A fixed item's root cause is recorded too, in `pr_comment_review.patched_causes` — the one record [finding-disposition.md § Recurrence](../references/finding-disposition.md#recurrence) reads, whichever loop patched the cause. `pr-review`, `qa-review`, and `review` rounds reach that rule through this step, and a cause missing from it is one the next pass reads as never patched and answers with an ordinary patch round. One entry per fixed item, through a file like the entry above:
 
    ```json
-   {"cause": "[ONE_LINE]", "commit": "[SHA]", "location": "[LOCATION]"}
+   {"cause": "[ONE_LINE]", "commit": "[SHA]", "location": "[LOCATION]", "owner": "[OWNER]"}
    ```
 
    ```bash
    .agents/skills/orch/scripts/workflow-state append-file [ISSUE_ID] pr_comment_review.patched_causes tmp/patched-cause-[ISSUE_ID].json
    ```
 
-   Copy `[LOCATION]` from the fixed item's header as written.
+   Copy `[LOCATION]` from the fixed item's header as written. Copy `[OWNER]` from its `Owner:` line as written; omit the `owner` key when the item has no such line.
 
    ```bash
    .agents/skills/orch/scripts/workflow-state increment [ISSUE_ID] cycles

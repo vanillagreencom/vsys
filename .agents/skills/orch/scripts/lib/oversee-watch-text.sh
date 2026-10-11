@@ -414,6 +414,9 @@ The long pass's events, checked and reported in this order:
                              relaunch; a late pass reports the current interval
                              The counts are review_rounds, fix_receipts,
                              validation_runs, restacks, repeated_class_rounds.
+                             A later distinct patch commit repeats an equal
+                             cause or a shared location/owner key, once per
+                             commit. Owner comes from the item's Owner: line.
                              Unavailable counts read unread. Definitions are
                              in references/oversee-events.md, lane-long.
                              A parked lane reads none of its stopped disk
@@ -571,11 +574,11 @@ The long pass's events, checked and reported in this order:
                              to the owner as an ask on the same item, naming
                              box, check, Where and deadline. The overseer
                              records the person's reading and closes the ask.
-  verifying <item> box=<N> trigger=<JSON> status=<due|overdue|blocked|waiting> deadline=<UTC> blocked_by=<ids|-> reading=<JSON> where=<JSON> why=<JSON>
+  verifying <item> box=<N> trigger=<JSON> status=<due|overdue|blocked|waiting> deadline=<UTC|-> [merged=<UTC>] blocked_by=<ids|-> reading=<JSON> where=<JSON> why=<JSON>
                              every open post-merge box on every long pass,
                              before active/queued lane filtering. Overdue
                              takes priority at or past the deadline,
-                             even with a blocker or an unfired trigger.
+                             even with a blocker, when a deadline exists.
                              Otherwise blocked means an open blocker, waiting
                              means an unfired trigger, and due means ready.
                              blocked_by names open blockers, or - for none.
@@ -583,8 +586,10 @@ The long pass's events, checked and reported in this order:
                              use the first matching publication after merge.
                              In a repository where the item merged, that
                              release must contain its latest merge commit.
-                             An unfired release has a UTC deadline at merge
-                             plus 72 hours. Invalid items report their parser
+                             An unfired release has deadline=- and merged=<UTC>.
+                             Its deadline starts at publication, within 72 hours.
+                             Merge triggers keep their deadline from merge.
+                             Invalid items report their parser
                              error on stderr; the pass reads the next item.
                              Printed with the event block or heartbeat. An item
                              with none prints verifying <item> boxes=0.
