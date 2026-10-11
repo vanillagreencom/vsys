@@ -261,6 +261,12 @@ class CiWorkflow(unittest.TestCase):
             self.assertEqual(shlex.split(command(self.step(changes, header)))[0], executable)
         for header in ("id: kendex", "id: mirror"):
             self.assertEqual(scalar(self.step(changes, header), "if"), "steps.render-reach.outputs.render_candidate == 'true'")
+        # Unbounded, a hung install or refresh runs to the job's timeout and
+        # fails the whole changes job, where continue-on-error would have let
+        # the classifier run on.
+        kendex = self.step(changes, "id: kendex")
+        self.assertEqual((scalar(kendex, "timeout-minutes"), scalar(kendex, "shell")), ("3", "bash"))
+        self.assertEqual(scalar(self.step(changes, "id: mirror"), "timeout-minutes"), "5")
         classify = self.step(changes, "id: classify")
         self.assertEqual(scalar(classify, "uses"), ACTION)
         # The lane declaration comes from the default branch's checkout, and
@@ -274,6 +280,9 @@ class CiWorkflow(unittest.TestCase):
             ("covers-all-lanes", "          lanes-from: classifier\n", "          lanes-from: classifier\n          covers-all-lanes: true\n"),
             ("lanes-from-subject", "lanes-from: classifier", "lanes-from: subject"),
             ("render-reach-subject", "classifier/.agents/skills/harness-ci/scripts/harness-only", "subject/.agents/skills/harness-ci/scripts/harness-only"),
+            ("kendex-timeout", "        timeout-minutes: 3\n", "        timeout-minutes: 30\n"),
+            ("kendex-shell", "        shell: bash\n", "        shell: sh\n"),
+            ("mirror-timeout", "        timeout-minutes: 5\n        run: kendex source refresh\n", "        timeout-minutes: 50\n        run: kendex source refresh\n"),
         )
         for control, old, new in controls:
             with self.subTest(control=control):
