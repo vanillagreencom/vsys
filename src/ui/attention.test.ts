@@ -435,7 +435,7 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
     }),
     laneSnapshot({
       id: "b",
-      name: "kendex nclaude",
+      name: "kendex 9claude",
       pids: [21],
       unconfined: true,
     }),
@@ -457,7 +457,7 @@ test("unconfined lanes are one card that states the launcher conclusion", () => 
   );
   if (!card) throw new Error("Expected one unconfined card");
   expect(card.title).toBe(
-    "2 lanes run outside agents.slice: kendex hclaude PID 40, kendex nclaude PID 40",
+    "2 lanes run outside agents.slice: kendex hclaude PID 40, kendex 9claude PID 40",
   );
   expect(said(card)).toContain("shadowed");
   expect(said(card)).toContain("/home/user/.shadow/bin");

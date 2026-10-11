@@ -2,7 +2,7 @@
 #
 # Run an agent harness inside agents.slice (CPUWeight=25 -- agents use the whole
 # idle machine but yield to interactive work under contention), with build/test
-# concurrency capped. Used by the per-account wrappers (1claude/nclaude/...) and
+# concurrency capped. Used by the per-account wrappers (1claude/9claude/...) and
 # safe to put in front of any harness command.
 #
 # WHY: agents run `cargo test`, and libtest defaults to one thread per core --
