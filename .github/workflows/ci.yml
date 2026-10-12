@@ -255,8 +255,7 @@ jobs:
       # .agents/skills/harness-ci/references/wiring.md § The CI template.
       # It runs last under always(), so a scan failure skips no aggregate
       # step, and a scan failure and an aggregate failure show in one run.
-      - name: The credential guards, from the default branch
-        if: github.event_name == 'pull_request'
+      - name: the credential guards and skip judge, from the default branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
@@ -267,15 +266,6 @@ jobs:
         with:
           fetch-depth: 0
           path: subject
-          persist-credentials: false
-      # aggregate-needs decides which skipped jobs pass, so it runs from the
-      # default branch: a pull request cannot edit the helper that judges it.
-      - name: The aggregate helper, from the default branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          path: classifier
-          sparse-checkout: .agents/skills/harness-ci/scripts
           persist-credentials: false
       # Kept beside aggregate-needs: that helper reads only the results it is
       # handed, so it cannot see a job missing from needs.
@@ -300,7 +290,7 @@ jobs:
           package=(--skippable arch-package --lane arch-package=package)
           # A README.md change runs arch-package whatever the verdicts say.
           if [ "$PACKAGE_README" = true ]; then package=(); fi
-          classifier/.agents/skills/harness-ci/scripts/aggregate-needs \
+          guards/.agents/skills/harness-ci/scripts/aggregate-needs \
             --results "$NEEDS" --classifier changes \
             --waiver "$WAIVER" --skippable application \
             --lane application=application "${package[@]}"

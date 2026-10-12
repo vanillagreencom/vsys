@@ -111,7 +111,10 @@ class CiWorkflow(unittest.TestCase):
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)
         self.root = Path(self.scratch.name)
-        (self.root / "classifier").symlink_to(ROOT, target_is_directory=True)
+        # The changes job reads its helpers from `classifier`, the ci job from
+        # `guards`: both are default-branch checkouts.
+        for checkout in ("classifier", "guards"):
+            (self.root / checkout).symlink_to(ROOT, target_is_directory=True)
 
     def step(self, job, header):
         return block(job, "      - " + header, 6)
@@ -289,6 +292,31 @@ class CiWorkflow(unittest.TestCase):
                 workflow = self.defective(old, new)
                 with self.assertRaises(AssertionError):
                     self.check_wiring(workflow)
+
+    def check_guards(self, workflow):
+        ci = block(workflow, "  ci:", 2)
+        steps = re.split(r"^      - ", ci, flags=re.M)[1:]
+        trusted = [step for step in steps if "uses: actions/checkout@" in step and "ref: ${{ github.event.repository.default_branch }}" in step]
+        self.assertEqual(len(trusted), 1, trusted)
+        guards = trusted[0]
+        self.assertIn("          path: guards\n", guards)
+        # aggregate-needs runs on every event, so its checkout has no if:.
+        self.assertNotRegex(guards, r"(?m)^ +if:")
+        self.assertEqual(set(re.findall(r"([\w-]+)/\.agents/skills/", ci)), {"guards"})
+
+    def test_ci_job_reads_every_helper_from_one_guards_checkout(self):
+        self.check_guards(self.text)
+        controls = (
+            ("guards-if", "      - name: the credential guards and skip judge, from the default branch\n", "      - name: the credential guards and skip judge, from the default branch\n        if: github.event_name == 'pull_request'\n"),
+            ("guards-path", "          path: guards\n", "          path: trusted\n"),
+            ("aggregate-classifier", "          guards/.agents/skills/harness-ci/scripts/aggregate-needs", "          classifier/.agents/skills/harness-ci/scripts/aggregate-needs"),
+            ("second-checkout", "      # Kept beside aggregate-needs", "      - name: The aggregate helper, from the default branch\n        uses: actions/checkout@v7\n        with:\n          ref: ${{ github.event.repository.default_branch }}\n          path: classifier\n      # Kept beside aggregate-needs"),
+        )
+        for control, old, new in controls:
+            with self.subTest(control=control):
+                workflow = self.defective(old, new)
+                with self.assertRaises(AssertionError):
+                    self.check_guards(workflow)
 
 
 if __name__ == "__main__":
