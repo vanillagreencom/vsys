@@ -35,7 +35,7 @@ Do not trade correctness for a smaller change. A failed check limits the evidenc
 
 - **One lifetime, one owner.** Resources with a shared lifetime have one owner whose teardown releases them. Resources with independent lifetimes have separate owners, each responsible for acquisition, recovery and release. Phases of one lifetime are private functions, not separate owners.
 - Acquire ownership before registering cleanup. A pathname alone grants no right to replace or delete a file; acquire a scratch file by exclusive creation. A saved process number grants no right to signal a later process with that number. Keep a process handle or verify identity while the ownership mechanism prevents reuse.
-- A child launch defines its environment explicitly, in production and in tests. The launch owner selects inherited values it needs instead of passing the caller's whole environment.
+- A child launch that changes identity, credentials or harness home selects the inherited values it needs, in production and in tests. A transparent launcher passes the caller's environment and states that contract.
 - Test access must not expand the shipped API or add fixture commands to a product executable. Keep fixtures in the stack's test boundary. A private readback alone is not a defect. Keep operational diagnostics with a named production consumer documented at their declaration.
 - Compatibility probing states the minimum upstream version it serves and the version that removes it. An undated shim is a workaround under § Correctness.
 - Narrow a wire-format union in one guard module. Call sites consume that result instead of repeating casts.
@@ -51,7 +51,7 @@ Integrate through the system's documented interface. Read its current documentat
 
 ## Prove Your Guards
 
-A new or modified production guard ships with one must-fail control per independent rule. Plant a defect that reaches that rule and observe the guard reject it. Rows for the same rule share a control; a defect for one rule cannot prove another. Mutate a disposable copy, never the tracked source. Put the disposable copy in a `mktemp -d` directory outside the worktree and remove that directory after the control runs. Build compiled controls there with their own target directory under that root's `tmp/`; for cargo, set `CARGO_TARGET_DIR` for the control's build and test commands only, never export it into the lane's environment. Keep the matched text when removing behavior: deleting the code under test only proves the assertion runs. Reject assertions that also match skip notes, fixtures that never reach the guarded bound or claimed workload, and harness code that keeps alive what the implementation should.
+Apply the must-fail control requirement in [§ Tests](#tests). Mutate a disposable copy, never the tracked source. Put the disposable copy in a `mktemp -d` directory outside the worktree and remove that directory after the control runs. Build compiled controls there with their own target directory under that root's `tmp/`; for cargo, set `CARGO_TARGET_DIR` for the control's build and test commands only, never export it into the lane's environment. Keep the matched text when removing behavior: deleting the code under test only proves the assertion runs. Reject assertions that also match skip notes, fixtures that never reach the guarded bound or claimed workload, and harness code that keeps alive what the implementation should.
 
 - An automated text edit asserts its match count and that the file changed, or uses an edit tool that refuses no match. Resolve or refuse symlinks before replacing a path.
 - An inventory check discovers members from the artifact under test, not a second list. A coverage floor detects a broken extractor. Under-inclusion also needs a required member; over-inclusion needs a forbidden member. State which direction remains unproved. Behavior tests keep expected values independent of the implementation.
@@ -65,7 +65,9 @@ A new or modified production guard ships with one must-fail control per independ
 
 ## Tests
 
-- A surface is a coherent contract or state machine. The stack reference defines its test placement. Each changed surface with a test takes at least one must-fail control that turns that test red. The control belongs to the instrument, not to each row; production guards follow § Prove Your Guards. A control using input, a fixture or an uncompiled source copy stays in the test and runs with it. A control requiring a compiled-source edit is shown once and recorded in the commit message; its absence from the current test file proves no omission.
+- A surface is a coherent contract or state machine. The stack reference defines its test placement. Each changed surface with a test takes at least one must-fail control that turns that test red. The control belongs to the instrument, not to each row.
+- A new or modified production gate, guard or check takes one must-fail control per independent rule. Plant a defect that reaches that rule and observe the check reject it. Rows for the same rule share a control. A defect for one rule cannot prove another. Follow [§ Prove Your Guards](#prove-your-guards) for control mechanics.
+- Write the required controls with the new or changed check. Ship them in its first commit. A control using input, a fixture or an uncompiled source copy stays in the test and runs with it. A control requiring a compiled-source edit is shown once and recorded in the commit message; its absence from the current test file proves no omission.
 - If no production edit can redden the test, state why and what the test establishes. Assert the guarantee, not the mechanism used to provide it.
 - No test asserts human-readable wording in messages, docs, help text or comments. Assert typed categories, error kinds or structured fields. The only exception is output another program parses: test its machine-read line or format and name that consumer. Delete pins on the test harness's own configuration.
 - No test pins a fixed count of data that grows: a dictionary's size, a table's row count, a catalog's member total. Assert the members the contract names, or the floor the contract fixes.
@@ -95,7 +97,7 @@ Load only the references for the code being changed:
 
 ## Comments and Prose
 
-A comment states why, or a constraint the code cannot show. No history, review notes, code restatements or change logs. Delete a comment that adds nothing. Keep claims within what the adjacent code establishes. The optional audit is commit-guards CHECKS.md § comments.
+A comment states why, or a constraint the code cannot show. No history, review notes, code restatements or change logs. Header help that a script prints is CLI documentation, not narration. Delete a comment that adds nothing. Keep claims within what the adjacent code establishes. The optional audit is commit-guards CHECKS.md § comments.
 
 Markdown follows [docs-writing](../docs-writing/SKILL.md). Commit bodies explain intent, not the diff.
 

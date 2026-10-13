@@ -47,7 +47,7 @@ ot_message() { # REASON FIELD=VALUE...
     preference-command-invalid) text='A model-free --cmd using ORCH_LANE_PREFERENCE must name the plain harness as its first word. The remaining arguments must suit the selected harness. Name an explicit model to keep an arbitrary shell command unchanged.' ;;
     lane-resolution-failed) text='The lanes helper failed to select an account.' ;;
     copilot-pool-walled) text='Every Pi account this launch could spend is at or above the usage threshold on its Copilot pool, as the lane host'"'"'s accounts row reads it or, where no row reads it, as ORCH_LANE_COPILOT_POOL states it. Nothing was launched. A pool the host read reopens at the reset its record names as binding_resets_at; a stated reading moves only when the owner restates it. The keyed lanes: line above names the pool and the threshold.' ;;
-    lane-provider-unmeasured) text='Nothing measures the account this Pi launch spends: its model names no provider, or a provider other than pi-claude/ (a Claude seat) and github-copilot/ (the Copilot pool), the two whose accounts are judged. Nothing was launched: an unmeasured account is not one with room. Spell the model pi-claude/<model> or github-copilot/<model>, or pass --provider beside a bare --model.' ;;
+    lane-provider-unmeasured) text='No reading measures this Pi account. For anthropic/, repair the provider harness=pi accounts row with credit-limit, credit-spent, credit-remaining and credit-expires. Its status and detail name a failed token reading. A local host reads no API credit. Other supported providers are pi-claude/ and github-copilot/.' ;;
     host-pi-claude-seat) text='A Pi launch on a pi-claude/ model spends a Claude seat, and the lane host protocol hands a Pi lane its account as its Pi root, so it cannot carry that seat into the host: pi-claude-bridge would run on the host'"'"'s own Claude login, not the seat judged here. Nothing was picked, judged or created. Launch it with --host local, or on a github-copilot/ model.' ;;
     copilot-pool-unstated) text='This Pi launch spends the Copilot pool, and neither a lane host accounts row nor ORCH_LANE_COPILOT_POOL reads a pool for any Pi account, so nothing measures what it would spend. Nothing was launched, and waiting changes nothing. The fix= line above names the read that failed and its repair (lanes --help).' ;;
     lane-directory-missing) text='The specified lane directory does not exist.' ;;
@@ -64,7 +64,7 @@ ot_message() { # REASON FIELD=VALUE...
     launch-trust-missing) text='The folder-trust entry for this launch directory could not be made in the config this launch would read. Nothing was launched: the harness would open on the folder-trust question and wait there for an answer nobody at the pane gives. Remedy by reason: trust-refused is an answer already recorded for this directory that is not trust, which this will not overwrite, so change it where it was written or launch somewhere else; config-unreadable is the account config present and unreadable or unparseable, a dangling shim link being the usual codex cause, so relink or repair it, and for a claude config dir .claude.json the parser'"'"'s own words are printed under this line, the position to repair the file at; account-store is the account transcript directory that could not be made; home-create is the private CODEX_HOME under the account, or the claude config dir, that could not be made, and home-path, home-link and home-entry are that CODEX_HOME that could not be built, so check that the account directory is writable, home-entry naming a real file or directory sitting where a link to the account belongs; config-write is that home config.toml, or a claude config dir .claude.json, that could not be written, the claude writer'"'"'s own words printed under this line the same way, and config-install the rename over it that failed; entry-unreadable is the entry written and not read back. The lane host provider makes this entry for a sandboxed lane instead.' ;;
     lane-model-walled) text='The account has no usage window left for the model this launch passes, once the lanes already on it spend what they are expected to; bucket names the window whose projected room decided, the 5-hour session window where the lanes on the account spend it before it resets and otherwise the shared or model window that binds, pct names how much of it is used, and projected-headroom the room left after that expected burn, or none where the claims could not be read. Nothing was launched: the session would open on a usage banner. A window nobody could measure is lane-model-unreadable instead. The threshold that judged is on the keyed lanes: line above.' ;;
     lane-model-unreadable) text='The lane could not be read for the model this launch passes. Nothing was launched: an unread window is not an empty one.' ;;
-    lane-credit-refused) text='The cloud grant does not admit this launch. Its refusal names no retry time because a plan reset cannot reopen the grant.' ;;
+    lane-credit-refused) text='The cloud or Anthropic API grant does not admit this launch. cause names the credit pool. Both grants use ORCH_LANE_CLOUD_CREDIT_FLOOR. retry-at=none means no known retry time because a plan reset cannot reopen the grant.' ;;
     host-credential-dead) text='The account read expired, and the lane host reports holding that same account. Nothing was launched. The expired copy is the credential this machine holds, which could not be renewed, or the copy the provider holds where its accounts row reports the account expired: lanes list names which in its THROUGH column. Remedy for THROUGH local: log in again on this machine for that config directory, or for a codex lane run the codex command lanes list names in its DETAIL; a provider that re-seeds the host from that directory at every create, as the reference provider does, sends this dead copy again. For THROUGH host, renew the credential the provider holds. A RELAUNCH onto this same account proceeds instead, on the copy the provider installed; a window read for the account walls either shape.' ;;
     host-relaunch-credential) text='Nothing here measured this account, and the lane host reports holding it, so the relaunch proceeds on the copy the provider installed. Nothing checked that copy is live. The resumed session reports its own usage banner, which the watch reads as usage-limit. A window this machine CAN read still walls a relaunch: an account at or above --lane-max-pct is refused as lane-model-walled, hosted or not.' ;;
     host-accounts-unanswered) text='The lane host could not say which accounts it holds, so this launch is judged on the usage windows this machine reads, exactly as an unhosted one is. Where a keyed lanes: line sits above this one, it names the provider failure; where none does, the read of that answer failed here. A provider that does not implement the optional accounts verb is not reported at all.' ;;
@@ -114,7 +114,7 @@ ot_message() { # REASON FIELD=VALUE...
     repo-missing) text='Specify a repository when GitHub cannot resolve it.' ;;
     item-repo-unresolved) text='The checkout repository or configured Linear team could not be resolved. Nothing was launched.' ;;
     item-foreign) text='This item belongs to another repository. Nothing was launched.
-fix=File a prioritized issue in that repository and send it with lane-mail peer send --repo [REPO]; with no live repository overseer, ask a live registered master, else the owner, with a recommendation to launch its overseer.' ;;
+fix=File a prioritized issue in that repository and send it with lane-mail peer send --repo [REPO]; with no live repository overseer, ask the live registered Jarvis session, else the owner, with a recommendation to launch its overseer.' ;;
     overseer-foreign) text='The checkout this launch runs from belongs to another repository than the fleet overseer'"'"'s and is not one that overseer lists in ORCH_CONNECTED_REPOS, so its lane would work there while this fleet records and watches it. Nothing was launched. repo is that repository and overseer the overseer'"'"'s, each its origin OWNER/REPO, or its main checkout directory where no GitHub origin reads. Where repo is an OWNER/REPO, add it to ORCH_CONNECTED_REPOS in the overseer repository'"'"'s settings in a reviewed change; or mail that repository'"'"'s overseer with lane-mail peer send --repo [REPO] (peer-mail.md § Addressing).' ;;
     overseer-unjudged) text='Whether this launch runs in the fleet overseer'"'"'s repository or one it lists could not be judged. Nothing was launched. cause=state-read is the --state-dir'"'"'s oversee state, which workflow-state could not resolve or jq could not read, with their own words above; overseer-root is the directory the state records as the overseer'"'"'s, or, where it records none, the directory workflow-state resolves the --state-dir to, below a .git entry, and checkout-root the checkout this launch runs from, each not a git checkout git can read, with git'"'"'s own words above; setting is ORCH_CONNECTED_REPOS, which orch-env could not read from the overseer'"'"'s directory, with its own words above; origin is the checkout this launch runs from, whose origin remote is absent, unreadable or not a github.com URL, so the list cannot be matched.' ;;
     claim-unrecorded) text='The previous claim is missing, so under --lane auto the next item cannot be spread off its account. The batch stops.' ;;
@@ -298,6 +298,14 @@ Options:
                     as lanes failing, which a retry can answer. That
                     lane runs under PI_CODING_AGENT_DIR, its
                     settings and carrier read there for a fleet launch. A pi
+                    anthropic/ model spends the provider account's API grant,
+                    read from its harness=pi credit fields. The provider maps
+                    the chosen Claude home to its remote Pi root at create.
+                    The grant must exceed ORCH_LANE_CLOUD_CREDIT_FLOOR,
+                    shared with cloud credit. A spent or expired grant is
+                    lane-credit-refused cause=api-credit retry-at=none.
+                    An unread grant is lane-provider-unmeasured; repair the
+                    provider row. A local host reads no API credit. A pi
                     model naming no provider, or any other provider, is
                     refused as lane-provider-unmeasured, named or `auto`. A
                     judged lane is
@@ -433,10 +441,15 @@ Options:
                     host is this machine's, sent again. The provider's
                     `accounts` answer is what says which accounts it holds, and
                     nothing here reads the secret itself.
-                    WHAT THE ANSWER DECIDES. On a named lane, cloud-credit
-                    refusal is judged first and reported as lane-credit-refused.
-                    The credential and unreadable answers below apply only
-                    where that refusal is absent. Both --lane forms judge the
+                    WHAT THE ANSWER DECIDES. Cloud and API credit refusals
+                    are judged first and reported as lane-credit-refused.
+                    An unread Anthropic API grant reports
+                    lane-provider-unmeasured and needs its provider reading
+                    repaired. A failed accounts command reports a failed
+                    judge or account selection with its original cause.
+                    The local-reading and held-account relaunch rules below
+                    apply only to non-API routes after these checks.
+                    Both --lane forms judge the
                     account on the provider's accounts row as `lanes --help`
                     (pick) states. A row carrying neither a status nor a
                     percentage, an absent verb and a failed one each leave

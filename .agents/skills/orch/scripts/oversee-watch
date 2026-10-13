@@ -11,12 +11,14 @@
 # --interval. A check that finds an event records it and the pass runs on to
 # the next check, so no kind starves another: a reducer line on every pass or
 # a lane parked on its limit banner would otherwise be the only thing the watch
-# ever said. The block carries the latest pr-watch context once. Live tracker and pane reads remain
+# ever said. Events carry only reducer lines whose keys rose; the heartbeat
+# carries the full pr-watch context. Live tracker and pane reads remain
 # authoritative; persisted state holds only edge keys. Usage, event details,
 # configuration, and failure contracts live in usage(), which lib/oversee-watch-text.sh
 # holds beside the message catalog.
 # Stdout is the overseer protocol: the EVENT records documented in usage(),
-# their record or pane payloads, and the optional `pr-watch rc=N` context block.
+# their record or pane payloads, and at heartbeat the optional `pr-watch rc=N`
+# context block.
 # Consumers handle every EVENT in order. Those records are not prose messages.
 
 set -euo pipefail
@@ -220,14 +222,14 @@ source "$SCRIPT_DIR/lib/lane-launch.sh"
 # shellcheck source=lib/lane-relaunch.sh
 source "$SCRIPT_DIR/lib/lane-relaunch.sh"
 # shellcheck source=lib/mailbox-append.sh
-source "$SCRIPT_DIR/lib/mailbox-append.sh"
+source "$SCRIPT_DIR/../../mailbox/scripts/lib/mailbox-append.sh"
 OWNER_TRACKER_ACTIVE=0
 OWNER_TRACKER_DELIVERED=0
-if owner_tracker_settings "$SCRIPT_DIR"; then OWNER_TRACKER_ACTIVE=1; fi
+if owner_tracker_settings "$SCRIPT_DIR/../../mailbox/scripts"; then OWNER_TRACKER_ACTIVE=1; fi
 PR_WATCH="${OVERSEE_WATCH_PR_WATCH:-$SKILLS_DIR/review-gate/scripts/pr-watch.sh}"
 TRACKER="${OVERSEE_WATCH_TRACKER:-$SKILLS_DIR/linear/scripts/linear.sh}"
 WORKFLOW_STATE="${OVERSEE_WATCH_WORKFLOW_STATE:-$SCRIPT_DIR/workflow-state}"
-LANE_MAIL="${OVERSEE_WATCH_LANE_MAIL:-$SCRIPT_DIR/lane-mail}"
+LANE_MAIL="${OVERSEE_WATCH_LANE_MAIL:-$SCRIPT_DIR/../../mailbox/scripts/lane-mail}"
 LANE_CLOSE="${OVERSEE_WATCH_LANE_CLOSE:-$SCRIPT_DIR/lane-close}"
 SUCCEED="${OVERSEE_WATCH_SUCCEED:-$SCRIPT_DIR/oversee-succeed}"
 LANES_CLI="${OVERSEE_WATCH_LANES:-$SCRIPT_DIR/lanes}"
@@ -274,6 +276,7 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   lane-exited<TAB><lane><TAB><pane key>[|reported]
 #   terminal-close<TAB><item><TAB><terminal state>|<lane record JSON>
 #   lane-idle<TAB><lane><TAB><pane key>|<copilot note>|<screen cksum>[|reported]
+#   lane-idle<TAB><lane><TAB>pi-merged-gone[|reported]
 #   handoff<TAB><item><TAB><record checksum>
 #   lane-prepare<TAB><item><TAB><preparation start epoch>|<ready|failed|stuck>
 #   start-stalled<TAB><item><TAB><running_at epoch>|<passes since reported, or seen>|<branch heads>|<last observed progress epoch>
@@ -285,14 +288,14 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   main-push-failing<TAB><repo><TAB>[<sorted failed jobs>,<sorted failure identities or null for unread logs>] as JSON
 #   security-alert, bot-fix and security-alerts-unread rows, which
 #   lib/security-alerts.sh sets out above check_security_alerts
-#   account<TAB><harness>|<through>|<config dir><TAB><status>|<verdict>|<binding_resets_at or ->|<status of the last unmeasured reading, or ->
+#   account<TAB><harness>|<through>|<config dir><TAB><status>|<verdict>|<binding_resets_at or ->|<status of the last saved unmeasured reading, or ->
 # And in the mail pass's file:
 #   lane-mail<TAB><item>[@clone]<TAB><to-overseer.jsonl lines already drained> <first id>
 #   directive<TAB><item>[@clone]<TAB><to-lane.cursor reported read> <last line reported unread>[:<passes since unread reported>] <first id>
 #   clone-root<TAB><item><TAB><the lane's main checkout, on its own host>
 #   lane-failed<TAB><item><TAB><the last lane-local failure the mail pass reported>
 #   long-pass<TAB>fleet<TAB><the epoch the last long pass started at>
-#   mail-pass<TAB>fleet<TAB><the epoch the last full mail pass started at>
+#   mail-pass<TAB>fleet<TAB><the epoch the last full mail pass completed at>
 # Four rows are keyed by the overseer's own pane rather than by a lane, and
 # are pruned on every pass so a pane that stops being the overseer's leaves
 # nothing behind:
@@ -426,7 +429,8 @@ WORKFLOW_STATE_ARGS=(--state-dir "$FLEET_STATE_DIR")
 [[ "$MAX_LOOPS" =~ ^[0-9]+$ && "$MAX_LOOPS" -ge 1 ]] || die max-loops-invalid "" "value=$MAX_LOOPS"
 # The age a usage figure may be served at, named to every lane reader a pass
 # runs: two of this watch's intervals. A long pass reads once an --interval,
-# counted start to start, or longer where one overruns, and the mail pass
+# counted start to start, or longer where one overruns. The mail pass idles
+# a full mail interval after each full read and
 # judges a standing wall at most once an interval too, so a window of one
 # interval has always expired by the next read and every one would post for
 # every account; two cover that. A larger ORCH_LANES_USAGE_MAX_AGE
@@ -543,11 +547,12 @@ fi
 # repeat would reduce that repository twice into one state file and report it
 # twice in the context, so it is a usage error, named as the caller spelled it.
 # A single run and repeat mode both call it.
-# ORCH_CONNECTED_REPOS then adds each repository the overseer may launch lanes
-# in, after every --repo so the items repository stays first. An entry a --repo
-# already names is skipped rather than refused: a launch line written before
-# the setting names them by hand, and repeat mode hands its pass the set this
-# check settled. The setting is read even with no --repo, so the repeat
+# ORCH_CONNECTED_REPOS adds each repository the overseer may launch lanes
+# in, after every --repo so the items repository stays first. Only that first
+# repository and the connected entries get reducer indices, including entries
+# already passed with --repo. The repeat wrapper passes the full read set to
+# its child, which derives the same reducer scope from the setting.
+# The setting is read even with no --repo, so the repeat
 # wrapper, which resolves no default, refuses an unreadable one once rather
 # than each pass refusing it after every sleep; the set itself is still
 # unresolved there and gains nothing, and the call below the default
@@ -562,11 +567,19 @@ check_repo_set() {
     fi
     repos_seen+="${REPOS[$repo_i]}"$'\n'
   done
-  connected="$(orch_connected_repos ${REPOS[@]+"${REPOS[@]}"})" \
+  connected="$(orch_connected_repos)" \
     || die connected-repos-unread "" "setting=ORCH_CONNECTED_REPOS"
   [[ ${#REPOS[@]} -gt 0 ]] || return 0
   IFS=$'\n' read -ra connected_list -d '' <<<"$connected" || true
-  REPOS+=(${connected_list[@]+"${connected_list[@]}"})
+  PW_REPO_INDICES=(0)
+  for repo_raw in ${connected_list[@]+"${connected_list[@]}"}; do
+    repo_i=0
+    while [[ "$repo_i" -lt "${#REPOS[@]}" && "${REPOS[$repo_i]}" != "$repo_raw" ]]; do
+      repo_i=$((repo_i + 1))
+    done
+    if [[ "$repo_i" -eq "${#REPOS[@]}" ]]; then REPOS+=("$repo_raw"); fi
+    [[ "$repo_i" -eq 0 ]] || PW_REPO_INDICES+=("$repo_i")
+  done
 }
 
 # The --item and --hosted checks, run by a single run and by every repeat pass
@@ -687,8 +700,8 @@ PREPARE_ROWS=""
 PARKED_ROWS_FILTER='
   (.lanes // [])[] | select(type == "object" and .status == "parked")
   | if ((.item? | type) != "string" or (.item | length) == 0) then error("lane-field field=item value=\(.item | tojson)")
-    elif ((.parked.pr? | type) != "number" or (.parked.repo? | type) != "string") then error("lane-field field=parked value=\(.parked | tojson)")
-    else "\(.item)\u001f\(.parked.repo | ascii_downcase)#\(.parked.pr)\u001f\(.launched_at | if . == null then "" else (fromdateiso8601 | tostring) end)" end'
+    elif (((.parked.until_pr // .parked.pr) | type) != "number" or (.parked.repo? | type) != "string") then error("lane-field field=parked value=\(.parked | tojson)")
+    else "\(.item)\u001f\(.parked.repo | ascii_downcase)#\(.parked.until_pr // .parked.pr)\u001f\(.launched_at | if . == null then "" else (fromdateiso8601 | tostring) end)" end'
 PARKED_ITEMS=()
 PARKED_KEYS=()
 
@@ -1209,12 +1222,19 @@ close_hosted_lane() { # ITEM [--if-terminal]
   esac
 }
 
-close_finished_hosted_lane() { # LANE ROW KEY; updates check_lanes' asking_state and close_failed
+finished_hosted_lane_eligible() { # LANE; sets hosted lane identity
   hosted_lane_item "$1"
   # A worktree still standing belongs to a lane inside merge close-out,
   # or one the overseer resumes. Only its removed worktree admits close.
   if [[ -n "$HOSTED_ROOT" && -n "$(lane_row_get merged "$asking_state" "$LANE_ITEM")" ]] \
      && grep -qxF -- "$LANE_ITEM" <<<"$HOSTED_GONE_ITEMS"; then
+    return 0
+  fi
+  return 1
+}
+
+close_finished_hosted_lane() { # LANE ROW KEY; updates check_lanes' asking_state and close_failed
+  if finished_hosted_lane_eligible "$1"; then
     # Commit before the irreversible close so a stopped pass cannot repeat it.
     lane_row_commit "$asking_state"
     if ! close_hosted_lane "$LANE_ITEM"; then
@@ -1494,11 +1514,29 @@ MERGED_SEARCH_PAGE=1000
 # One merged-PR reader owns lookup and lane_merged evaluation. Verification
 # uses its mergedAt for the publication floor and its merge commit for containment.
 MERGED_ITEM_ROWS=""
-merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC]
+merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC] [PASS_READ_DIR] [ITEM_SEARCH]
   local item="$1" repo="$2" pr="$3" since="${4:-null}" floor="${5:-}"
   local branch list named search rows errf="$WORK_DIR/merged.err"
   local fields=number,headRefName,headRepositoryOwner,mergedAt,mergeCommit,title,body
   branch="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "${6:-}" ]]; then
+    local read_file="$6/${repo//\//%}.merged"
+    if [[ ! -f "$read_file" ]]; then
+      local -a searches=()
+      IFS=$'\t' read -ra searches <<<"${7:-${floor:+merged:>=$floor}}"
+      for search in "${searches[@]}"; do
+        gh pr list --repo "$repo" --search "$search" --limit "$MERGED_SEARCH_PAGE" --state merged --json "$fields" >>"$read_file" 2>"$errf" \
+          || die pr-list-failed "$(cat "$errf")" "repo=$repo" "state=merged" "branch=$branch"
+      done
+      if ! named="$(jq -cs --argjson cap "$MERGED_SEARCH_PAGE" 'if any(.[]; length >= $cap) then null else add // [] end' "$read_file" 2>"$errf")"; then
+        die pr-list-invalid "$(cat "$errf")" "repo=$repo" "search=$item"
+      fi
+      [[ "$named" != null ]] || die merged-search-truncated "" "repo=$repo" "item=$item" "limit=$MERGED_SEARCH_PAGE"
+      printf '%s\n' "$named" >"$read_file" || die state-write-failed "" "path=$read_file"
+    fi
+    named="$(cat "$read_file")" || die pr-list-invalid "$(cat "$errf")" "repo=$repo" "search=$item"
+    list='[]'
+  else
   list="$(gh pr list --repo "$repo" --head "$branch" --state merged --limit 10 --json "$fields" 2>"$errf")" \
     || die pr-list-failed "$(cat "$errf")" "repo=$repo" "state=merged" "branch=$branch"
   # A cloud session's branch names no item, so its pull request is found
@@ -1508,8 +1546,9 @@ merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC]
   search="\"$item\" in:title,body${floor:+ merged:>=$floor}"
   named="$(gh pr list --repo "$repo" --search "$search" --state merged --limit "$MERGED_SEARCH_PAGE" --json "$fields" 2>"$errf")" \
     || die pr-list-failed "$(cat "$errf")" "repo=$repo" "state=merged" "search=$item"
+  fi
   rows="$(jq length <<<"$named" 2>"$errf")" || die pr-list-invalid "$(cat "$errf")" "repo=$repo" "search=$item"
-  [[ "$rows" -lt "$MERGED_SEARCH_PAGE" ]] || die merged-search-truncated "" "repo=$repo" "item=$item" "limit=$MERGED_SEARCH_PAGE"
+  [[ -n "${6:-}" || "$rows" -lt "$MERGED_SEARCH_PAGE" ]] || die merged-search-truncated "" "repo=$repo" "item=$item" "limit=$MERGED_SEARCH_PAGE"
   if ! MERGED_ITEM_ROWS="$(jq -cs --arg item "$item" --arg owner "${repo%%/*}" --argjson pr "$pr" --argjson since "$since" \
     "$LANE_MERGED_JQ"' add // [] | reduce .[] as $row ([]; if any(.[]; .number == $row.number) then . else . + [$row] end)
     | lane_merged($item; $owner; $pr; $since)' \
@@ -1520,16 +1559,60 @@ merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC]
 
 check_merged() {
   [[ -n "$ITEM_BRANCHES" ]] || return 0
-  local errf="$WORK_DIR/merged.err" item branch repo pr hit hits prior keys fresh key line state="${PW_SEEN[0]}"
+  local errf="$WORK_DIR/merged.err" item branch repo pr hit hits prior keys fresh key line until view dependency_state dependency_record own_pr own_repo state="${PW_SEEN[0]}"
   for item in "${MERGED_ITEMS[@]}"; do
     branch="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"
     PARKED_KEY=""
     item_parked "$item" || true
+    until="$(jq -r --arg item "$item" '(.lanes // [])[] | select(.item == $item and .status == "parked") | .parked.until_pr // empty' <<<"${FLEET_STATE:-"{}"}")" \
+      || die state-invalid "" "path=$STATE_FILE" "field=parked"
+    if [[ -n "$until" ]]; then
+      repo="${PARKED_KEY%#*}"
+      view="$(gh pr view "$until" --repo "$repo" --json state 2>"$errf")" \
+        || die pr-list-failed "$(cat "$errf")" "repo=$repo" "pr=$until"
+      dependency_state="$(jq -er '.state | select(. == "OPEN" or . == "MERGED" or . == "CLOSED")' <<<"$view" 2>"$errf")" \
+        || die pr-list-invalid "$(cat "$errf")" "repo=$repo" "pr=$until"
+      key="$PARKED_KEY $dependency_state"
+      prior="$(lane_row_get parked-until "$state" "$item")" \
+        || die state-read-failed "" "item=$item" "row=parked-until"
+      if [[ "$key" != "$prior" ]]; then
+        case "$dependency_state" in
+          MERGED) parked_merged_line "$item" "$PARKED_KEY"; PASS_EVENT=1 ;;
+          CLOSED) echo "EVENT parked-closed $item pr=$until repo=$repo"; PASS_EVENT=1 ;;
+        esac
+      fi
+      state="$(lane_row_set parked-until "$state" "$item" "$key")"
+      # The dependency is not this item's merge and earns no item cycle.
+    fi
+    # Its own delivery still needs a merged row before terminal close can
+    # remove the lane. Recovery keeps that identity in pending_pr as well.
+    dependency_record="$(jq -c --arg item "$item" '(.lanes // [])[] | select(.item == $item) | (.parked // .pending_pr) | select(.until_pr != null)' <<<"${FLEET_STATE:-"{}"}")" \
+      || die state-invalid "" "path=$STATE_FILE" "field=parked"
+    own_pr="" own_repo=""
+    if [[ -n "$dependency_record" ]]; then
+      own_pr="$(jq -r '.pr // empty' <<<"$dependency_record")" \
+        || die state-invalid "" "path=$STATE_FILE" "field=parked"
+      own_repo="$(jq -r '.repo | ascii_downcase' <<<"$dependency_record")" \
+        || die state-invalid "" "path=$STATE_FILE" "field=parked"
+    fi
     hits=""
     for repo in "${REPOS[@]}"; do
       pr=null
       [[ "${PARKED_KEY%#*}" != "$repo" ]] || pr="${PARKED_KEY##*#}"
-      merged_item_read "$item" "$repo" "$pr" "$SINCE_EPOCH" "$SINCE"
+      if [[ -n "$dependency_record" ]]; then
+        [[ "$repo" == "$own_repo" && -n "$own_pr" ]] || continue
+        pr="$own_pr"
+        # A second branch need not carry a searchable item reference. Read
+        # the retained own number, never the dependency, through gh's PR API.
+        view="$(gh pr view "$pr" --repo "$repo" --json number,headRefName,headRepositoryOwner,mergedAt,mergeCommit,title,body 2>"$errf")" \
+          || die pr-list-failed "$(cat "$errf")" "repo=$repo" "pr=$pr"
+        if ! MERGED_ITEM_ROWS="$(jq -c --arg item "$item" --arg owner "${repo%%/*}" --argjson pr "$pr" --argjson since "$SINCE_EPOCH" \
+          "$LANE_MERGED_JQ"' [.] | lane_merged($item; $owner; $pr; $since)' <<<"$view" 2>"$errf")"; then
+          die pr-list-invalid "$(cat "$errf")" "repo=$repo" "pr=$pr"
+        fi
+      else
+        merged_item_read "$item" "$repo" "$pr" "$SINCE_EPOCH" "$SINCE"
+      fi
       if ! hit="$(jq -r --arg item "$item" --arg repo "$repo" '.[] | "\(.number) \($item | ascii_downcase) \($repo)"' <<<"$MERGED_ITEM_ROWS" 2>"$errf")"; then
         die pr-list-invalid "$(cat "$errf")" "repo=$repo" "branch=$branch"
       fi
@@ -1551,6 +1634,9 @@ check_merged() {
       PASS_EVENT=1
     done <<<"$hits"
     state="$(lane_row_set merged "$state" "$item" "$keys")"
+    # An own merge cannot clear a dependency wait. Its events and heartbeat
+    # replay remain owned by parked-until, independently of this merged row.
+    [[ -z "$dependency_record" ]] || continue
     item_parked "$item" && [[ -n "$fresh" ]] || continue
     # A parked item's fresh merges that are not its own are named, so a park
     # left standing over a merge has a line saying which merge it was not.
@@ -1561,6 +1647,7 @@ check_merged() {
     parked_merged_line "$item" "$PARKED_KEY"
   done
   state="$(lane_row_prune merged "$state" "${MERGED_ITEMS[@]}")"
+  state="$(lane_row_prune parked-until "$state" ${PARKED_ITEMS[@]+"${PARKED_ITEMS[@]}"})"
   lane_row_commit "$state"
 }
 
@@ -1588,8 +1675,13 @@ parked_merged_line() { # ITEM KEY
 # first hand, still has the merge named at the next heartbeat. Errexit is off
 # under the caller's `||`, so the row read returns its own failure.
 parked_merged_owed() { # STATE
-  local i row
+  local i row dependency
   for i in ${PARKED_ITEMS[@]+"${!PARKED_ITEMS[@]}"}; do
+    dependency="$(lane_row_get parked-until "$1" "${PARKED_ITEMS[$i]}")" || return 1
+    if [[ "$dependency" == "${PARKED_KEYS[$i]} MERGED" ]]; then
+      parked_merged_line "${PARKED_ITEMS[$i]}" "${PARKED_KEYS[$i]}"
+      continue
+    fi
     row="$(lane_row_get merged "$1" "${PARKED_ITEMS[$i]}")" || return 1
     [[ " $row " == *" ${PARKED_KEYS[$i]} "* ]] || continue
     parked_merged_line "${PARKED_ITEMS[$i]}" "${PARKED_KEYS[$i]}"
@@ -2078,7 +2170,7 @@ read_owner_tracker_answers() {
   OWNER_TRACKER_READ=disabled
   [[ "$OWNER_TRACKER_ACTIVE" -eq 1 ]] || return 0
   OWNER_TRACKER_READ=unread
-  local items asks issue ask comment id rc repair description ids=()
+  local items asks issue ask comment id rc repair description labels label ids=()
   if ! "$LANE_MAIL" pending --item overseer --to owner >"$WORK_DIR/tracker-asks" 2>"$WORK_DIR/tracker.err"; then
     echo 'KEN-3624-unread cause=asks' >&2; return 0
   fi
@@ -2086,8 +2178,21 @@ read_owner_tracker_answers() {
     echo 'KEN-3624-unread cause=asks-format' >&2; return 0
   fi
   [[ "$asks" == true ]] || { OWNER_TRACKER_READ=read; return 0; }
-  if ! items="$("$TRACKER" issues list --assignee "$OWNER_TRACKER_EMAIL" --label "$OWNER_TRACKER_LABEL" --max --format=safe 2>"$WORK_DIR/tracker.err")"; then
-    echo 'KEN-3624-unread cause=issues' >&2; return 0
+  if ! labels="$(jq -rs --arg label "$OWNER_TRACKER_LABEL" "$OWNER_TRACKER_JQ"'
+    owner_tracker_open_labels($label)[]' "$WORK_DIR/tracker-asks" 2>"$WORK_DIR/tracker.err")"; then
+    echo 'KEN-3624-unread cause=asks-format' >&2; return 0
+  fi
+  : >"$WORK_DIR/tracker-item-lists"
+  while IFS= read -r label; do
+    if ! items="$("$TRACKER" issues list --assignee "$OWNER_TRACKER_EMAIL" --label "$label" --max --format=safe 2>"$WORK_DIR/tracker.err")"; then
+      echo 'KEN-3624-unread cause=issues' >&2; return 0
+    fi
+    if ! jq -ce arrays <<<"$items" >>"$WORK_DIR/tracker-item-lists" 2>"$WORK_DIR/tracker.err"; then
+      echo 'KEN-3624-unread cause=issues-format' >&2; return 0
+    fi
+  done <<<"$labels"
+  if ! items="$(jq -cs 'add | unique_by(.id)' "$WORK_DIR/tracker-item-lists" 2>"$WORK_DIR/tracker.err")"; then
+    echo 'KEN-3624-unread cause=issues-format' >&2; return 0
   fi
   if ! jq -c --slurpfile asks "$WORK_DIR/tracker-asks" "$OWNER_ACTION_JQ"'
     .[] | . as $item
@@ -4087,6 +4192,23 @@ check_lanes() {
         capacity=1
       fi
     else
+      # Removed Pi rows cannot judge idle. Hold the merged-and-gone evidence
+      # for two long passes so close-out can send its final clone notice.
+      if [[ "${LANE_ROWS[$i]:-}" == none && "$(lane_obs_state "$states" "$i")" == unjudged ]] \
+         && finished_hosted_lane_eligible "$lane"; then
+        if ! prior="$(lane_row_get lane-idle "$asking_state" "$lane")"; then
+          die state-read-failed "" "lane=$lane" "row=lane-idle"
+        fi
+        [[ "$prior" != pi-merged-gone'|reported' ]] || continue
+        if [[ "$prior" == pi-merged-gone ]]; then
+          asking_state="$(lane_row_set lane-idle "$asking_state" "$lane" 'pi-merged-gone|reported')"
+          PASS_EVENT=1
+          close_finished_hosted_lane "$lane" lane-idle pi-merged-gone
+        else
+          asking_state="$(lane_row_set lane-idle "$asking_state" "$lane" pi-merged-gone)"
+        fi
+        continue
+      fi
       asking_state="$(lane_row_clear lane-idle "$asking_state" "$lane")"
       asking_state="$(lane_row_clear model-capacity "$asking_state" "$lane")"
       continue
@@ -4202,14 +4324,13 @@ account_roster_read() {
 # An account the listing stops naming keeps its row, so one a provider drops
 # for a pass is compared against its last reading when it comes back.
 #
-# A reading that measured nothing (`verdict=unmeasured`) under the status word
-# the account's last unmeasured reading had is no news and leaves the row on
+# A reading that measured nothing (`verdict=unmeasured`) leaves the row on
 # the reading before it, so the next measured reading is compared with the
 # last one measured. A hosted provider holding a credential while a lane runs
 # on it reads unmeasured on alternate passes; were each alternation news,
 # --max-loops quiet passes, and so the heartbeat, would never come.
-# `status=expired` is exempt: only the operator renews a dead login, so each
-# expiry after a measured reading is news.
+# `status=expired` and `status=retired` are exempt: they require operator
+# action, so each such status after a measured reading is news.
 check_accounts() {
   local key value fields prior state="${PW_SEEN[0]}" change row
   local was_status was_verdict was_resets was_unmeasured status verdict resets reset_epoch unmeasured
@@ -4223,7 +4344,7 @@ check_accounts() {
     IFS='|' read -r status verdict resets <<<"$value"
     unmeasured="${was_unmeasured:--}"
     if [[ "$verdict" == unmeasured ]]; then
-      [[ "$status" == expired || "$status" != "$unmeasured" ]] || continue
+      [[ "$status" == expired || "$status" == retired ]] || continue
       unmeasured="$status"
     fi
     row="$value|$unmeasured"
@@ -4303,6 +4424,7 @@ check_report() {
 OWED_PR_LIMIT=1000
 OWED_LINES=""
 VERIFYING_LINES=""
+VERIFYING_EVENT_LINES=""
 # The heartbeat's own caches: one listing per host, one verdict per host,
 # harness and model, and the answers owed_accounts and owed_wall hand back.
 OWED_ACCOUNTS=""
@@ -4312,6 +4434,7 @@ OWED_VERDICT=""
 owed_read() {
   OWED_LINES=""
   VERIFYING_LINES=""
+  VERIFYING_EVENT_LINES=""
   [[ -n "$STATE_FILE" ]] || return 0
   local errf="$WORK_DIR/owed.err" out items rows rc=0 n
   local id state priority lane host harness model delivery key verdict line asked answer
@@ -4327,7 +4450,7 @@ owed_read() {
       | map(
           if ((.id? | type) == "string" and (.id | test("^[A-Za-z0-9._-]+$"))) then .
           else error("tracker-field field=id value=\(.id | tojson)") end
-          | {id, description: (.description // ""), blocked_by_open: (.blocked_by_open // []), priority: (if .priority == null or .priority == 0 then "-" else .priority end),
+          | {id, created_at, description: (.description // ""), blocked_by_open: (.blocked_by_open // []), priority: (if .priority == null or .priority == 0 then "-" else .priority end),
              state: ({"In Progress": "in-progress", "In Review": "in-review", "Verifying": "verifying"}[.state? | strings]
                // error("tracker-field field=state value=\(.state | tojson)"))})' <<<"$out" 2>"$errf")" \
       || die tracker-list-invalid "$(cat "$errf")" "team=$LINEAR_TEAM"
@@ -4430,10 +4553,29 @@ owed_accounts() { # HOST
 # lane filtering. Deadlines remain per box in the issue description.
 verifying_read() { # SAFE_ITEMS
   local lib="$SKILLS_DIR/linear/scripts/lib/issue-validation.sh"
-  local rows row id boxes merged merged_repos repo lines due prior key rc
+  local rows row id boxes merged merged_repos merged_rows repo out lines due line prior key rc floor read_dir search
   local state="${PW_SEEN[0]}" errf="$WORK_DIR/verifying.err"
-  rows="$(jq -c '.[] | select(.state == "verifying")' <<<"$1")" \
+  # One record per issue, its ID then the row: owed_read admits no unit
+  # separator in an ID, and tojson keeps the row on one line.
+  # An issue cannot merge before its creation. Missing creation evidence
+  # leaves the repository read unbounded rather than hiding an older merge.
+  rows="$(jq -r 'map(select(.state == "verifying")) as $items
+    | ($items | map(try (.created_at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null)
+       | if length > 0 and all(.[]; . != null) then min | todateiso8601 else "" end) as $floor
+    | (if $floor == "" then "" else "merged:>=" + $floor + " " end) as $prefix
+    | def query: $prefix + "(" + join(" OR ") + ") in:title,body";
+      $floor,
+      (reduce $items[] as $row ([[]];
+        ("(head:" + ($row.id | ascii_downcase) + " OR " + ($row.id | tojson) + ")") as $term
+        | if (.[-1] | length) >= 3 or (.[-1] + [$term] | query | length) > 256
+          then . + [[$term]] else .[-1] += [$term] end)
+       | map(select(length > 0) | query) | join("\t")),
+      ($items[] | "\(.id)\u001f\(tojson)")' <<<"$1")" \
     || die tracker-list-invalid "" "team=$LINEAR_TEAM"
+  floor="${rows%%$'\n'*}"
+  if [[ "$rows" == *$'\n'* ]]; then rows="${rows#*$'\n'}"; else rows=""; fi
+  search="${rows%%$'\n'*}"
+  if [[ "$rows" == *$'\n'* ]]; then rows="${rows#*$'\n'}"; else rows=""; fi
   # Rebuild the due set after the complete inventory, including valid items
   # after a checklist that Linear accepted but the box parser cannot read.
   state="$(awk -F'\t' '$1 != "verifying-deadline" { print }' <<<"$state")"
@@ -4444,9 +4586,9 @@ verifying_read() { # SAFE_ITEMS
   [[ -r "$lib" ]] || die missing-linear "" "path=$lib"
   # shellcheck source=../../../linear/scripts/lib/issue-validation.sh
   source "$lib"
-  while IFS= read -r row; do
-    [[ -n "$row" ]] || continue
-    id="$(jq -r '.id' <<<"$row")" || die tracker-list-invalid "" "team=$LINEAR_TEAM"
+  read_dir="$(mktemp -d "$WORK_DIR/verifying.XXXXXX")" || die state-write-failed "" "path=$WORK_DIR"
+  while IFS=$'\037' read -r id row; do
+    [[ -n "$id" ]] || continue
     if ! boxes="$(verifying_parse "$row" 2>"$errf")"; then
       ow_message verifying-invalid "issue=$id" >&2
       cat -- "$errf" >&2
@@ -4454,16 +4596,24 @@ verifying_read() { # SAFE_ITEMS
     fi
     merged=null
     merged_repos='{}'
-    if jq -e 'any(.[]; .trigger_kind == "release")' <<<"$boxes" >/dev/null; then
+    # verifying_parse prints compact JSON, where this text can only be a
+    # box's own trigger field: a quote inside a value is escaped.
+    if [[ "$boxes" == *'"trigger_kind":"release"'* ]]; then
+      merged_rows=""
       for repo in "${REPOS[@]}"; do
-        merged_item_read "$id" "$repo" null
-        merged="$(jq -c --argjson previous "$merged" '([$previous] + map(.at)) | max' <<<"$MERGED_ITEM_ROWS")" || die verifying-invalid "" "issue=$id"
-        merged_repos="$(jq -c --arg repo "$repo" --argjson previous "$merged_repos" '
-          $previous + {($repo | ascii_downcase): (max_by(.at) // null)}' <<<"$MERGED_ITEM_ROWS")" || die verifying-invalid "" "issue=$id"
+        merged_item_read "$id" "$repo" null null "$floor" "$read_dir" "$search"
+        merged_rows+="${merged_rows:+,}$MERGED_ITEM_ROWS"
       done
+      # The latest merge across repositories, then each repository's own.
+      out="$(jq -nc --argjson rows "[$merged_rows]" '[$ARGS.positional, $rows] | transpose
+        | ([.[][1][].at] | max),
+          reduce .[] as [$repo, $read] ({}; . + {($repo | ascii_downcase): ($read | max_by(.at) // null)})' \
+        --args "${REPOS[@]}")" || die verifying-invalid "" "issue=$id"
+      merged="${out%%$'\n'*}"
+      merged_repos="${out#*$'\n'}"
     fi
     rc=0
-    boxes="$(verifying_judge "$row" "$merged" "$merged_repos" "$PASS_NOW" "$boxes" "$WORK_DIR/verifying-release.err" "$MERGED_SEARCH_PAGE" gh 2>"$errf")" || rc=$?
+    boxes="$(verifying_judge "$row" "$merged" "$merged_repos" "$PASS_NOW" "$boxes" "$WORK_DIR/verifying-release.err" "$MERGED_SEARCH_PAGE" gh "$read_dir" 2>"$errf")" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
       read -r key _ <"$errf" || key=verifying-invalid
       [[ "$rc" -eq 1 ]] || die "$key" "$(cat "$errf")" "issue=$id"
@@ -4471,22 +4621,50 @@ verifying_read() { # SAFE_ITEMS
       cat -- "$errf" >&2
       continue
     fi
-    lines="$(verifying_lines "$id" "$boxes" "$row")" || die verifying-invalid "" "issue=$id"
+    # The box lines, a record separator, then the due keys. tojson escapes
+    # every control character a field holds, so the separator is unique.
+    out="$(jq -r --arg id "$id" --argjson row "$row" "$VERIFYING_LINE_JQ"'
+      ([.[] | verifying_line($id; $row)] | join("\n")) + "\u001e"
+      + ([.[] | select(.status == "due" or .status == "overdue")
+          | "box=\(.number) trigger=\(.trigger | tojson) status=\(.status) deadline=\(.deadline)"] | join("\n"))' <<<"$boxes")" \
+      || die verifying-invalid "" "issue=$id"
+    lines="${out%%$'\036'*}"
+    due="${out#*$'\036'}"
     [[ -n "$lines" ]] || lines="verifying $id boxes=0"
     VERIFYING_LINES+="$lines"$'\n'
-    due="$(jq -r '.[] | select(.status == "due" or .status == "overdue")
-      | "box=\(.number) trigger=\(.trigger | tojson) status=\(.status) deadline=\(.deadline)"' <<<"$boxes")" || die verifying-invalid "" "issue=$id"
-    [[ -n "$due" ]] || continue
-    prior="$(lane_row_get verifying-deadline "${PW_SEEN[0]}" "$id")" \
+    # The existing row also records a valid read with no due boxes. This
+    # distinguishes first-read completion from an unchanged empty due set.
+    key="${due//$'\n'/|}"
+    [[ -n "$key" ]] || key=-
+    [[ "$lines" != "verifying $id boxes=0" ]] || key=boxes=0
+    # Both helpers leave their answer in LANE_ROW; read here, they fork
+    # nothing per issue.
+    lane_row_get verifying-deadline "${PW_SEEN[0]}" "$id" >/dev/null \
       || die state-read-failed "" "row=verifying-deadline" "issue=$id"
-    state="$(lane_row_set verifying-deadline "$state" "$id" "${due//$'\n'/|}")"
-    [[ "$prior" != "${due//$'\n'/|}" ]] || continue
+    prior="$LANE_ROW"
+    lane_row_set verifying-deadline "$state" "$id" "$key" >/dev/null
+    state="$LANE_ROW"
+    [[ "$prior" != "$key" ]] || continue
+    if [[ "$key" == boxes=0 ]]; then
+      VERIFYING_EVENT_LINES+="$lines"$'\n'
+      echo "EVENT verifying-deadline $id boxes=0"
+      PASS_EVENT=1
+    fi
+    [[ -n "$due" ]] || continue
     while IFS= read -r row; do
+      # The saved row already holds each due box key. A changed sibling must
+      # not repeat this box's instructions before the full heartbeat.
+      [[ "|$prior|" != *"|$row|"* ]] || continue
+      while IFS= read -r line; do
+        [[ "$line" != "verifying $id ${row%% *} "* ]] || VERIFYING_EVENT_LINES+="$line"$'\n'
+      done <<<"$lines"
       echo "EVENT verifying-deadline $id $row"
+      PASS_EVENT=1
     done <<<"$due"
-    PASS_EVENT=1
   done <<<"$rows"
   VERIFYING_LINES="${VERIFYING_LINES%$'\n'}"
+  VERIFYING_EVENT_LINES="${VERIFYING_EVENT_LINES%$'\n'}"
+  rm -r -- "$read_dir" || die state-write-failed "" "path=$read_dir"
   lane_row_commit "$state"
 }
 
@@ -4588,8 +4766,8 @@ heartbeat() {
 # sets for this process belongs there. The baselines it committed are what the
 # next long pass reads, never this process's copy of them.
 LONG_PASSES=0
-LONG_RETURNS=(LONG_EVENT LONG_FAILED OWNER_TRACKER_DELIVERED OVERSEER_SUCCEEDED OVERSEER_STOP PW_PASSES PW_RC PW_EVENT
-  PW_OUT PW_ERR LANE_PROBE_NOTED OVERSEER_NOTED ACCOUNT_ROSTER ACCOUNT_ROSTER_RC OWED_LINES VERIFYING_LINES)
+LONG_RETURNS=(LONG_EVENT LONG_FAILED OWNER_TRACKER_DELIVERED OVERSEER_SUCCEEDED OVERSEER_STOP PW_PASSES PW_RC
+  PW_OUT PW_ERR LANE_PROBE_NOTED OVERSEER_NOTED ACCOUNT_ROSTER ACCOUNT_ROSTER_RC OWED_LINES VERIFYING_LINES VERIFYING_EVENT_LINES)
 long_pass() {
   local i state_file
   PASS_EVENT=0
@@ -4781,6 +4959,11 @@ tick_wait() {
 mail_turn() { # [overseer]
   BOX_SEEN="$(overseer_box_size)"
   overseer_down || check_mail "$@"
+  if [[ $# -eq 0 ]]; then
+    MAIL_DUE=$((WATCH_EPOCH + SECONDS - WATCH_SECONDS))
+    [[ "$MAIL_INTERVAL" -eq 0 ]] || mail_row_commit "$(lane_row_set mail-pass "$MAIL_SEEN" fleet "$MAIL_DUE")"
+    MAIL_DUE=$((MAIL_DUE + MAIL_INTERVAL))
+  fi
 }
 
 # One clock per turn. The stamp a lane's wall is observed on and the
@@ -4791,13 +4974,15 @@ mail_turn() { # [overseer]
 # row exists without the clock that earned it.
 PASS_NOW=""
 # Set by any check that printed an event this run, mail or long. Every check
-# runs on either way; the run ends once, with the pr-watch context closing the
-# block, when no long pass is left in flight.
+# runs on either way; the run ends once when no long pass is left in flight.
+# The full pr-watch context prints only at heartbeat.
 PASS_EVENT=0
 PASS_FAILED=0
 PASS_FAILED_ITEMS=""
-# The full mail pass is due an interval after the last one started, in this
-# run or an earlier one: a run started early on a note to the overseer reads
+# The full mail pass is due an interval after the last one ended, in this
+# run or an earlier one, including run_end's owed full read. The first long
+# pass can require a fresh full read before that interval ends. A run started
+# early on a note to the overseer reads
 # that mailbox alone first, and holds the lane mailboxes to their interval.
 if ! MAIL_DUE="$(lane_row_get mail-pass "$MAIL_SEEN" fleet)"; then
   die state-read-failed "" "path=$MAIL_STATE_FILE" "row=mail-pass"
@@ -4835,13 +5020,15 @@ run_end() {
     PASS_NOW="$(date -u +%s)" || die time-failed "" "clock=UTC"
     mail_turn
   fi
+  if [[ "$PASS_EVENT" -eq 1 || "$PASS_FAILED" -eq 1 ]]; then
+    # The deadline rows already advanced. A failed pass must deliver their
+    # selected instructions too, or later event passes would omit them.
+    [[ -z "$VERIFYING_EVENT_LINES" ]] || printf '%s\n' "$VERIFYING_EVENT_LINES"
+  fi
   if [[ "$PASS_FAILED" -eq 1 ]]; then
-    pr_watch_context
     exit 2
   fi
   if [[ "$PASS_EVENT" -eq 1 ]]; then
-    [[ -z "$VERIFYING_LINES" ]] || printf '%s\n' "$VERIFYING_LINES"
-    pr_watch_context
     exit 0
   fi
   [[ "$LONG_PASSES" -lt "$MAX_LOOPS" ]] || heartbeat
@@ -4858,10 +5045,8 @@ while :; do
   long_now=0
   ! long_due || long_now=1
   if [[ "$PASS_NOW" -ge "$MAIL_DUE" || ( "$long_now" -eq 1 && "$MAIL_FULL" -eq 0 ) ]]; then
-    MAIL_DUE=$((PASS_NOW + MAIL_INTERVAL))
     MAIL_OWED=0
     MAIL_FULL=1
-    [[ "$MAIL_INTERVAL" -eq 0 ]] || mail_row_commit "$(lane_row_set mail-pass "$MAIL_SEEN" fleet "$PASS_NOW")"
     mail_turn
   elif [[ "$(overseer_box_size)" != "$BOX_SEEN" ]]; then
     mail_turn overseer

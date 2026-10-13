@@ -22,9 +22,7 @@ def objects($box):
   | [range(0; $box.raw | length) as $i
       | ($box.raw[$i] | (fromjson? // empty) | objects)
       | select(.kind != "tracker-posted")
-      | if .kind == "ask" and .to == "owner" and .issue != null then
-          . as $ask | .tracker_posted = any($posted[]; .re == $ask.id and .issue == $ask.issue)
-        else . end
+      | owner_tracker_record($posted)
       | {line: $box.numbers[$i], envelope: .}];
 . as $in | objects(.lane) as $lane | objects(.over) as $over
 | [$lane[].envelope | select(.kind == "answer") | .re // empty] as $answered
@@ -49,7 +47,7 @@ def objects($box):
       + [$over[] | select($in.after == "" or .line > $after) | .envelope | . as $envelope
         | select($in.verb == "drain" or .kind == "ask")
         | select(.kind != "ask" or
-          ((if .to == "owner" then $closed else $answered end) | index($envelope.id) | not))
+          ((if .to == "owner" then $closed else $closed + $answered end) | index($envelope.id) | not))
         | select($in.to == "" or .to == $in.to)
         | select($in.due == false or (.reserved != true and
           ((.deadline // "" | at_epoch) as $d | $d != null and $d <= now))) | tojson]
@@ -115,6 +113,7 @@ def read_mail(box, item, verb, after, receipts, to, due, peek, ack, jq_defs, del
             try:
                 cursor.touch(exist_ok=True)
             except OSError:
+                # A peek moves no cursor, so a failed touch changes no result.
                 pass
     lane = read_snapshot(9, box / "to-lane.jsonl")
     over = (read_snapshot(8, box / "to-overseer.jsonl") if verb != "inbox" else
@@ -247,7 +246,7 @@ def plan(box, dest, cutoff, seen, jq_defs):
             unread = b == 1 and boxes[b][1][i] > seen
             open_ask = obj and obj.get("kind") == "ask" and (
                 not isinstance(obj.get("id"), str) or obj["id"] not in (
-                    owner_closed if obj.get("to") == "owner" else answers))
+                    owner_closed if obj.get("to") == "owner" else owner_closed | answers))
             retain = at is None or at >= cutoff or unread or open_ask
             selected.append(retain)
             if obj:

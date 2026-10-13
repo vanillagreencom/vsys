@@ -5,10 +5,11 @@
 # matcher: Bash
 # description: Block a copy (cp, rsync, tar, git clone) whose source names a `.git` or `target` path component and whose destination is under /tmp, /var/tmp or $TMPDIR. Suggests reading the source in place or building a minimal fixture.
 # summary: Stops a copy of a repository's `.git` folder or build output into a temporary folder, which can fill the disk. Suggests reading the source where it sits instead.
-# safety: Temp destinations are commonly RAM-backed tmpfs; a multi-gigabyte tree copy fills the filesystem and every process writing there then fails with ENOSPC. One regex over the raw command decides, in the order the words stand, so nothing is resolved, expanded or stat-ed: a source whose last path component IS `.git` or `target` is expensive by construction, and a destination spelled under a temp root is scratch. Both edges of that component are tested, so a word merely ending in one — a `…/bar.git` clone URL, a `build-target` directory — is not it. A source reached through a variable, and a repository named only by its working-tree path, are not seen; neither is a `tar -czf DEST SRC`, which spells the destination before the source. The reading runs the other way too: the three parts count wherever they stand, a quoted string and a comment tail included, so a read-only command spelling out a copy is refused as the copy it is not. Every refusal opens with `block-repo-copy: <key>=<value>`; what a command this hook runs writes is captured at the site and replayed under that line, so nothing precedes the key.
+# safety: Temp destinations are commonly RAM-backed tmpfs; a multi-gigabyte tree copy fills the filesystem and every process writing there then fails with ENOSPC. One regex over the raw command decides, in the order the words stand, so nothing is resolved, expanded or stat-ed: a source whose last path component IS `.git` or `target` is expensive by construction, and a destination spelled under a temp root is scratch. Both edges of that component are tested, so a word merely ending in one — a `…/bar.git` clone URL, a `build-target` directory — is not it. A source reached through a variable, and a repository named only by its working-tree path, are not seen; neither is a `tar -czf DEST SRC`, which spells the destination before the source. The reading runs the other way too: the three parts count wherever they stand, a quoted string and a comment tail included, so a read-only command spelling out a copy is refused as the copy it is not. Every refusal opens with `block-repo-copy: <key>=<value>`; what a command this hook runs writes is captured at the site and replayed under that line, so nothing precedes the key. Missing tools or unreadable payload produce one keyed warning and allow the call.
 # ---
 
 set -euo pipefail
+trap 'rc=$?; case $rc in 0 | 2) ;; *) refuse exit "$rc" ;; esac' EXIT
 
 # The command as it was read, empty until the reader has it: the refusal quotes
 # it, and a refusal can be reached before it is set.
@@ -25,10 +26,10 @@ refuse() { # KEY VALUE [CAUSE]
   printf 'block-repo-copy: %s=%s\n' "$1" "$2" >&2
   case "$1=$2" in
     missing-tools=*)
-      echo "the commands ${2//,/, } are required to read the hook payload and are not on PATH; refusing rather than skipping the guard" >&2
+      echo "the commands ${2//,/, } are required to read the hook payload and are not on PATH; this check is unavailable" >&2
       ;;
     payload=invalid-json)
-      echo "the hook payload is not valid JSON, or names a command that is not a string; refusing rather than skipping the guard" >&2
+      echo "the hook payload is not valid JSON, or names a command that is not a string; this check is unavailable" >&2
       ;;
     refused=*)
       echo "Refusing a copy of a repository or build tree into scratch space." >&2
@@ -48,7 +49,12 @@ refuse() { # KEY VALUE [CAUSE]
   # The cause a command this hook ran wrote, captured at the site and replayed
   # here: under the keyed line, never ahead of it.
   [ -z "${3:-}" ] || printf '%s\n' "$3" >&2
-  exit 2
+  case "$1" in
+    refused | path) exit 2 ;;
+    *)
+      echo "Check skipped. Repair the hook installation, tools or payload adapter; retry the command." >&2
+      exit 0 ;;
+  esac
 }
 
 # jq is the only reader of the payload. Without it the command cannot be read,
@@ -60,10 +66,10 @@ for dependency in jq cat; do
 done
 [ -z "$MISSING" ] || refuse missing-tools "${MISSING#,}"
 
-INPUT=$(cat)
+INPUT=$(cat 2>&1) || refuse payload unreadable "$INPUT"
 
 # A payload that does not parse, or that names a command which is not a
-# string, is refused rather than skipped. An absent command is the empty
+# string, produces a warning and allows the call. An absent command is the empty
 # string and passes. The command is read where each harness carries it:
 # `tool_input.command` (Claude Code, Codex, Gemini CLI and the Pi carrier), a
 # bare `command`, or Copilot's `toolArgs.command`, whose `toolArgs` arrives as
@@ -71,7 +77,7 @@ INPUT=$(cat)
 # because jq's `//` reads `false` as absent, and `false` is not a command
 # either.
 COMMAND=$(printf '%s' "$INPUT" \
-  | jq -r 'def copilot: .toolArgs
+  | jq -er 'def copilot: .toolArgs
              | if . == null then null elif type == "string" then fromjson else . end
              | if . == null then null elif type == "object" then .command else error end;
            if .tool_input.command != null then .tool_input.command

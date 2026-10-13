@@ -148,6 +148,11 @@ Create Options:
   [env], create refuses a description with no `Reached by:` line, and a
   `--review-born --priority 2` one with no `Symptom:`; a placeholder or null
   token (TBD, n/a, none, -) counts as no line. Rule: project-management SKILL.md, § Disposition.
+  Under the same key, create, update --description/--description-file,
+  and bulk-update --description
+  refuse a body whose first non-empty line is a header (a line-start
+  `**Key**:` or `Reached by:`), and one with a header line over 500
+  characters; each refusal names the line number and its length.
 
   Label taxonomy: where the repository declares one (project-management
   references/labels.md, plus LINEAR_AGENT_LABELS), create, update --labels,
@@ -265,13 +270,13 @@ Examples:
   # Basic operations
   issues.sh list --label "backend" --state "Todo"
   issues.sh get PROJ-42
-  issues.sh create --title "New task" --labels "backend,priority:high" --description "Reached by: kendex apply"
-  issues.sh create --title "Bundle" --project "Phase 2" --description "Reached by: kendex apply" --format=ids  # identifier only
+  issues.sh create --title "New task" --labels "backend,priority:high" --description-file body.md
+  issues.sh create --title "Bundle" --project "Phase 2" --description-file body.md --format=ids  # identifier only
   issues.sh update PROJ-42 --state "In Progress"
   issues.sh archive PROJ-42
 
   # Parent/sub-issues
-  issues.sh create --title "Sub-task" --parent PROJ-42 --description "Reached by: kendex apply"
+  issues.sh create --title "Sub-task" --parent PROJ-42 --description-file body.md
   issues.sh children PROJ-42                    # Direct children only
   issues.sh children PROJ-42 --recursive        # All descendants (3 levels deep)
   issues.sh children PROJ-42 --recursive --pending  # Pending only: drops completed/canceled rows, keeps an open grandchild of a closed child
@@ -646,6 +651,7 @@ bulk_update_issues() {
     local from_stdin="false"
     local update_args=()
     local attach_paths=()
+    local description="" description_set="false"
 
     # Separate issue IDs from update options
     while [[ $# -gt 0 ]]; do
@@ -660,6 +666,10 @@ bulk_update_issues() {
             # but each issue gets its own embed/attachment)
             update_args+=("$1" "$2")
             [[ "$1" != --attach ]] || attach_paths+=("$2")
+            if [[ "$1" == --description ]]; then
+                description="$2"
+                description_set="true"
+            fi
             shift 2
             ;;
         --state=* | --status=* | --labels=* | --label=* | --title=* | --description=* | --project=* | --parent=* | --milestone=* | --priority=* | --estimate=* | --assignee=* | --cycle=* | --sort-order=* | --attach=*)
@@ -667,6 +677,10 @@ bulk_update_issues() {
             local _key="${1%%=*}" _val="${1#*=}"
             update_args+=("$_key" "$_val")
             [[ "$_key" != --attach ]] || attach_paths+=("$_val")
+            if [[ "$_key" == --description ]]; then
+                description="$_val"
+                description_set="true"
+            fi
             shift
             ;;
         --remove-parent | --clear-cycle | --clear-estimate)
@@ -708,6 +722,7 @@ bulk_update_issues() {
     if [ ${#attach_paths[@]} -gt 0 ]; then
         attach_preflight_files "${attach_paths[@]}" || return 1
     fi
+    [[ "$description_set" != "true" ]] || require_issue_header_shape "$description" || return 1
     linear_guard_issue_team bulk-update "${identifiers[@]}" || return 1
 
     # Process each issue
@@ -1241,6 +1256,7 @@ create_issue() {
         linear_require_declared_labels "$labels" || return 1
     fi
     require_issue_reach "$description" "$priority" "$review_born" || return 1
+    require_issue_header_shape "$description" || return 1
 
     # --attach: refuse unreadable paths before ANY API call, which is what
     # `--help` promises, so this stays ahead of the resolvers below. Images
@@ -1729,6 +1745,9 @@ update_issue() {
     if [[ -n "$description_file" ]]; then
         read_description_file "$description_file"
         description_set="true"
+    fi
+    if [[ "$description_set" == "true" ]]; then
+        require_issue_header_shape "$description" || return 1
     fi
 
     # --attach: refuse unreadable paths before any API call.
@@ -3190,7 +3209,9 @@ complete_issue() {
     local update_result
     local update_rc=0
     set +e
-    update_result=$(update_issue "$issue_id" "${update_args[@]}")
+    # The ticked description is the filed body with boxes checked, not new
+    # authored text: an issue filed before the header-shape bar still completes.
+    update_result=$(LINEAR_REQUIRE_REACH='' update_issue "$issue_id" "${update_args[@]}")
     update_rc=$?
     set -e
 

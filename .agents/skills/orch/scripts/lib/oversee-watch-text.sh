@@ -23,8 +23,8 @@ Blocks until the fleet needs the overseer, then prints every event it found
 as one block, each line prefixed with its kind, and exits once. Re-run after
 handling every line with the live fleet in scope.
 
-Two passes run on one clock. The mail pass starts every
-ORCH_WATCH_MAIL_INTERVAL seconds, reads every lane mailbox, the overseer
+Two passes run on one clock. After each full read, including the heartbeat's
+owed read, the mail pass idles for ORCH_WATCH_MAIL_INTERVAL seconds. It reads every lane mailbox, the overseer
 mailbox and the lane records one after another, and prints what it finds as
 it finds it: lane-question, lane-notice, directive-read, directive-unread,
 peer-note, owner-note, owner-ask-resolved and owner-ask-closed. Hosted mail
@@ -32,17 +32,17 @@ uses `lane-host read-many` once per provider per mail pass, as
 schemas/lane-host.md specifies. Before the overseer mailbox is read,
 `lane-mail resolve --default` closes due owner asks.
 Only an unanswered ask receives a recommendation answer. The interval is
-counted start to start and kept across runs in the state directory. Between
+counted end to start and kept across runs in the state directory. Between
 two mail passes, and through a --repeat sleep, the overseer mailbox's size is
 checked once a second, and once it moves that mailbox alone is read, so a
 note to the overseer is printed within about a second while the lane
 mailboxes keep the interval; a run's first turn reads it alone too when no
-mail pass is due. A run's first long pass follows a read of every mailbox in
-that run, due or not. ORCH_WATCH_MAIL_INTERVAL 0 checks nothing between turns. A read that waits
-on a lock or a slow host delays
-the mailboxes after it past that interval, as do the overseer pane below and,
-run in this loop, a run's one GitHub auth check before its first long pass
-and the heartbeat's open-PR listing. The long pass reads everything else
+mail pass is due. A run's first long pass requires a fresh read of every
+mailbox in that run, which can run before the interval ends.
+ORCH_WATCH_MAIL_INTERVAL 0 checks nothing between turns. A read that waits
+on a lock or a slow host delays the mailboxes after it. The overseer pane
+below, a run's one GitHub auth check before its first long pass and the
+heartbeat's open-PR listing can also delay the next turn. The long pass reads everything else
 every --interval seconds, counted start to start and kept across runs in the
 state directory, so a run ending on mail news brings the next one no nearer. A long pass runs apart from the mail pass: one that overruns its
 interval holds up no mail pass, the next one starts only once it has ended,
@@ -185,7 +185,7 @@ The long pass's events, checked and reported in this order:
                              nothing; a session with no Stop row after the
                              record gets no such judgement. Emitted every long
                              pass it stands
-  EVENT pr-watch rc=N        new review-gate attention; reducer output follows
+  EVENT pr-watch rc=N        new review-gate attention; only rising-key lines follow
                              refresh-ready wakes on the opening pass and
                              once per new head, including without a lane
   EVENT merged <PR> <branch> <repo>
@@ -193,33 +193,49 @@ The long pass's events, checked and reported in this order:
                              --repo, <branch> being the item's own, its key
                              lower-cased. The PR is the item's by
                              lib/lane-state.sh's lane_own: the number a
-                             parked record names, a head on that branch, or
+                             queue-parked record names, a head on that branch, or
                              the key in its title's conventional-commit scope
                              or right after Closes on a body line, as a
                              Claude cloud session's claude/ branch names no
                              item; a search for the key that fills its page
                              exits 2 as merged-search-truncated at 1000. A
-                             parked record's item is an --item for
-                             this check alone, and the merge of the pull
-                             request its record names, in that repository,
-                             is followed by parked-merged below. Another pull
+                             queue-parked record's item is an --item for
+                             this check alone. Its recorded own PR merge can
+                             produce parked-merged below. A dependency park
+                             reads until_pr directly. Its dependency merge
+                             reports no item merged event. Its retained own
+                             PR is discovered separately. Another pull
                              request on the branch's name is reported and
                              hands nothing on, under a parked-merge-unmatched
                              note on stderr naming the recorded key and the
                              keys seen; the repository is matched in lower
                              case, GitHub's names being case-insensitive
   EVENT parked-merged <item> pr=<N> repo=<owner/repo>
-                             the pull request a parked record names merged in
-                             that repository, repo= in lower case: the
-                             sandbox stays stopped, the record stays parked
-                             and nothing is closed, since nothing here wakes a
-                             parked sandbox and the record carries no launch
-                             flags. The overseer relaunches the lane, which
-                             runs its own post-merge. Printed in the pass
-                             that reports the merge, and again ahead of every
-                             heartbeat while the record still reads parked
-                             and its merged row holds that pull request; the
-                             relaunch rewriting the record stopped ends it
+                             the selected wait PR merged and the terminal
+                             judge keeps the item open. repo= is in lower
+                             case. A dependency park selects parked.until_pr;
+                             a queue park selects parked.pr. The sandbox
+                             stays stopped and the record stays parked until
+                             relaunch. A dependency lane rebases and continues
+                             its held step. A queue lane finishes its own
+                             post-merge work. Recovery instructions are in
+                             references/oversee-events.md.
+                             Printed when the watch first reads that merge,
+                             and again ahead of every heartbeat while the
+                             record stays parked and the terminal judge keeps
+                             it open. Dependency replay uses the parked-until
+                             row holding <repo>#<N> MERGED; queue replay uses
+                             the item's merged row holding <repo>#<N>.
+                             Relaunch rewriting the record stopped ends replay
+  EVENT parked-closed <item> pr=<N> repo=<owner/repo>
+                             parked.until_pr closed without merging. repo= is
+                             in lower case. Reported once per selected
+                             dependency or state change, recorded in the
+                             parked-until row. No heartbeat replay. This
+                             event does not start the sandbox. The terminal
+                             judge can close the lane later in the same pass.
+                             Recovery instructions are in
+                             references/oversee-events.md
   EVENT triage <item>        an item created at or after --since that is absent
                              from the first repository's persisted baseline
   EVENT outside-contribution <repo>#<N> kind=<pr|issue> author=<login> [head=<sha>]
@@ -231,7 +247,11 @@ The long pass's events, checked and reported in this order:
                              GitHub's collaborator permission read, made once
                              per pass per repository and login, answers
                              admin, maintain or write; a 404 is outside and
-                             any other failed read exits. A pull request
+                             any other failed read exits. An admitted login
+                             prints outside-fleet-by-permission on stderr
+                             with repo=, author= and permission= once per pass
+                             per repository and login, without an event.
+                             A pull request
                              carries head=, its head commit on the list.
                              Reported once while it stays open, and a pull
                              request again once per new head; a
@@ -320,9 +340,9 @@ The long pass's events, checked and reported in this order:
                              feature-off, Dependabot alerts turned off on
                              that repository; http-<status> or
                              exit-<N> for any other failure; or invalid.
-                             Printed on every long pass a read fails, and
-                             ends the run only when the set of failed reads
-                             changes. Code or secret scanning answering
+                             Printed, and ends the run, only on a long pass
+                             whose set of failed reads differs from the last
+                             pass's. Code or secret scanning answering
                              feature-off, as on a repository without GitHub's
                              paid security products, is off: no line, on
                              stdout or stderr. The rows of a failed source stand
@@ -430,8 +450,11 @@ The long pass's events, checked and reported in this order:
                              Closing lines follow. Failed provider reads stay
                              unjudged; unusable local probes keep the lane watched
   EVENT lane-closed <item>   for a --hosted item already reported merged, after
-                             lane-exited or two idle passes, once the pass finds
-                             its worktree gone: `lane-close` succeeded; its
+                             lane-exited or two idle passes, once its worktree
+                             is gone; also after two consecutive long passes
+                             with a hosted Pi lane's rows missing, its merged
+                             row recorded and its worktree gone. `lane-close`
+                             succeeded; its
                              `kept=` line follows, its `closed=absent item=ID`
                              line where the host no longer held the item and
                              ran no archive pass, or else `kept=none` because
@@ -533,7 +556,7 @@ The long pass's events, checked and reported in this order:
                 binding_bucket=<bucket|-> binding_resets_at=<utc|->
                 change=<status|headroom|reset>[,...] was=<status>/<verdict>
                              an account the fleet can launch on changed since
-                             the last pass that read it, as `lanes list --json`
+                             the last compared reading. `lanes list --json`
                              reads it once per pass: its status word changed,
                              its verdict against ORCH_LANE_MAX_PCT crossed in
                              either direction (a Codex account on its credits
@@ -544,17 +567,17 @@ The long pass's events, checked and reported in this order:
                              applies and `was=` the status and verdict before
                              it. `config_dir` names the credentials, since
                              two accounts can share an alias. The first
-                             reading of an account is its baseline and an
+                             compared reading is an account's baseline. An
                              unchanged account says nothing. A reading with
-                             verdict=unmeasured under the status the
-                             account's last unmeasured reading had says
-                             nothing either and is not compared: the next
+                             verdict=unmeasured says nothing and leaves the
+                             saved comparison unchanged: the next
                              measured reading is compared with the last one
                              measured, so a hosted credential the provider
                              holds while a lane runs on it, unmeasured on
-                             alternate passes, is news once. status=expired
-                             is exempt: each expiry after a measured reading
-                             is news. `was=` is the reading compared with
+                             alternate passes, creates no account event.
+                             status=expired and status=retired are exempt:
+                             each such status after a measured reading is
+                             news. `was=` is the reading compared with
   EVENT report-due reason=<minutes|issues> since=<utc> [landed=<N>]
                              the overseer's status report is due, as
                              `oversee-report due --state` judges it from the
@@ -563,8 +586,8 @@ The long pass's events, checked and reported in this order:
                              stays due, so it stops once a report is written;
                              read only with --state
   EVENT verifying-deadline <item> box=<N> trigger=<JSON> status=<due|overdue> deadline=<UTC>
-                             the item's due or overdue box set changed. Read
-                             each due box in that pass and record evidence.
+                             that due or overdue box key changed. Read
+                             each emitted box in that pass and record evidence.
                              Pass: tick and complete the same item. Fail or
                              unreadable by deadline: keep Verifying and file
                              one blocking peer fix through audit-issues.
@@ -591,8 +614,16 @@ The long pass's events, checked and reported in this order:
                              Merge triggers keep their deadline from merge.
                              Invalid items report their parser
                              error on stderr; the pass reads the next item.
-                             Printed with the event block or heartbeat. An item
-                             with none prints verifying <item> boxes=0.
+                             Event blocks print only due or overdue boxes
+                             whose number, trigger, status or deadline key
+                             changed in the saved deadline row. Other fields
+                             wait for the heartbeat, which prints every box.
+                             Waiting and blocked statuses have no individual
+                             deadline keys; those boxes print at heartbeat.
+                             An item
+                             with none prints verifying <item> boxes=0 once at
+                             first read, with EVENT verifying-deadline <item>
+                             boxes=0, and again at heartbeat.
   EVENT heartbeat            --max-loops long passes with no event, after
                              the repeated parked-merged lines above. A line
                              `  failing <item> <key>` follows for every lane
@@ -721,8 +752,8 @@ no other kind can carry them. A slice that is nothing but that noise prints
 `payload-noise-only lines=N` in place of the block, so silence and
 suppression read apart. No other payload is filtered.
 
-The latest pr-watch attention lines close the block when any exist and the
-pr-watch event did not open it. Triage
+The heartbeat prints the full latest pr-watch attention output. Event blocks
+carry only the lines whose keys rose this pass. Triage
 reads the live tracker list and rebuilds only acknowledged triage keys in the
 first repository's OVERSEE_WATCH_STATE_DIR baseline from kept or canceled
 verdicts. Lane prompts use pane and turn.
@@ -762,12 +793,13 @@ Options:
                       afresh; LINEAR_TEAM below arms the triage check
   --item ISSUE_ID     live item; repeatable. No values skips merged and
                       handoff with a note
-  --repo OWNER/REPO   repository; repeatable and case-normalized. Every
-                      check reads all of them; triage and lane rows persist
-                      in the first one's baseline, mail rows in the file
-                      beside it. ORCH_CONNECTED_REPOS below adds more after
-                      them; with none given, the first is the repository
-                      this checkout resolves to
+  --repo OWNER/REPO   repository; repeatable and case-normalized. The first
+                      repository and ORCH_CONNECTED_REPOS feed pr-watch.
+                      Additional --repo values feed the existing merge,
+                      heartbeat, report and repository checks, but do not add
+                      repositories to pr-watch. Triage and lane rows persist in
+                      the first one's baseline, mail rows beside it. With none
+                      given, the first is the repository this checkout resolves to
   --hosted ITEM=REMOTE_ROOT
                       the item's lane lives on another host; its mailbox is
                       read through `lane-host` against REMOTE_ROOT rather
@@ -899,11 +931,12 @@ Options:
                       kept, is one --item for the merged check and the
                       lane-long age alone: its pane is gone and its mailbox
                       and state are on a stopped disk, so no other check
-                      reads it, and the merge of the
-                      pull request its `parked` names, in that repository,
-                      prints parked-merged in the same pass and at every
-                      heartbeat while the record reads parked, and closes
-                      nothing.
+                      reads it. The wait selects `parked.until_pr` for a
+                      dependency park, even with no own `parked.pr`; a queue
+                      park selects `parked.pr`. The selected PR's merge
+                      produces parked-merged as above. A dependency PR's
+                      unmerged close produces parked-closed.
+                      The own PR's merge cannot clear a dependency wait.
                       The set is noted on stderr as fleet-read whenever a
                       read changes what the reader last carried, with the
                       count of records whose status is not running, so a
@@ -957,9 +990,9 @@ Which mode fits the overseer's harness:
                every line is handled. Nothing reports overseer-dead
 references/watch-delivery.md holds each harness's mechanism and re-arm rule.
 
-When pr-watch.sh is installed, oversee-watch runs it on every pass for every
---repo; it reads GitHub's review state and writes nothing. When pr-watch.sh is
-absent, the step is skipped with one stderr note.
+When pr-watch.sh is installed, oversee-watch runs it with the repository
+scope stated under --repo above; it reads GitHub's review state and writes
+nothing. When pr-watch.sh is absent, the step is skipped with one stderr note.
 Inside tmux, an --item with no LANE_WINDOW skips the pane checks with one
 stderr note; outside tmux there is no pane to read and nothing is noted.
 
@@ -1000,10 +1033,10 @@ Environment:
                               orch-env in this checkout, an inherited value
                               and KENDEX_ENV_FILE honored, since the watch
                               runs in the overseer's own checkout: each entry
-                              is a watched repository after the --repo values,
-                              an entry they already name skipped. Each one
-                              adds its reads to every long pass, as a --repo
-                              does. After a change, restart the watch: its
+                              joins the repository list after the --repo
+                              values, without repeats. The read scope is
+                              stated under --repo above. After a change,
+                              restart the watch: its
                               start exports the value it loaded, which every
                               repeat pass inherits. An unreadable setting
                               exits 2, in repeat mode before the first pass.
@@ -1083,17 +1116,19 @@ Environment:
                               security-alert, bot-fix and
                               security-alerts-unread rows; the mail pass's
                               file beside the first one holds
-                              each lane mailbox's read position and when the
-                              last mail and long passes started, plus claims/ and
+                              each lane mailbox's read position, when the last
+                              full mail pass completed and when the last long
+                              pass started, plus claims/ and
                               usage/, both shared across the repositories
                               that point here
-  ORCH_WATCH_MAIL_INTERVAL    seconds from the start of one mail pass to the
-                              next, a whole number, default 20, and the most
+  ORCH_WATCH_MAIL_INTERVAL    idle seconds after a full mail read, a whole
+                              number, default 20, and the most
                               --repeat waits between two runs after one that
                               did not exit 2: a lane read failure first
                               reported, a hosted lane close that fails, or a
                               global failure. The mail pass paragraph above
-                              names when a note lands later. 0 reads the mail
+                              names the first-long-pass exception and delays.
+                              0 reads the mail
                               on every turn of the loop and waits out a long
                               pass in flight rather than polling it
   ORCH_DIRECTIVE_UNREAD_SECS  age in seconds past which a directive the lane
@@ -1193,6 +1228,7 @@ ow_message() { # REASON FIELD=VALUE...
     pr-list-failed) text='The GitHub PR list command failed.' ;;
     pr-list-invalid) text='The GitHub PR list output could not be parsed.' ;;
     outside-list-failed) text='The GitHub list of open issues and pull requests the outside-contribution check reads failed.' ;;
+    outside-fleet-by-permission) text='The collaborator permission read admits this author as fleet. No outside-contribution event is reported for this author.' ;;
     outside-list-invalid) text='The GitHub list of open issues and pull requests carried a line the outside-contribution check cannot read: a number, a pr or issue kind, a login, and a pull request head commit.' ;;
     external-triage-invalid) text='ORCH_EXTERNAL_TRIAGE takes on or off.' ;;
     security-alerts-invalid) text='ORCH_SECURITY_ALERTS takes on or off.' ;;

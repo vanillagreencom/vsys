@@ -44,6 +44,7 @@ message() { # KEY VALUE [CAUSE]
       setting) echo "The setting holds a value it does not take. oversee-report --help lists the values." ;;
       setting-read) echo "orch-env could not read the setting, so which repositories the report reads is unknown. Its own words are below." ;;
       clock) echo "The current UTC time, a file time or a scratch file could not be had." ;;
+      cycle-format) echo "The cycle rows could not be formatted, so no complete report can be published:" ;;
       sort) echo "sort failed over the landed rows, so their order is unknown." ;;
       auth-helper) echo "The shared GitHub auth helper could not be loaded, so no GitHub credential can be chosen:" ;;
       auth-failed) echo "No configured GitHub credential works: not the env token, the keyring or the project's GH_BOT_TOKEN. Run gh auth login." ;;
@@ -65,6 +66,7 @@ message() { # KEY VALUE [CAUSE]
           bare-id) echo "Link each KEN item or PR number in Slack mrkdwn; do not leave a bare identifier." ;;
           github-link) echo "Link the Linear item, not a GitHub pull request or commit. The item holds that detail." ;;
           waiting-on-you) echo "Include the Waiting on you label, even when its answer is Nothing." ;;
+          layout) echo "Rewrite the summary to the shape the line below names: item lines of at most 20 words, each figure on its own line, no more item lines than ORCH_REPORT_SUMMARY_LINES. Nothing was written or sent; run write again." ;;
         esac ;;
       report-exists) echo "A report under this name already stands, and it is never overwritten. Write again in the next minute." ;;
       write) echo "The report file could not be written." ;;
@@ -140,13 +142,13 @@ write    prints the rows and writes the same bytes to the path
          refusal whose lines name lane-mail's `owner-notice-repeated`
          leaves the report file standing and the owner already holding the
          same text, under the notice id that line names.
-         Before rendering or writing, write checks the summary in its posted
-         mrkdwn form. It refuses as summary-shape with the first failing
-         rule: bare-id, github-link, waiting-on-you.
-         After sending, it prints at most one summary-shape-notice: line=N
-         words=W for the first item over 20 words, else item-lines=N cap=CAP
-         when the item count exceeds ORCH_REPORT_SUMMARY_LINES. Layout
-         never blocks a report or asks for a resend.
+         Before rendering, writing or sending, write checks the summary in
+         its posted mrkdwn form. It refuses as summary-shape with the first
+         failing rule: bare-id, github-link, waiting-on-you, layout.
+         A layout refusal's third line is summary-shape-notice: line=N
+         words=W for the first item over 20 words, else item-lines=N
+         cap=CAP when the item count exceeds ORCH_REPORT_SUMMARY_LINES.
+         Nothing is written or sent: rewrite the summary and write again.
          Owner wording and the template live in
          references/communication-modes.md § Owner messages.
 
@@ -167,6 +169,9 @@ Rows:
                   `ITEM (direct push, SHA)`, with the commit's first 7
                   characters. Rows sort by time, oldest first; a direct
                   push uses its cycle row's at.
+  Cycles          one line per recorded class beside Landed: lane_median and
+                  open_median in seconds, plus miss_share on lane-controlled
+                  time. The read-only oversee-cycle report owns these figures.
   Escapes         one line under Landed: pull requests merged to the base
                   branch resolve-base-branch names that a revert commit
                   there names as #N, or a `Regressed-by: #N` line (plain or
@@ -332,7 +337,7 @@ source "$SCRIPT_DIR/lib/lane-gitfile.sh"
 source "$SCRIPT_DIR/lib/lane-state.sh"
 TRACKER="${OVERSEE_REPORT_TRACKER:-$SCRIPT_DIR/../../linear/scripts/linear.sh}"
 GITHUB="${OVERSEE_REPORT_GITHUB:-$SCRIPT_DIR/../../github/scripts/github.sh}"
-LANE_MAIL="${OVERSEE_REPORT_LANE_MAIL:-$SCRIPT_DIR/lane-mail}"
+LANE_MAIL="${OVERSEE_REPORT_LANE_MAIL:-$SCRIPT_DIR/../../mailbox/scripts/lane-mail}"
 LANE_HOST="${OVERSEE_REPORT_LANE_HOST:-$SCRIPT_DIR/lane-host}"
 WORKFLOW_STATE="${OVERSEE_REPORT_WORKFLOW_STATE:-$SCRIPT_DIR/workflow-state}"
 # Relative to a clone's root on a lane's host, as workflow-state joins it.
@@ -464,9 +469,8 @@ if ! SHAPE_FAILURE="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
   }' <<<"$SUMMARY_TEXT")"; then
   refuse summary "$SUMMARY"
 fi
-SUMMARY_NOTICE=""
 case "$SHAPE_FAILURE" in
-  summary-shape-notice:*) SUMMARY_NOTICE="$SHAPE_FAILURE" ;;
+  summary-shape-notice:*) refuse summary-shape layout "$SHAPE_FAILURE" ;;
   '') ;;
   *) refuse summary-shape "$SHAPE_FAILURE" ;;
 esac
@@ -884,6 +888,18 @@ render() {
     landed_name="Landed (since $cut_since, earlier merges not listed)"
   fi
   table "$landed_name" "$rows"
+  # Use the cycle owner on this report's snapshot, so a concurrent fleet
+  # write cannot give the two sections different records.
+  printf '%s\n' "$STATE_JSON" > "$WORK_DIR/workflow-state-oversee.json" || refuse state "$STATE"
+  list="$("$SCRIPT_DIR/oversee-cycle" --state-dir "$WORK_DIR" report 2>"$WORK_DIR/cycle.err")" \
+    || refuse state "$STATE" "$(cat "$WORK_DIR/cycle.err")"
+  awk '/^rollup / {
+    printf "Cycles:"
+    for (i = 2; i <= NF; i++)
+      if ($i ~ /^(class|lane_median|open_median|miss_share)=/) printf " %s", $i
+    print ""
+  }' <<<"$list" 2>"$WORK_DIR/cycle-format.err" \
+    || refuse cycle-format "$STATE" "$(cat "$WORK_DIR/cycle-format.err")"
   escapes_row
   echo
 
@@ -1019,4 +1035,3 @@ NOTICE_RECEIPT="$("$LANE_MAIL" notice --item overseer --to owner --attach "$TARG
   2>"$WORK_DIR/notice.err")" || refuse notice "$TARGET" "$(cat "$WORK_DIR/notice.err")"
 NOTICE_ID="${NOTICE_RECEIPT#* id=}"
 message report-written "$TARGET notice-id=${NOTICE_ID%% *}"
-[[ -z "$SUMMARY_NOTICE" ]] || printf '%s\n' "$SUMMARY_NOTICE" >&3

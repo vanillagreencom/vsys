@@ -30,6 +30,10 @@ state_message() {
       printf 'workflow-state: invalid-json path=%s\n' "$tmp_file"
       printf '%s\n' "Error: jq produced invalid JSON"
       ;;
+    value-count)
+      printf 'workflow-state: value-count count=%s\n' "$count"
+      printf '%s\n' "Error: jq expression must produce exactly one JSON value"
+      ;;
     unknown-option)
       printf 'workflow-state: unknown-option arg1=%s\n' "$1"
       printf '%s\n' "Unknown option: $1"
@@ -329,9 +333,16 @@ atomic_update() {
             exit 1
         fi
 
-        # Validate output is valid JSON
-        if ! jq empty "$tmp_file" 2>/dev/null; then
+        # Exactly one JSON value: `jq empty` passes a stream of several, or
+        # none, and either would replace the state file.
+        local count
+        if ! count=$(jq -s length "$tmp_file" 2>/dev/null); then
             state_message invalid-json "$@" >&2
+            rm -f "$tmp_file"
+            exit 1
+        fi
+        if [[ "$count" != 1 ]]; then
+            state_message value-count "$@" >&2
             rm -f "$tmp_file"
             exit 1
         fi
@@ -1179,7 +1190,7 @@ fleet_state_file() {
 
 # The fleet log's two readers, each printing its rows one JSON object per
 # line: the successor overseer's takeover read, the last ORCH_TAKEOVER_ROWS
-# rows but the `cycle` rows oversee-cycle logs, which would crowd the rulings
+# rows but the `cycle` and `token` rows, which would crowd the rulings
 # out of the window, and the audit read, every proposal and ruling row.
 cmd_fleet_log() {
     local reader="${1:-}" state_file rows
@@ -1188,7 +1199,7 @@ cmd_fleet_log() {
             state_file=$(fleet_state_file) || return 0
             rows=$("$SCRIPT_DIR/orch-env" ORCH_TAKEOVER_ROWS 10) || return 1
             jq -c --argjson n "$rows" \
-                '[(.fleet_log // [])[] | select(.kind != "cycle")] | if $n == 0 then empty else .[-$n:][] end' "$state_file" ;;
+                '[(.fleet_log // [])[] | select(.kind != "cycle" and .kind != "token")] | if $n == 0 then empty else .[-$n:][] end' "$state_file" ;;
         audit)
             state_file=$(get_state_file oversee)
             ensure_state_exists "$state_file"
@@ -1410,7 +1421,7 @@ cmd_prune() {
     # Its rows and session files have owners independent of state_units.
     root=$(project_root) || return 1
     local compacted to_lane to_overseer mailbox_archive sessions=0
-    compacted=$("$SCRIPT_DIR/lane-mail" compact --item overseer --root "$root" 2>&1) || {
+    compacted=$("$SCRIPT_DIR/../../mailbox/scripts/lane-mail" compact --item overseer --root "$root" 2>&1) || {
         printf '%s\n' "$compacted" >&2; return 1;
     }
     to_lane=$(awk '/^compacted / { sub(/^to-lane=/, "", $3); print $3 }' <<<"$compacted") || return 1
@@ -1697,10 +1708,12 @@ EOF
                                 remove-issue-dash
   fleet-log takeover|audit      Print fleet_log rows of the oversee state, one
                                 JSON object per line: takeover the last rows
-                                of every kind but cycle, as many as the
+                                of every kind but cycle and token, as many as the
                                 setting ORCH_TAKEOVER_ROWS (default 10),
                                 and nothing, exit 0, where no fleet state
-                                exists yet; audit every proposal and ruling row
+                                exists yet; audit every proposal and ruling row.
+                                Fleet's reap writes token events through
+                                append-file, never token values
   progress-report-path [--succession]
                                 Print the owner progress report's path,
                                 MM-DD-HH-MM.md in UTC (MM-DD-HH-MM-succession.md
@@ -1867,7 +1880,7 @@ parse_rc=0
 # shellcheck source=lib/date-ladder.sh
 source "$SCRIPT_DIR/lib/date-ladder.sh"
 # shellcheck source=lib/file-lock.sh
-source "$SCRIPT_DIR/lib/file-lock.sh"
+source "$SCRIPT_DIR/../../mailbox/scripts/lib/file-lock.sh"
 # shellcheck source=lib/tmux-server.sh
 source "$SCRIPT_DIR/lib/tmux-server.sh"
 # shellcheck source=lib/session-rows.sh
