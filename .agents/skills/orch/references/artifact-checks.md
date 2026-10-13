@@ -15,11 +15,12 @@ Cross-script routing behind the artifact rows in [../SKILL.md](../SKILL.md). Eac
 
 | Item | Contract |
 |------|----------|
+| Exit status | `DEV_VALIDATE_CMD` and `DEV_VALIDATE_RANGE_CMD` reserve exit 3 for unavailable host checks. Report the host cause in the log. Return 0 for pass and another nonzero status for a code defect. Wrap a test runner that exits with its failure count. `dev-validate-run --help` owns the sentinel and scoped-suite route. A host result cannot supply the timeout-only reuse proof. |
 | Line | `validate: lanes=<comma-separated names> selection=all\|subset\|battery` |
 | Names | Non-empty ASCII names using letters, digits, `.`, `_` or `-`; no empty comma-separated element |
 | `selection` | Eligible lanes follow the command's invocation mode and applicability rules, including change class and changed paths. `all` means every eligible lane; `subset` means the command chose fewer eligible lanes; `battery` means every lane the command has, none stood down for the change class or changed paths |
 | Repeated lines | The last line starting with `validate:` owns the result |
-| Missing or malformed last line | `selection=unreported`, with no `lanes` field; does not change the run verdict |
+| Missing or malformed last line | The start's previewed `selection=all` or `selection=subset`; otherwise `selection=unreported`. No `lanes` field; does not change the run verdict |
 | `validate-mode` | Remains `full`, `range` or `ci`; names the invocation, not the lane selection |
 | Finding line | A line starting with the prefix the project declares in `DEV_VALIDATE_FINDING_PREFIX`, such as `guard: ` for a guard printing `guard: suite=…`; a project that declares none has no finding-free run. A run the bound ended whose log holds none refuted nothing: `--last-pass` passes over it, and a later run over no fewer paths does not run past the bound again (`dev-validate-run --help`) |
 

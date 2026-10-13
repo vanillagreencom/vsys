@@ -172,23 +172,24 @@ parse_usage_body() { # HARNESS [ROUNDING]
 }
 
 # The tier inputs of one pick over LANES, `lanes`' JSON array of records, as
-# TIER_POOL, the pool the kind declares, TIER_RETIRE, each account's
+# TIER_POOL, the launch's spending pool, TIER_RETIRE, each account's
 # ORCH_LANE_RETIRE date, TIER_CLOUD_REPO, the accounts a cloud-session launch
 # may take, null for any other launch, and TIER_REPO, the checkout's
 # github.com repository they were judged against. Read once per pick: an
 # expiring credit is tier 0 only where the kind declares it, and a cloud
 # session reaches only a repository its account was given.
 TIER_POOL="" TIER_RETIRE='{}' TIER_CLOUD_REPO=null TIER_REPO=""
-lane_tier_inputs() { # LANES
+lane_tier_inputs() { # LANES HARNESS MODEL
 	local pool launch dir date
 	TIER_RETIRE='{}' TIER_CLOUD_REPO=null TIER_REPO=""
 	lane_capabilities_read "$SCRIPT_DIR/lane-host" "${ORCH_LANE_HOST:-local}" || die host-capabilities-unread "${ORCH_LANE_HOST:-local}"
 	lane_capability pool pool
+	pool="$(lane_pick_pool "$2" "$3" "$pool")" || return 1
 	TIER_POOL="$pool"
 	lane_capability launch launch
 	case "$pool" in
-		plan) ;;
-		cloud-credit)
+		plan | copilot) ;;
+		cloud-credit | api-credit)
 			while IFS= read -r dir; do
 				lane_retire_date "$dir" silent; date="$LANE_RETIRE_DATE"
 				[[ -z "$date" ]] || TIER_RETIRE="$(jq -c --arg d "$dir" --arg v "$date" '. + {($d): $v}' <<<"$TIER_RETIRE")" || return 1
@@ -196,6 +197,7 @@ lane_tier_inputs() { # LANES
 			;;
 		*) die host-capabilities-unread "${ORCH_LANE_HOST:-local}" ;;
 	esac
+	[[ "$pool" != api-credit ]] || return 0
 	case "$launch" in
 		window | ssh | cloud-task) ;;
 		cloud-session)

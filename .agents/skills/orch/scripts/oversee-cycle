@@ -48,8 +48,9 @@
 # compare-failed or no-push. Its first parent to the commit uses the same
 # classifier.
 # No CI check is read. pr_opened, gate_green, ci_green and armed are null,
-# as are open, phase, gate waits, pr_rounds and refixed; verdict is unmeasured
-# when classified. The cycle object carries commit instead of pr, and the
+# as are open, phase, gate waits, pr_rounds and refixed. The verdict compares
+# measured lane time with the class base. The cycle object carries commit
+# instead of pr, and the
 # cycle line below uses commit=SHA instead of pr=N. actual and escaped still
 # enter the per-class rollup. Exactly one of --pr and --commit is required.
 # The round counts and stage times come from
@@ -68,7 +69,7 @@
 #
 # It writes the record's `cycle` object, appends one `cycle` row to the fleet
 # log, and prints the same line:
-#   cycle item=ITEM pr=N class=C tier=T target=S merge_group=S actual=S open=S verdict=V
+#   cycle item=ITEM pr=N class=C tier=T target=S merge_group=S ci_head=S ci_clean=S lane=S actual=S open=S verdict=V
 #     phase=P phase_secs=S cause=W bot_wait=S thread_fix=S paused=S missing=A,B
 #     review=N fix=N bot=N full_validations=N pr_rounds=N escaped=B refixed=B
 # (one line). A value it could not read prints `-`.
@@ -76,27 +77,34 @@
 #             gate_green (pr-timeline's gate_met), ci_green, armed (armed,
 #             else queued), merged
 #   missing   the stamps that are null
-#   target    seconds, pull request open to merge: the class target from the
-#             table below plus pr-timeline's ci_merge_group_secs, null as 0
+#   target    the class base plus merge_group and ci_clean, each null as 0
 #   merge_group  those merge-group CI seconds, `-` when null
+#   ci_head   pr-timeline's ci_head_secs, including earlier attempts
+#   ci_clean  pr-timeline's ci_head_clean_secs, one clean final-head CI run;
+#             null where no clean run exists, and null on a direct push
+#   lane_secs actual minus merge_group minus ci_clean, each null as 0; printed
+#             as lane=. The verdict compares it with the class base.
+#             Reruns and red attempts remain in the lane time.
 #   actual    merged minus launched, lane launch to merge; the rollup reads it
 #   open      pr-timeline's open_secs, pull request open to merge, null where
 #             pr_opened or merged is missing
-#   verdict   met, miss (open over target), unmeasured (open null), or
+#   verdict   met, miss (lane_secs over class base), unmeasured (lane_secs
+#             null), or
 #             unclassified (the classifier gave no class)
 #   phase     the longest gap between two consecutive stamps in time order
-#             among the stamps at or after pr_opened and at or before merged
-#             in time, the span the verdict judges, named by the stamp that
+#             among the stamps at or after launched and at or before merged
+#             in time, named by the stamp that
 #             ends it; the earliest wins a tie.
-#             The gap ending at merged loses the merge-group CI seconds,
-#             floored at 0, before the longest gap is chosen.
+#             The gap ending at merged loses merge-group CI seconds. The
+#             ci_green gap loses clean final-head CI seconds. Each gap is
+#             floored at 0 before the longest gap is chosen.
 #             A stamp outside that span enters no gap: a ci_green whose
-#             checks finished before the PR opened, or one an optional check
+#             checks finished before the lane launched, or one an optional check
 #             completes after the merge.
 #             An armed stamp at or before the latest green stamp in that
 #             span enters no gap; that time stays with CI or the gate.
-#             Null while a stamp other than launched, first_commit and
-#             armed is missing: a missing stamp has no time, and one that
+#             Null while a stamp other than armed is missing: a missing
+#             stamp has no time, and one that
 #             could fall in the span joins two gaps. A null armed is a merge
 #             never armed or queued, as on the admin route: pr-timeline reads
 #             an arm by every merge method
@@ -120,12 +128,23 @@
 #             PR opened in
 #   cause     the largest gate wait, the earlier of bot_wait, thread_fix and
 #             paused winning a tie, where the phase is gate_green. Where the
-#             phase is ci_green, the larger part of its gap split at
+#             phase is ci_green, the largest part of its gap split at
 #             pr-timeline's last_push: work, the rounds pushed before the
-#             final head, or ci, the final head's checks after its push;
-#             work wins a tie, a push before the gap opened leaves it all
-#             ci, and the cause is null where last_push is null or after
-#             ci_green. Null on any other phase, except on a miss, which is
+#             final head; ci, the time after that push in which a check run
+#             in pr-timeline's ci_head_spans was in progress, minus clean CI
+#             seconds, floored at 0; or wait, the rest of the time after the
+#             push, when no check on the final head ran.
+#             Work wins a tie, then wait: ci only where it is the larger
+#             part. A push before the gap opened leaves the gap no work,
+#             and the cause is null where last_push or ci_head_spans is
+#             null or last_push is after ci_green. On a merged miss at every tier, compare the raw
+#             merge gap's paused seconds, merge-group CI seconds and the
+#             remaining wait. Paused wins a tie, then merge_group. Where
+#             the remaining wait wins, use the recorded merge decision's
+#             route (admin or queue), else keep merged as the cause. Pauses
+#             are clipped to this gap and overlaps count once; gate waits
+#             still describe only the gate_green gap.
+#             Null on any other phase, except on a miss, which is
 #             never recorded without a cause: on a miss the phase is the
 #             cause wherever no split above applies, and the cause is
 #             `unread` where the phase is null
@@ -169,9 +188,13 @@
 # recorded lane, in the order of the target table, then unclassified; with no
 # fleet state yet it prints nothing and exits 0. report prints the same rows
 # and writes nothing, for a reader without write access to the fleet state:
-#   rollup class=C items=N median=S p90=S misses=N review=N fix=N bot=N
+#   rollup class=C items=N median=S p90=S lane_median=S open_median=S miss_share=M/N misses=N review=N fix=N bot=N
 #     full_validations=N rounds_unread=N escaped=N refixed=N pr_rounds=N
 #     pr_rounds_unread=N round_median=S fix_median=S rounds_untimed=N
+# lane_median and open_median are nearest-rank medians of lane_secs and open.
+# miss_share is the fraction of measured lane_secs over the class base,
+# or - with no measured lane time or no class base. Old records with no
+# lane_secs enter neither its median nor its miss share.
 # median and p90 are nearest-rank over the measured launch-to-merge seconds;
 # the round figures are sums over the records that carry rounds, and
 # rounds_unread counts the records that do not. pr_rounds is the nearest-rank
@@ -205,6 +228,8 @@ source "$SCRIPT_DIR/lib/lane-gitfile.sh"
 # shellcheck source=../../github/scripts/lib/gh-repo.sh
 source "$SCRIPT_DIR/../../github/scripts/lib/gh-repo.sh"
 
+# Class bases stay lane-controlled: only a clean final-head CI run and the
+# merge group are forgiven. The open-to-merge wait remains visible beside them.
 TARGETS='{"render":300,"trivial":300,"micro":1200,"small":1800,"standard":5400}'
 # The owner's review-stage targets: review rounds per pull request by class,
 # and seconds per review round.
@@ -217,7 +242,7 @@ CYCLE_DEFS='def interval: if type == "number" and . < 0 then null else . end;
 
 usage() {
   awk 'NR > 1 && /^set -euo/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"
-  jq -r '"Targets, open-to-merge seconds: " + (to_entries | map("\(.key) \(.value)") | join(", "))' <<<"$TARGETS"
+  jq -r '"Targets, lane-controlled seconds: " + (to_entries | map("\(.key) \(.value)") | join(", "))' <<<"$TARGETS"
   jq -r --arg secs "$ROUND_SECS_TARGET" \
     '"Review rounds per pull request: " + (to_entries | map("\(.key) \(.value)") | join(", "))
      + "; seconds per round: " + $secs' <<<"$ROUND_TARGETS"
@@ -319,6 +344,11 @@ if [[ "$VERB" != record ]]; then
       "rollup class=\($class) items=\($c | length)"
       + " median=\([$c[] | .actual | interval // empty] | nr(0.5))"
       + " p90=\([$c[] | .actual | interval // empty] | nr(0.9))"
+      + " lane_median=\([$c[] | .lane_secs | interval // empty] | nr(0.5))"
+      + " open_median=\([$c[] | .open | interval // empty] | nr(0.5))"
+      + " miss_share=\([$c[] | .lane_secs | interval // empty] as $measured
+          | if ($measured | length) == 0 or $targets[$class] == null then "-"
+            else "\($measured | map(select(. > $targets[$class])) | length)/\($measured | length)" end)"
       + " misses=\([$c[] | select(.verdict == "miss")] | length)"
       + " review=\(sum(.review) | n) fix=\(sum(.fix) | n) bot=\(sum(.bot) | n)"
       + " full_validations=\(sum(.full_validations) | n)"
@@ -540,20 +570,24 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
   # covers is paused, any other is the wait the latest push or bot review at
   # or before it opened, bot_wait where neither came yet. A push and a bot
   # review in one second read the push first.
-  def gate_waits($from; $to):
-    ($pauses | map({a: ([.from, $from] | max), b: ([.to // $to, $to] | min)})
+  # The same union measures gate holds, merge holds and the time a check
+  # ran. This local calculation adds no merge policy or new lane record.
+  def covered_seconds($spans; $from; $to):
+    ($spans | map({a: ([.from, $from] | max), b: ([.to // $to, $to] | min)})
      | map(select(.b > .a)) | sort_by(.a)
      | reduce .[] as $p ([]; if length > 0 and $p.a <= .[-1].b
          then .[-1].b = ([.[-1].b, $p.b] | max) else . + [$p] end)) as $union
-    | def paused($a; $b): [$union[] | ([.b, $b] | min) - ([.a, $a] | max) | select(. > 0)] | add // 0;
+    | [$union[] | .b - .a] | add // 0;
+  def paused_seconds($from; $to): covered_seconds($pauses; $from; $to);
+  def gate_waits($from; $to):
     ([$t.push_times[] | {at: fromdate, wait: "bot_wait"}] + [$t.bot_review_times[] | {at: fromdate, wait: "thread_fix"}]
      | sort_by(.at, .wait)) as $events
     | ([{at: $from, wait: ([$events[] | select(.at <= $from)] | last | .wait // "bot_wait")}]
        + [$events[] | select(.at > $from and .at < $to)] + [{at: $to}])
-    | [range(1; length) as $i | {wait: .[$i - 1].wait, secs: ((.[$i].at - .[$i - 1].at) - paused(.[$i - 1].at; .[$i].at))}]
+    | [range(1; length) as $i | {wait: .[$i - 1].wait, secs: ((.[$i].at - .[$i - 1].at) - paused_seconds(.[$i - 1].at; .[$i].at))}]
     | {bot_wait: ([.[] | select(.wait == "bot_wait") | .secs] | add // 0),
        thread_fix: ([.[] | select(.wait == "thread_fix") | .secs] | add // 0),
-       paused: paused($from; $to)};
+       paused: paused_seconds($from; $to)};
   $t.stamps as $s
   | {launched: $lane.launched_at, first_commit: $s.first_commit, pr_opened: $s.created,
      gate_green: $s.gate_met, ci_green: $s.ci_green, armed: ($s.armed // $s.queued),
@@ -561,12 +595,15 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
   | (if $class == "" then null else $class end) as $class
   | (if $tier == "" then null else $tier end) as $tier
   | $t.ci_merge_group_secs as $merge_group
-  | (if $class == null then null else $targets[$class] + ($merge_group // 0) end) as $target
+  | $t.ci_head_secs as $ci_head
+  | $t.ci_head_clean_secs as $ci_clean
+  | (if $class == null then null else $targets[$class] + ($merge_group // 0) + ($ci_clean // 0) end) as $target
   | (if $stamps.launched == null or $stamps.merged == null then null
      else ($stamps.merged | fromdate) - ($stamps.launched | fromdate) end) as $actual
+  | (if $actual == null then null else $actual - ($merge_group // 0) - ($ci_clean // 0) end) as $lane_secs
   | $t.open_secs as $open
   | [$stamps | to_entries[] | select(.value == null) | .key] as $missing
-  | (if $missing - ["launched", "first_commit", "armed"] != [] then null else ($stamps.pr_opened | fromdate) as $o
+  | (if $missing - ["armed"] != [] then null else ($stamps.launched | fromdate) as $o
      | ($stamps.merged | fromdate) as $m
      | [$stamps | to_entries[] | select(.value != null) | {name: .key, at: (.value | fromdate)} | select(.at >= $o and .at <= $m)]
      | ([.[] | select(.name == "ci_green" or .name == "gate_green") | .at] | max) as $green
@@ -574,25 +611,39 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
      | sort_by(.at) end) as $seq
   | (if $seq == null then {phase: null, secs: null} else
        [range(1; $seq | length) as $i | {phase: $seq[$i].name, secs: ($seq[$i].at - $seq[$i - 1].at)}
-        | if .phase == "merged" then .secs = ([.secs - ($merge_group // 0), 0] | max) else . end]
+        | if .phase == "merged" then .secs = ([.secs - ($merge_group // 0), 0] | max) elif .phase == "ci_green" then .secs = ([.secs - ($ci_clean // 0), 0] | max) else . end]
        | sort_by(- .secs) | first end) as $dominant
   | ($seq // [] | map(.name) | index("gate_green")) as $gate
   | (if ($gate // 0) == 0 or $t.push_times == null then null
      else gate_waits($seq[$gate - 1].at; $seq[$gate].at) end) as $waits
   | ($seq // [] | map(.name) | index("ci_green")) as $ci
-  | (if ($ci // 0) == 0 or $s.last_push == null then null
+  | (if ($ci // 0) == 0 or $s.last_push == null or $t.ci_head_spans == null then null
      else $seq[$ci - 1].at as $from | $seq[$ci].at as $to | ($s.last_push | fromdate) as $push
-     | if $push > $to then null elif $push - $from >= $to - $push then "work" else "ci" end end) as $ci_cause
+     | if $push > $to then null
+       else ([$push, $from] | max) as $final
+       | covered_seconds([$t.ci_head_spans[] | {from: (.start | fromdate), to: (.end | fromdate)}]; $final; $to) as $running
+       | ([$push - $from, 0] | max) as $work
+       | ([$running - ($ci_clean // 0), 0] | max) as $checks
+       | ($to - $final - $running) as $wait
+       | if $work >= $checks and $work >= $wait then "work" elif $checks > $wait then "ci" else "wait" end end end) as $ci_cause
   | (if $t.commit == null then {pr: $t.pr} else {commit: $t.commit} end)
     + {class: $class, class_cause: (if $cause == "" then null else $cause end),
      class_reason: (if $class_reason == "" then null else $class_reason end),
-     tier_inputs: $lane.tier_inputs, tier: $tier, stamps: $stamps, target: $target, merge_group: $merge_group, actual: $actual, open: $open,
-     verdict: (if $class == null then "unclassified" elif $open == null then "unmeasured"
-               elif $open > $target then "miss" else "met" end),
+     tier_inputs: $lane.tier_inputs, tier: $tier, stamps: $stamps, target: $target, merge_group: $merge_group, ci_head: $ci_head, ci_clean: $ci_clean, lane_secs: $lane_secs, actual: $actual, open: $open,
+     verdict: (if $class == null then "unclassified" elif $lane_secs == null then "unmeasured"
+               elif $lane_secs > $targets[$class] then "miss" else "met" end),
      phase: $dominant.phase, phase_secs: $dominant.secs, gate_waits: $waits,
      cause: (if $dominant.phase == "gate_green" and $waits != null
                then $waits | to_entries | sort_by(- .value) | first.key
              elif $dominant.phase == "ci_green" then $ci_cause
+             elif $dominant.phase == "merged" and $class != null and $lane_secs > $targets[$class]
+               then ($seq[-1].at - $seq[-2].at) as $gap
+                 | paused_seconds($seq[-2].at; $seq[-1].at) as $paused
+                 | ($merge_group // 0) as $group
+                 | ([$gap - $paused - $group, 0] | max) as $rest
+                 | if $paused > 0 and $paused >= $group and $paused >= $rest then "paused"
+                   elif $group > 0 and $group >= $rest then "merge_group"
+                   else $t.merge_decision.route end
              else null end),
      missing: $missing, rounds: $rounds, stages: $stages, repeat_refusals: $refusals,
      pr_rounds: ($t.rounds | if . == null then null else map(.secs |= interval) end),
@@ -615,7 +666,7 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
 line="$(jq -r --arg item "$ITEM" 'def n: if . == null then "-" else tostring end;
   "cycle item=\($item) " + (if .commit == null then "pr=\(.pr)" else "commit=\(.commit)" end)
   + " class=\(.class | n) tier=\(.tier | n) target=\(.target | n)"
-  + " merge_group=\(.merge_group | n)"
+  + " merge_group=\(.merge_group | n) ci_head=\(.ci_head | n) ci_clean=\(.ci_clean | n) lane=\(.lane_secs | n)"
   + " actual=\(.actual | n) open=\(.open | n) verdict=\(.verdict) phase=\(.phase | n) phase_secs=\(.phase_secs | n)"
   + " cause=\(.cause | n) bot_wait=\(.gate_waits.bot_wait | n) thread_fix=\(.gate_waits.thread_fix | n)"
   + " paused=\(.gate_waits.paused | n)"

@@ -76,13 +76,13 @@ The template carries outcomes only. A question in the set names no mechanism the
 
 ## Owner asks
 
-An overseer's question to the owner is one owner ask: the template above for the mode, written to a file, sent with its form and its deadline as fields, never as prose. The template's recommendation is the option the ask records as `recommend`, the relay's Recommended line, and a question whose ask records none leaves it out. The chat shows one line naming the ask. `--wait` names one ask's minutes, and an ask without it takes `ORCH_ASK_WAIT_MINUTES`. Which forms record a recommendation, and what the deadline does for each, is the [lane-mail owner-channel contract](../scripts/lane-mail)'s.
+An overseer's question to the owner is one owner ask: the template above for the mode, written to a file, sent with its form and its deadline as fields, never as prose. The template's recommendation is the option the ask records as `recommend`, the relay's Recommended line, and a question whose ask records none leaves it out. The chat shows one line naming the ask. `--wait` names one ask's minutes, and an ask without it takes `ORCH_ASK_WAIT_MINUTES`. Which forms record a recommendation, and what the deadline does for each, is the [lane-mail owner-channel contract](../../mailbox/scripts/lane-mail)'s.
 
 ```bash
-.agents/skills/orch/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --recommend [RECOMMENDED_OPTION] --file [PATH] --issue [ITEM] --do [ACTION_AND_CLOSING_EVIDENCE]
+.agents/skills/mailbox/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --recommend [RECOMMENDED_OPTION] --file [PATH] --issue [ITEM] --do [ACTION_AND_CLOSING_EVIDENCE]
 ```
 
-For an item ask, set `ORCH_OWNER_ASK_LABEL` and `LINEAR_TEAM` to enable the Linear route. `ORCH_OWNER_EMAIL` names the person and defaults to `KENDEX_USER_EMAIL`. The overseer assigns that person, adds the label without replacing other labels, and posts the question with its options, recommendation, deadline and `ask=` id. Linear sends the assignment notification. After the complete tracker question is confirmed, Slack posts one line with the question's first line and the item link. A failed tracker write keeps the full chat question, options and deadline. It retains the item binding for cleanup and uses the chat deadline route. An ask with no item stays on the chat route and creates no issue.
+For an item ask, set `ORCH_OWNER_ASK_LABEL` and the owner email to enable the Linear route. `ORCH_OWNER_EMAIL` names the person and defaults to `KENDEX_USER_EMAIL`. The item supplies its own team. The overseer assigns that person, adds the label without replacing other labels, and posts the question with its options, recommendation, deadline and `ask=` id. Linear sends the assignment notification. After the complete tracker question is confirmed, Slack posts one line with the question's first line and the item link. A failed tracker write keeps the full chat question, options and deadline. It retains the item binding for cleanup and uses the chat deadline route. Unset settings report `lane-mail: tracker-unwritten issue=<ID> cause=settings-unset`. A failed settings read reports `cause=settings-unreadable`. An ask with no item stays on the chat route and creates no issue.
 
 An item ask requires `--do TEXT`: at most two sentences in plain words saying what the person does and what evidence closes it. A missing or empty action refuses as `owner-action-missing`; an action over two sentences refuses as `owner-action-long sentences=N`. Both refusals name `--do` as the fix and write nothing. The label update also opens the description with `**<FIRST_NAME>, what you do:** <TEXT>`, a blank line, then the existing body. The first name comes from the Linear user the route assigns. A later ask replaces the opening line. The existing long watch pass restores a missing line from the ask's `do` field.
 
@@ -92,27 +92,27 @@ The owner can answer more than once. Each answer lands through `send --item over
 
 - The overseer closes the ask when it has its ruling: `resolve --item overseer --id [ASK_ID]`. The close is a separate record, reported as `owner-ask-closed`.
 - **The chat-answer rule.** Record each chat answer with `send --re` before acting. `resolve --text` records a chat answer and closes together only when the overseer already has its ruling.
-- At the deadline the watch runs `resolve --default` on each ask `pending --due` lists, with the outcome the [lane-mail owner-channel contract](../scripts/lane-mail) states.
+- At the deadline the watch runs `resolve --default` on each ask `pending --due` lists, with the outcome the [lane-mail owner-channel contract](../../mailbox/scripts/lane-mail) states.
 - After closing, later text arrives as a directive. A repeated delivery still names its original answer.
 
 A decision the owner's authority rule reserves to the owner is a reserved ask: a deletion or other irreversible step, spending beyond an approved figure, an external commitment, anything sent as the owner, and an x.0 release of kendex or an app. A send as the owner on Slack or by email is a draft ask, below; every other send as the owner, such as a GitHub or Linear comment, is a reserved ask. It takes `--reserved` in place of `--recommend`. The overseer closes it once it holds the owner's answer. Past its deadline and unanswered, "Waiting on you" marks it overdue and the Slack relay posts it once more in its thread; an answered one reads as awaiting close.
 
 ```bash
-.agents/skills/orch/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --reserved --file [PATH]
+.agents/skills/mailbox/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --reserved --file [PATH]
 ```
 
-An ask for the owner to approve a Slack message or an email sent as the owner is a draft ask: `--draft [PATH]` in place of `--options` and `--recommend`. The [lane-mail owner-channel contract](../scripts/lane-mail) states the draft's fields and its `text_hash`. Send only when the approval for that ask id names the `text_hash` that `pending --item overseer --to owner` prints. An edited draft is a new ask.
+An ask for the owner to approve a Slack message or an email sent as the owner is a draft ask: `--draft [PATH]` in place of `--options` and `--recommend`. The [lane-mail owner-channel contract](../../mailbox/scripts/lane-mail) states the draft's fields and its `text_hash`. Send only when the approval for that ask id names the `text_hash` that `pending --item overseer --to owner` prints. An edited draft is a new ask.
 
-At `owner-ask-closed`, by any route including the watch's default close, the tracker route posts the ruling on the issue. If another tracker-posted ask for that issue remains open, it keeps the owner-ask label and assignee and shows the latest remaining ask's action. Otherwise it removes the label, assignee and opening action line. The overseer records the ruling per § Recording and sends `lane-mail notice --item overseer --to owner --ref [ASK_ID]` naming it, so a relay posts the ruling where the question was asked.
+At `owner-ask-closed`, by any route including the watch's default close, the tracker route posts the ruling on the issue. Posting evidence retains the applied label, so close can clean up when settings are unset or unreadable. Each ask uses its recorded label. An older record without that label uses the configured label, never another ask’s recorded label. A legacy record cannot identify a label from earlier settings, so an unidentified historic label remains. If a closing or remaining legacy ask needs unavailable settings, close reports `tracker-unwritten` with the settings cause and leaves tracker ownership unchanged. The watch surfaces that diagnostic. Close removes its ask's label only when no remaining tracker-posted ask on that issue uses it. It keeps the labels of the remaining asks and unrelated item labels. While an ask remains, it keeps the assignee and shows the latest remaining ask's action. The watch finds owner replies through the remaining asks' recorded labels. After the last ask closes, close removes the assignee and opening action line. The overseer records the ruling per § Recording and sends `lane-mail notice --item overseer --to owner --ref [ASK_ID]` naming it, so a relay posts the ruling where the question was asked.
 
-For a delivered owner request, `--ref` binds the reply to that request's delivery id through the [lane-mail owner-channel contract](../scripts/lane-mail). Answer it under the Reply row and Thread rule in [§ Owner messages](#owner-messages).
+For a delivered owner request, `--ref` binds the reply to that request's delivery id through the [lane-mail owner-channel contract](../../mailbox/scripts/lane-mail). Answer it under the Reply row and Thread rule in [§ Owner messages](#owner-messages).
 
 ## Opening question
 
 A session that starts with no item to work, no handoff file, no owner note and no pending owner ask (`lane-mail pending --item overseer --to owner`) asks this as an owner ask:
 
 ```bash
-.agents/skills/orch/scripts/lane-mail ask --item overseer --to owner --options idle,tracker --recommend idle --file [PATH]
+.agents/skills/mailbox/scripts/lane-mail ask --item overseer --to owner --options idle,tracker --recommend idle --file [PATH]
 ```
 
 ```text
@@ -144,27 +144,28 @@ A post-merge box that only a person can read goes to that person as an owner ask
 
 ## Owner messages
 
-This standard holds for the master and every overseer: each post the relay makes for a `to=owner` envelope, each `slack post`, and each notice or ask for the owner. A message only a session reads, such as a `lane-mail send` to a lane, keeps its full detail.
+This standard holds for the Jarvis session and every overseer: each post the relay makes for a `to=owner` envelope, each `slack post`, and each notice or ask for the owner. A message only a session reads, such as a `lane-mail send` to a lane, keeps its full detail.
 
 ### Routing
 
-For the master and every overseer, a conversation stays in the medium where it takes place. A voice call's replies go to the call only. Progress reports and scheduled messages go to every open text medium (Slack and terminal), never the phone.
+For the Jarvis session and every overseer, a conversation stays in the medium where it takes place. A voice call's replies go to the call only. Progress reports and scheduled messages go to every open text medium (Slack and terminal), never the phone.
 
 | Message | Where | When | Mention |
 |---|---|---|---|
 | Decision needed | Slack and chat | At the moment the question exists: one question per message, with the options, in the ceo template. A question only in the chat has not been asked. | Yes |
 | Critical notice | Slack and chat | A failure that stops work, loses data or money, or needs the owner within the hour. | Yes |
-| Progress report | Slack and chat | The master every hour, an overseer by `ORCH_REPORT_EVERY_MINUTES` ([Settings](../README.md#setup)), while the session runs, and before a succession. `oversee-report` still writes and prints during `ORCH_REPORT_QUIET_HOURS` (default midnight to 7 am in `ORCH_OWNER_TIME_ZONE`, default `America/Los_Angeles`), but sends no owner notice. Empty quiet hours turns suppression off. The first due report after the window sends the morning brief: **Landed**, **Running**, **Blocked** and **Waiting on you** cover the work since the last report sent to the owner, including overnight merges. Decisions needed and critical notices remain immediate. | No |
+| Progress report | Slack and chat | The Jarvis session every hour, an overseer by `ORCH_REPORT_EVERY_MINUTES` ([Settings](../README.md#setup)), while the session runs, and before a succession. `oversee-report` still writes and prints during `ORCH_REPORT_QUIET_HOURS` (default midnight to 7 am in `ORCH_OWNER_TIME_ZONE`, default `America/Los_Angeles`), but sends no owner notice. Empty quiet hours turns suppression off. The first due report after the window sends the morning brief: **Landed**, **Running**, **Blocked** and **Waiting on you** cover the work since the last report sent to the owner, including overnight merges. Decisions needed and critical notices remain immediate. | No |
 | Reply | Where the owner's message arrived | An answer to an owner message. A reply on Slack shows in the chat as at most one line naming the post. | No |
 
 - Nothing else goes to Slack: no acknowledgement, no mechanism, no history. The same routing holds for every overseer.
 - Threads: a reply goes in the thread of the owner message it answers, or of the thread that message sits in; later posts on the same topic stay in that thread until the owner moves to another topic. A new topic, a decision needed, a critical notice and the progress report start at the top level. One topic per post, so the owner can answer each in its own thread. Thread replies stay in their threads.
-- An owner message that arrives with a thread pointer is read with that thread only; the master reads the thread's history on demand, never the channel's.
+- An owner message that arrives with a thread pointer is read with that thread only; the Jarvis session reads the thread's history on demand, never the channel's.
 
 ### Thread rule
 
 - Answer a note typed in the pane in the pane only. Answer a Slack-delivered mailbox note with `lane-mail notice --item overseer --to owner --ref [DIRECTIVE_ID] --file [PATH]`; the pane shows at most one line naming the Slack post. A directive carrying `thread_ts` takes this notice, which keeps the reply in its thread. An owner's typed yes approves per [§ Voice requests](#voice-requests). A `slack post` text reply takes `--thread TS`. Answer a voice request per [§ Voice requests](#voice-requests).
-- The directive's `parent` is small context, not the full conversation. Read more only when needed with `slack thread TS [--limit N]`; TS may name the root or a reply. Read no history by default.
+- The Slack relay delivers the whole owner/app thread up to the note in `parent.thread` on the first delivery to a reader generation. Later deliveries carry only messages since that generation's mark. Other users' messages and answers already delivered individually to that generation are excluded from every delivery.
+- Read the delivered `parent.thread` in full. Nothing is read twice within the same applicable revision. Make no further Slack read unless required history is missing; then use `slack thread TS [--limit N]`, where TS names the root or a reply.
 
 ### Words
 
@@ -201,7 +202,7 @@ A text sent beside a file, the comment of `slack post --file` or the `report-due
 
 ### Owner summary template
 
-Use this mrkdwn template for the report file's comment. For a post without a file, use the standard Markdown markup above. `scripts/oversee-report write` keeps tracker links and the Waiting on you section as refusals. Word and item counts produce one advisory notice after the send; its `--help` defines the notice.
+Use this mrkdwn template for the report file's comment. For a post without a file, use the standard Markdown markup above. `scripts/oversee-report write` refuses a summary that breaks tracker links, the Waiting on you section, the word limit or the item-line cap before it sends; its `--help` defines each refusal.
 
 ```text
 [WHAT CHANGED FOR THE OWNER]
@@ -224,32 +225,42 @@ Use this mrkdwn template for the report file's comment. For a post without a fil
 
 ### Voice requests
 
+- While working a voice request, send one short progress notice per long step with `--progress --ref [REQUEST_ENVELOPE_ID]`. This is a report Jarvis may speak or hold. Send the final reply once without `--progress`.
 - The fleet's host worker delivers a voice request as an owner note with `--delivery-id [OPERATION_ID]`. Its envelope carries `delivery_id`. The directive's first line is `voice-request: caller=... operation=... conversation=... provenance=...`. The caller is its `caller=` value, never a name the transcription states. An employee caller cannot approve a step only the owner may approve.
 - Start the reply with the answer in one or two spoken sentences. Use plain spoken words, no Markdown and no links. Say numbers as a person says them. Name an id only when the caller must act on it. End the spoken paragraph with one question or next step.
 - The reply contains the spoken answer only. Reply with `lane-mail notice --item overseer --to owner --ref [REQUEST_ENVELOPE_ID] --file [PATH]`; the reference binds the reply to the request. An owner ask raised while answering the request sets `--ref [REQUEST_ENVELOPE_ID]` too, so the owner's answer binds to the call. The call's outcome appears in the next progress report.
 - The owner's plain approval counts: a yes typed in Slack, or spoken on a call whose caller is the owner. A plain yes answers the ask it replies to (an ask bound with `--ref`, or a reserved or draft ask in [§ Owner asks](#owner-asks)) or approves a step no ask named. Whatever it answers, a step the next rule names waits for that rule's confirmation. A yes to a draft ask approves only the exact text whose `text_hash` that ask carries, so an edited text needs a new ask. Before acting, say the exact action back in one sentence, such as "Sending the welcome email now". No code, on-screen card or option word is needed.
-- Explicit confirmation stays only for a destructive or irreversible step (a delete, a force-push, a revoke, an offboard) and for money (a payment, a purchase, new spending). On a call, the step waits for the caller's on-screen Approve or a one-time read-back code the server verifies, either bound to the exact operation id and the caller; act only on the host worker's approval record that names both and that provenance. For such a step the overseer reads `approved_by`, `approval` and `turn` from the directive's first line; `turn` is the Live function call id of the `approve_by_code` read-back call, null when `approval` is `on-screen`; a directive missing any of the three, or a `voice-read-back` whose `turn` is null, approves nothing. In Slack, the step waits for a typed yes to a message that names the step. A transcription alone, a code the server did not verify and a yes to anything else confirm no such step. A correction voids an earlier confirmation; the corrected step needs a new one.
+- Explicit confirmation stays only for a destructive or irreversible step (a delete, a force-push, a revoke, an offboard) and for money (a payment, a purchase, new spending). On a call, the step waits for the caller's on-screen Approve, bound to the exact operation id and the caller. Act only on the host worker's approval record that names both and the on-screen provenance. For such a step the overseer reads `approved_by` and `approval` from the directive's first line. A directive missing either field, or whose `approval` is not `on-screen`, approves nothing. In Slack, the step waits for a typed yes to a message that names the step. A transcription alone and a yes to anything else confirm no such step. A correction voids an earlier confirmation; the corrected step needs a new one.
 
 ## Handoff
 
 Every hold in the handoff, the report's Next row or lane state names its items and an open owner ask id or a blocking pull request or tracker item. At each start, read the named ask from `lane-mail pending --item overseer --to owner` and the named blocker from GitHub or the live tracker. Drop a hold with no id, a resolved or absent ask, or a blocker whose live state is terminal. Count its items as ready, then apply `oversee.md` § 2 Select Work.
 
-```text
+```markdown
 Start here: [YYYY-MM-DDThh:mm:ssZ] generation=[FLEET RECORD'S .overseer.generation]
-Instructions in force: [TEMPORARY OWNER OR MASTER INSTRUCTION, WHO GAVE IT, WHEN, AND WHEN IT ENDS]
-Standing rulings: [EACH STANDING RULING AND WHO MADE IT]
-In flight: [ITEM, ITS PULL REQUEST, ITS NEXT STEP]
-Open asks and directives: [EACH OPEN OWNER OR PEER ANSWER, WITH ITS LANE-MAIL ID]
-Owed items: [EACH ITEM AND ITS ACCEPTANCE LINE]
-Context: [OPEN ITEM, CAUSE NOT FIXED, MEASURED FACT, FAILED APPROACH AND WHY, OR HALF-FINISHED OPERATION]
-Traps: [WHAT WOULD BREAK IF THE NEXT SESSION MISSED IT]
+
+## State
+Session: [HOST, SESSION STATUS, HOLDS WITH THEIR ASK OR BLOCKER IDS, AND STATE CHECK TIME]
 Watch: [ONE REPEAT WATCH, LOG TAIL AND NATIVE WAIT, RE-ARM RULE, RUN DIRECTORY AND NEXT LOG LINE; AFTER STOP, `stopped` AND RUN DIRECTORY. SINGLE PASSES: `single passes`]
-Progress log: [CURRENT SESSION'S OPEN PROGRESS ONLY]
+Next report: [WHEN THE REPORT IS DUE]
+Open owner asks: [LANE-MAIL IDS ONLY]
+In flight: [EACH TRACKER ID WITH ONE NEXT ACTION]
+
+## Sub-agents
+[EACH RUNNING CONTROL-HOST SUBAGENT'S TASK FILE AND RESULT PATH; FLEET LANES STAY IN THE FLEET RECORD]
+
+## Instructions in force
+[EACH TEMPORARY OWNER INSTRUCTION, ITS SOURCE, RECORDED TIME AND END EVENT; LINK THE HOME OF A STANDING RULE]
+
+## Progress log
+[CURRENT SESSION'S OPEN PROGRESS ONLY: ONE LINE PER ACTION WITH ITS TIME, OPERATION, OBSERVED RESULT AND DECISION REASON]
 ```
 
 The handoff is a current snapshot. At every rewrite, replace the file, never prepend. Use the exact UTC write time and the writer's fleet generation. For live self-succession, `oversee-succeed` refuses `handoff-stale` when the Start here generation is absent or differs from the fleet record; it does not judge the time. Dead and walled recovery use the existing handoff plus bounded live records, even when the handoff is stale or absent: their callers cannot write a live snapshot. At succession, promote open progress into the sections above and cut the log. Keep no archive copy: commits, the tracker, mailboxes and Slack hold history.
 
-Drop each done item. Keep a line only when the successor would act wrongly or redo work without it, including lane facts held in another record. Instructions in force holds instructions no skill states; move a lasting instruction to its owning file. Each Context line names the open item it serves. Account, PID and watch facts otherwise stay in their own records. Hosted idle wakes use [oversee-lanes.md § Talking to a lane](oversee-lanes.md#talking-to-a-lane)'s Pane paste.
+Drop each closed tracker id from State. Keep its completion evidence on the item. Keep a line only when the successor would act wrongly or redo work without it. Remove a temporary instruction when its end event occurs or its standing home states it. An unresolved checkout condition belongs in State until its cause clears. Account, PID and lane facts stay in their own records. Hosted idle wakes use [oversee-lanes.md § Talking to a lane](oversee-lanes.md#talking-to-a-lane)'s Pane paste.
+
+Standing procedures and traps go to the orch skill through a lane. Record rulings and filing history in the fleet log under [§ Recording](#recording). Verifying checks and readings stay on their tracker items; `oversee-watch` prints them. Owed items and acceptance lines stay in the tracker, with dispatch order in `launch_queue`. Item context, measured facts and failed approaches stay on the item they serve. Open exchanges stay in their mailboxes, read live. Before replacing a predecessor handoff, move records outside session state to these homes or confirm that their homes already retain them. A failed destination read or write leaves the handoff and progress log untouched.
 
 [oversee.md](../workflows/oversee.md) § 5 uses this shape. This file's stance is not copied into a handoff. Its owner summary uses [§ Owner messages](#owner-messages).
 

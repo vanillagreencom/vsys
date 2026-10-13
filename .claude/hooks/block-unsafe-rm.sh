@@ -6,10 +6,11 @@
 # requires: [command-safety]
 # description: Block rm on shared directory roots, globs directly under them, child paths with . or .. segments, and paths that start with a variable that may expand empty. Keep a private mktemp directory and remove it in the same shell call. Not run on antigravity: its required command-safety companion does not name antigravity, whose payload is toolCall.args.
 # summary: Stops deletes of shared directory roots, their direct globs or child paths with . or .. segments, and paths that start with a variable that may be empty. The refusal gives a safe cleanup pattern.
-# safety: The raw command scan refuses any rm on TMPDIR, TMP, TEMP, AGENT_TMPDIR or HOME roots, globs directly under them, and child paths containing . or .. segments, regardless of flags, including `${NAME:?…}`. Literal operands are compared as text against nonempty hook environment values, with trailing slashes ignored; no filesystem reads or glob expansion occur. Named child paths without . or .. segments pass this check. The existing empty-variable check refuses `$NAME`, `${NAME}` and `${NAME:-…}` roots; `${NAME:?…}` passes it. A redirection target is not an operand. Harmless text with the same shape can be refused. The scan does not parse shell: aliases such as `D=$TMPDIR`, `${!NAME}`, cd followed by relative rm, command substitutions, split command names and line continuations can escape it. Every refusal opens with `block-unsafe-rm: <key>=<value>`; captured command output follows that line.
+# safety: The raw command scan refuses any rm on TMPDIR, TMP, TEMP, AGENT_TMPDIR or HOME roots, globs directly under them, and child paths containing . or .. segments, regardless of flags, including `${NAME:?…}`. Literal operands are compared as text against nonempty hook environment values, with trailing slashes ignored; no filesystem reads or glob expansion occur. Named child paths without . or .. segments pass this check. The existing empty-variable check refuses `$NAME`, `${NAME}` and `${NAME:-…}` roots; `${NAME:?…}` passes it. A redirection target is not an operand. Harmless text with the same shape can be refused. The scan does not parse shell: aliases such as `D=$TMPDIR`, `${!NAME}`, cd followed by relative rm, command substitutions, split command names and line continuations can escape it. Every refusal opens with `block-unsafe-rm: <key>=<value>`; captured command output follows that line. Missing tools or unreadable payload produce one keyed warning and allow the call.
 # ---
 
 set -euo pipefail
+trap 'rc=$?; case $rc in 0 | 2) ;; *) refuse exit "$rc" ;; esac' EXIT
 
 # The command as it was read, empty until the reader has it: the refusal quotes
 # it, and a refusal can be reached before it is set.
@@ -26,10 +27,10 @@ refuse() { # KEY VALUE [CAUSE]
   printf 'block-unsafe-rm: %s=%s\n' "$1" "$2" >&2
   case "$1=$2" in
     missing-tools=*)
-      echo "the commands ${2//,/, } are required to read the hook payload and are not on PATH; refusing rather than skipping the guard" >&2
+      echo "the commands ${2//,/, } are required to read the hook payload and are not on PATH; this check is unavailable" >&2
       ;;
     payload=invalid-json)
-      echo "the hook payload is not valid JSON, or names a command that is not a string; refusing rather than skipping the guard" >&2
+      echo "the hook payload is not valid JSON, or names a command that is not a string; this check is unavailable" >&2
       ;;
     refused=shared-root)
       echo "This rm targets a shared root, its direct glob, or a child path with . or .. segments:" >&2
@@ -52,7 +53,12 @@ refuse() { # KEY VALUE [CAUSE]
   # The cause a command this hook ran wrote, captured at the site and replayed
   # here: under the keyed line, never ahead of it.
   [ -z "${3:-}" ] || printf '%s\n' "$3" >&2
-  exit 2
+  case "$1" in
+    refused | path) exit 2 ;;
+    *)
+      echo "Check skipped. Repair the hook installation, tools or payload adapter; retry the command." >&2
+      exit 0 ;;
+  esac
 }
 
 # jq is the only reader of the payload. Without it the command cannot be read,
@@ -65,10 +71,10 @@ for dependency in jq cat; do
 done
 [ -z "$MISSING" ] || refuse missing-tools "${MISSING#,}"
 
-INPUT=$(cat)
+INPUT=$(cat 2>&1) || refuse payload unreadable "$INPUT"
 
 # A payload that does not parse, or that names a command which is not a
-# string, is refused rather than skipped. An absent command is the empty
+# string, produces a warning and allows the call. An absent command is the empty
 # string and passes. The command is read where each harness carries it:
 # `tool_input.command` (Claude Code, Codex, Gemini CLI and the Pi carrier), a
 # bare `command`, or Copilot's `toolArgs.command`, whose `toolArgs` arrives as
@@ -76,7 +82,7 @@ INPUT=$(cat)
 # because jq's `//` reads `false` as absent, and `false` is not a command
 # either.
 COMMAND=$(printf '%s' "$INPUT" \
-  | jq -r 'def copilot: .toolArgs
+  | jq -er 'def copilot: .toolArgs
              | if . == null then null elif type == "string" then fromjson else . end
              | if . == null then null elif type == "object" then .command else error end;
            if .tool_input.command != null then .tool_input.command

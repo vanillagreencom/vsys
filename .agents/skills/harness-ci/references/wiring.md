@@ -10,8 +10,7 @@ Every classifier checkout uses `fetch-depth: 0`. The classifier diffs two real c
 
 Review holds these rules when a consumer adopts or changes a workflow:
 
-- GitHub-owned `actions/*` use a major tag, such as `actions/checkout@v7`. A moved tag can execute changed code without a consumer commit. A harmful move by GitHub is unlikely. The cost is trust in GitHub's tag updates and review of major upgrades.
-- Third-party actions use a full commit SHA with the version in a trailing comment. A moved third-party tag can execute unreviewed code with the job's permissions. Its likelihood depends on the publisher and its account security. The cost is a reviewed pin update for each release.
+- GitHub-owned and third-party actions use a full commit SHA with the release version in a trailing comment, such as `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1`. A moved tag cannot change the code a pinned job runs. A harmful release still needs a reviewed pin update. Its likelihood depends on the publisher and its account security.
 - This organization's own actions use the default-branch ref, such as `vanillagreencom/kendex/.github/actions/change-class@main`. That ref has the same trust as the default-branch checkout. A harmful change needs an incorrect or compromised merge to that branch. The cost is accepting its reviewed updates before the consumer's next refresh.
 
 Enable GitHub's Dependabot `github-actions` ecosystem in the consumer's `.github/dependabot.yml`. Dependabot opens update pull requests for action tags and commit pins. Review those updates under the rules above. Add this entry to an existing `updates` list, or use this file when none exists:
@@ -23,7 +22,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: "vanillagreencom/kendex*"
 ```
+
+The kendex refresh route owns kendex's workflow and action refs.
 
 [GitHub's Dependabot options](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference) define the configuration.
 
@@ -69,7 +72,7 @@ jobs:
     outputs:
       harness_only: ${{ steps.classify.outputs.harness_only }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: classify
@@ -121,7 +124,7 @@ jobs:
     name: CI
     runs-on: ${{ vars.CI_RUNNER_2V || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - id: classify
@@ -158,7 +161,7 @@ Two rules, both about a check that never appears.
     if: always()
     runs-on: ${{ vars.CI_RUNNER_2V || 'ubuntu-latest' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: guards
@@ -211,12 +214,12 @@ The shape has TWO checkouts, and that is the whole point of it. The verdict deci
       HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.event.after || github.sha }}
     steps:
       - name: the classifier, from the default branch
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: classifier
       - name: the tree under judgement
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           path: subject
@@ -311,9 +314,9 @@ bench:queue          benches/*
   - **Refresh the install before the mark lands.** `pr-merge` reads `queue_only` through the `change-class` beside the `github.sh` it runs, and a render from before the mark answers `false` for the lane's paths. CI sees two checkouts a merge can run it from: the default branch, the `lanes-from` checkout, and the pull request's head, which the worktree `submit-pr` runs it in holds. The action defers a lane only where both carry `.agents/skills/harness-ci/scripts/lib/ci-lanes.sh`, the render's reader of the mark. Where either lacks it, the lane runs with `cause=queue-reader-absent` and `tree=lanes-from`, `tree=judged` or both, and one `::warning`. A pull request branched before the refresh runs the lane until it is rebased onto it, and a head that deletes its reader only makes the lane run.
   - **Sync the merging checkout before the mark lands.** No CI run sees the checkout that runs `pr-merge` at merge time; in orch that is the main checkout, which `sync-base` keeps current. It must carry the refresh before a mark reaches the default branch, or it reads a deferred pull request as free to take the admin route.
   - **Removing or narrowing a mark needs the open pull requests re-run.** `pr-merge` asks `change-class` again at merge time, off the base tip's declaration. A pull request whose CI deferred the lane before the mark went reads `queue_only=false` there and can take the admin route with the lane never run. Re-run CI on each such pull request, or merge it through the queue, before it merges.
-- **Pass the default branch's checkout as `lanes-from`.** The action reads the declaration there, never out of `repo`, because the pull request's author could edit its own copy to stand a lane down; it refuses a `lanes-from` naming the same checkout as `repo` with exit 2. A pull request that changes the declaration is therefore judged by the one already merged.
-- **The verdict** is `false` wherever `lanes` is `false`. Otherwise, on a pull request, a `:queue` lane deferred as above is `false` first. Every other lane is `true` where a changed path matches one of its globs, and `false` where none does, with two exceptions that turn every lane on: a changed path no lane claims and the docs set does not hold, and a diff whose changed paths could not be read. A docs-set path no lane claims turns nothing on. The classify step prints one `lane:` line per lane naming the path and glob, or the cause, behind its verdict.
-- **An absent or malformed declaration publishes no verdict**, and the step still succeeds: failing it would redden every pull request, the one repairing the default branch's declaration included. The lanes and the aggregate below then fall back to `lanes` alone, as a workflow with no declaration reads it, which is also what an adopting repository gets until its declaration reaches the default branch. The step prints a `lane-declaration:` line with the state and a `::warning` annotation. A malformed line is a name outside the set above or a lane with no glob; a file naming no lane, or one the step cannot read, is malformed too.
+- **Pass the default branch's checkout as `lanes-from`.** The action refuses a `lanes-from` naming the same checkout as `repo` with exit 2. It uses default-branch claims for every changed path except `.github/ci-lanes.conf`. This base-only trust choice prevents a branch-added claim from taking a path out of a required lane. A new fixture uses an existing default-branch glob when that glob claims it. When the declaration itself changes, the action reads both copies with `ci_lanes_read`: the default-branch checkout and the commit `head` names in `repo`. For that path alone, it selects each lane whose name, claim set or `:queue` mark changed, including lanes present in only one copy. Reordered or repeated globs do not change a claim set. An `:event-uniform` edit alone selects no lane. The action publishes the union of lane names. A declaration change alone never defers a queue lane. When an ordinary path also matches that lane's default-branch glob, it retains normal queue deferral in either path order. A missing, unreadable or malformed copy keeps the all-lanes fallback.
+- **The verdict** is `false` wherever `lanes` is `false`. Otherwise, a failed declaration comparison runs every lane before queue deferral. On a pull request with no such failure, a `:queue` lane deferred as above is `false`. Every remaining lane is `true` where a changed path matches one of its default-branch globs or the declaration comparison selects it, and `false` where neither does. An ordinary changed path outside the docs set that no default-branch lane claims, or a diff whose changed paths could not be read, turns every remaining lane on. The declaration path uses its comparison instead of glob matching. A docs-set path no lane claims turns nothing on. The classify step prints one `lane:` line per lane naming the path and glob, or the cause, behind its verdict.
+- **An absent or malformed default-branch declaration publishes no verdict**, and the step still succeeds: failing it would redden every pull request, the one repairing the default branch's declaration included. The lanes and the aggregate below then fall back to `lanes` alone, as a workflow with no declaration reads it, which is also what an adopting repository gets until its declaration reaches the default branch. The step prints a `lane-declaration:` line with the state and a `::warning` annotation. A malformed line is a name outside the set above or a lane with no glob; a file naming no lane, or one the step cannot read, is malformed too.
 - **Republish the verdicts as step outputs.** A composite action publishes only the outputs it declares, so `lane_verdicts` arrives as one `lane_<name>=true|false` line per lane. A step after the action appends it to its own `$GITHUB_OUTPUT`, and the job publishes each line under its own name:
 
   ```yaml

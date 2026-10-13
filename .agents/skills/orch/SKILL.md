@@ -5,7 +5,7 @@ summary: "Work-item orchestration for Linear or GitHub issues: prepare, delegate
 license: MIT
 user-invocable: true
 dependencies:
-  required: [github, worktree, dev, project-management, decider, reviewer, review-gate]
+  required: [mailbox, github, worktree, dev, project-management, decider, reviewer, review-gate]
   optional: [harness-ci, linear, second-opinion, commit-guards]
 metadata:
   author: vanillagreen
@@ -50,7 +50,7 @@ Load `github` and `worktree` before anything else; a Linear work item also needs
 
 Get the issue → dev implements → publication, review and fixes in the order from `pr-order --help` → required CI and review gate → merge.
 
-- **Bounded loops.** A fix round addresses blockers only, and the same pass declines or tracks every `fix` suggestion ([workflows/review-pr.md](workflows/review-pr.md) § 4); re-review narrows to the fix diff, the domains it touched, and the class of every defect it fixed ([reviewer/SKILL.md](../reviewer/SKILL.md) § Re-Review Rounds); two consecutive rounds with no new blocker end the review, except at `REVIEW_MAX_CYCLES` 0, where the one fix round ends it with no re-review.
+- **Bounded loops.** A fix round addresses blockers only, and the same pass declines or tracks every `fix` suggestion ([workflows/review-pr.md](workflows/review-pr.md) § 4); re-review narrows to the fix diff, the domains it touched, and the class of every defect it fixed ([reviewer/SKILL.md](../reviewer/SKILL.md) § Re-Review Rounds); two consecutive rounds with no new blocker end the review; [workflows/review-pr.md § At The Cap](workflows/review-pr.md#at-the-cap) sets the cap, cap 0 and a fix round's own regression.
 - **No edge-case churn.** A finding that cannot affect real usage is declined with a one-line reason, not fixed, not filed.
 - **Review must converge**, by [references/finding-disposition.md](references/finding-disposition.md):
   - Every finding runs its [§ Decision flow](references/finding-disposition.md#decision-flow), Step 0 first, and ends as one of the reply forms that section sets out.
@@ -147,7 +147,7 @@ Every script takes `--help` bar `pr-view-json` and `resolve-base-branch`, whose 
 
 ## Configuration
 
-Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Setup; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `python3` 3.8+ for lane-mail, SSH and configured archives; `flock` and `setsid` (util-linux); `timeout` or `gtimeout` (coreutils) for `dev-validate-run`, and `perl` for its `--attached`. Optional: `systemd-run` with a user manager, which the orch job runner's jobs are contained in; a launch with no `--cap` (the fleet watch, the waiters and the succession's helper) also needs it to linger (`loginctl enable-linger`) ([references/job-units.md](references/job-units.md)); `setsid` stays the fallback elsewhere.
+Non-secret settings go in committed `kendex.settings.toml` under `[env]`; `.env.local` holds secrets and personal overrides. Keys: [README.md](README.md) § Setup; review-gate keys in [references/gates.md](references/gates.md); lane keys in `lanes --help` and `open-terminal --help`. System dependencies: `jq`; `bash` 3.2; `python3` 3.8+ for SSH and configured archives; `flock` and `setsid` (util-linux); `timeout` or `gtimeout` (coreutils) for `dev-validate-run`, and `perl` for its `--attached`. Optional: `systemd-run` with a user manager, which the orch job runner's jobs are contained in; a launch with no `--cap` (the fleet watch, the waiters and the succession's helper) also needs it to linger (`loginctl enable-linger`) ([references/job-units.md](references/job-units.md)); `setsid` stays the fallback elsewhere.
 
 ---
 

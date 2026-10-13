@@ -26,6 +26,9 @@ Output, one JSON object on stdout:
 {
   "pr": 42, "repo": "owner/repo", "state": "MERGED",
   "head": "<final head oid>", "merge_commit": "<oid>" | null,
+  "merge_decision":     {"route": "admin" | "queue", "cause": "<cause>"},
+                         the last merge-route line in the PR body's
+                         Merge decision section; null where none is recorded,
   "stamps": {
     "first_commit":     author date of the PR's first commit,
     "created":          the PR opened,
@@ -60,6 +63,10 @@ Output, one JSON object on stdout:
                          final head,
   "ci_head_clean_secs":  the same over each workflow run's latest attempt
                          on that head; null unless every attempt passed,
+  "ci_head_spans":       each check run on the final head with a start and
+                         an end, {start, end}, ascending by start: the
+                         latest run per name in every check suite on that
+                         head, a superseded workflow run's included,
   "ci_merge_group_secs": the same over the merge commit's merge_group runs,
   "open_secs":           created to merged,
   "bot_reviews":         reviews submitted by Bot accounts other than the
@@ -154,7 +161,7 @@ RUNS_PAGE_QUERY='query runsPage($id: ID!, $cursor: String!) {
 QUERY='query($owner: String!, $name: String!, $number: Int!, $gate: String!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      number state createdAt mergedAt author { login } headRefName headRepository { nameWithOwner }
+      number state body createdAt mergedAt author { login } headRefName headRepository { nameWithOwner }
       mergeCommit { oid ...suites }
       firstCommit: commits(first: 1) { nodes { commit { authoredDate } } }
       headCommit: commits(last: 1) { nodes { commit { oid committedDate ...gate ...suites } } }
@@ -322,9 +329,19 @@ def rounds($reviews; $pushed):
   | {
       pr: $p.number, repo: $repo, state: $p.state,
       head: $head.oid, merge_commit: ($p.mergeCommit.oid // null),
+      # merge-attempt records the route here; text in other sections is no
+      # decision. oversee-cycle uses it only after measured waits.
+      merge_decision: ([$p.body // "" | gsub("\r\n"; "\n") | split("\n")[]
+        | {line: .}] | reduce .[] as $row ({inside: false, decision: null};
+          if $row.line == "## Merge decision" then .inside = true
+          elif ($row.line | startswith("## ")) then .inside = false
+          elif .inside then .decision = (($row.line
+            | [capture("merge-route: (?<route>admin|queue) cause=(?<cause>[^\\s`]+)")][0]) // .decision)
+          else . end) | .decision),
       stamps: $stamps,
       ci_head_secs: null,
       ci_head_clean_secs: null,
+      ci_head_spans: null,
       ci_merge_group_secs: null,
       _checks: {head: rollup($head_suites), group: rollup($group_suites),
                 pending_run: any($head_suites[]; .workflowRun != null and (.checkRuns.nodes | length) == 0)},
@@ -425,9 +442,11 @@ pr_timeline() {
             else (map(.completedAt | fromdate) | max) - (map(.startedAt | fromdate) | min) end;
         def green($r): if ($r | length) > 0 and all($r[]; bucket | IN("pass", "skipping"))
           then ($r | map(.completedAt) | max) else null end;
-        ._checks.pending_run as $pending_run | del(._checks) | .stamps.ci_green = green($head)
+        ._checks.pending_run as $pending_run | ._checks.head as $runs | del(._checks) | .stamps.ci_green = green($head)
         | .ci_head_secs = span($head)
         | .ci_head_clean_secs = (if ($pending_run | not) and green($clean) != null then span($clean) else null end)
+        | .ci_head_spans = ([$runs[] | select(.startedAt != null and .completedAt != null)
+            | {start: .startedAt, end: .completedAt}] | sort_by(.start))
         | .ci_merge_group_secs = span($group)' <<<"$result") \
         || { github_error 'pr-timeline: unreadable checks'; exit 1; }
 

@@ -3,12 +3,14 @@
 # name: block-bare-cd
 # event: PreToolUse
 # matcher: Bash
-# description: Refuse a command with a line that is only a `cd`. A here-document body is not judged because it is input to a command, not a line the shell runs. Where the shell persists across tool calls (Claude Code) a bare cd re-roots every later command and every hook that judges the working directory, while instruction files and hook paths stay with the launch directory; a cd into a worktree inside the repository, Claude Code's default `.claude/worktrees/<name>/`, also loads that tree's instruction files a second time as files there are read. Names the scoped form, `(cd /path && command)`, and, where the harness has one (Claude Code's EnterWorktree), its worktree tool for a move.
+# description: Not run on codex: each shell call starts a fresh process. Not run on pi: each shell call starts a fresh process. Not run on antigravity: its toolCall.args payload is not read. Refuse a command with a line that is only a `cd`. A here-document body is not judged because it is input to a command, not a line the shell runs. Where the shell persists across tool calls (Claude Code) a bare cd re-roots every later command and every hook that judges the working directory, while instruction files and hook paths stay with the launch directory; a cd into a worktree inside the repository, Claude Code's default `.claude/worktrees/<name>/`, also loads that tree's instruction files a second time as files there are read. Names the scoped form, `(cd /path && command)`, and, where the harness has one (Claude Code's EnterWorktree), its worktree tool for a move.
 # summary: Stops a command whose whole line is a `cd`. A here-document body is not judged because it is input to a command, not a line the shell runs. Where the shell stays open between tool calls, that moves every later command with it. Names the scoped form to use instead.
-# safety: Reads the command text only. On a harness that runs each command in a fresh shell (Codex, the Pi carrier) a bare cd changes nothing and the refusal costs one rewrite; the scoped form is right on every harness. Every refusal opens with `block-bare-cd: <key>=<value>`; what a command this hook runs writes is captured at the site and replayed under that line, so nothing precedes the key.
+# safety: Reads command text using its local here-document check. Missing tools or unreadable payload produce one keyed warning and allow the call. A matching bare-cd line still refuses. Every refusal opens with `block-bare-cd: <key>=<value>`; captured command output follows that line.
+# harnesses: [claude, copilot, gemini, cursor, opencode]
 # ---
 
 set -euo pipefail
+trap 'rc=$?; case $rc in 0 | 2) ;; *) refuse exit "$rc" ;; esac' EXIT
 
 # Every line this hook writes, and the only place its text lives. The first
 # line is the contract a reader parses: the keys and values are the fixed set
@@ -21,10 +23,10 @@ refuse() { # KEY VALUE [CAUSE]
   printf 'block-bare-cd: %s=%s\n' "$1" "$2" >&2
   case "$1=$2" in
     missing-tools=*)
-      echo "the commands ${2//,/, } are required to read the hook payload and are not on PATH; refusing rather than skipping the guard" >&2
+      echo "the commands ${2//,/, } are required to read the hook payload and are not on PATH; this check is unavailable" >&2
       ;;
     payload=invalid-json)
-      echo "the hook payload is not valid JSON, or names a command that is not a string; refusing rather than skipping the guard" >&2
+      echo "the hook payload is not valid JSON, or names a command that is not a string; this check is unavailable" >&2
       ;;
     refused=bare-cd)
       echo "Where the shell persists across tool calls a bare cd re-roots every later command and every hook judging the working directory, while instruction files and hook paths stay with the launch directory." >&2
@@ -34,7 +36,12 @@ refuse() { # KEY VALUE [CAUSE]
   # The cause a command this hook ran wrote, captured at the site and replayed
   # here: under the keyed line, never ahead of it.
   [ -z "${3:-}" ] || printf '%s\n' "$3" >&2
-  exit 2
+  case "$1" in
+    refused | path) exit 2 ;;
+    *)
+      echo "Check skipped. Repair the hook installation, tools or payload adapter; retry the command." >&2
+      exit 0 ;;
+  esac
 }
 
 # jq is the only reader of the payload, and grep and sed make every decision
@@ -47,10 +54,10 @@ for dependency in jq cat grep sed; do
 done
 [ -z "$MISSING" ] || refuse missing-tools "${MISSING#,}"
 
-INPUT=$(cat)
+INPUT=$(cat 2>&1) || refuse payload unreadable "$INPUT"
 
 # A payload that does not parse, or that names a command which is not a
-# string, is refused rather than skipped. An absent command is the empty
+# string, produces a warning and allows the call. An absent command is the empty
 # string and passes. The command is read where each harness carries it:
 # `tool_input.command` (Claude Code, Codex, Gemini CLI and the Pi carrier), a
 # bare `command`, or Copilot's `toolArgs.command`, whose `toolArgs` arrives as
@@ -58,7 +65,7 @@ INPUT=$(cat)
 # because jq's `//` reads `false` as absent, and `false` is not a command
 # either.
 COMMAND=$(printf '%s' "$INPUT" \
-  | jq -r 'def copilot: .toolArgs
+  | jq -er 'def copilot: .toolArgs
              | if . == null then null elif type == "string" then fromjson else . end
              | if . == null then null elif type == "object" then .command else error end;
            if .tool_input.command != null then .tool_input.command

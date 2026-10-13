@@ -27,7 +27,11 @@ WORKTREE_HOSTED_NAME = ""
 # Paths linked into every new worktree, separated by spaces. List only what
 # git does not already carry, since an entry git carries in full does
 # nothing. Include the private env file only where worktrees should share
-# this project's credentials.
+# this project's credentials. A pnpm or Next.js project leaves node_modules
+# out and installs in each worktree, where pnpm hard-links from its store:
+# pnpm refuses a linked node_modules with ERR_PNPM_UNSAFE_MODULES_DIR, and
+# Turbopack with "Symlink node_modules is invalid, it points out of the
+# filesystem root".
 WORKTREE_SYMLINKS = ""
 
 # Links whose target is worked out from the link's own folder, written as
@@ -43,6 +47,15 @@ WORKTREE_COPIES = ""
 # Each is added to the repository's local git exclude list, so it never
 # shows as untracked and needs no .gitignore entry.
 WORKTREE_MKDIRS = ""
+
+# Optional command interpreted by Bash in the worktree after links, copies,
+# directories and Git configuration. For pnpm or Next.js, omit node_modules
+# from WORKTREE_SYMLINKS and use "pnpm install --frozen-lockfile" here.
+# Requires the github skill and Perl. It has a 3600-second bound, no stdin,
+# and sends output to stderr. Failure keeps the worktree for --reuse or an
+# app setup-hook retry. Repair commands and --no-checkout do not run it.
+# The command must finish its work before exiting; do not detach services.
+WORKTREE_SETUP_CMD = ""
 
 # The name on commits made in a worktree. Empty uses the signed-in user, and
 # the email below is then ignored. A name here is written on every commit

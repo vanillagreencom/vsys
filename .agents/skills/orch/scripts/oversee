@@ -361,8 +361,7 @@ state_ready() {
 # ---------------------------------------------------------------------------
 # register
 # ---------------------------------------------------------------------------
-if [[ "$COMMAND" == register ]]; then
-  [[ -n "${TMUX_PANE:-}" ]] || die tmux-missing var=TMUX_PANE
+register() {
   key="$(lane_context_caller_key)" || die pane-unreadable "pane=$TMUX_PANE" field=pid
   matches "$key" '^([0-9]+)[[:blank:]]+(%[0-9]+)$' || die pane-unreadable "pane=$TMUX_PANE" field=pid "value=$key"
   server="${key%% *}"
@@ -417,7 +416,6 @@ if [[ "$COMMAND" == register ]]; then
     *) harness="$shape" ;;
   esac
   ol_identity "$harness" "$ACCOUNT" "$home" "$model" "" "$cwd" || die record-unwritten field=overseer step=identity
-  state_ready
   ol_record_write tmux "$TMUX_PANE" "$window" "$server" "$OL_IDENTITY" "" \
     || die record-unwritten field=overseer
   # The writer retains unknown fields only for this same session. Check that
@@ -464,14 +462,15 @@ if [[ "$COMMAND" == register ]]; then
     "generation=$OL_GENERATION" "account=${ACCOUNT:-none}" \
     "retained=$OL_RECORD_RETAINED" "fresh=$OL_RECORD_FRESH"
   exit 0
-fi
+}
 
 # ---------------------------------------------------------------------------
 # launch
 # ---------------------------------------------------------------------------
 # A succession opens in its predecessor's session and names no tmux session; the
 # server is still the one lib/tmux-server.sh's rule reaches.
-if [[ -n "$PREDECESSOR" ]]; then
+if [[ "$COMMAND" == register || -n "$PREDECESSOR" ]]; then
+  [[ "$COMMAND" != register || -n "${TMUX_PANE:-}" ]] || die tmux-missing var=TMUX_PANE
   SERVER_SOCKET="$(tmux_server_socket)" || die tmux-missing var=TMUX
 else
   [[ -n "$SESSION_NAME" ]] || SESSION_NAME="${ORCH_TMUX_SESSION:-}"
@@ -523,6 +522,15 @@ fi
 live_pane="" named_pane=""
 if [[ -n "$live" ]]; then
   read -r live_pane live_generation <<<"$live"
+fi
+register_self=0
+if [[ "$COMMAND" == register && -n "$live_pane" && "$live_pane" == "${TMUX_PANE:-}" ]]; then
+  caller_server="$(tmux display-message -p -t "$TMUX_PANE" '#{pid}' 2>"$DEP_ERR")" \
+    || die launch-failed step=server "session=$TMUX_PANE" "server=$SERVER_SOCKET"
+  recorded_server="$(jq -r '.server // empty' <<<"$OL_PRIOR" 2>"$DEP_ERR")" || die state-unwritable field=overseer
+  [[ "$recorded_server" != "$caller_server" ]] || register_self=1
+fi
+if [[ -n "$live_pane" && "$register_self" == 0 ]]; then
   ol_session_inspect "$live_pane" || die launch-failed step=inspect
   if [[ "$OL_INSPECT_STATE" == gone ]]; then
     live_pane=""
@@ -530,7 +538,8 @@ if [[ -n "$live" ]]; then
     # A start that cannot be read cannot tell the recorded overseer from a
     # session an earlier server's pid and pane id left, so nothing is opened
     # beside a pane that may be it.
-    live_start="$(ol_session_start "$OL_INSPECT_SERVER" "$live_pane")" \
+    live_start="${OL_INSPECT_START:-}"
+    [[ -n "$live_start" ]] || live_start="$(ol_session_start "$OL_INSPECT_SERVER" "$live_pane")" \
       || die launch-failed step=server-start "session=$live_pane" "server=$SERVER_SOCKET"
     if ! live_named="$(jq -r --arg server "$OL_INSPECT_SERVER" --arg start "$live_start" --arg pane "$live_pane" \
       "$OL_JQ_DEFS"' [ol_names($server; $start; $pane), ol_owns($server; $start; $pane)]
@@ -538,14 +547,21 @@ if [[ -n "$live" ]]; then
       die state-unwritable field=overseer
     fi
     read -r live_named live_blocks <<<"$live_named"
-    [[ "$live_named" != true ]] || named_pane="$live_pane"
+    if [[ "$live_named" == true && -n "$PREDECESSOR" ]]; then
+      predecessor_server="$(tmux display-message -p '#{pid}' 2>"$DEP_ERR")" \
+        || die launch-failed step=server "server=$SERVER_SOCKET"
+      [[ "$OL_INSPECT_SERVER" != "$predecessor_server" ]] || named_pane="$live_pane"
+    fi
     [[ "$live_blocks" == true ]] || live_pane=""
   fi
 fi
 [[ -z "$PREDECESSOR" || "$named_pane" == "$PREDECESSOR" ]] \
   || die predecessor-not-live "session=$PREDECESSOR" "live=${named_pane:-none}" "server=$SERVER_SOCKET"
+[[ "$register_self" == 0 ]] || live_pane=""
 [[ -z "$live_pane" || -n "$PREDECESSOR" ]] \
   || die overseer-live "session=$live_pane" "server=$SERVER_SOCKET" "generation=$live_generation"
+
+if [[ "$COMMAND" == register ]]; then register; fi
 
 HEADROOM_TRIGGER="${ORCH_OVERSEER_HEADROOM_PCT:-10}"
 matches "$HEADROOM_TRIGGER" '^[0-9]{1,3}$' && (( 10#$HEADROOM_TRIGGER <= 100 )) \

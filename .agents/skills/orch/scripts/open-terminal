@@ -126,7 +126,7 @@ source "$SCRIPT_DIR/lib/gh-repo.sh"
 # shellcheck source=lib/lane-claims.sh
 source "$SCRIPT_DIR/lib/lane-claims.sh"
 # shellcheck source=lib/file-lock.sh
-source "$SCRIPT_DIR/lib/file-lock.sh"
+source "$SCRIPT_DIR/../../mailbox/scripts/lib/file-lock.sh"
 # shellcheck source=lib/lane-state.sh
 source "$SCRIPT_DIR/lib/lane-state.sh"
 # shellcheck source=lib/pane-write.sh
@@ -1013,6 +1013,14 @@ pi_lane_root_apply() {
 auto_pick_refusal() { # RC [FIELD...]
   local rc="$1"
   shift
+  if [[ "$(lane_pick_pool "$LANE_HARNESS" "$LAUNCH_MODEL")" == api-credit ]]; then
+    case "$rc" in
+      3) ot_message lane-credit-refused cause=api-credit retry-at=none "$@" ;;
+      5) ot_message lane-provider-unmeasured "harness=$LANE_HARNESS" "model=${LAUNCH_MODEL:-none}" "$@" ;;
+      *) ot_message lane-resolution-failed "exit=$rc" "$@" ;;
+    esac >&2
+    return
+  fi
   case "$rc:$(lane_pick_harness "$LANE_HARNESS" "$LAUNCH_MODEL")" in
     3:pi) ot_message copilot-pool-walled "setting=ORCH_LANE_COPILOT_POOL" "$@" ;;
     3:*) ot_message lane-unavailable "harness=$LANE_HARNESS" "$@" ;;
@@ -1078,13 +1086,18 @@ named_lane_judge() {
     --model "$LAUNCH_MODEL" --projected ${LANE_PCT_ARGS[@]+"${LANE_PCT_ARGS[@]}"} --json)" || lane_rc=$?
   if [[ "$lane_rc" == 3 || "$lane_rc" == 5 ]]; then
     lane_refusal="$(jq -r 'if .refusal == null then empty
-      elif .refusal.cause == "cloud-credit" then [.refusal.cause, (.refusal.retry_at // "none")] | @tsv
+      elif .refusal.cause == "cloud-credit" or .refusal.cause == "api-credit" then [.refusal.cause, (.refusal.retry_at // "none")] | @tsv
       else error("unknown allowance refusal") end' <<<"$lane_record")" || {
       ot_message lane-judge-failed "lane=${LANE_ENV#*=}" "model=$LAUNCH_MODEL" "exit=invalid-refusal" >&2; return 1;
     }
     if [[ -n "$lane_refusal" ]]; then
       IFS=$'\t' read -r lane_cause lane_retry <<<"$lane_refusal"
-      ot_message lane-credit-refused "lane=${LANE_ENV#*=}" "cause=$lane_cause" "retry-at=$lane_retry" >&2
+      if [[ "$lane_rc:$lane_cause" == 5:api-credit ]]; then
+        lane_detail="$(jq -r '.detail // "none"' <<<"$lane_record")" || return 1
+        ot_message lane-provider-unmeasured "harness=$LAUNCH_HARNESS" "model=$LAUNCH_MODEL" "lane=${LANE_ENV#*=}" "detail=$lane_detail" >&2
+      else
+        ot_message lane-credit-refused "lane=${LANE_ENV#*=}" "cause=$lane_cause" "retry-at=$lane_retry" >&2
+      fi
       return 1
     fi
   fi
@@ -1329,9 +1342,9 @@ resolve_repo() {
 # render its OWN account onto that item and spend it there, with no claim taken
 # on it. The test names the LAUNCHER and not the terminal mode: a --wake reaches
 # open_wake in tmux mode too, since the gate above exempts a wake from the
-# tmux-only settings and not from the mode, and run_detached scrubs CLAUDECODE,
-# TMUX and TMUX_PANE while keeping CODEX_HOME. That child is the one launch here
-# that really does inherit this process's environment.
+# tmux-only settings and not from the mode, and run_detached scrubs the
+# session identity, TMUX and TMUX_PANE while keeping CODEX_HOME. That child is
+# the one launch here that really does inherit this process's environment.
 #
 # WHICH tmux scope, and in what order. tmux keeps a session environment beside a
 # global one, and a pane takes the session's entry wherever it has one. The
@@ -1377,7 +1390,7 @@ launch_ambient_codex_home() {
 # once and later launch writes keep it until close or a new park replaces it.
 UNPARK_JQ='def unpark($at): (if .parked.at == null then .
   else .pauses = ((.pauses // []) + [{from: .parked.at, to: $at, cause: "parked"}]) end)
-  | (if .parked == null then . else .pending_pr = (.parked | {pr, repo, head}) end) | del(.parked);'
+  | (if .parked == null then . else .pending_pr = (.parked | {pr, repo, head} + (if .until_pr == null then {} else {until_pr: .until_pr} end)) end) | del(.parked);'
 
 # One lane record per item in the oversee workflow state WORKFLOW_STATE_ARGS
 # addresses, which is what oversee-watch --state reads the live fleet from.
@@ -1521,10 +1534,10 @@ merged_commit_for() ( # WT_ID
 relaunch_continuation() { # MAIL_ID HARNESS
   local rearm=""
   case "$2" in
-    claude) rearm=", then re-arm your mailbox monitor on .agents/skills/orch/scripts/lane-mail watch --item $1 through your harness background wake" ;;
-    copilot) rearm=", then re-arm your mailbox monitor on .agents/skills/orch/scripts/lane-mail watch --once --item $1 as a background command" ;;
+    claude) rearm=", then re-arm your mailbox monitor on .agents/skills/mailbox/scripts/lane-mail watch --item $1 through your harness background wake" ;;
+    copilot) rearm=", then re-arm your mailbox monitor on .agents/skills/mailbox/scripts/lane-mail watch --once --item $1 as a background command" ;;
   esac
-  printf '%s\n' "Resume the orch workflow for $1 from where this session stopped. Run .agents/skills/orch/scripts/lane-mail inbox --item $1 first and act on every envelope it prints, answers and directives alike, as its text directs$rearm. $LAUNCH_UNATTENDED_TEXT"
+  printf '%s\n' "Resume the orch workflow for $1 from where this session stopped. Run .agents/skills/mailbox/scripts/lane-mail inbox --item $1 first and act on every envelope it prints, answers and directives alike, as its text directs$rearm. $LAUNCH_UNATTENDED_TEXT"
 }
 start_cmd() { # ITEM MAIL_ID REPO [SESSION_ID] [WAKE_DIR] [BRIEF_PATH]
   # MAIL_ID is the worktree id, which is what every line rendered here must
@@ -1599,7 +1612,7 @@ start_cmd() { # ITEM MAIL_ID REPO [SESSION_ID] [WAKE_DIR] [BRIEF_PATH]
   # argument parsing. A relaunch that matched no session renders the normal
   # brief below, which already says what to do.
   if [[ -n "$wake_dir" ]]; then
-    line=" 'Run .agents/skills/orch/scripts/lane-mail inbox --item $mail_id and act on every envelope it prints, answers and directives alike, as its text directs.$unattended'"
+    line=" 'Run .agents/skills/mailbox/scripts/lane-mail inbox --item $mail_id and act on every envelope it prints, answers and directives alike, as its text directs.$unattended'"
     exec="exec "
     print=" -p"
   elif [[ "$RELAUNCH" == true ]]; then
@@ -2279,7 +2292,7 @@ launch_session_resolve() { # TITLE
 # launch handed to a background job opens it before the hand-off, so the next
 # item's pick counts this account while the host is still preparing.
 tmux_window_open() { # DIR TITLE
-  local dir="$1" title="$2" last_idx pane spec server matches row idx id owner identity replace_idx=""
+  local dir="$1" title="$2" last_idx pane spec server matches row idx id owner identity replace_idx="" pane_shell pane_command
   local window_args=()
   tmux_server_named || { ot_message tmux-missing "item=$title" >&2; return 1; }
   launchable_dir "$dir" "$title" || return 1
@@ -2315,7 +2328,13 @@ tmux_window_open() { # DIR TITLE
   # The server pid rides along with the pane id: it is the other half of a
   # lane claim's liveness key, and taking both from the creating call means no
   # second tmux round trip and no window between them.
-  if ! spec=$(tmux new-window "${window_args[@]}" -n "$title" -c "$dir" -P -F '#{pid} #{pane_id}') || [[ -z "$spec" ]]; then
+  if ! pane_shell=$(tmux show-options -Av -t "=$LAUNCH_SESSION:" default-shell) \
+    || ! pane_command=$(tmux show-options -Av -t "=$LAUNCH_SESSION:" default-command); then
+    ot_message tmux-failed "operation=show-options" "item=$title" >&2
+    return 1
+  fi
+  lane_launch_shell_argv "$pane_shell" "$pane_command"
+  if ! spec=$(tmux new-window "${window_args[@]}" -n "$title" -c "$dir" -P -F '#{pid} #{pane_id}' "${LANE_LAUNCH_SHELL_ARGV[@]}") || [[ -z "$spec" ]]; then
     ot_message tmux-failed "operation=new-window" "item=$title" >&2
     return 1
   fi
@@ -2333,7 +2352,10 @@ tmux_window_open() { # DIR TITLE
   # identity — and never fatal: a launch that worked is not a failure because
   # its bookkeeping did not.
   if [[ -n "$LANE_ENV" && -n "$server" ]]; then
-    if ! lane_claim_write "$(lane_claims_dir "$CLAIM_ROOT")" "$server" "$pane" "${LANE_ENV#*=}" "$title" "$CAP_FLEET" "$HOST_KIND"; then
+    local claim_pool
+    lane_capability claim_pool pool
+    if ! claim_pool="$(lane_pick_pool "$LAUNCH_HARNESS" "$LAUNCH_MODEL" "$claim_pool")" \
+      || ! lane_claim_write "$(lane_claims_dir "$CLAIM_ROOT")" "$server" "$pane" "${LANE_ENV#*=}" "$title" "$CAP_FLEET" "$HOST_KIND" "$claim_pool"; then
       # This launch stands, but the next `auto` pick cannot see it: the batch
       # stops at the top of the next item rather than stacking blind.
       CLAIM_WRITE_FAILED=true
@@ -2569,14 +2591,17 @@ open_gui() {
 }
 
 # Detached through lib/lane-launch.sh's lane_run_detached, which owns how a
-# child outlives this script. The environment is scrubbed: a child started
-# from inside tmux or Claude Code otherwise inherits TMUX, TMUX_PANE and
-# CLAUDECODE, reads as a tmux pane or a nested session, and pane-aware tools in
-# it act on the controller's server.
+# child outlives this script. The environment is scrubbed of the launching
+# session's identity (lib/lane-launch.sh LANE_LAUNCH_SCRUB) and of TMUX and
+# TMUX_PANE: a child started from inside tmux otherwise reads as a tmux pane,
+# and pane-aware tools in it act on the controller's server. A tmux window
+# gets a pane identity of its own, so those two are cleared here alone.
 run_detached() { # LOG COMMAND...
-  local log="$1"
+  local log="$1" name
+  local -a scrub=()
   shift
-  lane_run_detached "$log" "$log" env -u CLAUDECODE -u TMUX -u TMUX_PANE "$@"
+  for name in "${LANE_LAUNCH_SCRUB[@]}" TMUX TMUX_PANE; do scrub+=(-u "$name"); done
+  lane_run_detached "$log" "$log" env "${scrub[@]}" "$@"
 }
 
 # A resumed turn can run for a long time, so it runs detached from the caller,
@@ -2852,9 +2877,15 @@ launch_finish() {
     # exits, so the shell stays to run it rather than exec the first.
     local run="exec $cmd"
     [[ "$RELAUNCH_ROUTE" != resume-or-fresh ]] || run="{ $cmd; }"
+    [[ -z "$CMD_TEMPLATE" ]] || run="$cmd"
     # An exported empty email wins over private files in the project loader.
     # A lane has no person to assign when it activates its work item.
     run="export KENDEX_USER_EMAIL='' && $run"
+    run="$(lane_launch_line "$run" "$HARNESS" "" "" custom)" || return 1
+    # The host's shell runs on whatever environment its provider hands it,
+    # which can carry the launching session's identity. This text is POSIX
+    # shell (a hosted relaunch reads `$?`), so `unset` clears the list here.
+    run="unset ${LANE_LAUNCH_SCRUB[*]} && $run"
     # Keep the marked launch root when a lane's tool shell changes directory.
     run="export KENDEX_LANE_ORIGIN=$(lane_single_quote "$remote_path") && $run"
     cmd="$remote_prefix $(lane_single_quote "cd $(printf '%q' "$remote_path") && $run")"
@@ -2907,7 +2938,10 @@ launch_finish() {
     # A launch with none has no account to check and keeps the `unchecked` the
     # check reads as skip, whatever prefix the line below carries.
     [[ -z "$LANE_ENV" ]] || LANE_FORM="$launch_form"
-    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form")" || return 1
+    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form" "$CMD_TEMPLATE")" || return 1
+  else
+    launch_form="$(lane_launch_form "$cmd" "$HARNESS" "" "$CMD_TEMPLATE")" || return 1
+    cmd="$(lane_launch_line "$cmd" "$HARNESS" "" "" "$launch_form" "$CMD_TEMPLATE")" || return 1
   fi
   if [[ "$LANE_HOST" == local ]]; then
     cmd="export KENDEX_USER_EMAIL='' && $cmd"

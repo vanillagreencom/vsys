@@ -502,23 +502,26 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
 # ol_entry_permitted ENTRY — whether ol_walk may launch ENTRY, of harness
 # OL_HARNESS, under the posture its source allows, a skip notice queued in
 # OL_WALK_SKIPS where it may not. A first launch, OL_WALK_SOURCE_HARNESS empty,
-# needs the full-bypass word the harness row writes, and a row naming none,
-# pi's, has no unattended launch to open: entry-permission-unwritable. An
+# needs the full-bypass word the harness row writes. A lane preference walk
+# also accepts a declared no-word posture; overseer launches still skip it
+# as entry-permission-unwritable. An
 # entry of another harness than its source needs that word too, and the
 # source's posture to cross to it: OL_WALK_SOURCE_FLAGS held to exactly one
 # transferable posture (lib/lane-launch.sh §
 # launch_choice_permission_transferable), entry-permission-untransferable
 # where not; with OL_WALK_SOURCE_ROWS 1, a judgement handed no permission
 # words, the source row naming a transferable posture, and a skip says
-# nothing. So no posture crosses to or from pi, whose row names none. A
+# nothing. So no overseer posture crosses to or from pi. A
 # numeric entry of another harness than its source is skipped the same way,
 # with `model=` naming the caller's model: that model is spelled for the
 # source harness (copilot's `claude-opus-5.5` is claude's `claude-opus-5-5`),
 # and no table here translates one harness's spelling into another's.
 ol_entry_permitted() { # ENTRY
-  local tab=$'\t'
+  local tab=$'\t' row posture
+  row="$(launch_choice_row "$OL_HARNESS")"
+  IFS='|' read -r _ _ _ _ _ posture _ <<<"$row"
   if [[ -z "$OL_WALK_SOURCE_HARNESS" ]]; then
-    launch_choice_permission_write "$OL_HARNESS" >/dev/null && return 0
+    [[ "$posture" != no-word ]] && launch_choice_permission_write "$OL_HARNESS" >/dev/null && return 0
     OL_WALK_SKIPS+=("entry-permission-unwritable${tab}entry=$1${tab}harness=$OL_HARNESS")
     return 1
   fi
@@ -528,7 +531,11 @@ ol_entry_permitted() { # ENTRY
       || OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS${tab}model=${OL_MODEL:-none}")
     return 1
   fi
-  if launch_choice_permission_write "$OL_HARNESS" >/dev/null; then
+  if [[ "${PREFERENCE_ACTIVE:-false}" == true && "$posture" == no-word ]] \
+    && launch_choice_permission_transferable "$OL_WALK_SOURCE_HARNESS" "$OL_WALK_SOURCE_FLAGS"; then
+    return 0
+  fi
+  if [[ "$posture" != no-word ]] && launch_choice_permission_write "$OL_HARNESS" >/dev/null; then
     if (( OL_WALK_SOURCE_ROWS )); then
       [[ -z "$(launch_choice_transfer_permission_spellings "$OL_WALK_SOURCE_HARNESS")" ]] || return 0
     elif launch_choice_permission_transferable "$OL_WALK_SOURCE_HARNESS" "$OL_WALK_SOURCE_FLAGS"; then
@@ -676,7 +683,11 @@ ol_command_line() { # [--brief TEXT] HARNESS HANDOFF LANE_DIR LAUNCH_DIR FLAG...
   OL_LAUNCH_HOME="$LANE_TRUST_HOME"
   OL_FORM="$(lane_launch_form "$cmd" "$harness" "$OL_LAUNCH_HOME" "")"
   OL_CMD="$cmd"
-  [[ -z "$OL_LAUNCH_HOME" ]] || OL_CMD="$(lane_launch_line "$cmd" "$harness" "$OL_LANE_VAR" "$OL_LAUNCH_HOME" "$OL_FORM")"
+  if [[ -n "$OL_LAUNCH_HOME" ]]; then
+    OL_CMD="$(lane_launch_line "$cmd" "$harness" "$OL_LANE_VAR" "$OL_LAUNCH_HOME" "$OL_FORM")" || return 1
+  else
+    OL_CMD="$(lane_launch_line "$cmd" "$harness" "" "" "$OL_FORM")" || return 1
+  fi
   ol_identity "$harness" "$lane_dir" "$OL_LAUNCH_HOME" "$model" \
     "$(launch_choice_effort "$harness" "$*")" "$launch_dir" || OL_IDENTITY=""
 }
@@ -895,21 +906,51 @@ ol_session_from_out() {
 # ol_session_inspect SESSION [--launch] — the runtime's `inspect`, which the
 # launch's live-overseer check, the succession's read of its caller and its
 # wait for the caller to close, and the watch's per-pass overseer read take.
+# The caller's captured OL_PRIOR supplies recorded routing. Bootstrap and
+# fresh-pane verification need no record to inspect their caller-server pane.
 # The keyed line's state, server, window, cause and probe go into
 # OL_INSPECT_STATE, OL_INSPECT_SERVER, OL_INSPECT_WINDOW, OL_INSPECT_CAUSE and
 # OL_INSPECT_PROBE; wall_kind goes into OL_INSPECT_WALL_KIND. Each is empty
-# where the line names none, and window and
-# server the word `none` for a session the runtime no longer lists; the line
+# where absent. OL_INSPECT_START is the start read from a different recorded
+# socket, so a caller never reads that start on its own server. Window and
+# server are `none` for a session the runtime no longer lists; the line
 # itself into OL_INSPECT_LINE and the snapshot under it into OL_DETAIL.
 # OL_INSPECT_CAUSE is the comma-separated scans the judge could not run, and
 # OL_INSPECT_PROBE the child probe's exit status where one of them is
 # `process-probe`. Returns 1 with OL_REASON=inspect-failed; the provider's own
 # line is in DEP_ERR.
-OL_INSPECT_STATE="" OL_INSPECT_WALL_KIND="" OL_INSPECT_SERVER="" OL_INSPECT_WINDOW="" OL_INSPECT_CAUSE="" OL_INSPECT_PROBE="" OL_INSPECT_LINE=""
+OL_INSPECT_STATE="" OL_INSPECT_WALL_KIND="" OL_INSPECT_SERVER="" OL_INSPECT_START="" OL_INSPECT_WINDOW="" OL_INSPECT_CAUSE="" OL_INSPECT_PROBE="" OL_INSPECT_LINE=""
 ol_session_inspect() { # SESSION [--launch]
-  local out word
-  OL_INSPECT_STATE="" OL_INSPECT_WALL_KIND="" OL_INSPECT_SERVER="" OL_INSPECT_WINDOW="" OL_INSPECT_CAUSE="" OL_INSPECT_PROBE="" OL_DETAIL=""
-  out="$("$SCRIPT_DIR/overseer-host" inspect --session "$1" ${2:+"$2"} 2>"$DEP_ERR")" \
+  local out word record socket caller_socket caller_server server start recorded_pane args=()
+  OL_INSPECT_STATE="" OL_INSPECT_WALL_KIND="" OL_INSPECT_SERVER="" OL_INSPECT_START="" OL_INSPECT_WINDOW="" OL_INSPECT_CAUSE="" OL_INSPECT_PROBE="" OL_DETAIL=""
+  record="${OL_PRIOR:-null}"
+  socket=""
+  recorded_pane=""
+  # --launch verifies the fresh pane create just opened. A pane number from
+  # an earlier server can repeat there, so its prior record cannot route it.
+  if [[ "${2:-}" != --launch && "$record" != null ]]; then
+    recorded_pane="$(jq -r '.pane // empty' <<<"$record" 2>"$DEP_ERR")" \
+      || { OL_REASON=inspect-failed; return 1; }
+  fi
+  if [[ "$recorded_pane" == "$1" ]]; then
+    socket="$(jq -r '.server_socket // empty' <<<"$record" 2>"$DEP_ERR")" || { OL_REASON=inspect-failed; return 1; }
+    server="$(jq -r '.server // empty' <<<"$record" 2>"$DEP_ERR")" || { OL_REASON=inspect-failed; return 1; }
+    start="$(jq -r '.server_start // empty' <<<"$record" 2>"$DEP_ERR")" || { OL_REASON=inspect-failed; return 1; }
+    # Shipped records can lack a socket. Their server identity still binds
+    # the inspection: an unrelated caller pane cannot prove the holder dead.
+    if [[ -z "$socket" ]]; then
+      caller_server="$(tmux display-message -p '#{pid}' 2>"$DEP_ERR")" || { OL_REASON=inspect-failed; return 1; }
+      if [[ "$server" != "$caller_server" ]]; then
+        args=(--server "$server" --server-start "$start")
+      fi
+    else
+      caller_socket="$(tmux_server_socket)" || { OL_REASON=inspect-failed; return 1; }
+      if [[ "$socket" != "$caller_socket" ]]; then
+        args=(--server-socket "$socket" --server "$server" --server-start "$start")
+      fi
+    fi
+  fi
+  out="$("$SCRIPT_DIR/overseer-host" inspect --session "$1" ${2:+"$2"} ${args[@]+"${args[@]}"} 2>"$DEP_ERR")" \
     || { OL_REASON=inspect-failed; return 1; }
   OL_INSPECT_LINE="${out%%$'\n'*}"
   for word in $OL_INSPECT_LINE; do
@@ -917,6 +958,7 @@ ol_session_inspect() { # SESSION [--launch]
       state=*) OL_INSPECT_STATE="${word#state=}" ;;
       wall_kind=*) OL_INSPECT_WALL_KIND="${word#wall_kind=}" ;;
       server=*) OL_INSPECT_SERVER="${word#server=}" ;;
+      server_start=*) OL_INSPECT_START="${word#server_start=}" ;;
       window=*) OL_INSPECT_WINDOW="${word#window=}" ;;
       cause=*) OL_INSPECT_CAUSE="${word#cause=}" ;;
       probe=*) OL_INSPECT_PROBE="${word#probe=}" ;;
@@ -1119,7 +1161,7 @@ ol_record_get() {
 # words in DEP_ERR.
 OL_GENERATION="" OL_RECORD_RETAINED="" OL_RECORD_FRESH=""
 ol_record_write() { # RUNTIME SESSION WINDOW SERVER IDENTITY [LINE]
-  local prior="${OL_PRIOR:-null}" result record cwd rows="" start="" fields
+  local prior="${OL_PRIOR:-null}" result record cwd rows="" start="" socket="" fields
   OL_GENERATION="" OL_RECORD_RETAINED="" OL_RECORD_FRESH=""
   if [[ "$1" == tmux ]]; then
     cwd="$(jq -r '.cwd // empty' <<<"$5" 2>"$DEP_ERR")" || return 1
@@ -1128,10 +1170,12 @@ ol_record_write() { # RUNTIME SESSION WINDOW SERVER IDENTITY [LINE]
       printf 'the start of tmux server %s holding pane %s could not be read\n' "$4" "$2" > "$DEP_ERR"
       return 1
     fi
+    socket="$(tmux_server_socket)" || return 1
+    [[ -n "$socket" ]] || return 1
   fi
   result="$(jq -cn --argjson prior "$prior" --argjson identity "$5" --arg runtime "$1" \
     --arg session "$2" --arg window "$3" --arg server "$4" --arg line "${6:-}" --arg rows "$rows" \
-    --arg start "$start" "$OL_JQ_DEFS"'
+    --arg start "$start" --arg socket "$socket" "$OL_JQ_DEFS"'
       def nonempty: with_entries(select(.value != null and .value != ""));
       def field_names: keys | if length == 0 then "none" else join(",") end;
       ($prior // {}) as $p
@@ -1141,7 +1185,7 @@ ol_record_write() { # RUNTIME SESSION WINDOW SERVER IDENTITY [LINE]
       | ($identity | nonempty) as $known
       | ($known + {runtime: $runtime, server: $server, window: $window, generation: $next}
          + (if $runtime == "tmux"
-            then {pane: $session, session_rows: $rows, server_start: ($start | tonumber)}
+            then {pane: $session, session_rows: $rows, server_start: ($start | tonumber)} + {server_socket: $socket}
             else {session: $session} end)
          + (if $line == "" then {} else {launch_line: $line} end)) as $fresh
       | (if $same then $p | del(.pending, .exit) else $identity | map_values(null) end) as $base
@@ -1183,10 +1227,13 @@ ol_record_pending() { # LINE IDENTITY
 # puts back, and a query is not a snapshot.
 OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD=""
 ol_record_current() { # SERVER PANE
-  local record fields start sep=$'\x1f'
+  local record fields start state_file sep=$'\x1f'
   OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD=""
-  "$SCRIPT_DIR/workflow-state" exists oversee >/dev/null 2>&1 || return 1
-  record="$(ol_record_get)" || return 2
+  # Resolve once through the state owner, then read that file without reloading settings.
+  state_file="$("$SCRIPT_DIR/workflow-state" path oversee 2>/dev/null)" || return 1
+  [[ -f "$state_file" ]] || return 1
+  record="$(jq -r '.overseer // null' "$state_file" 2>"$DEP_ERR")" || return 2
+  record="${record:-null}"
   # Unread, the start names no record bound to one: the caller keeps its own
   # readings, and nothing here acts on the record.
   start="$(ol_session_start "$1" "$2")" || start=""
@@ -1267,8 +1314,12 @@ OL_KNOWN_HARNESS="" OL_KNOWN_ACCOUNT="" OL_KNOWN_MODEL="" OL_KNOWN_CWD=""
 ol_caller_known() { # SERVER PANE DIR
   local rc=0
   ol_record_current "$1" "$2" || rc=$?
-  # A rows file that cannot be read is no row: the caller's fallbacks answer.
-  session_rows_start "$(session_rows_overseer_file "$3" "$1" "$2")" || true
+  # A complete launch identity needs no SessionStart fallback.
+  SR_HARNESS="" SR_ACCOUNT="" SR_MODEL="" SR_CWD=""
+  if [[ -z "$OL_CUR_HARNESS" || -z "$OL_CUR_ACCOUNT" || -z "$OL_CUR_MODEL" || -z "$OL_CUR_CWD" ]]; then
+    # A rows file that cannot be read is no row: the caller's fallbacks answer.
+    session_rows_start "$(session_rows_overseer_file "$3" "$1" "$2")" || true
+  fi
   case "$SR_HARNESS" in claude | codex) ;; *) SR_HARNESS="" SR_ACCOUNT="" SR_MODEL="" SR_CWD="" ;; esac
   OL_KNOWN_HARNESS="${OL_CUR_HARNESS:-$SR_HARNESS}"
   OL_KNOWN_ACCOUNT="${OL_CUR_ACCOUNT:-$SR_ACCOUNT}"

@@ -17,24 +17,24 @@
 # caller that must stay errexit-free restores its own posture after sourcing
 # this file, the way `lanes` already does at its lib seam.
 # shellcheck source=lane-claims.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lane-claims.sh"
+source "${BASH_SOURCE[0]%/*}/lane-claims.sh"
 
 # The codex arm of lane_trust_prepare below reads a codex config.toml for one
 # key and writes it back without one table. That reading is shared with `spawn-adapter`,
 # which asks the same file a different question, so it lives in its own library
 # and both callers source it rather than each carrying a scanner of its own.
 # shellcheck source=toml.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toml.sh"
+source "${BASH_SOURCE[0]%/*}/toml.sh"
 
 # The private home the preparation below builds is named by lane-home.sh, which
 # also takes such a path back apart for the readers outside this launch that ask
 # which account a session is spending.
 # shellcheck source=lane-home.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lane-home.sh"
+source "${BASH_SOURCE[0]%/*}/lane-home.sh"
 # The claude adapter names the window a claude model runs, which decides
 # whether a claude command may turn its compaction off (launch_choice_compaction).
 # shellcheck source=adapters/claude.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/adapters/claude.sh"
+source "${BASH_SOURCE[0]%/*}/adapters/claude.sh"
 
 # The env prefix that puts a launch on a chosen account: the harness names the
 # variable, the directory IS the account. One mapping for every caller — the
@@ -71,7 +71,8 @@ lane_env_prefix() { # HARNESS DIR [MODEL]
 # spend their own accounts' windows, whatever the model: a Copilot account's
 # monthly pool is one for every model. A Pi launch spends the account its
 # model's provider bills: `pi-claude/` is pi-claude-bridge on a Claude seat,
-# judged as claude on MODEL; `github-copilot/` is the Copilot pool, which
+# judged as claude on MODEL; `github-copilot/` is the Copilot pool and
+# `anthropic/` is the provider's expiring API credit grant, which
 # `lanes pick --harness pi` reads. Every other Pi provider, and a Pi model naming
 # none, answers `unmeasured`: nothing reads what it spends, which is never room.
 # Empty is a harness `lanes` judges no launch of at all.
@@ -88,10 +89,21 @@ lane_pick_harness() { # HARNESS MODEL
     pi)
       case "$2" in
         pi-claude/*) printf '%s\n' claude ;;
-        github-copilot/*) printf '%s\n' pi ;;
+        github-copilot/* | anthropic/*) printf '%s\n' pi ;;
         *) printf '%s\n' unmeasured ;;
       esac
       ;;
+  esac
+}
+
+# Usage can be unread on an admitted relaunch. The launch and host still name
+# the spending pool, so claims never infer it from a measured bucket.
+lane_pick_pool() { # HARNESS MODEL [HOST_POOL]
+  case "$1:$2:${3:-plan}" in
+    pi:anthropic/*:*) printf '%s\n' api-credit ;;
+    copilot:* | pi:github-copilot/*:*) printf '%s\n' copilot ;;
+    *:cloud-credit) printf '%s\n' cloud-credit ;;
+    *) printf '%s\n' "${3:-plan}" ;;
   esac
 }
 
@@ -146,7 +158,10 @@ lane_copilot_pool_fix() { # HOST READ [DIR [STATUS [DETAIL]]]
 # posture an unattended launch accepts. The seventh is the subset whose full
 # bypass meaning can transfer between harnesses. Its first spelling is written;
 # a `FLAG=VALUE` spelling also accepts `FLAG VALUE` when a caller supplied it.
-# `-` says the harness launch form has no permission word in that set. The
+# `-` says the harness launch form has no permission word in that set.
+# `no-word` in the sixth field declares native tools with no approval gate;
+# the writer succeeds without a flag, while the transfer set stays empty.
+# Extensions can still ask for confirmation. The
 # eighth is the launch-only settings every command a launcher builds for that
 # harness carries, written as they stand, one `;`-separated run per setting, and
 # `-` where it has none. Codex
@@ -250,7 +265,7 @@ LAUNCH_CHOICE_FLAGS=(
   'claude|--model|--effort|-|-|--dangerously-skip-permissions --permission-mode=bypassPermissions --permission-mode=dontAsk|--dangerously-skip-permissions --permission-mode=bypassPermissions|-|--disallowedTools=AskUserQuestion,EnterPlanMode|--settings={"env":{"DISABLE_AUTO_COMPACT":"1"}}'
   'codex|-m --model|model_reasoning_effort=|-|-c|--dangerously-bypass-approvals-and-sandbox --approve-for-me --ask-for-approval=never -a=never|--dangerously-bypass-approvals-and-sandbox|-c check_for_update_on_startup=false;-c features.daemon_auto_start=false;--dangerously-bypass-hook-trust|-c features.default_mode_request_user_input=false|-c model_auto_compact_token_limit=9223372036854775807 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0'
   'opencode|-m --model|-|-|-|-|-|-|-|-'
-  'pi|--model|--thinking|:|-|-|-|-|--exclude-tools question|-'
+  'pi|--model|--thinking|:|-|no-word|-|-|--exclude-tools question|-'
   'copilot|--model|--reasoning-effort|-|-|--allow-all --yolo --allow-all-tools|--allow-all --yolo|--autopilot --max-autopilot-continues 3;--context long_context;--no-auto-update|--no-ask-user|-'
 )
 # The row for harness $1, empty where the table names no such harness.
@@ -296,13 +311,13 @@ launch_choice_effort_spellings() { # HARNESS
 }
 
 # The permission spellings an unattended launch on harness $1 accepts. Empty
-# where the row uses the `-` sentinel or the table names no such harness.
+# where the row uses `-` or `no-word`, or the table names no such harness.
 launch_choice_permission_spellings() { # HARNESS
   local row spellings
   row="$(launch_choice_row "$1")"
   [[ -n "$row" ]] || return 0
   IFS='|' read -r _ _ _ _ _ spellings _ _ <<<"$row"
-  [[ "$spellings" != - ]] || return 0
+  [[ "$spellings" != - && "$spellings" != no-word ]] || return 0
   printf '%s\n' "$spellings"
 }
 
@@ -552,10 +567,13 @@ launch_choice_write() { # HARNESS MODEL EFFORT
 
 # The permission words an unattended launch on HARNESS carries, quoted for the
 # shell command its caller is building. The first spelling in the row is the
-# written form. A row with no permission word and an unknown harness both
-# return status 1: neither can safely launch a named successor unattended.
+# written form. The no-word posture succeeds with empty output. A row with no
+# declared posture and an unknown harness return status 1.
 launch_choice_permission_write() { # HARNESS
-  local spellings word flag value
+  local row posture spellings word flag value
+  row="$(launch_choice_row "$1")"
+  IFS='|' read -r _ _ _ _ _ posture _ <<<"$row"
+  [[ "$posture" != no-word ]] || return 0
   spellings="$(launch_choice_transfer_permission_spellings "$1")"
   [[ -n "$spellings" ]] || return 1
   read -r word _ <<<"$spellings"
@@ -660,10 +678,10 @@ launch_choice_question_off() { # HARNESS
 # discovered APPEND_SYSTEM.md only when no such value is given, and that file
 # carries the instructions its installed extensions append. The turn-end half
 # of the rule is the lane-mail-check hook's idle judge, on every harness that
-# runs it, which holds a turn ending with no lane-mail ask or notice sent since
-# the last one. The text crosses the quoting layers a codex kickoff does, so it
+# runs it, which holds a turn ending with no lane-mail ask or notice sent and
+# no lane status file update since its last judgement. The text crosses the quoting layers a codex kickoff does, so it
 # holds only letters, spaces, commas, periods and hyphens.
-LAUNCH_UNATTENDED_TEXT='This is an unattended orch lane, and nobody reads this pane. Send every question for the overseer with lane-mail ask and block on lane-mail wait for its answer, never as a question in chat. Never end a turn waiting on the person, and end none before a lane-mail ask or notice says where the work stands. Where you would stop to ask, read lane-mail inbox and continue the workflow.'
+LAUNCH_UNATTENDED_TEXT='This is an unattended orch lane, and nobody reads this pane. Send every question for the overseer with lane-mail ask and block on lane-mail wait for its answer, never as a question in chat. Never end a turn waiting on the person, and end none before a lane-mail ask or notice, or the lane status file, says where the work stands. Send a notice only when the work changed since your last notice, with a new head, PR, verdict, blocker, request or finish. A wait that continues updates the lane status file only. Where you would stop to ask, read lane-mail inbox and continue the workflow.'
 
 # The words a channel=session brief closes on in place of the unattended words
 # above (../../schemas/lane-host.md § Host kinds): a cloud session has no mailbox,
@@ -673,16 +691,31 @@ LAUNCH_UNATTENDED_TEXT='This is an unattended orch lane, and nobody reads this p
 # meets that branch already checked out. A cloud session pushes to a claude/
 # branch unless its prompt names another, and the overseer's watch finds a
 # lane's pull request and its merge by the item branch, so the words name it.
-# The watch reads no open pull request on that branch soon after launch as a
-# lane that never started (oversee-watch check_start_stall), and GitHub opens
-# none on a branch with no commit ahead of its base, so the session makes an
-# empty first commit and opens the draft at once. It names the steps the kind never
+# GitHub REST can create a ready pull request but cannot mark a draft ready.
+# The cloud denies GraphQL, so its session reviews before publication.
+# It names the steps the kind never
 # takes, each one a mailbox, a tracker the cloud cannot reach, a merge under
 # another identity or a wait on a person. A cloud machine has no kendex and no tools/setup, so it
 # arms the commit hooks only through the commit-guards script where the
 # checkout carries it, and otherwise commits under the gates that hold the
 # merge. It holds no apostrophe or backtick, as the words above hold none.
-LAUNCH_SESSION_TEXT='This is an unattended orch lane in a cloud session, and nobody reads it. The task above is the whole issue. This session cloned the item branch {branch}: work on it as checked out, create no worktree and no other branch. Commit and push each finished part of the work to {branch} on origin as it finishes, not only at the end. Before each commit, before staging or validation, apply the safe fixes of the formatter declared by the repository lint script or DEV_VALIDATE_CMD. Run its write mode only on files you changed. Apply no unsafe fix and touch no other file. For a review or audit, commit the report file after each section, so a session that runs out of credit or time leaves its work on the branch. Never push to a claude/ branch, since your overseer finds your work by the item branch name. You reach your overseer through your branch and pull request and nothing else. Where .agents/skills/commit-guards/scripts/install-git-hooks is present, arm the commit hooks with it before your first commit. Where it is not, commit anyway, since the pull request CI, the review gate and the second-opinion gate hold the merge. Then, before any other work, make your first commit with git commit --allow-empty, push it to {branch}, and open a draft pull request from {branch}: your overseer reads an item branch with no open pull request soon after launch as a lane that never started, and GitHub opens none on a branch with no commit ahead of its base. While the work goes on, and while a blocker stands, keep the pull request draft, with where the work stands and any blocker under a ## Lane status heading in its body, and name a blocker in a pull request comment too. When the change is committed and pushed and your own tests pass, mark the pull request ready for review without waiting to read CI, since CI and merge belong to the landing lane. Never ask a question: a step that needs an answer is a step this lane never takes, so name the blocker in the pull request and end your turn. Never run linear.sh, lane-mail or pr-merge, never arm a background wake, and never wait on a person.'
+LAUNCH_SESSION_TEXT='This is an unattended orch lane in a cloud session, and nobody reads it. The task above is the whole issue. This session cloned the item branch {branch}: work on it as checked out, create no other work branch. The detached base checkout in the completion commands below is the only extra worktree allowed. Commit and push each finished part of the work to {branch} on origin as it finishes, not only at the end. Before each commit, before staging or validation, apply the safe fixes of the formatter declared by the repository lint script or DEV_VALIDATE_CMD. Run its write mode only on files you changed. Apply no unsafe fix and touch no other file. For a review or audit, commit the report file after each section, so a session that runs out of credit or time leaves its work on the branch. Never push to a claude/ branch, since your overseer finds your work by the item branch name. You reach your overseer through your branch and pull request and nothing else. Where .agents/skills/commit-guards/scripts/install-git-hooks is present, arm the commit hooks with it before your first commit. Where it is not, commit anyway, since the pull request CI, the review gate and the second-opinion gate hold the merge. Then, before any other work, make your first commit with git commit --allow-empty and push it to {branch} on origin. Finish the change, pass your own tests and internal review, and push the final commits before opening the pull request. Cloud sessions use the review-first publication order from pr-order, including where the repository selects open-first or push-first: the cloud refuses GraphQL, and REST cannot mark an existing draft ready. Explain this cloud route in the pull request body under ## Lane status. Resolve [OWNER], [REPO] and the intended target [BASE] from the repository and task; when the task names no target, read the default branch with gh api repos/[OWNER]/[REPO] --jq .default_branch. Write tmp/cloud-pull-request.json with title, body, head set to {branch}, base set to [BASE], and "draft": false as a JSON boolean. Create the ready pull request through REST with gh api --method POST repos/[OWNER]/[REPO]/pulls --input tmp/cloud-pull-request.json --jq .number and bind its returned number as [PR_NUMBER]. Open no draft and run no draft-to-ready command. If creation fails or a blocker prevents completion before creation, record the refusal or blocker in a commit message or committed report on {branch}. Push that commit to {branch} on origin before ending your turn. After creation succeeds, report refusals and blockers in the pull request body or comments. After creation, read the pull request target base through REST with gh api repos/[OWNER]/[REPO]/pulls/[PR_NUMBER] --jq .base.ref and bind it as [BASE]. The detached checkout below supplies the consumer base policy without item-branch changes. Run these commands in order:
+(
+git fetch origin [BASE] || exit "$?"
+git worktree add --detach tmp/review-base origin/[BASE] || exit "$?"
+cloud_request_status=0
+env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --request-review --base-checkout tmp/review-base || cloud_request_status=$?
+cloud_cleanup_status=0
+git worktree remove tmp/review-base || cloud_cleanup_status=$?
+if [ "$cloud_cleanup_status" -ne 0 ]; then
+  printf "%s\n" "cloud-completion: base-cleanup-failed exit=$cloud_cleanup_status" >&2
+fi
+if [ "$cloud_request_status" -ne 0 ]; then
+  exit "$cloud_request_status"
+fi
+exit "$cloud_cleanup_status"
+)
+Remove the temporary base checkout even if the request fails. Use a full clone under tmp/ only if Gate-mode routing refuses the detached base checkout, and name its refusal line in the pull request. On a fallback or failure, copy the request answer to a pull request comment for the landing lane. Never close and reopen the pull request to request review. Read no CI and wait on no review, since CI and merge belong to the landing lane. Never ask a question: a step that needs an answer is a step this lane never takes, so use the failure-reporting route above and end your turn. Never run linear.sh, lane-mail or pr-merge, never arm a background wake, and never wait on a person.'
 
 # ORCH_QUESTION_TOOL, decided once here for every launcher: `off`, the
 # default, gives a launched overseer its harness row's question-off words in
@@ -1225,9 +1258,9 @@ lane_codex_trust_prepare() { # LANE_DIR LAUNCH_DIR
   return 0
 }
 
-# The ONE decision about how a resolved lane reaches the launched harness, made
-# once per launch and read both by the launch line and by the account check that
-# follows the pane open. Prints one of:
+# How a resolved account is delivered and observed. Rendering caller shell
+# text is lane_launch_line's decision and does not enable account checks.
+# Prints one of:
 #   launcher:<path>  launch through that file, with no env prefix
 #   prefix           launch under the env prefix, and check the pane
 #   custom           keep the caller's command and check its account;
@@ -1283,11 +1316,12 @@ lane_codex_trust_prepare() { # LANE_DIR LAUNCH_DIR
 # on another machine. It keeps its caller's form and has no local account read.
 lane_launch_form() { # CMD HARNESS LANE_DIR [TEMPLATE]
   local cmd="$1" harness="$2" dir="$3" template="${4:-}" name path
-  if [[ -z "$dir" ]] || [[ ! "$harness" =~ ^(claude|codex|copilot)$ ]]; then
+  if [[ ! "$harness" =~ ^(claude|codex|copilot)$ ]]; then
     printf 'unchecked\n'
     return
   fi
   if [[ -n "$template" ]]; then printf 'custom\n'; return; fi
+  if [[ -z "$dir" ]]; then printf 'unchecked\n'; return; fi
   name="$(basename -- "$dir")" || { printf 'prefix\n'; return; }
   name="${name#.}"
   if [[ "$name" != *"$harness"* || "$name" == "$harness" ]]; then printf 'prefix\n'; return; fi
@@ -1335,8 +1369,72 @@ lane_launch_compaction_env() { # CMD HARNESS VERIFIED
   printf 'ORCH_COMPACTION_OVERRIDES=%s' "$(lane_single_quote "$overrides")"
 }
 
-# The launch line for a command that must run on a chosen account, under the
-# form lane_launch_form picked for it.
+# Claude's critical-path prompts survive bypassPermissions. The provider's
+# https://code.claude.com/docs/en/permission-modes#critical-paths and
+# https://code.claude.com/docs/en/env-vars require these switches in the
+# launching environment, not a settings env block. The inline switch needs
+# v2.1.288. Subagents inherit them from the launched session.
+lane_launch_rm_prompt_env() { # CMD HARNESS
+  local rc=0
+  [[ "$2" == claude ]] || return 0
+  lane_copilot_allows_all "$1" "$2" || rc=$?
+  case "$rc" in
+    0) printf 'CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT=1 CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1' ;;
+    1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# The variables that name the session a launch is made from, cleared from every
+# child a launcher starts so the child never writes that session's records or
+# answers as it: lane_launch_line opens each `env` line it renders with them,
+# open-terminal's run_detached clears them from the detached terminal or wake,
+# and its hosted command, POSIX shell text, clears them with `unset`. A tmux
+# window takes the server's environment rather than the launcher's, so the
+# scrub rides in the command and not in the caller's process. Account and home
+# variables are not listed: a launch sets the child's own after this scrub, and
+# KENDEX_LANE_ORIGIN, exported ahead of the command, stays.
+#   Claude Code  CLAUDECODE, the nested-session marker; CLAUDE_CODE_SESSION_ID,
+#                the session id it exports to its tools (2.1.42), and
+#                CLAUDE_SESSION_ID, the name a session environment can carry
+#                it under beside that one; CLAUDE_PROJECT_DIR, the root the
+#                lane-mail-check hook resolves a lane from.
+#   Codex        CODEX_THREAD_ID, the session it exports to its tools;
+#                CODEX_SANDBOX and CODEX_SANDBOX_NETWORK_DISABLED, which
+#                second-opinion reads as running inside Codex.
+#   Pi           PI_SUBAGENT_PARENT_SESSION_ID and PI_BRIDGE_PARENT_SESSION_ID,
+#                pi-agents-tmux's parent session for a subagent.
+#   Jarvis       JARVIS_RECORD and JARVIS_GENERATION, the runtime record a
+#                SessionStart writes its native identity into
+#                (lib/session-rows.sh session_rows_jarvis_write).
+# Copilot is not listed: kendex reads a Copilot session's id from its hook
+# payload alone.
+LANE_LAUNCH_SCRUB=(
+  CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CLAUDE_PROJECT_DIR
+  CODEX_THREAD_ID CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED
+  PI_SUBAGENT_PARENT_SESSION_ID PI_BRIDGE_PARENT_SESSION_ID
+  JARVIS_RECORD JARVIS_GENERATION
+)
+
+# Start the pane's configured shell with no parent session identity. Scrubbing
+# before shell initialization preserves functions and the shell language of a
+# raw custom command. Match tmux's default-command or login-shell selection.
+lane_launch_shell_argv() { # SHELL DEFAULT_COMMAND
+  local name
+  LANE_LAUNCH_SHELL_ARGV=(env)
+  for name in "${LANE_LAUNCH_SCRUB[@]}"; do LANE_LAUNCH_SHELL_ARGV+=(-u "$name"); done
+  LANE_LAUNCH_SHELL_ARGV+=("$1")
+  if [[ -n "$2" ]]; then LANE_LAUNCH_SHELL_ARGV+=(-c "$2")
+  else LANE_LAUNCH_SHELL_ARGV+=(-l); fi
+}
+
+# The complete command under the form lane_launch_form picked for it. TEMPLATE
+# retains caller shell text independently of whether its account is checked. Empty
+# account words keep the caller's account, or the provider's on a host. Every
+# line that opens on `env` clears LANE_LAUNCH_SCRUB there. A custom command
+# that takes no env words is the caller's shell text and stays as written: it
+# runs in the pane's own shell, started through lane_launch_shell_argv, so a
+# function that shell defines stays callable without the parent's identity.
 #
 # The prefix value is quoted by lane_single_quote, not wrapped in bare quotes:
 # lane dirs are paths, an unquoted space would split the env assignment inside
@@ -1348,7 +1446,7 @@ lane_launch_compaction_env() { # CMD HARNESS VERIFIED
 # this builder's to do.
 #
 # The lane is recorded in the launched command itself, so `ps` and the pane's
-# own first line show which account a stalled session belongs to — as the
+# own first line show which account a stalled session belongs to: the
 # launcher's own path, or as the env prefix where the machine has no launcher.
 # Not the window title: both launchers open their window with an explicit -n,
 # which turns tmux's automatic rename off, so the title keeps the name it was
@@ -1358,23 +1456,48 @@ lane_launch_compaction_env() { # CMD HARNESS VERIFIED
 # because a launcher that exports COPILOT_HOME for its own name exports
 # nothing else: the account variable here, and the words lane_copilot_env
 # below prints.
-lane_launch_line() { # CMD HARNESS LANE_VAR LANE_DIR FORM
-  local cmd="$1" harness="$2" var="$3" dir="$4" form="$5" compaction="" verified=true env_words
-  if [[ "$harness" == codex ]]; then
+lane_launch_line() { # CMD HARNESS LANE_VAR LANE_DIR FORM [TEMPLATE]
+  local cmd="$1" harness="$2" var="$3" dir="$4" form="$5" launch_env="" verified=true env_words scrub
+  [[ -z "${6:-}" ]] || form=custom
+  printf -v scrub -- ' -u %s' "${LANE_LAUNCH_SCRUB[@]}"
+  scrub="env$scrub"
+  launch_env=$(lane_launch_rm_prompt_env "$cmd" "$harness") || return 1
+  if [[ "$harness" == codex && -n "$var" ]]; then
     [[ "$form" != unchecked && "$form" != custom ]] || verified=false
-    compaction=$(lane_launch_compaction_env "$cmd" "$harness" "$verified") || return 1
+    launch_env=$(lane_launch_compaction_env "$cmd" "$harness" "$verified") || return 1
   fi
   if [[ "$harness" != copilot ]]; then
     case "$form" in
-      launcher:*) printf '%s%s %s\n' "${compaction:+env $compaction }" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
-      *) printf 'env %s=%s %s%s\n' "$var" "$(lane_single_quote "$dir")" "${compaction:+$compaction }" "$cmd" ;;
+      custom)
+        [[ -z "$var" ]] || launch_env="$var=$(lane_single_quote "$dir")${launch_env:+ $launch_env}"
+        # The whole custom command runs in the same shell language. One
+        # quoted -c argument keeps operators, expansions and comments intact,
+        # and remains executable argv for overseer-run and other consumers.
+        if [[ -n "$launch_env" ]]; then
+          printf '%s %s %s -c %s\n' "$scrub" "$launch_env" "$(lane_single_quote "$BASH")" "$(lane_single_quote "$cmd")"
+        else
+          printf '%s\n' "$cmd"
+        fi
+        ;;
+      launcher:*) printf '%s%s %s %s\n' "$scrub" "${launch_env:+ $launch_env}" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
+      *)
+        if [[ -n "$var" ]]; then
+          printf '%s %s=%s %s%s\n' "$scrub" "$var" "$(lane_single_quote "$dir")" "${launch_env:+$launch_env }" "$cmd"
+        else
+          printf '%s %s%s\n' "$scrub" "${launch_env:+$launch_env }" "$cmd"
+        fi
+        ;;
     esac
+    return
+  fi
+  if [[ -z "$var" ]]; then
+    if [[ "$form" == custom ]]; then printf '%s\n' "$cmd"; else printf '%s %s\n' "$scrub" "$cmd"; fi
     return
   fi
   env_words="$(lane_copilot_env "$cmd" "$(lane_single_quote "${LANES_HOME:-$HOME}/.agents/skills")")"
   case "$form" in
-    launcher:*) printf '%s %s %s\n' "$env_words" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
-    *) printf '%s %s=%s %s\n' "$env_words" "$var" "$(lane_single_quote "$dir")" "$cmd" ;;
+    launcher:*) printf '%s %s %s %s\n' "$scrub" "$env_words" "$(lane_single_quote "${form#launcher:}")" "${cmd#"$harness" }" ;;
+    *) printf '%s %s %s=%s %s\n' "$scrub" "$env_words" "$var" "$(lane_single_quote "$dir")" "$cmd" ;;
   esac
 }
 
@@ -1426,23 +1549,24 @@ lane_copilot_env() { # CMD SKILLS
   printf 'env -u COPILOT_GITHUB_TOKEN COPILOT_SKILLS_DIRS=%s %s\n' "$2" "$allow"
 }
 
-# Whether CMD carries one of the copilot row's transferable permission
-# spellings, the full allow-all ones, as a word the shell hands copilot. The
-# tools-only `--allow-all-tools` is not one: it leaves paths and URLs asking.
-lane_copilot_allows_all() { # CMD
-  local spellings i
-  spellings="$(launch_choice_transfer_permission_spellings copilot)"
-  launch_choice_shell_words "$1"
+# Whether CMD carries a transferable full-bypass permission word. Existing
+# Copilot callers omit HARNESS; tools-only --allow-all-tools is not full bypass.
+# Claude stops reading options at --. Return 2 when the command cannot be read.
+lane_copilot_allows_all() { # CMD [HARNESS]
+  local harness="${2:-copilot}" spellings i
+  spellings="$(launch_choice_transfer_permission_spellings "$harness")" || return 2
+  launch_choice_shell_words "$1" || return 2
   for ((i = 0; i < ${#LAUNCH_CHOICE_ARGV[@]}; i++)); do
+    [[ "$harness" != claude || "${LAUNCH_CHOICE_ARGV[i]}" != -- ]] || break
     launch_choice_permission_match "$spellings" "${LAUNCH_CHOICE_ARGV[i]}" "${LAUNCH_CHOICE_ARGV[i+1]:-}"
     (( LAUNCH_CHOICE_PERMISSION_SPAN == 0 )) || return 0
   done
   return 1
 }
 
-# The lane variable's value in the DEEPEST process under pane pid $1 that
-# carries it, empty when none does. Breadth first, so no carrier found later is
-# shallower than one found earlier.
+# CODEX_HOME from the deepest codex process under pane pid $1, even when unset.
+# Other lane variables retain the deepest nonempty value. Breadth first, so no
+# process found later is shallower than one found earlier.
 #
 # Deepest, not first: under `env VAR=<picked> claude` the env process carries
 # the picked value while a wrapper below it can already have replaced it, and a
@@ -1452,13 +1576,30 @@ lane_copilot_allows_all() { # CMD
 # pgrep's 0 and 1 are its two answers and anything else is the probe breaking.
 # pgrep, not `ps --ppid`, which is procps-only and rejected by BSD ps.
 lane_observed_dir() { # PANE_PID NAME
-  local name="$2" frontier next pid kids value rc found=""
+  local name="$2" frontier next pid kids value rc found="" command name_re lib_dir
+  if [[ "$name" == CODEX_HOME ]]; then
+    # Standalone readers need the classifier without replacing caller globals.
+    name_re="$(
+      if ! declare -F lane_harness_process_re >/dev/null; then
+        lib_dir="$(dirname "${BASH_SOURCE[0]}")" || exit 2
+        # shellcheck source=lane-state.sh
+        source "$lib_dir/lane-state.sh" || exit 2
+      fi
+      lane_harness_process_re codex
+    )" || return 2
+  fi
   frontier="$(pgrep -P "$1" 2>/dev/null)" || { rc=$?; [[ "$rc" -eq 1 ]] || return 2; frontier=""; }
   while [[ -n "$frontier" ]]; do
     next=""
     for pid in $frontier; do
       kids="$(pgrep -P "$pid" 2>/dev/null)" || { rc=$?; [[ "$rc" -eq 1 ]] || return 2; kids=""; }
       [[ -z "$kids" ]] || next+="$kids"$'\n'
+      # Codex helpers can carry another home. Other variables name multiple
+      # commands, including Copilot's MainThread and Pi on CLAUDE_CONFIG_DIR.
+      if [[ "$name" == CODEX_HOME ]]; then
+        read -r command 2>/dev/null < "/proc/$pid/comm" || continue
+        [[ "$command" =~ $name_re ]] || continue
+      fi
       # A process that exits mid-walk takes its /proc entry with it; that is an
       # absent value, not a broken probe.
       # 2> BEFORE <: redirections apply left to right, so a suppression written
@@ -1466,7 +1607,7 @@ lane_observed_dir() { # PANE_PID NAME
       # stderr — a shell error in the launch output for the very case the
       # comment above calls an absent value.
       value="$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" | sed -n "s/^$name=//p" | tail -1)" || value=""
-      [[ -z "$value" ]] || found="$value"
+      if [[ "$name" == CODEX_HOME || -n "$value" ]]; then found="$value"; fi
     done
     frontier="$next"
   done
