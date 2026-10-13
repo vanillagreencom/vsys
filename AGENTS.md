@@ -11,13 +11,9 @@ A Linux terminal dashboard for agent processes and system health, in TypeScript 
 
 ## Conventions
 
-- A reading vsys could not take stays unknown. Never let a failed read become a zero, and never draw a zero for a number vsys could not read.
-- `src/model/` returns numbers and identifiers. Every word and every formatted number is written in `src/ui/`. Five fields of the `--once` snapshot are the exception and stay where they are: `errors[].message`, `capabilities[].detail`, `storage.udisks.detail`, `storage.scratch[].error` and `alerts[].message`. Other programs read them from that JSON, and they move to `src/ui/` only by an owner decision.
 - `tsconfig.json` sets `noUncheckedIndexedAccess`. Guard an indexed read or restructure it so the compiler sees it present; never assert it with `!` or a cast. A test reads an element it depends on through `present()` in `src/test/present.ts`.
 - Collection reads only the settings in `collectionKeys` in `src/collect/settings.ts`. A new collection setting goes there, or the runtime will not rebuild the collector when it changes.
 - Nothing is appended to a lane name to make it unique. The process id is a column of its own, and prose names a lane through `laneText()` in `src/model/naming.ts`.
-- No screen names a colour value. Colour comes from the role table in `src/ui/theme.ts`; `src/ui/theme.test.tsx` admits no other colour.
-- Only `runEffect()` in `src/effect.ts` changes system state for the dashboard, and only from a command `resolveIntent()` in `src/model/actions.ts` rebuilt against the current sample. The warden changes process placement outside the dashboard runtime.
 - A change that makes a claim in a doc false changes the doc in the same commit. A claim that something is enforced names the test, or says that review holds it.
 - `docs/media/vsys-tour.gif` is product content: the tour the README shows.
 
