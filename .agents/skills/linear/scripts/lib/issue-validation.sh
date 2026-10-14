@@ -16,7 +16,7 @@ set -euo pipefail
 #
 #   container     A bundle parent whose children are each worked as their own
 #                 PR unit; the container itself is never orchestrated and
-#                 closes LAST, after its final child. Its own state name is
+#                 closes after its holder proves the shared outcome. Its state name is
 #                 not checked here (see build_completion_validation_result:
 #                 the container role gates on state_type instead), so this
 #                 helper emits nothing for it.
@@ -249,8 +249,9 @@ ISSUE_HEADER_MAX=500
 require_issue_header_shape() {
 	[[ -n ${LINEAR_REQUIRE_REACH-1} ]] || return 0
 
-	local refusal
-	refusal=$(jq -cn --arg desc "$1" --argjson max "$ISSUE_HEADER_MAX" '
+	local refusal parsed
+	parsed=$(done_when_parse "$1" '[]') || return 1
+	refusal=$(jq -cn --arg desc "$1" --argjson max "$ISSUE_HEADER_MAX" --argjson parsed "$parsed" '
 		def header: test("^(\\*\\*[^*]+(\\*\\*:|:\\*\\*)|[Rr]eached [Bb]y:)");
 		def owner_action: test("^\\*\\*[^*\\s]+, what you do:\\*\\* [^\\r\\n]*$");
 		[$desc | gsub("\r\n"; "\n") | split("\n") | to_entries[]
@@ -258,12 +259,19 @@ require_issue_header_shape() {
 		| [$lines[] | select(.text | test("\\S"))] as $content
 		| ($content | if length > 0 and (.[0].text | owner_action) then .[1:] else . end | first) as $first
 		| ([$lines[] | select((.text | header) and .length > $max)] | first) as $long
+		| ([$parsed.boxes[] | select(.post_merge)
+			| if (.trigger | test("^release(?: |$)")) and .trigger_kind != "release" then
+				{rule: "post-merge-release-repository", box: .number, fix: "Use Trigger: release OWNER/REPO TAG-GLOB."}
+			  elif .deadline_epoch == null and ((.deadline // "") | test("^\\+[0-9]+h$") | not) then
+				{rule: "post-merge-deadline", box: .number, fix: "Use Deadline: +Nh or a real UTC time in YYYY-MM-DDTHH:MM:SSZ form."}
+			  else empty end] | first) as $post
 		| if $first != null and ($first.text | header) then
 			{error: "issue-header-opening line=\($first.line) length=\($first.length)\nRefusing an issue body that opens with a header line. Open with the outcome sentence; the **Key**: and Reached by: headers follow it.",
 			 rule: "issue-header-opening", line: $first.line, length: $first.length}
 		  elif $long != null then
 			{error: "issue-header-length line=\($long.line) length=\($long.length) max=\($max)\nRefusing an issue body with a header line over \($max) characters. Keep each header to one short sentence and move the detail under a section.",
 			 rule: "issue-header-length", line: $long.line, length: $long.length}
+		  elif $post != null then $post + {error: ($post.rule + " box=\($post.box)\nfix=" + $post.fix)}
 		  else empty end') || return 1
 	if [ -n "$refusal" ]; then
 		printf '%s\n' "$refusal" >&2
@@ -274,28 +282,38 @@ require_issue_header_shape() {
 # One parser owns checklist numbering, ticking, triggers, and post-merge deadlines.
 # merge-pr supplies GitHub's mergedAt; watch and reconcile consume the same
 # per-box deadline in the description without a second tracker field.
-# Usage: done_when_parse DESCRIPTION MET_JSON [MERGED_AT]
+# Usage: done_when_parse DESCRIPTION MET_JSON [MERGED_AT] [EVIDENCE_JSON] [ROLE]
 done_when_parse() {
-    jq -cn --arg desc "$1" --argjson met "$2" --arg merged "${3:-}" '
+    local evidence='{}'
+    [[ $# -lt 4 ]] || evidence="$4"
+    jq -cn --arg desc "$1" --argjson met "$2" --arg merged "${3:-}" --argjson evidence "$evidence" --arg role "${5:-issue}" '
         def utc_epoch:
             . as $stamp
             | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$") then
                 (try (fromdateiso8601 | select((todateiso8601) == $stamp)) catch null) // null
               else null end;
         ($merged | if . == "" then null else utc_epoch end) as $merge_epoch
-        | reduce ($desc | gsub("\r\n"; "\n") | split("\n"))[] as $line
-            ({out: [], section: false, boxes: [], ticked: 0};
+        | ($desc | gsub("\r\n"; "\n") | split("\n")) as $lines
+        | reduce range(0; $lines | length) as $i
+            ({out: [], section: false, boxes: [], ticked: 0, changed: false, skip: -1};
+            $lines[$i] as $line
+            | if $i == .skip then . else
             (if ($line | test("^## Done when\\s*$")) then .section = true
              elif ($line | startswith("## ")) then .section = false
              else . end)
             | if .section and ($line | test("^\\s*[-*] \\[[ xX]\\](\\s|$)")) then
                 ((.boxes | length) + 1) as $n
                 | ($line | test("^\\s*[-*] \\[ \\]")) as $open
-                | ($open and ($met == "all" or ($met | any(.[]; . == $n)))) as $tick
+                | ($met == "all" or ($met | any(.[]; . == $n))) as $selected
+                | ($open and $selected) as $tick
+                | ($line | capture("^(?<indent>[ \t]*)").indent) as $indent
+                | (($lines[$i + 1] // "" | try capture("^(?<indent>[ \t]+)Evidence:[ \t]*(?<text>.*)$") catch null) // null) as $following
+                | (if $following != null and ($following.indent | length) > ($indent | length) then $following.text else "" end) as $stored_evidence
+                | (if $selected then $evidence[$n | tostring] // (if $open then "" else $stored_evidence end) else $stored_evidence end) as $proof
                 | ($line | sub("^\\s*[-*] \\[[ xX]\\]\\s*"; "")) as $body
                 | ($body | startswith("Post-merge:")) as $post
                 | (if $post then
-                    (try ($body | capture("^Post-merge: (?<reading>.+); Where: (?<where>.+); Why after merge: (?<why>.+?); (?:Trigger: (?<trigger>[^;]+); )?Deadline: (?<deadline>[^; ]+)$")) catch null) // {}
+                    (try ($body | capture("^Post-merge: (?<reading>.+); Where: (?<where>.+); Why after merge: (?<why>.+?); (?:Trigger: (?<trigger>[^;]+); )?Deadline: (?<deadline>[^;]+)$")) catch null) // {}
                    else {} end) as $fields
                 | ($fields.trigger // "merge"
                     | gsub("\\\\(?<punct>[\\x21-\\x2f\\x3a-\\x40\\x5b-\\x60\\x7b-\\x7e])"; .punct)) as $trigger
@@ -309,12 +327,18 @@ done_when_parse() {
                       (try ($fields.deadline | capture("^\\+(?<hours>[0-9]+)h$").hours | tonumber) catch null) // null
                    else null end) as $deadline_hours
                 | .boxes += [({number: $n, checked: (($open | not) or $tick), post_merge: $post,
-                               text: $body, deadline_epoch: $deadline_epoch, deadline_hours: $deadline_hours} + $fields + {trigger: $trigger} + $trigger_fields)]
+                               text: $body, evidence: $proof, deadline_epoch: $deadline_epoch, deadline_hours: $deadline_hours} + $fields + {trigger: $trigger} + $trigger_fields)]
                 | if $tick then .out += [$line | sub("\\[ \\]"; "[x]")] | .ticked += 1
                   else .out += [$line] end
-              else .out += [$line] end)
+                | if $selected and ($evidence | has($n | tostring)) then
+                    .out += [$indent + "  Evidence: " + $proof] | .changed = true
+                    | if $following != null and ($following.indent | length) > ($indent | length) then .skip = ($i + 1) else . end
+                  else . end
+              else .out += [$line] end end)
         | . as $r
-        | {description: ($r.out | join("\n")), ticked: $r.ticked, boxes: $r.boxes,
+        | {description: ($r.out | join("\n")), ticked: $r.ticked, changed: ($r.changed or $r.ticked > 0), boxes: $r.boxes,
+           unmet_branch_boxes: [$r.boxes[] | select(.checked == false and .post_merge == false) | .number],
+           missing_evidence_boxes: [$r.boxes[] | select(.checked and (.evidence | test("\\S") | not)) | .number],
            missing: (if $met == "all" then [] else [$met[] | select(. > ($r.boxes | length))] | unique end),
            errors: [$r.boxes[] | select(.post_merge)
                 | if .trigger_kind == null or ((.why // "") | contains("; Trigger:")) or any([.reading, .where, .why][]; (. // "") | test("\\S") | not)
@@ -324,5 +348,9 @@ done_when_parse() {
                         else ($merged != "" and ($merge_epoch == null or (.trigger_kind == "time" and .trigger_epoch < $merge_epoch)))
                              or (.deadline_epoch != null and .trigger_epoch != null and (.deadline_epoch <= .trigger_epoch or .deadline_epoch > (.trigger_epoch + 259200))) end)
                     then {box: .number, rule: "post-merge-window"}
-                  else empty end]}'
+                  else empty end]}
+        | .missing_outcome_box = ($role == "container" and all(.boxes[]; .post_merge))
+        | .outcome_remedy = (if .missing_outcome_box then "Add a shared-outcome box under Done when, then read its source." else null end)
+        | .completion_state = (if .missing_outcome_box or (.errors | length) > 0 or (.unmet_branch_boxes | length) > 0 or (.missing_evidence_boxes | length) > 0 then null
+            elif any(.boxes[]; .post_merge and (.checked | not)) then "Verifying" else "Done" end)'
 }

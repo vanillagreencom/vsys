@@ -585,45 +585,9 @@ The long pass's events, checked and reported in this order:
                              settings. Reported on every long pass while it
                              stays due, so it stops once a report is written;
                              read only with --state
-  EVENT verifying-deadline <item> box=<N> trigger=<JSON> status=<due|overdue> deadline=<UTC>
-                             that due or overdue box key changed. Read
-                             each emitted box in that pass and record evidence.
-                             Pass: tick and complete the same item. Fail or
-                             unreadable by deadline: keep Verifying and file
-                             one blocking peer fix through audit-issues.
-                             Repeat the same check after that fix merges.
-                             A merged item never returns to In Progress.
-                             No deadline moves. An owner-only box goes once
-                             to the owner as an ask on the same item, naming
-                             box, check, Where and deadline. The overseer
-                             records the person's reading and closes the ask.
-  verifying <item> box=<N> trigger=<JSON> status=<due|overdue|blocked|waiting> deadline=<UTC|-> [merged=<UTC>] blocked_by=<ids|-> reading=<JSON> where=<JSON> why=<JSON>
-                             every open post-merge box on every long pass,
-                             before active/queued lane filtering. Overdue
-                             takes priority at or past the deadline,
-                             even with a blocker, when a deadline exists.
-                             Otherwise blocked means an open blocker, waiting
-                             means an unfired trigger, and due means ready.
-                             blocked_by names open blockers, or - for none.
-                             A missing Trigger means merge. Release triggers
-                             use the first matching publication after merge.
-                             In a repository where the item merged, that
-                             release must contain its latest merge commit.
-                             An unfired release has deadline=- and merged=<UTC>.
-                             Its deadline starts at publication, within 72 hours.
-                             Merge triggers keep their deadline from merge.
-                             Invalid items report their parser
-                             error on stderr; the pass reads the next item.
-                             Event blocks print only due or overdue boxes
-                             whose number, trigger, status or deadline key
-                             changed in the saved deadline row. Other fields
-                             wait for the heartbeat, which prints every box.
-                             Waiting and blocked statuses have no individual
-                             deadline keys; those boxes print at heartbeat.
-                             An item
-                             with none prints verifying <item> boxes=0 once at
-                             first read, with EVENT verifying-deadline <item>
-                             boxes=0, and again at heartbeat.
+  EVENT verifying-deadline / verifying
+                             see references/oversee-events.md § Verification
+                             for event fields and operator actions
   EVENT heartbeat            --max-loops long passes with no event, after
                              the repeated parked-merged lines above. A line
                              `  failing <item> <key>` follows for every lane
@@ -649,9 +613,15 @@ The long pass's events, checked and reported in this order:
                              unjudged harness=<h>>` per item the tracker holds
                              as work the fleet owes that launch_queue lacks:
                              with LINEAR_TEAM, the team's In Progress and In
-                             Review items, from the long pass's one live read
-                             that also supplies Verifying boxes. A priority of 0 (none)
-                             printed `-`; with none, every open PR of the first
+                             Review items. The long pass reads team statuses,
+                             lists issues in their non-terminal states, and
+                             reads each container candidate's children. These
+                             reads also supply Verifying and container outcome
+                             boxes. A failed read exits 2 as tracker-list-failed;
+                             an invalid reply exits 2 as tracker-list-invalid.
+                             Status and child failures carry read=statuses or
+                             read=children. A priority of 0 (none) prints `-`;
+                             with none, every open PR of the first
                              --repo on an issue-N branch, from a listing of its
                              own that exits 2 as owed-list-truncated at 1000.
                              A record running, preparing or parked owes
@@ -1258,7 +1228,7 @@ ow_message() { # REASON FIELD=VALUE...
     hosted-duplicate) text='Name each hosted item once.' ;;
     host-capabilities-unread) text='lane-host could not declare the capability line of a host a lane record names, or declared a value this watch has no arm for, so nothing says where that lane is read or how it is judged; lane-host'"'"'s own words are above this line. Nothing of the fleet is carried.' ;;
     wall-relaunch-invalid) text='ORCH_WALL_RELAUNCH takes auto or ask.' ;;
-    wall-relaunch-refused) text='The watch did not relaunch this walled lane, and reports usage-limit in its place. The reason names the rule or the step that stopped it: lane-working (the judge did not read the lane walled), record-unnamed (no running lane record names its item, harness and model), account-unknown (neither a live claim nor the record names the spent account), spent-account (the pick handed back the account that walled), context-unavailable (the original launch choices cannot be recovered; cause names missing permission choices or checkout), marker-unwritten (the pending marker of the relaunch could not be written), or stop-failed (the hosted harness did not confirm its stop).' ;;
+    wall-relaunch-refused) text='The watch did not relaunch this walled lane, and reports usage-limit in its place. The reason names the rule or the step that stopped it: lane-working (the judge did not read the lane walled), record-unnamed (no running lane record names its item, harness and model), account-unknown (neither a live claim nor the record names the spent account), spent-account (the pick handed back the account that walled), context-unavailable (cause names missing original permissions, an unavailable checkout or capability read, or deferred recovery; read references/lane-directive.md Recovery relaunch before any manual stop), marker-unwritten (the pending marker of the relaunch could not be written), or stop-failed (the hosted harness did not confirm its stop).' ;;
     lane-age-secs-invalid) text='ORCH_WATCH_LANE_AGE_SECS takes a positive whole number of seconds, with no leading zero.' ;;
     lane-long-rounds-unread) text='The lane workflow state or its round counts could not be read. The lane-long event carries unavailable counts.' ;;
     cloud-stall-minutes-invalid) text='ORCH_CLOUD_STALL_MINUTES takes a positive whole number of minutes, with no leading zero.' ;;

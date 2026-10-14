@@ -10,6 +10,7 @@
 #
 # Sourced, never run.
 
+
 # ---------------------------------------------------------------------------
 # Pane predicates. One line each, matched with `grep -E` against
 # `pane_below_last_turn`'s slice — never the whole capture. The exception is a
@@ -881,12 +882,14 @@ lane_pane_by_id() { # PANE_ID
 # through the resolution above. For a caller whose own window is on the lane's
 # tmux server — `open-terminal --wake` and `lanes state` both are — this is the
 # SAME pane oversee-watch reads, which is why the three now answer alike.
-# oversee-watch keeps its own per-lane reads: it captures to a file per pass
-# and stops the run on a failed capture, where these callers degrade instead.
+# oversee-watch publishes the same capture result to a file per pass. A failed
+# provider capture stays unreadable; a failed local watch capture ends the run.
 #
 # A window this server does not hold, a name it holds more than once, or a
 # capture that fails leaves all three empty, and the count at none: nothing
-# here can be acted on, whichever of the three it was. That is not an idle
+# here can be acted on, whichever of the three it was. LANE_PANE_SOURCE keeps
+# failed provider reads separate from local failures and completed captures.
+# That is not an idle
 # lane either — the judge then has only the harness process to go on, and
 # answers `unjudged` where that is silent too, which the wake refuses on. A
 # caller that must tell those silences apart — `lane-close` owes its operator
@@ -895,24 +898,63 @@ lane_pane_by_id() { # PANE_ID
 LANE_PANE_CMD=""
 LANE_PANE_PID=""
 LANE_PANE_SCREEN=""
-lane_pane_observe() { # WINDOW
+LANE_PANE_SOURCE=""
+lane_pane_observe() { # WINDOW [HOST ITEM]
+  local mode=local
   LANE_PANE_SCREEN=""
+  LANE_PANE_SOURCE=""
   # The count belongs to the resolution, which answers three ways; this one
   # answers two, so a window two panes share leaves the same post-state here as
   # a window none carries.
   lane_pane_resolve "$1" || { LANE_PANE_COUNT=0; return 0; }
-  LANE_PANE_SCREEN="$(tmux capture-pane -pJ -t "$LANE_PANE_ID" 2>/dev/null)" || {
+  [[ -z "${3:-}" ]] || lane_pane_mode mode "${2:-local}" || { LANE_PANE_SOURCE=unreadable; LANE_PANE_COUNT=0; return 0; }
+  lane_pane_capture LANE_PANE_SCREEN "$mode" "${2:-local}" "${3:-}" "$LANE_PANE_ID" 2>/dev/null || {
     LANE_PANE_ID=""; LANE_PANE_PID=""; LANE_PANE_CMD=""; LANE_PANE_SCREEN=""
     LANE_PANE_COUNT=0
     return 0
   }
 }
 
+# The hosted pane belongs to the provider. A dormant local viewer cannot
+# answer about the harness, even when it still holds a previous turn's text.
+lane_pane_mode() { # OUT_VAR HOST
+  declare -F lane_capability >/dev/null || source "${BASH_SOURCE[0]%/*}/lane-capabilities.sh" || return
+  lane_capabilities_read "$SCRIPT_DIR/lane-host" "${2:-local}" || return
+  lane_capability "$1" pane
+}
+
+# The output variable and tagged read result remain in the caller's shell.
+# A command substitution would discard the result and make the judge repeat it.
+lane_pane_capture() { # OUT_VAR MODE HOST ITEM PANE [history]
+  local _lpc_screen="" _lpc_rc=0 _lpc_args=()
+  LANE_PANE_SOURCE=unreadable
+  printf -v "$1" '%s' ''
+  case "$2" in
+    verb)
+      [[ -n "$4" ]] || return 1
+      [[ "${6:-}" != history ]] || _lpc_args+=(--history)
+      _lpc_screen="$(ORCH_LANE_HOST="$3" "$SCRIPT_DIR/lane-host" capture --item "$4" ${_lpc_args[@]+"${_lpc_args[@]}"})" || _lpc_rc=$? ;;
+    local)
+      # Local observers still keep the independent session proof when the
+      # pane read fails. The provider's mandatory unreadable rule is separate.
+      LANE_PANE_SOURCE=local-unreadable
+      [[ "${6:-}" != history ]] || _lpc_args+=(-S -)
+      _lpc_screen="$(tmux capture-pane -pJ ${_lpc_args[@]+"${_lpc_args[@]}"} -t "$5")" || _lpc_rc=$? ;;
+    *) return 1 ;;
+  esac
+  [[ "$_lpc_rc" == 0 ]] || return "$_lpc_rc"
+  LANE_PANE_SOURCE="$2"
+  [[ "$2" != verb ]] || LANE_PANE_SOURCE=provider
+  printf -v "$1" '%s' "$_lpc_screen"
+}
+
 # ---------------------------------------------------------------------------
 # The judge.
 # ---------------------------------------------------------------------------
 
-# lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] [HOSTED_ITEM] [HARNESS] —
+# lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] [HOSTED_ITEM] [HARNESS] [SOURCE]
+# SOURCE carries LANE_PANE_SOURCE from the shared capture owner. A failed
+# provider observation cannot establish exit, even when the process confirms it.
 # assigns OUT_VAR exactly one of:
 #
 #   gone      no window: there is no lane here to ask about
@@ -943,6 +985,9 @@ lane_pane_observe() { # WINDOW
 #   HOSTED_ITEM and HARNESS name the remote process read through lane-host.
 #            One call per invocation; a failure returns unjudged without
 #            falling back to the local ssh child or the screen.
+#   The optional eleventh argument is `provider` for a screen the caller
+#            already captured through the provider, or `unreadable` for a
+#            failed capture. The watch passes it to avoid a second remote read.
 #   LANE_WALL_KIND is `auth` for a failed login, `usage` for a usage wall,
 #            and empty for every other verdict.
 #   LANE_EXIT_SOURCE is `provider` for a confirmed remote exit, `pane` for
@@ -999,19 +1044,33 @@ lane_pane_observe() { # WINDOW
 LANE_WALL_KIND=""
 lane_state() {
   local _ls_out="$1" _ls_window="$2" _ls_cmd="$3" _ls_pid="$4" _ls_screen="$5" _ls_session="${6:-}" _ls_account="${7:-}"
-  local _ls_rows="${8:-}" _ls_item="${9:-}" _ls_harness="${10:-}" _ls_slice _ls_banner _ls_rc=0
+  local _ls_rows="${8:-}" _ls_item="${9:-}" _ls_harness="${10:-}" _ls_source="${11:-}" _ls_mode _ls_slice _ls_banner _ls_rc=0
   LANE_PROBE_RC=0
   LANE_EXIT_SOURCE=""
   LANE_WALL_KIND=""
+  LANE_PANE_SCREEN="$_ls_screen"
+  LANE_PANE_SOURCE="$_ls_source"
   if [[ "$_ls_window" != listed ]]; then printf -v "$_ls_out" gone; return 0; fi
+  if [[ -z "$_ls_item" && "$_ls_source" == unreadable ]]; then printf -v "$_ls_out" unjudged; return 0; fi
   if [[ -n "$_ls_item" ]]; then
     pane_has_remote_harness "$SCRIPT_DIR/lane-host" "$_ls_item" "$_ls_harness" || _ls_rc=$?
+    # An actual failed capture cannot be replaced by another observation,
+    # including a later process exit. Callers retain the unreadable result.
+    if [[ "$_ls_source" == unreadable ]]; then printf -v "$_ls_out" unjudged; return 0; fi
     case "$_ls_rc" in
-      0) ;;
+      0)
+        if [[ "$_ls_source" != provider ]]; then
+          lane_pane_mode _ls_mode "${ORCH_LANE_HOST:-local}" || { printf -v "$_ls_out" unjudged; return 0; }
+          if [[ "$_ls_mode" == verb ]]; then
+            lane_pane_capture _ls_screen verb "${ORCH_LANE_HOST:-local}" "$_ls_item" "" \
+              || { printf -v "$_ls_out" unjudged; return 0; }
+            LANE_PANE_SCREEN="$_ls_screen"
+          fi
+        fi ;;
       1) LANE_EXIT_SOURCE=provider; printf -v "$_ls_out" exited; return 0 ;;
       2) printf -v "$_ls_out" unjudged; return 0 ;;
     esac
-  elif is_bare_shell "$_ls_cmd" && [[ -n "$_ls_pid" ]]; then
+  elif [[ "$_ls_source" != provider ]] && is_bare_shell "$_ls_cmd" && [[ -n "$_ls_pid" ]]; then
     pane_runs_program "$_ls_pid" || _ls_rc=$?
     # 1 is "nothing but shells" and the whole of `exited`. 2 is a probe that
     # could not run, never an answer: the pane rungs below still get their say, and

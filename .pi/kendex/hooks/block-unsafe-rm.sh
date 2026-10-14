@@ -4,9 +4,9 @@
 # event: PreToolUse
 # matcher: Bash
 # requires: [command-safety]
-# description: Block rm on shared directory roots, globs directly under them, child paths with . or .. segments, and paths that start with a variable that may expand empty. Keep a private mktemp directory and remove it in the same shell call. Not run on antigravity: its required command-safety companion does not name antigravity, whose payload is toolCall.args.
-# summary: Stops deletes of shared directory roots, their direct globs or child paths with . or .. segments, and paths that start with a variable that may be empty. The refusal gives a safe cleanup pattern.
-# safety: The raw command scan refuses any rm on TMPDIR, TMP, TEMP, AGENT_TMPDIR or HOME roots, globs directly under them, and child paths containing . or .. segments, regardless of flags, including `${NAME:?…}`. Literal operands are compared as text against nonempty hook environment values, with trailing slashes ignored; no filesystem reads or glob expansion occur. Named child paths without . or .. segments pass this check. The existing empty-variable check refuses `$NAME`, `${NAME}` and `${NAME:-…}` roots; `${NAME:?…}` passes it. A redirection target is not an operand. Harmless text with the same shape can be refused. The scan does not parse shell: aliases such as `D=$TMPDIR`, `${!NAME}`, cd followed by relative rm, command substitutions, split command names and line continuations can escape it. Every refusal opens with `block-unsafe-rm: <key>=<value>`; captured command output follows that line. Missing tools or unreadable payload produce one keyed warning and allow the call.
+# description: Block plain rm on shared directory roots, globs directly under them, child paths with . or .. segments, and paths that start with a variable that may expand empty. Keep a private mktemp directory and remove it in the same shell call. Not run on antigravity: its required command-safety companion does not name antigravity, whose payload is toolCall.args.
+# summary: Stops plain rm on shared directory roots, their direct globs or child paths with . or .. segments, and paths that start with a variable that may be empty. The refusal gives a safe cleanup pattern.
+# safety: The raw command scan checks plain rm. It excludes git rm, including commands with global Git options. Git rejects empty path arguments and paths outside the repository. The scan refuses plain rm on TMPDIR, TMP, TEMP, AGENT_TMPDIR or HOME roots, globs directly under them, and child paths containing . or .. segments, regardless of flags, including `${NAME:?…}`. Literal operands are compared as text against nonempty hook environment values, with trailing slashes ignored; no filesystem reads or glob expansion occur. Named child paths without . or .. segments pass this check. The existing empty-variable check refuses `$NAME`, `${NAME}` and `${NAME:-…}` roots; `${NAME:?…}` passes it. A redirection target is not an operand. Harmless text with the same shape can be refused. The scan does not parse shell: aliases such as `D=$TMPDIR`, `${!NAME}`, cd followed by relative rm, command substitutions, split command names and line continuations can escape it. Every refusal opens with `block-unsafe-rm: <key>=<value>`; captured command output follows that line. Missing tools or unreadable payload produce one keyed warning and allow the call.
 # ---
 
 set -euo pipefail
@@ -152,6 +152,16 @@ WORD="(${WORD_PART}|${QUOTED_WORD}|${ESCAPED_WORD})+"
 REDIRECT='([[:digit:]]*|\{[[:alpha:]_][[:alnum:]_]*\})(&>[>]?|[<>]&|>>|<<<|<<-|<<|<>|>\||[<>])'
 SKIP="(${GAP}+${WORD}|${GAP}*${REDIRECT}${GAP}*${WORD})*"
 UNSAFE_RE="${RM_EDGE}rm${SKIP}${GAP}+${ROOT}"
+
+# Git rejects an empty pathspec and paths outside its repository. Mask only
+# its rm verb. Option values can run nested removals before Git sees them,
+# so their text and every separator must reach both operand checks.
+GIT_RM="(${RM_EDGE}git(${GAP}+(-C|-c|--git-dir|--work-tree|--namespace|--exec-path)${GAP}+${WORD}|${GAP}+-[^${ENDERS}${SPACE_ANY}]*)*${GAP}+)rm($|[${ENDERS}${SPACE_ANY}])"
+while [[ $COMMAND =~ $GIT_RM ]]; do
+  git_prefix=${BASH_REMATCH[1]}
+  git_suffix=${BASH_REMATCH[0]#"$git_prefix"rm}
+  COMMAND=${COMMAND/"${BASH_REMATCH[0]}"/"${git_prefix}__${git_suffix}"}
+done
 
 # The harness has no shared-root ownership check.
 # With HOME=/shared/home, rm -rf /shared/home/* is a refused direct glob.

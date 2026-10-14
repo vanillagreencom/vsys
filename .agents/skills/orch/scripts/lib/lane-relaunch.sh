@@ -16,7 +16,7 @@
 # must refuse before stopping a lane. The host and tracker retain their existing
 # lane-record meanings, including null host meaning local.
 lane_recovery_args() { # RECORD ACCOUNT STATE_DIR LAUNCHER
-  local fields item harness flags refresh tracker repo
+  local fields item harness flags refresh tracker repo pane rc=0
   LANE_RECOVERY_CAUSE=permission-choice-unrecorded
   LANE_RECOVERY_ARGS=() LANE_RECOVERY_CWD="" LANE_RECOVERY_HOST="" LANE_RECOVERY_SESSION=""
   fields="$(jq -er 'select((.recovery | type) == "object"
@@ -26,8 +26,23 @@ lane_recovery_args() { # RECORD ACCOUNT STATE_DIR LAUNCHER
        (.host // "local"), (.recovery.session // ""), .tracker, (.repo // "")]
     | join("\u001f")' <<<"$1")" || return 1
   IFS=$'\x1f' read -r item harness LANE_RECOVERY_CWD flags refresh LANE_RECOVERY_HOST LANE_RECOVERY_SESSION tracker repo <<<"$fields"
+  # The launcher records relative provider paths without their resolution base.
+  case "$LANE_RECOVERY_HOST" in
+    local|claude-cloud|/*) ;;
+    *) LANE_RECOVERY_CAUSE=relative-provider-deferred:KEN-3996; return 1 ;;
+  esac
   LANE_RECOVERY_CAUSE=checkout-unavailable
   LANE_RECOVERY_CWD="$(cd -- "$LANE_RECOVERY_CWD" && pwd -P)" || return 1
+  lane_capabilities_read "$SCRIPT_DIR/lane-host" "$LANE_RECOVERY_HOST" "$LANE_RECOVERY_CWD" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    LANE_RECOVERY_CAUSE="host-capabilities-unavailable exit=$rc"
+    return "$rc"
+  fi
+  lane_capability pane pane
+  if [[ "$pane" == verb ]]; then
+    LANE_RECOVERY_CAUSE=relaunch-deferred:KEN-3996
+    return 1
+  fi
   LANE_RECOVERY_ARGS=("$4" --tmux --relaunch --continue-resume --harness "$harness" --lane "$2"
     --launch-flags "$flags" --state-dir "$3" --host "$LANE_RECOVERY_HOST" --tracker "$tracker")
   [[ -z "$repo" ]] || LANE_RECOVERY_ARGS+=(--repo "$repo")
@@ -170,6 +185,32 @@ session_id_of() { # HARNESS SESSION_FILE
   esac
   [[ -n "$id" ]] || return 1
   printf '%s\n' "$id"
+}
+
+# A recorded target is exact. Jarvis uses this instead of the newest-session
+# search above. A missing target is 1; unreadable or changed identity is 2.
+recorded_session_file() { # HARNESS ACCOUNT NATIVE_ID SESSION_FILE
+  local harness="$1" account="$2" id="$3" file="$4" actual
+  if [[ "$harness" == copilot && -z "$file" ]]; then
+    case "$id" in ''|.|..|*[!A-Za-z0-9._-]*) return 2 ;; esac
+    file="$account/session-state/$id/workspace.yaml"
+  fi
+  [[ -n "$file" ]] || return 1
+  [[ -e "$file" ]] || { [[ ! -L "$file" ]] || return 2; return 1; }
+  [[ -f "$file" && -r "$file" ]] || return 2
+  if [[ "$harness" == copilot ]]; then
+    [[ -e "${file%/*}/events.jsonl" ]] || return 1
+    [[ -f "${file%/*}/events.jsonl" && -r "${file%/*}/events.jsonl" ]] || return 2
+    [[ -s "${file%/*}/events.jsonl" ]] || return 1
+  else
+    jq -Rne '[inputs | fromjson] | length > 0' -- "$file" >/dev/null || return 2
+  fi
+  actual="$(session_id_of "$harness" "$file")" || return 2
+  if [[ "$harness" == pi ]]; then
+    actual="$(jq -Rrn 'first(inputs|fromjson|select(.type=="session")|.id)//empty' -- "$file")" || return 2
+  fi
+  [[ "$actual" == "$id" ]] || return 2
+  printf '%s\n' "$file"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

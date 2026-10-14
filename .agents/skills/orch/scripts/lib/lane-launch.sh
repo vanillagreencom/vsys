@@ -66,6 +66,36 @@ lane_env_prefix() { # HARNESS DIR [MODEL]
   printf '%s=%s\n' "$var" "$2"
 }
 
+# Jarvis starts without a prompt so SessionStart can confirm the native id
+# before the Start procedure reaches the model. The explicit Pi account is
+# its agent directory, rather than a Claude seat selected for pi-claude.
+lane_session_command() { # HARNESS NATIVE_ID RESUME_FILE
+  local harness="$1" id="$2" file="$3"
+  LANE_SESSION_ACCOUNT_VAR="$(lane_env_prefix "$harness" -)"
+  LANE_SESSION_ACCOUNT_VAR="${LANE_SESSION_ACCOUNT_VAR%%=*}"
+  [[ "$harness" != pi ]] || LANE_SESSION_ACCOUNT_VAR=PI_CODING_AGENT_DIR
+  LANE_SESSION_CMD="$(
+  case "$harness" in
+    (claude)
+      if [[ -n "$file" ]]; then printf 'claude -n jarvis --resume %q' "$id"
+      else printf 'claude -n jarvis --session-id %q' "$id"; fi ;;
+    (codex)
+      launch_choice_lead_settings codex || return 1
+      printf 'codex'
+      printf ' %q' "${LAUNCH_CHOICE_KEPT[@]}"
+      [[ -z "$file" ]] || printf ' resume %q' "$id" ;;
+    (copilot)
+      if [[ -n "$file" ]]; then printf 'copilot --resume=%q' "$id"
+      else printf 'copilot --session-id=%q' "$id"; fi ;;
+    (pi)
+      if [[ -n "$file" ]]; then printf 'pi --session %q' "$file"
+      else printf 'pi --session-id %q' "$id"; fi ;;
+    (*) return 2 ;;
+  esac
+  printf '\n'
+  )" || return 1
+}
+
 # The harness whose accounts `lanes pick` judges a launch of HARNESS on MODEL
 # under, which is the account that launch spends. Claude, codex and copilot
 # spend their own accounts' windows, whatever the model: a Copilot account's
@@ -1456,11 +1486,14 @@ lane_launch_shell_argv() { # SHELL DEFAULT_COMMAND
 # because a launcher that exports COPILOT_HOME for its own name exports
 # nothing else: the account variable here, and the words lane_copilot_env
 # below prints.
-lane_launch_line() { # CMD HARNESS LANE_VAR LANE_DIR FORM [TEMPLATE]
+lane_launch_line() { # CMD HARNESS LANE_VAR LANE_DIR FORM [TEMPLATE] [CHILD_ENV]
   local cmd="$1" harness="$2" var="$3" dir="$4" form="$5" launch_env="" verified=true env_words scrub
   [[ -z "${6:-}" ]] || form=custom
   printf -v scrub -- ' -u %s' "${LANE_LAUNCH_SCRUB[@]}"
   scrub="env$scrub"
+  # A controller supplies its child's quoted assignments after parent identity
+  # is removed. Callers without child assignments retain the existing line.
+  [[ -z "${7:-}" ]] || scrub+=" $7"
   launch_env=$(lane_launch_rm_prompt_env "$cmd" "$harness") || return 1
   if [[ "$harness" == codex && -n "$var" ]]; then
     [[ "$form" != unchecked && "$form" != custom ]] || verified=false
@@ -1742,13 +1775,19 @@ lane_account_check() { # PANE LANE_VAR PICKED FORM BOUND
     waited=$((waited + settle_ms))
   done
   LANE_ACCOUNT_OBSERVED="$observed"
-  if [[ "$(lane_claims_canon "$(lane_launch_home_account "$observed")")" \
-     == "$(lane_claims_canon "$(lane_launch_home_account "$picked")")" ]]; then
+  if lane_account_equivalent "$observed" "$picked"; then
     LANE_ACCOUNT_RESULT=verified
     return 0
   fi
   LANE_ACCOUNT_RESULT=mismatch
   return 1
+}
+
+# Account equivalence is shared by process observations and native hook acknowledgements.
+lane_account_equivalent() { # OBSERVED PICKED
+  [[ -n "$1" && -n "$2" ]] || return 1
+  [[ "$(lane_claims_canon "$(lane_launch_home_account "$1")")" \
+     == "$(lane_claims_canon "$(lane_launch_home_account "$2")")" ]]
 }
 
 # lane_run_detached OUT ERR COMMAND... — COMMAND started so it outlives this

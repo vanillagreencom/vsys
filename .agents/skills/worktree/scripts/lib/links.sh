@@ -40,7 +40,7 @@ split_worktree_config_words() {
   read -r -a WORKTREE_CONFIG_WORDS <<<"$value"
 }
 
-# Idempotently append a worktree-relative path to the COMMON git-dir's
+# Idempotently append a root-anchored path to the COMMON git-dir's
 # info/exclude so git treats the symlink we lay down as ignored content.
 # Required because .gitignore patterns with a trailing slash (e.g. `.agents/`)
 # match only real directories, not symlinks pointing at directories — without
@@ -53,17 +53,18 @@ split_worktree_config_words() {
 # That shared file is the problem this function has to work around. The
 # entry is meant for a SYMLINK in a worktree, but it lands in a file every
 # checkout of the repo reads — including main, where the same path is a REAL
-# directory. A bare `harness` entry therefore marks that whole directory ignored
+# directory. A `/harness` entry therefore marks that whole directory ignored
 # in main, and `git add harness/tracked-file` starts refusing with "The
 # following paths are ignored by one of your .gitignore files" while `git
 # status` still lists the file as modified. It outlives the worktree, too.
 #
 # The fix uses the very asymmetry documented above: a TRAILING-SLASH pattern
 # matches a real directory but NOT a symlink pointing at one. So when the path
-# has tracked content, follow the bare entry with `!<path>/`, which re-includes
+# has tracked content, follow the entry with `!/<path>/`, which re-includes
 # the real directory in main while leaving the worktree's symlink ignored. Order
 # matters — gitignore takes the LAST matching pattern — so the negation is
-# always rewritten after the bare entry.
+# always rewritten after the entry. A leading slash keeps a root link's rule
+# from hiding new files under a nested directory with the same name.
 #
 # The negation is written ONLY when the path actually holds tracked files.
 # Runtime-only paths (the common case — kendex's own `.agents` mirror is hidden
@@ -74,30 +75,80 @@ split_worktree_config_words() {
 #
 # Other tools write to this file too (Claude Code writes its own `**/.claude/*`
 # entries), so only our own exact lines are ever written or removed.
-exclude_from_worktree_index() {
+exclude_from_worktree_index() (
   local wt="$1" path="$2" has_tracked="${3:-false}"
   [[ -z "$path" ]] && return 0
-  local common_dir info_exclude negation tmp
-  common_dir="$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)" || return 0
-  info_exclude="$common_dir/info/exclude"
-  negation="!$path/"
-  mkdir -p "$(dirname "$info_exclude")"
-
-  # Drop any existing negation first: when it is still wanted it gets appended
-  # below, which also guarantees it sits AFTER the bare entry.
-  if [[ -f "$info_exclude" ]] && grep -qxF "$negation" "$info_exclude" 2>/dev/null; then
-    tmp="$info_exclude.wt-tmp.$$"
-    if grep -vxF "$negation" "$info_exclude" > "$tmp" 2>/dev/null; then
-      mv "$tmp" "$info_exclude"
-    else
-      rm -f "$tmp" 2>/dev/null
+  local common_dir info_exclude entry negation tmp="" candidate="" filtered="" rc=0 exists=false
+  local failure=read operation=git-common-directory result=0
+  trap '
+    result=$?
+    if [[ -n "$tmp" ]] && ! rm -f -- "$tmp" 2>/dev/null; then
+      if [[ "$result" -eq 0 ]]; then result=1; failure=write; operation=cleanup; fi
     fi
+    if [[ "$result" -ne 0 ]]; then
+      worktree_message "exclude-$failure-failed" "path=$wt/$path operation=$operation" "Could not complete the exclusion update for $wt/$path during $operation." >&2
+    fi
+    exit "$result"
+  ' EXIT
+  common_dir="$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  [[ -n "$common_dir" ]] || return 1
+  info_exclude="$common_dir/info/exclude"
+  entry="/$path"
+  negation="!/$path/"
+  # Move only the current anchored negation after the entry.
+  # Bare rules and other patterns stay in place.
+  operation=filter
+  if [[ -e "$info_exclude" || -L "$info_exclude" ]]; then
+    [[ -f "$info_exclude" && ! -L "$info_exclude" ]] || return 1
+    exists=true
+    # The sentinel retains final newlines; grep's empty result is successful.
+    filtered="$(
+      grep -vxF -e "$negation" -- "$info_exclude" 2>/dev/null || rc=$?
+      [[ "$rc" -le 1 ]] || exit 1
+      printf '.' 2>/dev/null
+    )" || return 1
+    filtered="${filtered%.}"
   fi
 
-  grep -qxF "$path" "$info_exclude" 2>/dev/null || echo "$path" >> "$info_exclude"
-  [[ "$has_tracked" == true ]] && echo "$negation" >> "$info_exclude"
+  operation=entry-inspection
+  grep -qxF -- "$entry" <<<"$filtered" 2>/dev/null || rc=$?
+  [[ "$rc" -le 1 ]] || return 1
+  if [[ "$rc" -eq 1 ]]; then
+    [[ -z "$filtered" || "$filtered" == *$'\n' ]] || filtered+=$'\n'
+    filtered+="$entry"$'\n'
+  fi
+  if [[ "$has_tracked" == true ]]; then
+    [[ -z "$filtered" || "$filtered" == *$'\n' ]] || filtered+=$'\n'
+    filtered+="$negation"$'\n'
+  fi
+
+  failure=write; operation=directory
+  mkdir -p -- "${info_exclude%/*}" 2>/dev/null || return 1
+  if [[ "$exists" == false ]]; then
+    operation=content
+    printf '%s' "$filtered" 2>/dev/null >> "$info_exclude" || return 1
+    return 0
+  fi
+  operation=temporary-file
+  candidate="$(mktemp "$info_exclude.wt-tmp.XXXXXX" 2>/dev/null)" || return 1
+  tmp="$candidate"
+  operation=content
+  printf '%s' "$filtered" 2>/dev/null > "$tmp" || return 1
+  if [[ "$exists" == true ]]; then
+    failure=read; operation=comparison; rc=0
+    cmp -s -- "$tmp" "$info_exclude" 2>/dev/null || rc=$?
+    [[ "$rc" -le 1 ]] || return 1
+    [[ "$rc" -ne 0 ]] || return 0
+    failure=write; operation=permissions
+    # Shared repositories need the replacement to keep the original access.
+    cp -p -- "$info_exclude" "$tmp" 2>/dev/null || return 1
+    operation=content
+    printf '%s' "$filtered" 2>/dev/null > "$tmp" || return 1
+  fi
+  operation=replacement
+  mv -- "$tmp" "$info_exclude" 2>/dev/null || return 1
   return 0
-}
+)
 
 # Replace "$2" with a symlink to "$1" without ever leaving "$2" absent.
 #
@@ -154,7 +205,7 @@ copy_ignore_file_into_worktree() {
   local wt="$1" path="$2"
   local src="$PROJECT_ROOT/$path" dst="$wt/$path" tmp="" err="" effect=""
   ensure_worktree_path_safe "$wt" "$path" false || return 1
-  exclude_from_worktree_index "$wt" "$path" false
+  exclude_from_worktree_index "$wt" "$path" false || return 1
   ignore_file_copy_matches "$src" "$dst" && return 0
   if [[ -d "$dst" && ! -L "$dst" ]]; then
     worktree_message ignore-copy-directory "$wt/$path" "Warning: '$path' in $wt is a directory where main's .gitignore should be copied; leaving it alone." >&2
@@ -374,7 +425,7 @@ symlink_into_worktree() {
     return 1
   fi
   # Whether this path holds tracked content decides the SHAPE of the exclude
-  # entry: a path with tracked files needs the `!<path>/` negation so the
+  # entry: a path with tracked files needs the `!/<path>/` negation so the
   # real directory in the main checkout stays stageable. Covers both the file
   # entry and the directory's contents, so it is computed once here rather than
   # separately in each branch below.
@@ -390,7 +441,7 @@ symlink_into_worktree() {
      [[ -n "$(git -C "$PROJECT_ROOT" ls-files -- "$path" "$path/" 2>/dev/null || true)" ]]; then
     tracked_here=true
   fi
-  exclude_from_worktree_index "$wt" "$path" "$tracked_here"
+  exclude_from_worktree_index "$wt" "$path" "$tracked_here" || return 1
 
   if [[ -f "$src" ]]; then
     # File symlink — if the path is tracked in the worktree (a project that
@@ -1031,7 +1082,7 @@ setup_worktree_links() {
   for path in ${WORKTREE_CONFIG_WORDS[@]+"${WORKTREE_CONFIG_WORDS[@]}"}; do
     path="$(normalize_worktree_config_path WORKTREE_MKDIRS "$path")" || return 1
     mkdir_inside_worktree "$wt" "$path" || return 1
-    exclude_from_worktree_index "$wt" "$path"
+    exclude_from_worktree_index "$wt" "$path" || return 1
   done
 
   # Project-configured symlinks
@@ -1065,7 +1116,7 @@ setup_worktree_links() {
         continue
       fi
       ensure_worktree_path_safe "$wt" "$path" true || return 1
-      exclude_from_worktree_index "$wt" "$path"
+      exclude_from_worktree_index "$wt" "$path" || return 1
       # Checked, not left to implicit set -e: fix-links calls this function
       # on the left of ||, which disables errexit for everything inside it.
       # Unchecked, a failure here would return whatever the next command
@@ -1113,7 +1164,7 @@ setup_worktree_links() {
       worktree_message relative-link-failed "$wt/$path" "Error: could not create relative symlink '$path' -> '$target' in $wt." >&2
       return 1
     fi
-    exclude_from_worktree_index "$wt" "$path"
+    exclude_from_worktree_index "$wt" "$path" || return 1
   done
 
   # Shared dependencies come from main's install; a pnpm workspace install
