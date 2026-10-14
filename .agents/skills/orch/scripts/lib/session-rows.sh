@@ -292,7 +292,7 @@ session_rows_write() { # DIR HARNESS [EVENT]
   [ "$event" != subagent ] || return 0
   [ -n "$event" ] || { printf 'the payload names no hook_event_name\n' >&2; return 1; }
   if [ "$event" = SessionStart ] && [ -n "${JARVIS_RECORD:-}" ]; then
-    session_rows_jarvis_write "$JARVIS_RECORD" "${JARVIS_GENERATION:-}" "$key" <<<"$payload" || jarvis_rc=$?
+    session_rows_jarvis_write "$JARVIS_RECORD" "${JARVIS_GENERATION:-}" "$key" "$2" <<<"$payload" || jarvis_rc=$?
   fi
   [ -d "${file%/*}" ] || return "$jarvis_rc"
   if [ "$event" = Stop ]; then
@@ -317,11 +317,12 @@ session_rows_write() { # DIR HARNESS [EVENT]
   return "$jarvis_rc"
 }
 
-# session_rows_jarvis_write RECORD GENERATION KEY — the SessionStart payload on
+# session_rows_jarvis_write RECORD GENERATION KEY HARNESS: the SessionStart payload on
 # stdin written as its session's native identity into the `pending` row of the
 # Jarvis runtime record RECORD: the harness's own session id as
 # `native_session_id`, its session file as `session_file` where it names one,
-# and `started_at`. The launcher writes that row, with its launch `generation`,
+# `started_at`, and the effective account read from this native hook's
+# environment. The launcher writes that row, with its launch `generation`,
 # tmux `server` pid and lead `pane` id, before the harness starts, and hands the
 # harness RECORD and GENERATION as JARVIS_RECORD and JARVIS_GENERATION; KEY is
 # this session's `<server pid> <pane id>`. A row naming another generation,
@@ -334,8 +335,10 @@ session_rows_write() { # DIR HARNESS [EVENT]
 # takes, as workflow-state's writers take theirs. Exit 1 where the payload names
 # neither or RECORD could not be read, 2 where it could not be written, 3 where
 # its lock was not taken. The cause is on stderr.
-session_rows_jarvis_write() { # RECORD GENERATION KEY
-  local identity
+session_rows_jarvis_write() { # RECORD GENERATION KEY HARNESS
+  local identity account
+  account="$(lane_context_caller_cfg "$4")" || return 1
+  [ -n "$account" ] || return 1
   identity="$(jq -c '{native_session_id: (.session_id // .sessionId),
       session_file: (.transcript_path // .transcriptPath)}
     | with_entries(select(.value | type == "string" and . != ""))')" || return 1
@@ -343,9 +346,9 @@ session_rows_jarvis_write() { # RECORD GENERATION KEY
     exec 200>>"$1.lock" || exit 2
     orch_take_lock 200 "$1.lock" "$SESSION_ROWS_WAIT" || exit 3
     verdict="$(jq -r --arg generation "$2" --arg server "${3%% *}" --arg pane "${3#* }" \
-      --argjson identity "$identity" '
+      --argjson identity "$identity" --arg harness "$4" '
       .pending as $p
-      | if ($p | type) != "object" or $generation == "" or ($p.generation | tostring) != $generation
+      | if .harness != $harness or ($p | type) != "object" or $generation == "" or ($p.generation | tostring) != $generation
           or ($p.server | tostring) != $server or $p.pane != $pane or $p.started_at != null then "other"
         elif ($p.native_session_id // $identity.native_session_id) != $identity.native_session_id then "mismatch"
         elif ($identity | length) == 0 then "unnamed"
@@ -359,8 +362,8 @@ session_rows_jarvis_write() { # RECORD GENERATION KEY
         [ "$verdict" = mismatch ] && exit 4
         exit 1 ;;
     esac
-    jq -c --argjson identity "$identity" --argjson at "$(date +%s)" \
-      '.pending += $identity + {started_at: $at}' -- "$1" >"$1.$$" || { rm -f -- "$1.$$"; exit 2; }
+    jq -c --argjson identity "$identity" --arg account "$account" --argjson at "$(date +%s)" \
+      '.pending += $identity + {started_at: $at, observed_account: $account}' -- "$1" >"$1.$$" || { rm -f -- "$1.$$"; exit 2; }
     mv -f -- "$1.$$" "$1" || { rm -f -- "$1.$$"; exit 2; }
   )
 }
@@ -388,17 +391,20 @@ session_rows_turn_open() { # FILE
   [ "$(jq -r '.event // ""' <<<"$SESSION_ROW")" = Stop ]
 }
 
-# session_rows_lane_write BOX HARNESS EVENT [TRANSCRIPT] — one row for the lane
+# session_rows_lane_write BOX HARNESS EVENT [TRANSCRIPT] [PAYLOAD] — one row for the lane
 # whose mailbox directory is BOX: `Stop` at a turn end, carrying the
 # `stopReason` of the turn's last assistant message in TRANSCRIPT, Pi's
 # `message` record (`AssistantMessage`, @earendil-works/pi-ai), and its
 # `errorMessage` as `message` where that reason is `error`; `PreToolUse` at a
-# tool call, written only over a Stop row or an empty file. Nothing is written,
+# tool call, written only over a Stop row or an empty file. Stop retains
+# PAYLOAD's working_agents count, or null when the carrier could not read it.
+# Nothing is written,
 # with exit 0, where BOX is not there, or for a PreToolUse a turn already
 # opened. Exit 1 where jq could not build the row, mailbox_append_locked's own
 # 2 and 3 for the write and the lock. The cause is on stderr.
-session_rows_lane_write() { # BOX HARNESS EVENT [TRANSCRIPT]
-  local file="$1/$SESSION_ROWS_LANE" end='{}' row rc=0
+session_rows_lane_write() { # BOX HARNESS EVENT [TRANSCRIPT] [PAYLOAD]
+  local file="$1/$SESSION_ROWS_LANE" end='{}' row rc=0 payload="${5:-}"
+  [ -n "$payload" ] || payload='{}'
   [ -d "$1" ] || return 0
   if [ "$3" = Stop ] && [ -n "${4:-}" ] && [ -f "$4" ]; then
     end="$(tail -c "$SESSION_ROWS_TRANSCRIPT_TAIL" -- "$4" | jq -Rnc '
@@ -408,7 +414,10 @@ session_rows_lane_write() { # BOX HARNESS EVENT [TRANSCRIPT]
       | with_entries(select(.value | type == "string"))')" || return 1
   fi
   row="$(jq -c --arg event "$3" --arg harness "$2" --argjson at "$(date +%s)" \
-    '{at: $at, event: $event, harness: $harness} + .' <<<"$end")" || return 1
+    --argjson payload "$payload" '
+    {at: $at, event: $event, harness: $harness} + .
+    + (if $event == "Stop" and ($payload | has("working_agents"))
+       then {working_agents: $payload.working_agents} else {} end)' <<<"$end")" || return 1
   if [ "$3" = Stop ]; then
     printf '%s\n' "$row" | mailbox_append_locked "$file" "$SESSION_ROWS_WAIT"
     return
@@ -421,18 +430,28 @@ session_rows_lane_write() { # BOX HARNESS EVENT [TRANSCRIPT]
 
 # session_rows_lane_verdict FILE — what a Pi lane's last row says of it, into
 # SESSION_ROWS_VERDICT, with that row in SESSION_ROW:
-#   none     no row: the lane has emitted nothing a reader can judge
-#   working  a PreToolUse row, a turn started after the last turn end
+#   none     no row, or an unread working-agent count
+#   working  a PreToolUse row, or a Stop whose background agents still work
 #   walled   a Stop row whose turn ended on an error lib/lane-state.sh §
 #            lane_limit_banner reads as the account's limit
-#   idle     any other Stop row
+#   idle     any other Stop row with a known or absent count
 # Exit 2 where the file could not be read, or its last row names an event no
-# writer above writes; the verdict is then `none` and says nothing.
+# writer above writes or an unread count; the verdict is then `none`.
 session_rows_lane_verdict() { # FILE
-  local fields banner
+  local fields banner has_count
   SESSION_ROWS_VERDICT=none
   session_rows_last "$1" || return 2
   [ -n "$SESSION_ROW" ] || return 0
+  has_count="$(jq -r '.event == "Stop" and has("working_agents")' <<<"$SESSION_ROW")" || return 2
+  if [ "$has_count" = true ]; then
+    # Null is the carrier's failed task read, never evidence of an idle lane.
+    fields="$(jq -r '.working_agents | if type == "number" and . >= 0 and floor == . then . else "unknown" end' <<<"$SESSION_ROW")" || return 2
+    [ "$fields" != unknown ] || return 2
+    if [ "$fields" -gt 0 ]; then
+      SESSION_ROWS_VERDICT=working
+      return 0
+    fi
+  fi
   fields="$(jq -r '"\(.event // "")\t\(.stop_reason // "")"' <<<"$SESSION_ROW")" || return 2
   case "$fields" in
     PreToolUse$'\t'*) SESSION_ROWS_VERDICT=working ;;

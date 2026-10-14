@@ -1,6 +1,6 @@
 # Parent Issue Template
 
-A parent with children is a **container by default**: never orchestrated directly, never its own PR. Each child ships as its own PR and the container closes last.
+A parent with children is a **container by default**: never orchestrated directly, never its own PR. Each child ships as its own PR, and the container closes when its holder reads the shared outcome at its source.
 
 A **single-PR bundle** — one session, one PR covering every child — is the explicit opt-in exception, marked with `(one PR)` in the parent title. Promoting an existing issue to single-PR parent means retitling it. Prefer a leaf issue with an internal checklist over a single-PR bundle.
 
@@ -10,6 +10,10 @@ A **single-PR bundle** — one session, one PR covering every child — is the e
 [SUMMARY: one or two plain sentences on the children's shared outcome and its impact]
 
 [DONE: one sentence saying how we know the shared outcome is complete]
+
+## Done when
+
+- [ ] [Children’s shared outcome, the source to read, and the holder who reads it]
 
 ## Acceptance Criteria
 
@@ -33,6 +37,8 @@ A **single-PR bundle** — one session, one PR covering every child — is the e
 ```
 
 ## Rules
+
+The holder reads the shared outcome at its source. Only a passing read ticks its Done-when box, with a nonblank `Evidence:` line indented directly below it. A failed or unread result leaves the box open.
 
 1. `## Sub-Issues`, never `## Requirements`. No implementation detail lives here.
 2. All children share the parent's project. See [dependencies.md](../references/dependencies.md).

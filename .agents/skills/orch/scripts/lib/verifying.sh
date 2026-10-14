@@ -9,16 +9,42 @@ verifying_error() { # KEY [FIELDS...]
   printf '\n' >&2
 }
 
+# Callers supply live parents and their direct child state facts.
+# Completed children make their container outcome due for its holder, never Done.
+verifying_containers() { # SAFE_ITEMS
+  jq -c '
+    . as $live
+    | map(select(.parent_id != null and .parent_id != "")) | group_by(.parent_id)[]
+    | .[0].parent_id as $pid
+    | map(select(.state_type != "canceled"))
+    | select(length > 0 and all(.[]; .state_type == "completed"))
+    | ($live[] | select(.id == $pid))
+    | select(.state_type != "completed" and .state_type != "canceled")
+    | select((.title // "") | test("\\(one PR\\)"; "i") | not)
+    | . + {container: true}' <<<"$1"
+}
+
 verifying_parse() { # SAFE_ROW
-  local record id desc parsed boxes
-  # One read for both fields: an issue ID holds no unit separator, and the
+  local record id desc parsed boxes role
+  # One read for the ID, role and description: an ID holds no unit separator, and the
   # final dot keeps the description's trailing newlines through substitution.
-  record="$(jq -r '"\(.id)\u001f\(.description // "")."' <<<"$1")" || return 1
+  record="$(jq -r '"\(.id)\u001f\(if .container then "container" else "issue" end)\u001f\(.description // "")."' <<<"$1")" || return 1
   id="${record%%$'\037'*}"
   desc="${record#*$'\037'}"
-  parsed="$(done_when_parse "${desc%.}" '[]')" || return 1
-  boxes="$(jq -c 'if (.errors | length) == 0 and all(.boxes[]; .checked or .post_merge)
-    then [.boxes[] | select(.post_merge and (.checked | not))] else empty end' <<<"$parsed")" || boxes=""
+  role="${desc%%$'\037'*}"
+  desc="${desc#*$'\037'}"
+  parsed="$(done_when_parse "${desc%.}" '[]' '' '{}' "$role")" || return 1
+  boxes="$(jq -c --argjson row "$1" '
+    if $row.container == true then
+      .missing_evidence_boxes as $missing
+      | (if .missing_outcome_box then
+          [{number: 0, text: .outcome_remedy}]
+         else [.boxes[] | select((.checked | not) or ((.number as $n | $missing | index($n)) != null))] end)
+      | map(
+        . + {trigger: "outcome", trigger_kind: "outcome", trigger_epoch: null,
+               deadline_epoch: null, deadline: null, reading: .text, where: "-", why: "-"})
+    else if (.errors | length) == 0 and all(.boxes[]; .checked or .post_merge)
+    then [.boxes[] | select(.post_merge and (.checked | not))] else empty end end' <<<"$parsed")" || boxes=""
   if [[ -z "$boxes" ]]; then
     verifying_error verifying-invalid "issue=$id"
     printf '%s\n' "$parsed" >&2
@@ -102,7 +128,7 @@ verifying_judge() { # SAFE_ROW MERGE_EPOCH MERGED_REPOS NOW BOXES ERR_FILE LIMIT
         else . end
       | .status = (if .deadline_epoch != null and .deadline_epoch <= $now then "overdue"
         elif $blocked then "blocked"
-        elif .trigger_kind != "merge" and (.trigger_epoch == null or .trigger_epoch > $now) then "waiting"
+        elif .trigger_kind != "merge" and .trigger_kind != "outcome" and (.trigger_epoch == null or .trigger_epoch > $now) then "waiting"
         else "due" end))' <<<"$boxes")" || { verifying_error verifying-invalid "issue=$id"; return 1; }
   printf '%s\n' "$boxes"
 }

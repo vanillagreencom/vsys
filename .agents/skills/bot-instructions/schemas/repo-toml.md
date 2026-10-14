@@ -77,7 +77,7 @@ One pattern is written once and handed to Copilot's comma-separated `applyTo`, C
 
 Stating the dialect as a character class rather than as a list of banned sequences is deliberate. A glob is rendered into files whose grammars are line-oriented or comment-bearing: one holding a newline becomes two lines in `.macroscope/ignore.md`, where every line is a pattern, so a second line reading `**` takes the whole repo out of Macroscope's review while each line on its own is a valid glob and every validator passes. One holding `#` becomes a comment in `.coderabbit.yaml`. A ban list closes the shapes someone thought of; a character class closes the rest.
 
-**Path shape, on top of the class.** Refused: an empty glob, a leading `/`, a trailing `/`, a `..` component, and an empty component. Each is its own clause, so each ships its own control.
+**Path shape, on top of the class.** Refused: an empty glob, a leading `/`, a trailing `/`, a `..` component, and an empty component. Admit test protection under `validators.md` § Controls.
 
 The class catches none of them. `.` and `/` are both permitted characters, so `../**` and `/src/**` are made of nothing but allowed bytes; and the class constrains which characters may appear rather than requiring one to, so `""` satisfies it and everything else stated here.
 
@@ -262,7 +262,7 @@ The predicates, written once:
 
 **Render-side second checks.** The `doctrine block text` row is enforced where that value is read — when the generator parses the `## Doctrine` section — and it carries **every** class the row marks, not the heading class alone. Doctrine text does not come through this file, so no input refusal covers it, and each of the three markdown classes is reachable on its own route: a heading line or an underline under a text line renders into `code-review.md`, `.github/copilot-instructions.md`, `REVIEW.md` and `.macroscope/correctness/doctrine.md`, where blocks are sections with paragraphs preserved, forging a section in files whose Escaping paragraphs exist so a string cannot forge one; a line that is exactly `---` opens frontmatter where a block reaches byte 0; and the marker text would forge ownership of a file the repo wrote. Doctrine text reaches no `.instructions.md` file on any route — the routing table gives it eight destinations and that is not one of them — so nothing about the generator emitting that file's frontmatter itself covers any of the three.
 
-Every marked cell is one clause with one control, and § Controls' count is checkable against this table read with its Enforced column. `toml-schema` carries no list of its own: it names this table, takes the rows Enforced marks as its, and adds the one clause that is a path shape rather than a content refusal.
+Every marked cell names a rejection clause. Admit its test protection under `validators.md` § Controls. `toml-schema` carries no list of its own: it names this table, takes the rows Enforced marks as its, and adds the one clause that is a path shape rather than a content refusal.
 
 Two surfaces may match the same file. Macroscope stacks both, CodeRabbit may apply both `path_instructions` entries, and Copilot may load both files. No bot resolves a contradiction between them in TOML declaration order, so keeping overlapping surfaces consistent is the author's job.
 

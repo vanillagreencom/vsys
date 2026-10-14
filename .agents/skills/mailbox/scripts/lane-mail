@@ -18,7 +18,7 @@
 # The Receipt section of usage() owns
 # what counts as a repeat, and nothing here restates it.
 # An owner ask in the overseer mailbox is closed by `resolve` alone, exactly
-# once, under the same lock the append takes, and a send carrying a delivery
+# once, under the same lock the append takes, and an ask or send carrying a delivery
 # id lands once under that lock too; usage() § Owner channel owns both rules.
 # Text crosses a file, never argv.
 # Bash 3.2-safe: tools/bash32-lint scans this directory.
@@ -170,12 +170,14 @@ Overseer side:
               reads no cursor, since no directive is printed, so a cursor
               read that missed refuses neither
   events --item ITEM [--box to-lane|to-overseer [--after N]]
-              print every envelope of both files, to-overseer.jsonl then
+              print public envelopes of both files, to-overseer.jsonl then
               to-lane.jsonl, each with `box` naming the file it came from,
               `line` its logical line number and `count` that file's logical
               line count, including lines filtered as invalid JSON,
               and `mail_class` on to-lane records from the shared mailbox rule,
-              answered asks and their answers included. With --box, read
+              answered asks and their answers included. Without --box, hold
+              an owner ask whose tracker outcome is pending for up to 300
+              seconds from its `at`. With --box, read
               that file alone: print its header (below), then its envelopes
               whose `line` is past --after N (0 when not given), in file
               order. Logical numbers survive compaction, so a watcher keeps
@@ -266,10 +268,10 @@ Owner channel, the overseer's own mailbox from any of its checkouts:
               An answer leaves the ask pending until resolve closes it.
               The lock judges repeats before closure, so a replay after close
               still names its original answer. New answers after close refuse.
-  send --item ITEM ... --delivery-id KEY
-              a send whose envelope carries KEY, the sender's own name for
+  ask|send --item ITEM ... --delivery-id KEY
+              an ask or send whose envelope carries KEY, the sender's own name for
               this delivery. Under the mailbox lock a KEY the file already
-              holds refuses the send as `delivery-repeated=<KEY> id=<id>`,
+              holds refuses it as `delivery-repeated=<KEY> id=<id>`,
               naming the envelope that landed, so a retry after a crash
               between the append and the sender's mark lands nothing twice.
               Local only: a hosted append passes through a provider that
@@ -368,7 +370,7 @@ Options:
   --text PATH   resolve only: the owner's answer, read as --file is
   --default     resolve only: close at deadline; recommend only if unanswered
   --delivery-id KEY
-                send and resolve only: the sender's name for this delivery
+                ask, send and resolve only: the sender's name for this delivery
   --thread-ts TS --parent PATH
                 send --item overseer --directive only: the thread pointer
   --timeout S   seconds before `wait` exits 124; 0 never times out
@@ -391,6 +393,7 @@ delivery_id), thread_ts and parent (threaded owner directives only),
 closes (false on new owner answers; absent on legacy closing answers),
 draft (a draft ask only: recipient, medium, text and text_hash),
 reserved (true on a reserved ask only), issue (a configured item ask),
+tracker_pending (true on the immutable ask while its tracker outcome is missing),
 tracker_posted (a boolean projected by mailbox reads after the complete tracker
 question is confirmed), tracker_label (the confirmed label used for close
 when settings change or cannot be read),
@@ -403,11 +406,16 @@ verb writes the item, a send into the overseer's own mailbox and a `resolve
 --default` included, writes `overseer:<repository>`. The repository is the `[marketplace]` name in the
 caller's kendex.toml, else the last segment of its origin URL, else the
 checkout's own directory name.
-A private tracker-posted record confirms an immutable ask by its re and issue.
-Reads fold it into that ask before cursor filtering and never emit it as an
+A private tracker-posted or tracker-failed record carries an immutable ask's
+outcome by its re and issue. Failure records carry the failed operation in cause.
+Reads fold the outcome into that ask and clear tracker_pending before cursor filtering. They never emit it as an
 ordinary event. Line counts include it. Without confirmation, an item ask
 keeps the full chat presentation and chat deadline route. Closure still uses
 its issue to clean up partial tracker writes.
+Full event snapshots, including the Slack relay's imported mailbox reader,
+hold pending tracker asks for 300 seconds from at. An outcome releases the ask.
+At that bound, a missing outcome releases the full question. Cursored events,
+pending and drain still include pending asks, so their cursors cannot lose a later outcome.
 Reads of legacy closing answers warn `lane-mail: legacy-close=<id>` on stderr.
 The old format remains readable through kendex 1.4.
 
@@ -436,7 +444,7 @@ the same envelope again. The repeat rules below apply locally and on hosts
 whose append library has the repeat guard.
 
 A send, ask or notice repeating an envelope the mailbox already holds is a retry of a delivery
-that landed, not a second message. A send carrying --delivery-id is judged by
+that landed, not a second message. An ask or send carrying --delivery-id is judged by
 that key alone, under the lock, and never by this window. What is compared is the envelope whole,
 every field of it but the id it is minted with and the stamp, which the window
 judges instead; a generated deadline is compared as its offset from the stamp.
@@ -463,11 +471,15 @@ cannot both append: the second checks the first row while it holds that lock
 and refuses with its id. A mailbox read failure refuses the write as
 `write-failed` locally or `host-append` on a provider, never as an empty mailbox.
 
+A local --root used to append mailbox envelopes must be a checkout's physical
+top-level directory; another value refuses as `root-not-checkout`. Reads,
+including their cursor and watcher records, keep their existing root behavior.
 A send writes a mailbox of the caller's own repository alone, its own lanes
-and its own overseer mailbox: a --root whose common root is not the caller's,
-or resolves to none, is refused as `lane-foreign`. `peer` is the only
-cross-repository write. A hosted send is outside that check: its root is a
-path on another host, and nothing here can establish which repository owns it.
+and its own overseer mailbox: a checkout whose common root is not the caller's
+refuses as `lane-foreign`. `peer` is the only cross-repository write. A hosted
+mailbox root is outside that ownership check: its path is on another host.
+A session send always checks repository ownership from the recorded mail_root,
+which can be inside its checkout.
 
 Exit codes: 0 did what it says; 2 usage, an unreadable message file, an item
 outside the alphabet, a lock, a write or a host that failed; 69
@@ -790,7 +802,7 @@ for given in $OPTS_GIVEN; do
       [ "$VERB" = events ] || refuse option-unknown --box
       case "$EVENT_BOX" in to-lane | to-overseer) ;; *) refuse box-invalid "$EVENT_BOX" ;; esac ;;
     --text | --default) [ "$VERB" = resolve ] || refuse option-unknown "$given" ;;
-    --delivery-id) case "$VERB" in send | resolve) ;; *) refuse option-unknown --delivery-id ;; esac ;;
+    --delivery-id) case "$VERB" in ask | send | resolve) ;; *) refuse option-unknown --delivery-id ;; esac ;;
     --thread-ts | --parent)
       [ "$VERB:$ITEM:$DIRECTIVE" = send:overseer:1 ] || refuse option-unknown "$given" ;;
     --once) [ "$VERB" = watch ] || refuse option-unknown --once ;;
@@ -894,7 +906,7 @@ lm_existing_lock() { # FD PATH COMMAND...
 # flock locks belong to the inherited descriptors, so one read scope can hold
 # the pair. The directory-mutex fallback retains its separate cleanup scopes.
 lm_read_pair() { # OVERSEER_FILE LANE_FILE COMMAND...
-  local over="$1" lane="$2" fd path
+  local over="$1" lane="$2" fd path result key value
   shift 2
   if ! command -v flock >/dev/null 2>&1; then
     lm_existing_lock 8 "$over" lm_existing_lock 9 "$lane" "$@"
@@ -903,12 +915,16 @@ lm_read_pair() { # OVERSEER_FILE LANE_FILE COMMAND...
   for fd in 8 9; do
     path="$over"; [ "$fd" -ne 9 ] || path="$lane"
     if [ -f "$path" ]; then
-      eval "exec $fd<\"\$path\"" 2>/dev/null || refuse file-unreadable "$path"
-      orch_take_lock "$fd" "$path" 30 || refuse lock-failed "$path"
+      eval "exec $fd<\"\$path\"" 2>/dev/null || { lm_plain; refuse file-unreadable "$path"; }
     else
       eval "exec $fd</dev/null" || refuse file-unreadable /dev/null
     fi
   done
+  result="$(python3 "$SCRIPT_DIR/lib/lane-mail-store.py" plain-lock "$BOX" "$over" "$lane")" || refuse file-unreadable "$BOX"
+  if [ -n "$result" ]; then
+    IFS=$'\x1f' read -r key value <<<"$result"
+    refuse "$key" "$value"
+  fi
   "$@"
 }
 
@@ -1013,7 +1029,7 @@ lm_send_channel() {
   esac
   IFS=$'\t' read -r harness account session root < <(jq -r '[.harness // "", .account // "", .session_id // "", .mail_root // ""] | @tsv' <<<"$record") ||
     refuse state-unreadable "$ITEM"
-  lm_root_own "$root"
+  lm_root_own "$root" own
   [ -z "$MSGID" ] || refuse channel-session --re
   [ "$HALT" -eq 0 ] || refuse channel-session --halt
   { [ -n "$account" ] && [ -n "$session" ]; } || refuse session-unrecorded "$ITEM"
@@ -1161,14 +1177,41 @@ fi
 # checkouts. The overseer item is judged with the rest, because a --root into
 # another repository's overseer mailbox is the cross-repository write `peer`
 # exists to be. A root that resolves to no common root at all is refused with
-# them, so an unreadable checkout is no way in. A hosted send is out of reach:
-# the root is a path on another host.
-lm_root_own() { # ROOT
-  LANE_ROOT="$(mailbox_common_root "$1" 2>/dev/null)" || LANE_ROOT=""
-  { [ -n "$LANE_ROOT" ] && [ "$LANE_ROOT" = "$OWN_ROOT" ]; } || refuse lane-foreign "$1"
+# them, so an unreadable checkout is no way in. Hosted mailbox destinations
+# use the lane record's remote-root check. Session ownership is checked under
+# either host flag, including recorded paths inside a checkout.
+lm_root_own() { # ROOT own|checkout
+  local top canonical
+  if [ "$2" = checkout ]; then
+    # Compaction retains existing rows and delivers no new envelope. Cursor
+    # and liveness records belong to reads. Validate only envelope appends.
+    case "$VERB" in
+      ask | notice | send | resolve | peer)
+        top="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || top=""
+        canonical="$(cd -P -- "$1" 2>/dev/null && pwd -P)" || canonical=""
+        [ -z "$top" ] || top="$(cd -P -- "$top" 2>/dev/null && pwd -P)" || top=""
+        if [ -z "$top" ] || [ "$canonical" != "$top" ]; then
+          printf 'lane-mail: root-not-checkout=%s top=%s\n' "$1" "$top" >&2
+          exit 2
+        fi
+        ;;
+    esac
+  fi
+  if [ "$2" = own ] || [ "$VERB" = send ] || [ "$VERB" = resolve ]; then
+    LANE_ROOT="$(mailbox_common_root "$1" 2>/dev/null)" || LANE_ROOT=""
+    { [ -n "$LANE_ROOT" ] && [ "$LANE_ROOT" = "$OWN_ROOT" ]; } || refuse lane-foreign "$1"
+  fi
 }
-if { [ "$VERB" = send ] || [ "$VERB" = resolve ]; } && [ "$HOST" -eq 0 ]; then
-  lm_root_own "$ROOT"
+if [ "$HOST" -eq 0 ]; then
+  if [ "$VERB" = peer ] || [[ "$OPTS_GIVEN" == *"--root$NL"* ]]; then
+    lm_root_own "$ROOT" checkout
+  elif [ "$VERB" = send ] || [ "$VERB" = resolve ]; then
+    lm_root_own "$ROOT" own
+  fi
+fi
+if [ "$VERB" = peer ]; then
+  # Either peer route can append to the sender's local delivery record.
+  lm_root_own "$OWN_ROOT" checkout
 fi
 
 # The mailbox a verb reads or writes. A peer exchange moves it once: the same
@@ -1189,14 +1232,18 @@ lm_box "$ROOT"
 # tmp/lane-mail down: tmp itself may be a link a worktree setup makes. A hosted
 # mailbox is judged by its provider behind `lane-host cat` and `append`.
 lm_plain() {
-  local path kind
-  for path in "$MAIL_ROOT/tmp/lane-mail" "$BOX" "$TO_OVERSEER" "$TO_LANE" "$TO_OVERSEER.numbering" "$TO_LANE.numbering" "$CURSOR" "$CURSOR.lock" "$WATCH_FILE"; do
-    kind=-f
-    case "$path" in "$MAIL_ROOT/tmp/lane-mail" | "$BOX") kind=-d ;; esac
-    { [ ! -L "$path" ] && { [ ! -e "$path" ] || test "$kind" "$path"; }; } || refuse mailbox-unsafe "$path"
-  done
+  local unsafe
+  command -v python3 >/dev/null 2>&1 || refuse command-missing python3
+  unsafe="$(python3 "$SCRIPT_DIR/lib/lane-mail-store.py" plain "$BOX")" || refuse file-unreadable "$BOX"
+  [ -z "$unsafe" ] || refuse mailbox-unsafe "$unsafe"
 }
-[ "$HOST" -eq 1 ] || lm_plain
+# The read-only fast path validates in the same helper that takes its inode
+# locks. Inbox still validates before creating or opening its cursor lock.
+if [ "$HOST" -eq 0 ]; then
+  if [ "$FAST_READ" -ne 1 ] || [ "$VERB" = inbox ] || ! command -v flock >/dev/null 2>&1; then
+    lm_plain
+  fi
+fi
 
 # Two directories for one lane differing only in case are two mailboxes on a
 # case-sensitive disk: the lane's asks are never seen and the overseer's
@@ -1375,22 +1422,30 @@ lm_header() { # FILE
 # parse is dropped here and counted above. Events name BOX to carry logical
 # line numbers before that filtering, aligned with the Jarvis session's seen count.
 lm_objects() { # FILE [BOX [AFTER]]
-  local count=0 numbers=/dev/null
+  local count=0 numbers=/dev/null snapshot=false now=0
   [ "$ITEM" != overseer ] || mailbox_warn_legacy "$1" || return 2
   if [ -n "${2:-}${3:-}" ]; then
     count="$(lm_count "$1")" || return 1
     numbers="$1.index"
   fi
+  if [ "$VERB" = events ] && [ -z "${3:-}" ]; then
+    snapshot=true
+    now="$(date -u +%s)" || return 1
+  fi
   # Posting is confirmed after the immutable ask. Fold that evidence before
   # cursor selection, while keeping the ask's original logical position.
   jq -c -R -n --arg box "${2:-}" --arg after "${3:-}" --argjson count "$count" \
-    --slurpfile numbers "$numbers" "$MAILBOX_CLASS_JQ$OWNER_TRACKER_JQ"'
+    --argjson snapshot "$snapshot" --argjson now "$now" \
+    --slurpfile numbers "$numbers" "$MAILBOX_TIME_JQ$MAILBOX_CLASS_JQ$OWNER_TRACKER_JQ"'
     [inputs | input_line_number as $physical | (fromjson? // empty) | objects
       | {physical: $physical, envelope: .}] as $rows
-    | [$rows[].envelope | select(.kind == "tracker-posted")] as $posted
+    | [$rows[].envelope | select(.kind == "tracker-posted" or .kind == "tracker-failed")] as $posted
     | $rows[] | .physical as $physical | .envelope
-    | select(.kind != "tracker-posted")
+    | owner_tracker_public
     | owner_tracker_record($posted)
+    # Snapshot consumers reread every ask; cursor consumers must retain pending
+    # asks at their original line. The bound releases interrupted tracker writes.
+    | if $snapshot then owner_tracker_snapshot($now) else . end
     | select($after == "" or $numbers[$physical - 1] > ($after | tonumber))
     | if $box == "" then . else . + {box: $box, line: $numbers[$physical - 1], count: $count}
         + (if $box == "to-lane" then {mail_class: overseer_mail_class} else {} end)
@@ -1636,7 +1691,7 @@ lm_append_local() { # FILE LINE [GUARD]
 # closed any fragment, and leaves what it found in the work directory for the
 # verb's refusal to name.
 
-# The envelope already carrying this send's delivery id, its id into
+# The envelope already carrying this delivery id, its id into
 # WORK_DIR/delivery.earlier; refuses where one stands.
 lm_guard_delivery() { # FILE
   jq -r -R --arg key "$DELIVERY_ID" '(fromjson? // empty) | objects
@@ -2094,6 +2149,9 @@ case "$VERB" in
       fi
     fi
     LINE="$(lm_envelope "$VERB")"
+    if [ "$OWNER_TRACKER_ACTIVE" -eq 1 ]; then
+      LINE="$(jq -c '.tracker_pending = true' <<<"$LINE")" || refuse write-failed "$TO_OVERSEER"
+    fi
     [ "$VERB" != notice ] || lm_receipt_fields "$LINE"
     # An owner notice is judged on its text for a day, under the lock after
     # the minute check, so a retry inside the minute keeps its `duplicate`.
@@ -2102,16 +2160,28 @@ case "$VERB" in
         REFUSE_EXTRA="id=$(cat -- "$WORK_DIR/notice.earlier")"
         refuse owner-notice-repeated "$ITEM"
       }
+    elif [ -n "$DELIVERY_ID" ]; then
+      # A restarted asker uses send's existing key guard so the relay sees
+      # no new ask, and the original tracker deadline and outcome stay intact.
+      lm_append_local "$TO_OVERSEER" "$LINE" lm_guard_delivery || {
+        REFUSE_EXTRA="id=$(cat -- "$WORK_DIR/delivery.earlier")"
+        refuse delivery-repeated "$DELIVERY_ID"
+      }
     else
       lm_append_local "$TO_OVERSEER" "$LINE"
     fi
     if [ "$OWNER_TRACKER_ACTIVE" -eq 1 ]; then
-      owner_tracker_ask "$SCRIPT_DIR/../../linear/scripts/linear.sh" "$LINE" "$WORK_DIR"
+      if ! owner_tracker_ask "$SCRIPT_DIR/../../linear/scripts/linear.sh" "$LINE" "$WORK_DIR"; then
+        owner_tracker_unwritten "$ISSUE" "$OWNER_TRACKER_CAUSE"
+      fi
       if [ "$OWNER_TRACKER_POSTED" -eq 1 ]; then
         POSTED_LINE="$(jq -c --arg label "$OWNER_TRACKER_LABEL" '{id: (.id + "-tracker"), kind: "tracker-posted", at, from,
           re: .id, issue, tracker_label: $label, text: ""}' <<<"$LINE")" || refuse write-failed "$TO_OVERSEER"
-        lm_append_local "$TO_OVERSEER" "$POSTED_LINE"
+      else
+        POSTED_LINE="$(jq -c --arg cause "$OWNER_TRACKER_CAUSE" '{id: (.id + "-tracker"), kind: "tracker-failed", at, from,
+          re: .id, issue, cause: $cause, text: ""}' <<<"$LINE")" || refuse write-failed "$TO_OVERSEER"
       fi
+      lm_append_local "$TO_OVERSEER" "$POSTED_LINE"
     fi
     if [ "$VERB" = ask ]; then
       printf 'id=%s\n' "$(cat -- "$WORK_DIR/id")"
