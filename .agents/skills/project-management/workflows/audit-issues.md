@@ -108,21 +108,23 @@ Collect the artifact per § 4.2 step 1-2, then present:
 |------------|---------|-------|-------|-----|-----------|
 | [NAME] | [NAME] | [STATE] | L[N] | [CURRENT]→[RECOMMENDED] | [WHY] |
 
-**Complete** (100%, needs state transition): [PROJECT] — unblocks [PROJECTS]
+**Complete** (no open item left, needs state transition): [PROJECT] — unblocks [PROJECTS] [· ends_when holds: [ENDS_WHEN_EVIDENCE], for a map deliverable]
 
-**Recommended next**: [PROJECT] — [REASON], or `None` with what blocks each candidate.
+**Held open** (no open item left, `ends_when` not shown to hold): [PROJECT] — ends when [ENDS_WHEN]
+
+**Recommended next**: [PROJECT] — [REASON] [· waits for active project [BLOCKED_BY_ACTIVE]], or `None` with what blocks each candidate.
 </output_format>
 
 ### 2.3 Apply and Activate
 
-Apply reorders and completions without asking:
+Apply reorders and the `complete_candidates[]` completions without asking; a `complete_held[]` project stays started:
 
 ```bash
 .agents/skills/linear/scripts/linear.sh projects set-sort-order [PROJECT_ID] --position [NEW_SORT_ORDER]
 .agents/skills/linear/scripts/linear.sh projects update [PROJECT_ID] --state completed
 ```
 
-**Skip if** `recommended_next` is null or a started project already exists. Otherwise ask: `Activate [RECOMMENDED]` | other ready projects | `Skip`. On activation:
+**Skip if** `recommended_next.id` is null or `recommended_next.blocked_by_active` is set, the active project tpm-audit § 11 step 5 found. Otherwise ask: `Activate [RECOMMENDED]` | other ready projects | `Skip`. On activation:
 
 ```bash
 .agents/skills/linear/scripts/linear.sh projects update [PROJECT_ID] --state started
@@ -136,7 +138,7 @@ Then ask "Continue to full audit of [PROJECT]?" — yes sets MODE=project, TARGE
 
 **Skip if** MODE is `issue` or `team` — team audits the whole team and resolves no target. Linear only.
 
-With `TARGET` set, use it. Otherwise take the first `session-status.projects` entry with `has_active_work` — `session-status` selects projects workspace-wide and reports no team, so confirm the chosen project belongs to the configured team before using it ([SKILL.md](../SKILL.md) § Scope by Path). With no such project, present the ready projects with their blockers and ask which to activate (`Skip` ends the workflow); activate the chosen one, then → § 4.
+With `TARGET` set, use it. Otherwise take the first `session-status.projects` entry with `has_active_work` that [project-map.md § Project kinds](../references/project-map.md#project-kinds) counts as the active project, reading the map first as that section says, with its team from `LINEAR_TEAM` ([project-map.md § Audit](../references/project-map.md#audit)) — `session-status` selects projects workspace-wide and reports no team, so confirm the chosen project belongs to the configured team before using it ([SKILL.md](../SKILL.md) § Scope by Path). With no such project, take the first entry that counts as active, since it holds every other project from activation. With none, present the ready projects with their blockers and ask which to activate (`Skip` ends the workflow); activate the chosen one, then → § 4.
 
 ---
 
@@ -265,6 +267,7 @@ Execute every § 5 correction. Linear routes follow the Linear CLI's workflow-ac
 | `hierarchy` | § Hierarchy and Relations, then § Descriptions (parent rebuild) |
 | `wrong_project` | `issues update [ID] --project "[PROJECT]"` + reason comment |
 | `project_dependency_issues`, `project_recommendations` | § Projects and Initiatives (project mode) |
+| `project_needed`, `map_findings` | Reported in § 8, never applied: [project-map.md § Audit](../references/project-map.md#audit) |
 
 GitHub routes carry their commands inline in § 7.2.
 
@@ -274,11 +277,13 @@ Order per issue: relations first, then priority and labels, then project/state, 
 
 Process creates in dependency order — every issue after the issues it is blocked by and its parent — and attach each issue's relations and parent immediately after its own create, never after the whole batch. The route comes from `TRACKER`. Never mix routes within one audit.
 
+**Project map (Linear).** **Skip if** the repository declares no project map. Before the first create, check every create's `--project` against the map ([project-map.md § Routing](../references/project-map.md#routing)): each passes the map project its row recommends. A `project_needed` row is held, not created, and reported in § 8; it resumes once the map lists the new project. A row whose project the map does not list halts the whole batch before any create, so a mixed batch is never half applied.
+
 **Linear route (TRACKER=linear)**
 
 | Action | Execution |
 |--------|-----------|
-| create | `issues create` with the Create template below, `--state "Backlog"`, and `--parent` per `hierarchy`. Backlog is mandatory, never the team-default Triage. § 7.2.1 then promotes to Todo where it applies. A `hierarchy.parent` of null with `make_child` resolves to the input's `parent_issue`. A child must share the parent's project; if it cannot, create it standalone with `related` — except for `hierarchy_contract` items, where the standalone fallback is not permitted: create the child in the contract parent's project and never downgrade to standalone. |
+| create | `issues create` with the Create template below, `--state "Backlog"`, and `--parent` per `hierarchy`. Backlog is mandatory, never the team-default Triage. § 7.2.1 then promotes to Todo where it applies. A `hierarchy.parent` of null with `make_child` resolves to the input's `parent_issue`. A child must share the parent's project; if it cannot, create it standalone with `related` — except for `hierarchy_contract` items, where the standalone fallback is not permitted: create the child in the contract parent's project and never downgrade to standalone. Under a project map, [project-map.md § Routing](../references/project-map.md#routing) says how the parent's project is reached and when the fallback applies. |
 | expand, update | workflow-actions § Descriptions + reason comment |
 | supersede, combine | workflow-actions § State Transitions (cancel/absorb), then Superseded issues below |
 | cancel | workflow-actions § State Transitions |
@@ -378,6 +383,8 @@ Repeat cancellation, decline and deferred-cleanup bullets per entry; omit empty 
 - Cancelled: [ISSUE_ID]: [REASON]
 - Declined: [TITLE]: [REASON]
 - Deferred cleanup: [candidate BLOCKER_ID for TARGET_ID: REASON, or stale reference ISSUE_ID: OLD PATTERN; not applied under auto]
+- Project needed: [ISSUE_ID or TITLE]: [NAME] ([KIND]): [REASON], held until the map lists it
+- Map finding: [KIND] [SUBJECT]
 
 **Degraded (github)**: [every obligation executed through a documented degradation, or omit this line]
 

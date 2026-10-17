@@ -66,7 +66,9 @@ A blocker mid-apply or a failed verification stops the surface and makes it a re
 
 ## Phase 5: report
 
-Write `docs/dep-radar/report-<YYYY-MM-DD>.md`, committed with the last-seen update: auto-applied bumps with PR links; blocked bumps with exact error output; the owner-decision tier; new capabilities unlocked. Each awaiting-decision item names the capability, what it unlocks, estimated effort and risk, and a recommendation. Surface the report to the owner (PR description or handoff doc), not just the file.
+Update `docs/dep-radar/last-seen.json` with each checked surface's observed version and `checked_at`. Commit that state and any Phase 0 inventory changes through the repository's existing review and merge route.
+
+Write `tmp/dep-radar/report-<YYYY-MM-DD>.md`: auto-applied bumps with PR links; blocked bumps with exact error output; the owner-decision tier; new capabilities unlocked. Attach the report to the work item the run serves and cite it in the PR description or handoff. With no work item, give the owner the report through the current session. Do not commit dated reports under `docs/dep-radar/`. Each awaiting-decision item names the capability, what it unlocks, estimated effort and risk, and a recommendation.
 
 ## Technology playbooks
 

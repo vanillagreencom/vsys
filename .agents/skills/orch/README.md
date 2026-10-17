@@ -59,16 +59,18 @@ Until KEN-2466 lands, the Claude Code agent renderer maps `haiku` to `sonnet` an
 | `ORCH_OVERSEER_LANES` | Fleet lane cap: `open-terminal --help` | `3` |
 | `ORCH_OVERSEER_CLOUD_LANES` | Separate Claude cloud session cap per overseer: `open-terminal --help` | `10` |
 | `ORCH_CONNECTED_REPOS` | Blank-separated `OWNER/REPO` list of repositories the overseer may launch lanes in beside its own. `open-terminal` reads it in the overseer's checkout without the launcher's own value or `KENDEX_ENV_FILE`, which can be the launch checkout's, and matches it to a launch checkout's origin remote: `open-terminal --help`. `oversee-watch` and `oversee-report` run in the overseer's checkout, honor both, and read each one after their `--repo` values: `oversee-watch --help`, `oversee-report --help` | empty |
+| `ORCH_MAIN_WORKFLOWS` | Blank-separated `OWNER/REPO:FILE` list of workflow files whose red push or nightly run on `main` `oversee-watch` reports for that repository, beside `skill-tests.yml` and `ci.yml`, which every repository reads; an entry whose file the repository lacks, or whose repository the watch does not read, is reported: `oversee-watch --help` | empty |
 | `ORCH_WAKE_PROCESS` | `pgrep -f` wake pattern for `lane-mail-check`. Empty disables the check with no watch record | empty |
 | `ORCH_WAKE_START` | Wake start command printed by the turn-end refusal. Empty disables the check with no watch record | empty |
 | `ORCH_LANE_OUTPUT` | Lane pane output: [skill-rules.md](references/skill-rules.md) § Lane Output | `quiet` |
 | `ORCH_ROUND_PRUNE_DISK_PCT` | Disk use percent at or past which `round-prune` clears the item worktree's Cargo output before a dev round: [skill-rules.md](references/skill-rules.md) § Round Closure | `75` |
-| `ORCH_HANDOFF_CONTEXT_PCT` | Earlier handoff percentage (1 to 100, capped at 90); strict lane handoff and inclusive reserve-aware succession: [context rule](references/oversee-events.md#judgement-rules) | `90` |
-| `ORCH_HANDOFF_AGENT_RESERVE_TOKENS` | Nonnegative whole token reserve before the context mark for attached agent returns. Attached launches and overseer succession use the same inclusive boundary. A reserve larger than the available budget refuses every attached launch. | `150000` |
+| `ORCH_HANDOFF_CONTEXT_PCT` | Earlier handoff percentage (1 to 100, capped at 90); strict for lane handoff and overseer succession alike: [context rule](references/oversee-events.md#judgement-rules) | `90` |
+| `ORCH_HANDOFF_AGENT_RESERVE_TOKENS` | Nonnegative whole token reserve before the context mark for attached agent returns, held only by the attached-launch refusal while an attached agent may still be out, equality refused. Succession does not apply it. A reserve larger than the available budget refuses every attached launch while one is out. | `150000` |
 | `ORCH_HANDOFF_HEADROOM_PCT` | Account headroom at or below which `lanes context` marks a live lane for handoff and `lane-mail-check` refuses its turn end, Codex credits exempt: `lanes --help` | `3` |
 | `ORCH_WALL_RELAUNCH` | `auto` has `oversee-watch` relaunch a walled lane on an account `lanes pick` qualifies for its model, as `lane-relaunched`; `ask` reports `usage-limit` with the pick's answer: [oversee-events.md](references/oversee-events.md#event-kinds) | `auto` |
-| `ORCH_OVERSEER_PREFERENCE` | Comma-separated `harness:model:effort` entries `oversee launch` and `oversee-succeed` try in order; grammar: [guide](kendex.settings.toml.example) § Fleet. Empty names none | `claude:claude-opus-5-5:high,codex:gpt-6.1-sol:high` |
+| `ORCH_OVERSEER_PREFERENCE` | Comma-separated `harness:model:effort` entries `oversee launch` and `oversee-succeed` try in order. `kendex tier-model` classifies each model at launch: a class runs claude's family alias for it, where `model-classes` overrides do not apply yet, and codex's native default until codex list evidence reaches the launch; grammar: [guide](kendex.settings.toml.example) § Fleet. An empty setting names none | `claude:standard:high,codex:standard:high` |
 | `ORCH_PR_ORDER` | Publication order: `review-first`, `open-first` or `push-first`. A set value overrides visibility. [`pr-order --help`](scripts/pr-order) owns the defaults, validation and draft rules | unset |
+| `ORCH_DELIVERY` | `pr` uses pull requests. `push-base` keeps the tier's local checks and review, then fast-forward pushes the resolved base branch. The lane reports the pushed commit for the existing direct-push cycle record. An item with an open post-merge box stops for the PR route: [submit-pr.md § 2.1](workflows/submit-pr.md#21-base-publication) | `pr`, also when unset |
 | `ORCH_LANE_PREFERENCE` | `harness[@host]:model:effort` entries in default-model order. Each named host applies to its entry; an omitted host keeps the caller's route. Explicit models keep that route. [Lane preference](references/lane-directive.md#lane-preference) | unset |
 | Owner-ask settings | `ORCH_QUESTION_TOOL`, `ORCH_ASK_WAIT_MINUTES`, `ORCH_OWNER_EMAIL` (defaults to `KENDEX_USER_EMAIL`), `ORCH_OWNER_ASK_LABEL` (unset by default): [guide](kendex.settings.toml.example) § Talking to you | |
 | `ORCH_OVERSEER_SUCCESSION` | `on` lets `oversee-succeed` launch the successor overseer; `off` launches none and turns off the account-mark turn-end refusals, not the context one: `oversee-watch --help` | `on` |
@@ -93,7 +95,7 @@ Until KEN-2466 lands, the Claude Code agent renderer maps `haiku` to `sonnet` an
 | `QA_UI_DESIGN_DOC` | Repository path of the design-system doc a dev round that changes a view builds to and the `needs-ui-review` pass judges against; unset is reported as a gap | empty |
 | `RECONCILE_STALE_HOURS` | Hours before an In Progress or In Review item counts as started-stale in `reconcile-work-items` sweeps | `24` |
 | `WORKTREE_CLI` | Path to the worktree CLI `open-terminal` drives; empty resolves the installed worktree skill's script | resolved |
-| Review-gate settings | `PR_REVIEW_WAIT_SECS`, `PR_COPILOT_REQUESTS`: [references/gates.md](references/gates.md) | |
+| Reviewer-gate settings | `PR_REVIEW_WAIT_SECS`, `PR_COPILOT_REQUESTS`: [references/gates.md](references/gates.md) | |
 | `ORCH_LANE_MAX_PCT` | Usage share at or above which `lanes pick` refuses an account, Codex credits exempt; bucket, overrides, other lane settings: `lanes --help`, `open-terminal --help` | `95` |
 | `ORCH_OVERSEER_SEAT_RESERVE_PCT` | Plan room kept for the overseer. Seats return last above it; lanes on seats hand off at it. Keep above `ORCH_OVERSEER_HEADROOM_PCT`; 100 admits no seat, 0 uses the lane limit alone | `50` |
 | `ORCH_LANE_CLOUD_CREDIT_FLOOR` | Dollars a Claude cloud or Pi Anthropic API grant must exceed to stay pickable; tier and refusal: `lanes --help` | `10` |
@@ -101,11 +103,11 @@ Until KEN-2466 lands, the Claude Code agent renderer maps `haiku` to `sonnet` an
 | `ORCH_SIZE_RENDER_ROOTS` | Render-mirror roots excluded from production and test counts when their source changes in the same branch | `.agents .claude .codex .pi` |
 | `ORCH_SIZE_TEST_PATHS` | Extra test-path globs for the shared CI change classification | empty |
 
-`ORCH_OVERSEER_PREFERENCE` reads the deprecated `harness:positive-integer:effort` form until the next major release: [kendex.settings.toml.example](kendex.settings.toml.example) § Fleet.
+`ORCH_OVERSEER_PREFERENCE` reads the deprecated `harness:positive-integer:effort` form, and a claude exact model id, until the next major release; a codex or copilot exact id is a supported form: [kendex.settings.toml.example](kendex.settings.toml.example) § Fleet. The refresh report lists the numeric form only.
 
 Launch settings and Codex compaction limits: [skill-rules.md](references/skill-rules.md#coordination), Compaction.
 
-Every lane merges its own pull request, past the merge queue or through it, as the github skill's `pr-merge --help` § Merge route says.
+Every lane merges its own pull request, past the merge queue or through it, as the github skill's `pr-merge --help` § Merge route says. Under harness-ci's queue-only default every change takes the queue: the merge-group run proves the head, a red one returns the change to its lane, and an unchanged head never re-enters the queue, per [workflows/merge-pr.md § 5](workflows/merge-pr.md#5-execute-the-merge) Recovery cycle.
 
 Maintainer notes and test entry point: [DEVELOPMENT.md](https://github.com/vanillagreencom/kendex/blob/main/skills/orch/DEVELOPMENT.md).
 

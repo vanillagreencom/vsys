@@ -34,7 +34,7 @@ Analyze issues and projects for relations, labels, hierarchy, placement, duplica
 
 **Verifying issues retain live checks on the same merged item.** Keep them out of development candidate sets. Read them in the comparison inventory for relation and duplicate analysis.
 
-**Done and Canceled issues are historical records.** Never recommend a change to their labels, agent, priority, or state — whichever set they arrive in, they take no disposition. They participate in relation analysis and duplicate detection as § 1.5 comparison evidence, which is the only way a Canceled issue reaches the analysis at all. Only Backlog, Todo, In Progress, and In Review issues are candidates for development fixes. Verifying issues retain their post-merge checks and deadlines on the same item. The overseer handles them through the orch verification route.
+**Done and Canceled issues are historical records.** Never recommend a change to their labels, agent, priority, or state — whichever set they arrive in, they take no disposition. They participate in relation analysis, duplicate detection, and supersession analysis as § 1.5 comparison evidence, and in parent child counts through § 7.3. Only Backlog, Todo, In Progress, and In Review issues are candidates for development fixes. Verifying issues retain their post-merge checks and deadlines on the same item. The overseer handles them through the orch verification route.
 
 For an existing-issue entry in `INPUT_ITEMS`, use its `identifier` as the requested ID in § 1.4. Analyze the resolved tracker issue, not a proposed creation; preserve its input `index` and `identifier` in the issue-mode output. Proposed entries use their supplied fields.
 
@@ -73,21 +73,21 @@ Fetch every project in ONE command. `projects list --state` matches one state ty
 ### 1.4 Fetch Input Issues
 
 ```bash
-.agents/skills/linear/scripts/linear.sh issues list --project "[PROJECT]" --state "Backlog,Todo,In Progress,In Review,Verifying,Done" --max   # project mode
-.agents/skills/linear/scripts/linear.sh issues list --all-projects --state "Backlog,Todo,In Progress,In Review" --max               # team mode
+.agents/skills/linear/scripts/linear.sh issues list --team "[TEAM]" --project "[PROJECT]" --state "Backlog,Todo,In Progress,In Review,Verifying" --max   # project mode
+.agents/skills/linear/scripts/linear.sh issues list --team "[TEAM]" --all-projects --state "Backlog,Todo,In Progress,In Review" --max               # team mode
 .agents/skills/linear/scripts/linear.sh issues bulk-get [ISSUE_ID_1] [ISSUE_ID_2] --format=safe                                     # issues mode, one call
 gh issue view [N] --repo [REPOSITORY] --json number,title,body,labels,state,url                                                           # issues mode, github
 ```
 
-Both `--all-projects` fetches return every team; keep only the rows § 1.1.1 scopes in. Issues mode fetches the whole input set in one `bulk-get`, never one call per issue; a lone input issue is `issues get [ISSUE_ID]`. `issues bulk-get` fails the whole read when an identifier names no issue, and compare the returned `id` values against every requested identifier besides: halt naming any input that is missing, which `issues get` on each input names. An unmatched target is a mistyped or deleted issue, never an absent one, and auditing the remainder would report a complete result over a subset. An input issue the caller named that resolves outside the § 1.1.1 scope halts the same way — Linear returns it, and auditing another team's issue is not the caller's to authorize.
+Pass `--team` on every `issues list` in this workflow to filter on the server; retain the § 1.1.1 scope check on returned rows. Issues mode fetches the whole input set in one `bulk-get`, never one call per issue; a lone input issue is `issues get [ISSUE_ID]`. With no existing-issue entry in `INPUT_ITEMS`, the input set holds no identifier and issues mode makes no § 1.4 read. `issues bulk-get` fails the whole read when an identifier names no issue, and compare the returned `id` values against every requested identifier besides: halt naming any input that is missing, which `issues get` on each input names. An unmatched target is a mistyped or deleted issue, never an absent one, and auditing the remainder would report a complete result over a subset. An input issue the caller named that resolves outside the § 1.1.1 scope halts the same way — Linear returns it, and auditing another team's issue is not the caller's to authorize.
 
 The Linear issue payload carries `blocks`, `blocked_by`, `blocked_by_open`, and `related`. `blocked_by_open` decides whether an issue is blocked now; `blocked_by` remains the full relation history used by § 4. GitHub: read relations from body links (`Blocks: #N`, `Blocked by: #N`, `Related: #N`, `Parent: #N`). Proposed items use their provided fields directly.
 
 ### 1.4.1 Read Comments
 
-Comments carry what no listing does: an issue's scope changes, its supersession notes, and its partial-completion reports. This is the workflow's only read of them. Read them for the § 1.4 input set here, and for every in-scope row of the § 1.5 comparison set as soon as that fetch returns, closed rows included: a supersession note, or the reason a row was canceled, is what makes a closed row worth comparing against. Dispositions stay active-only (§ 1.1). An issue with no comments reads as an empty list, and a disposition written before its issue's comments were read rests on unsupported evidence, whatever the body says.
+Comments carry scope changes, supersession notes, and partial-completion reports. After § 1.5 returns, use its rows and the candidate signals in § 4 to select duplicate, relation, and supersession candidates. Read the active rows' bodies against § 6.2 to select cancellation candidates. Form one set of identifiers: the § 1.4 input set, every comparison row named as a duplicate, relation, or supersession candidate, and every active row § 6.2 proposes to cancel. Include closed candidates; their comments can explain supersession or cancellation. Read comments for this set before analysis assigns any disposition. Read no other comparison row's comments.
 
-On Linear each set is one `bulk-list` call, run one after the other: never one `comments list` per issue and never parallel readers, which pay a script start per issue and saturate a small host across a whole backlog. The result is one object keyed by identifier. A refusal carrying `missing` names identifiers Linear has no issue for, and halts as an unmatched § 1.4 target does; a failed read never reads as an issue with no comments.
+On Linear deduplicate the identifiers. When the set is empty, as in issues mode with only proposed entries and no candidate, make no `comments bulk-list` call: no selected issue has comments to read. Otherwise use one `comments bulk-list` call for the whole set. Never use one call per issue or parallel readers. The result is one object keyed by identifier. An issue with no comments reads as an empty list. A refusal carrying `missing` names identifiers Linear has no issue for, and halts as an unmatched § 1.4 target does; a failed read never reads as an issue with no comments. Dispositions stay active-only (§ 1.1).
 
 ```bash
 .agents/skills/linear/scripts/linear.sh comments bulk-list [ISSUE_ID_1] [ISSUE_ID_2]   # TRACKER=linear
@@ -97,13 +97,21 @@ gh issue view [N] --repo [REPOSITORY] --json body,comments                      
 
 ### 1.5 Fetch Comparison Set
 
-Fetch the full backlog in ONE command:
+Fetch active comparison rows in one command:
 
 ```bash
-.agents/skills/linear/scripts/linear.sh issues list --all-projects --state "Backlog,Todo,In Progress,In Review,Verifying,Done,Canceled" --max
+.agents/skills/linear/scripts/linear.sh issues list --team "[TEAM]" --all-projects --state "Backlog,Todo,In Progress,In Review,Verifying" --max
 ```
 
-Each row carries its own `project` name, empty for an issue with none. Discard every row outside the § 1.1.1 team scope before comparing anything against it. Never loop `--project` over the projects from § 1.3. In team mode this is the § 1.4 input fetch with `Done` and `Canceled` added. `Canceled` is here as comparison evidence and nowhere else — a duplicate an issue already has, a relation it already carries, a child § 7.3 must count — never as an audit input. Neither state takes a disposition (§ 1.1), and the § 6 sweep proposes cancellations only from this set's active rows.
+Each row carries its own `project` name, empty for an issue with none. Discard every row outside the § 1.1.1 team scope before comparison. Never loop `--project` over the projects from § 1.3. Use the active set for duplicates, relations, supersessions, and the § 6 cancellation sweep. Verifying rows remain comparison evidence (§ 1.1).
+
+For each input item, search closed rows by its title, target, or component terms:
+
+```bash
+.agents/skills/linear/scripts/linear.sh issues list --team "[TEAM]" --all-projects --state "Done,Canceled" --search "[TERMS]"
+```
+
+Do not add `--max` to a closed-row search or fetch the team's whole closed history. Retain the rows and any `linear-list: truncated` notice per input item. A truncated read limits that item's closed-row findings to the returned evidence; it never establishes that no match exists. Closed rows serve only as comparison evidence for duplicates, relations, and supersessions (§ 1.1); they take no disposition. A parent's child counts use § 7.3, not these search results. Read comments for the selected set per § 1.4.1 before proceeding.
 
 **GitHub**:
 
@@ -117,7 +125,7 @@ The same stated cap applies: past 200 issues the comparison set is partial, and 
 
 **Skip if** TRACKER=github — treat the repository as one scope.
 
-For each project from § 1.3, extract from name, description, and content: its **purpose** (implementation, testing, refactoring, validation), the **work type** that belongs in it, and the **components** it owns.
+Read the project map: `.agents/skills/linear/scripts/linear.sh projects audit --team "[TEAM]"`, kept for § 3 and § 6.3. A map repository's project definitions are the entries of the `### Project map` block rendered in this skill's project instructions, each with its `kind`, `admits`, and `ends_when` or `role` ([project-map.md § Declaration](../references/project-map.md#declaration)); each entry's Linear id is the audit's `projects[].id`. A run whose audit returns `map-absent` has no map: for each project from § 1.3, extract from name, description, and content its **purpose** (implementation, testing, refactoring, validation), the **work type** that belongs in it, and the **components** it owns.
 
 ### 1.7 Collect Verification Evidence
 
@@ -161,7 +169,7 @@ Store each result as `VERIFICATION_CONTEXTS[ISSUE_KEY]` — the output fields an
 
 **Skip if** MODE = issues.
 
-Verify each issue matches the target project's definition from § 1.6 — wrong work type, wrong scope, or content contradicting the project's stated purpose all go to `wrong_project[]`. In team mode the target is the project named on the issue's own row; a row with project `""` gets a `wrong_project[]` entry with `from: null` recommending the project its scope fits, or an `analysis[]` note when nothing fits.
+Map every finding of the § 1.6 audit that this mode keeps, map or no map, to output per [project-map.md § Audit](../references/project-map.md#audit), with each `to` from [§ Routing](../references/project-map.md#routing). With no map that is the one `map-absent` finding, which goes to `map_findings[]`. With no map, also verify each issue matches the target project's definition from § 1.6 — wrong work type, wrong scope, or content contradicting the project's stated purpose all go to `wrong_project[]`. In team mode the target is the project named on the issue's own row; a row with project `""` gets a `wrong_project[]` entry with `from: null` recommending the project its scope fits, or an `analysis[]` note when nothing fits.
 
 Then trace what depends on this project's output: list what it modifies, find which projects build on or test those modifications, and record any missing project relation in `project_dependency_issues[]` as `{from_project, to_project, current_relation, should_be, reason}`. Project relations come from this scope analysis only, never bottom-up from individual issue relations.
 
@@ -225,7 +233,7 @@ This is the cancellation sweep. No mode that reaches this section skips it.
 
 ### 6.1 Duplicates and Supersession
 
-Compare input issues against the whole § 1.5 comparison set. Same problem plus same approach is a duplicate (`duplicates[]`) whatever project it lives in; same problem with a genuinely different approach keeps both with a `related` link. When title and keyword matching finds nothing, extract the module or component name from the location field and search on that.
+Compare each input issue against the § 1.5 active set and its own closed search results. Same problem plus same approach is a duplicate (`duplicates[]`) whatever project it lives in; same problem with a genuinely different approach keeps both with a `related` link. When title and keyword matching finds nothing, extract the module or component name from the location field and search on that. Keep closed-row conclusions within that item's returned evidence and report any truncation; a truncated search is not proof of no match. Closed rows take no disposition (§ 1.1).
 
 When an input item's scope **fully covers** an existing issue, that is `supersedes[]` on the input item, not `duplicates[]`. Signals: the item's `decision_ref` supersedes the existing issue's governing decision, the item's `creates[]` is a superset of the existing deliverables, or the existing issue references a superseded decision.
 
@@ -247,7 +255,7 @@ With `DECISION_REF` present, also detect issues the decision made unnecessary by
 
 **Below the bar.**
 
-1. Re-read every active issue in the comparison set as § 1.5 fetched it against the creation bar's first and third tests as they stand today (the second, coverage by other work, is not reapplied: an issue always covers itself).
+1. Re-read every Backlog, Todo, In Progress, and In Review issue in the § 1.5 active set against the creation bar's first and third tests as they stand today (the second, coverage by other work, is not reapplied: an issue always covers itself). Verifying rows keep their live checks (§ 1.1).
 2. One that fails (the bar's own list, not restated here) is a cancellation with confidence 100 and evidence `{below_bar: true, test, who_hits_it}`: `test` names the failed test, `who_hits_it` is the one-line user story and how often a user meets it, written after reading the issue's body and its § 1.4.1 comments (on GitHub, `gh issue view [N] --repo [REPOSITORY] --json body,comments`; the § 1.5 list carries neither).
 3. In project mode it is an `obsolete[]` entry; in issue mode it is the issue's own `issues[]` entry with `action: "cancel"` and that evidence in its `obsolete` field.
 4. The bar's two exceptions (a shipped-path security or data-loss defect; a critical-harm or financial-loss edge case) never go here on likelihood; the third test still applies to them.
@@ -255,7 +263,7 @@ With `DECISION_REF` present, also detect issues the decision made unnecessary by
 
 ### 6.3 Project Fit
 
-Compare each input issue against every project definition. A scope matching another project better, or a child sitting in a different project from its parent, goes to `wrong_project[]`. A dependency on work in another project is recorded as a relation, not a move. The current assignment is not evidence. A team-mode row with project `""` carries no assignment to weigh — recommend the project its scope fits.
+Compare each input issue against every project definition. A scope matching another project better, or a child sitting in a different project from its parent, goes to `wrong_project[]`. A dependency on work in another project is recorded as a relation, not a move. The current assignment is not evidence. In a map repository the project an item belongs in is the one [project-map.md § Routing](../references/project-map.md#routing) names, and an item it routes to none is a `project_needed[]` entry. With no map, a team-mode row with project `""` carries no assignment to weigh — recommend the project its scope fits.
 
 ---
 
@@ -281,7 +289,7 @@ Items outside `child_indexes` — `origin: "discovered"` refactors, for instance
 
 Look for: an input item whose scope is a strict subset of a tracked effort (child candidate); two or more input issues on the same target, or a large issue with implicit sub-tasks (parent candidate); and two or more issues sharing an agent label, project, and work type, or applying one refactor pattern across sibling components (bundle candidate). Bundle on pattern, not size.
 
-Parent and child must share a project. If they cannot, record `wrong_project[]` or keep the issue standalone with a relation.
+Parent and child must share a project. If they cannot, record `wrong_project[]` or keep the issue standalone with a relation. Under a project map, [project-map.md § Routing](../references/project-map.md#routing) says which.
 
 ### 7.2 Evaluate Coherence
 
@@ -294,6 +302,8 @@ Lean sub-issue for tests of the feature being implemented, hardening for the com
 **Skip if** MODE = issues.
 
 For each parent with children: implementation scope left in the parent (`## Requirements` rather than `## Sub-Issues`) is an `analysis[]` note; a `## Sub-Issues` list that disagrees with the actual children is a `hierarchy[]` entry with action `update_parent_desc`; children spanning 2+ agent domains under a parent lacking the project's multi-agent label is an `agent_mismatch[]` entry, recorded only after validating the replacement label exists.
+
+Read each parent's actual direct children with `issues children [PARENT_ISSUE_ID] --format=safe`, without `--pending`. Count its Done and Canceled children from that read. Neither the § 1.5 active set nor an input item's closed search results establishes a parent's full child set. Closed children remain historical evidence and take no disposition (§ 1.1).
 
 Record findings as `findings.hierarchy[]` in project mode — `make_parent` (`issue`, `children[]`, and `retitle: "[current title] (one PR)"` only when § 7.2 answered yes), `make_child` (`issue`, `parent`), `bundle` (`issues[]`, `new_parent_title`), `update_parent_desc` (`issue`) — or as each issue's `hierarchy` field in issues mode per [audit-output.md](../schemas/audit-output.md). Include the coherence reasoning in `reason`.
 
@@ -325,7 +335,7 @@ Classify each component as implemented (exists, functions present, no major TODO
 
 **A gap is still an issue, so it still clears the creation bar.** Critical (blocks 2+ existing issues) becomes a P1 implementation issue; required (architecture-specified, unblocked) a P2; optional or future work needing investigation becomes a research issue. A gap that nothing depends on and no user would notice is declined with one line, not filed. Record `reasoning` (2-4 sentences), `evidence`, `blocked_issues[]`, `project_placement`, and `recommended_issue` with its full `labels[]`.
 
-Recommend a new project in `project_recommendations[]` only when 3+ related gaps form a subsystem larger than 8 points with no existing fit; recommend reopening a completed project only when a gap matches its scope and blocks active work or leaves its deliverables incomplete.
+Recommend a new project in `project_recommendations[]` for architecture gaps only when 3+ related gaps form a subsystem larger than 8 points with no existing fit (an item that fits no map project is `project_needed`, § 6.3); recommend reopening a completed project only when a gap matches its scope and blocks active work or leaves its deliverables incomplete.
 
 ---
 
@@ -365,15 +375,15 @@ For every `create`: populate `create_fields` per [audit-output.md](../schemas/au
 
 Entered from § 1.1 after § 1.1.1; §§ 2-10 do not apply. Every project, initiative, and issue read below is filtered to the § 1.1.1 scope first: an initiative naming another team's projects contributes none of them, and a project whose `teams[]` omits `TEAM` is neither ordered nor recommended.
 
-1. **Fetch** initiatives (`initiatives list --max`) and projects in every state (§ 1.3), recording `id`, `name`, `state`, `progress`, `sort_order`, `blocked_by[]`, `blocks[]`, `description`, `content`, plus each initiative's project names. Build the name→initiative map that fills each project's `initiative` field.
+1. **Fetch** initiatives (`initiatives list --max`) and projects in every state (§ 1.3), recording `id`, `name`, `state`, `progress`, `sort_order`, `blocked_by[]`, `blocks[]`, `description`, `content`, plus each initiative's project names. Build the name→initiative map that fills each project's `initiative` field. Read the project map as § 1.6 does, kept for step 5.
 
-2. **Assign a layer** to each `planned` and `backlog` project (never `started` or `completed`) from its scope: what it delivers, what it consumes, and what its issues touch (`issues list --project "[PROJECT_NAME]" --state "Backlog,Todo,In Progress" --max`). Verify against the architecture docs that deliverables do not depend on unbuilt code. L0 foundation (no project dependencies) → L1 core infrastructure → L2 features → L3 integration and testing → L4 polish and release.
+2. **Assign a layer** to each `planned` and `backlog` project (never `started` or `completed`) from its scope: what it delivers, what it consumes, and what its issues touch (`issues list --team "[TEAM]" --project "[PROJECT_NAME]" --state "Backlog,Todo,In Progress" --max`). Verify against the architecture docs that deliverables do not depend on unbuilt code. L0 foundation (no project dependencies) → L1 core infrastructure → L2 features → L3 integration and testing → L4 polish and release.
 
 3. **Order** by topological sort on layer, then dependency edges (A's deliverables consumed by B means A precedes B), then priority.
 
 4. **Compare to current, per state column.** `sortOrder` is relative **within one column only**. Execution order is started → planned top-to-bottom → backlog top-to-bottom. Current position: started = 0, then planned by `sortOrder`, then backlog by `sortOrder`. For each mismatch, decide whether the project is in the wrong state (recommend a state change) or the wrong position within its state (recommend a reorder), and compute `new_sort_order` with spacing per state column.
 
-5. **Detect transitions**: a `started` project at `progress == 1.0` is a `complete_candidates[]` entry noting what it unblocks; assuming reorders applied, the first `planned`/`backlog` project with no incomplete blockers is `recommended_next` — null with a `rationale` listing each candidate's blockers when nothing is ready.
+5. **Detect transitions**: read each `started` project's open items by its recorded `id`, the read [project-map.md § Project kinds](../references/project-map.md#project-kinds) defines; `progress` is no such read. A `started` project with no open item left that § Project kinds lets complete is a `complete_candidates[]` entry noting what it unblocks, with the `ends_when` evidence for a map deliverable; a map deliverable that rule holds open is a `complete_held[]` entry; assuming reorders applied, the first `planned`/`backlog` project with no incomplete blockers is `recommended_next` — null with a `rationale` listing each candidate's blockers when nothing is ready. Its `blocked_by_active` names the started project that holds activation by [§ Project kinds](../references/project-map.md#project-kinds): one that counts as active and is no `complete_candidates[]` entry, a `complete_held[]` deliverable included; null when none does.
 
 Return per § 13 with the `tmp/audit-project-order-YYYYMMDD-HHMMSS.json` hint and the project-order schema in [audit-output.md](../schemas/audit-output.md).
 
@@ -387,7 +397,8 @@ Any invariant failing sends you back before the JSON is built.
 
 - [ ] Every input issue has its own `VERIFICATION_CONTEXTS[ISSUE_KEY]` — no PR, branch, or resolved path set reused across issues, docs-only handled explicitly (§ 1.7, § 2.1)
 - [ ] No completed-blocker relation appears in `remove_relations[]` outside a § 4.2 `Violation:` entry, or under any stale-metadata framing (§ 4.1)
-- [ ] The § 6 cancellation sweep ran against the full comparison set
+- [ ] The § 6 cancellation sweep ran against the § 1.5 active set; closed rows took no disposition, and each input item's closed-row findings report and respect any search truncation
+- [ ] TRACKER=linear: when the § 1.4.1 set is non-empty, one comments read covered the input set, candidate duplicate/relation/supersession rows, and every active cancellation candidate; an empty set made no read
 - [ ] TRACKER=linear: every issue named anywhere in the output carries the § 1.1.1 team prefix
 - [ ] Every proposed item carries an assigned action, with a one-line reason naming the failed creation-bar test on each `skip`, and on each `create` a complete `create_fields.labels[]`, a `reach`, a `review_born`, and a `symptom` where `review_born` is true at priority 2 (§ 10)
 - [ ] Every `hierarchy_contract.child_indexes` item is `action: create` + `hierarchy.action: make_child` + `hierarchy.parent` = the contract parent, none downgraded (§ 7.0, § 10.2)
@@ -415,11 +426,11 @@ One filing: the creation bar, a title-level duplicate check, the label set and t
 
 1. **Input.** Read the file as § 1.1 reads `issues` mode. It holds exactly one `items[]` entry and no `hierarchy_contract`; any other shape halts naming the item count, and the caller runs `--issues`.
 2. **Scope and labels.** § 1.1.1, then § 1.2.
-3. **Placement.** Linear: the § 1.3 command, then the project whose name and description fit the item's `location`. GitHub: § 1.3's degradation.
+3. **Placement.** Linear: the § 1.3 command, then the project whose name and description fit the item's `location`; in a map repository, the § 1.6 map read and [project-map.md § Routing](../references/project-map.md#routing), with `project_needed` when it routes to none. GitHub: § 1.3's degradation.
 4. **Duplicates by title.** One read of the open titles; keep only rows § 1.1.1 scopes in:
 
    ```bash
-   .agents/skills/linear/scripts/linear.sh issues list --all-projects --state "Backlog,Todo,In Progress,In Review" --max --format=compact   # TRACKER=linear
+   .agents/skills/linear/scripts/linear.sh issues list --team "[TEAM]" --all-projects --state "Backlog,Todo,In Progress,In Review" --max --format=compact   # TRACKER=linear
    gh issue list --repo [REPOSITORY] --state open --limit 200 --json number,title                                                                # TRACKER=github
    ```
 

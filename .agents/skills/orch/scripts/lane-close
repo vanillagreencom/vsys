@@ -12,6 +12,11 @@ DEV_VALIDATE_RUN="$SCRIPT_DIR/dev-validate-run"
 LINEAR="$SCRIPT_DIR/../../linear/scripts/linear.sh"
 WORKTREE="$SCRIPT_DIR/../../worktree/scripts/worktree"
 LANES="$SCRIPT_DIR/lanes"
+# The wall read's stderr carries only the causes the help points at, no model
+# line (lib/overseer-launch.sh § OL_LINES_HELD). A lane's launch prints those
+# lines only where its preference walk classified the entry, and a launch that
+# named its model prints none, since that model reaches the harness as written.
+export ORCH_MODEL_LINES_HELD=1
 source "$SCRIPT_DIR/lib/lane-state.sh"
 source "$SCRIPT_DIR/lib/lane-host-slots.sh"
 source "$SCRIPT_DIR/lib/date-ladder.sh"
@@ -19,6 +24,7 @@ source "$SCRIPT_DIR/lib/usage-reset.sh"
 source "$SCRIPT_DIR/lib/lane-capabilities.sh"
 source "$SCRIPT_DIR/lib/lane-gitfile.sh"
 source "$SCRIPT_DIR/lib/tmux-server.sh"
+source "$SCRIPT_DIR/lib/cloud-close-log.sh"
 
 message() { # REASON FIELD=VALUE...
   local reason="$1" field branch_source_named=false
@@ -107,6 +113,8 @@ message() { # REASON FIELD=VALUE...
       printf '%s\n' \
         'The lane was not parked and nothing changed. reason names the condition it stopped on:' \
         '  local             the record carries no host, so there is no sandbox to stop.' \
+        '  repo-unwatched    the dependency repository is neither the lane repository nor in ORCH_CONNECTED_REPOS.' \
+        '  connected-repos-unread  the connected repository setting could not be read.' \
         '  repo-unresolved   the record names no repository and gh repo view could not answer for this checkout; pass --repo OWNER/REPO.' \
         '  pr-read-failed    gh pr view could not read the pull request; its own words are on the lines above this one.' \
         '  pr-branch-mismatch  the pull request head branch differs from the checked-out branch, or the workflow-state branch named by branch-source.' \
@@ -119,7 +127,7 @@ message() { # REASON FIELD=VALUE...
         '  queue-read-failed the merge queue could not be asked whether it holds the pull request; gh api graphql'"'"'s own words are on the lines above this one.' \
         '  not-armed         the pull request is neither in the merge queue nor auto-merge armed, so nothing will merge it while the lane is away.' \
         '  merge-state       the pull request is armed and not queued, and GitHub reports the state named: only CLEAN, every required check green on the head and nothing else blocking, admits a park there. A push after the arm, a running check or a red one all read otherwise. A queued pull request is admitted on the queue'"'"'s own judgement and this state is not read for it.' \
-        '  reducer-missing   the review-gate reducer pr-watch.sh is not installed beside this skill, and the review and thread reading is its alone.' \
+        '  reducer-missing   the github skill'"'"'s reducer pr-watch.sh is not installed beside this skill, and the review and thread reading is its alone.' \
         '  attention         the reducer prints attention for this pull request, kinds= naming what: an open thread, a standing objection, an approval that has not come. The lane is still needed.' \
         '  reducer-failed    the reducer could not evaluate the pull request; its own words are on the lines above this one.' ;;
     park-failed)
@@ -141,7 +149,7 @@ message() { # REASON FIELD=VALUE...
 
 usage() {
   cat <<'EOF'
-Usage: lane-close [--state-dir PATH] [--keep-sandbox | --park [--pr N] [--until-pr N]]
+Usage: lane-close [--state-dir PATH] [--keep-sandbox | --park [--pr N] [--until-pr N|OWNER/REPO#N]]
                   [--harness claude|codex|pi|copilot] [--tracker linear|github]
                   [--repo OWNER/REPO] ITEM
 
@@ -152,6 +160,7 @@ request's merge and whose worktree, the record's mail_root, is gone, in a full
 close a record whose window no pane carries on a terminal item, or a record
 whose host kind declares stop=none, in any state, which the close ends on this
 machine alone (the stop=none paragraph below).
+Codex's rate-limit-switch reminder takes the same completion checks as idle.
 The lane's own close-out removes its worktree, so its idle lane closes
 as finished work. If a later failed check reopens the item, its files stay,
 and the host close passes no --merged, as for any item the tracker holds open.
@@ -163,7 +172,10 @@ a hosted lane's .git through lane-host cat, as oversee-watch reads it before
 its own close of a merged hosted lane, and a read that fails refuses as
 worktree-read-failed.
 A Pi lane read unjudged also closes when its record carries the merge cycle
-and its worktree is gone. Every other unjudged lane refuses as lane-live.
+and its worktree is gone, on a host whose capture verb reads its pane too
+where that read and the harness status read both succeed. Every other
+unjudged lane refuses as lane-live, or as pane-read-failed where that
+capture verb read it.
 A limit banner below the lane's last turn is passed over only where
 `lanes pick --lane`, run under the record's host, so a hosted lane is read
 through the provider's copy, reads the account the record names as room, for
@@ -171,7 +183,9 @@ the model the record names or over the whole account where it names none, and
 the banner names no dated reset still ahead and no reset this host cannot
 resolve; the lane is then judged by the rest of its screen. Every other
 reading keeps the lane walled.
-An idle lane's harness is ended by SIGTERM, never by typing into its pane:
+Copilot first receives /exit, after C-c clears or cancels its current input.
+It shares the pane-exit grace below; failed input or a timeout takes SIGTERM.
+Other harnesses start with SIGTERM:
 through lane-host stop for a record carrying host, and for a local lane by the
 same stop against the launch identity the record's launch names, the harness
 pid and its start time open-terminal read once the launch was confirmed. A
@@ -273,7 +287,7 @@ lane's checked-out branch and head; the merge queue holds it, read through gh ap
 isInMergeQueue or a mergeQueueEntry, or, outside the queue, auto-merge is
 armed on it and it reads mergeStateStatus CLEAN, which is GitHub reporting
 every required check green on the current head and nothing else blocking; and
-it gets no attention line from the review-gate reducer pr-watch.sh, whose
+it gets no attention line from the github skill's reducer pr-watch.sh, whose
 silence means no open thread, no objection and no disarmed or stale-review
 line; pr-watch.sh --help holds the exact condition. The silence is no proof of
 approval, since an unapproved PR inside its quiet period is silent too: the
@@ -286,7 +300,7 @@ entry by then, so autoMergeRequest is null for the whole wait; the merge state i
 alone. A lane still inside a CI or gate wait after a push is neither queued
 nor CLEAN, or gets an attention line, and is never parked. The reducer is the
 one OVERSEE_WATCH_PR_WATCH names, as it is for oversee-watch, and the
-review-gate skill beside this one otherwise. Admitted, the park ends the
+github skill's watcher beside this one otherwise. Admitted, the park ends the
 harness by signal as a close does,
 whatever the lane is doing, waits for its pane to read exited, closes the
 window, then stops the sandbox through lane-host stop-sandbox and requires its
@@ -312,11 +326,13 @@ or mismatched evidence refuses. A queue
 park whose remote Git read fails may use the item's workflow-state branch;
 its admission or refusal names branch-source=workflow-state.
 --park --until-pr N selects another OPEN PR in the same repository as the
-resume prerequisite. --pr is optional there and retains the lane's own PR
-identity. Branch, queue, CLEAN and reducer checks apply only to a queue park.
+resume prerequisite. OWNER/REPO#N selects an OPEN PR in that repository.
+The repository must be the lane's own or listed in ORCH_CONNECTED_REPOS.
+--pr is optional there and retains the lane's own PR identity. Branch, queue, CLEAN and reducer checks apply only to a queue park.
 The dependency park retains until_pr beside head, repo, at and the optional
-own pr. Its own PR merge does not clear the wait. The watch reports the
-dependency's merge as parked-merged and its unmerged close as parked-closed.
+own pr. A qualified reference also retains until_repo for the dependency.
+A bare number keeps the existing record shape. Its own PR merge does not
+clear the wait. The watch reports the dependency's merge as parked-merged and its unmerged close as parked-closed.
 
 The record's worktree must stand: a removed-worktree answer to the stop
 refuses as stop-failed, as it does under --keep-sandbox.
@@ -395,6 +411,7 @@ TERMINAL_MODE=close
 PARK=false
 PARK_PR=""
 PARK_UNTIL_PR=""
+PARK_UNTIL_REPO=""
 OPT_HARNESS=""
 OPT_TRACKER=""
 OPT_REPO=""
@@ -436,6 +453,11 @@ if [[ "$PARK" == true && -z "$PARK_PR$PARK_UNTIL_PR" || "$PARK" == false && -n "
   message missing-value "option=--park" "requires=--pr" >&2; usage >&2; exit 2
 fi
 [[ -z "$PARK_PR" || "$PARK_PR" =~ ^[1-9][0-9]*$ ]] || { message missing-value "option=--pr" "value=$PARK_PR" >&2; exit 2; }
+# Qualified dependency references come from the overseer's park request.
+if [[ "$PARK_UNTIL_PR" =~ ^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#([1-9][0-9]*)$ ]]; then
+  PARK_UNTIL_REPO="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')"
+  PARK_UNTIL_PR="${BASH_REMATCH[2]}"
+fi
 [[ -z "$PARK_UNTIL_PR" || "$PARK_UNTIL_PR" =~ ^[1-9][0-9]*$ ]] || { message missing-value "option=--until-pr" "value=$PARK_UNTIL_PR" >&2; exit 2; }
 if [[ "$TERMINAL_MODE" != close ]]; then
   [[ "$KEEP_SANDBOX" == false && "$PARK" == false ]] \
@@ -685,7 +707,7 @@ tracker_read() { # OUT_VAR COMMAND...
 TRACKER_CAUSE=""
 ITEM_END=""
 tracker_terminal() {
-  local value number state reason pr_repo pr_number pr_numbers description checklist pending_pr=null
+  local value number state reason pr_repo pr_number pr_rows description checklist pending_pr=null
   TRACKER_CAUSE=""
   if [[ "$TERMINAL_MODE" != close ]]; then
     # A resumed sandbox can be stopped or running while its PR is still open.
@@ -699,9 +721,12 @@ tracker_terminal() {
     # lane's own PR stays OPEN. Both retained waits must permit terminal close.
     pr_repo="$(jq -er '.repo | strings | select(length > 0)' <<<"$pending_pr")" \
       || { TRACKER_CAUSE=parked-record-invalid; return 2; }
-    pr_numbers="$(jq -er '[.pr, .until_pr] | map(select(. != null)) | if length > 0 and all(.[]; type == "number" and . > 0) then unique[] else error("parked-record-invalid") end' <<<"$pending_pr")" \
+    pr_rows="$(jq -er '[{repo: .repo, pr: .pr}, {repo: (.until_repo // .repo), pr: .until_pr}]
+      | map(select(.pr != null))
+      | if length > 0 and all(.[]; (.pr | type) == "number" and .pr > 0 and (.repo | type) == "string" and (.repo | length) > 0)
+        then unique[] | [.repo, .pr] | @tsv else error("parked-record-invalid") end' <<<"$pending_pr")" \
       || { TRACKER_CAUSE=parked-record-invalid; return 2; }
-    while IFS= read -r pr_number; do
+    while IFS=$'\t' read -r pr_repo pr_number; do
       tracker_read state env -u GH_REPO -u GITHUB_REPOSITORY gh pr view "$pr_number" --repo "$pr_repo" --json state --jq '.state' \
         || { TRACKER_CAUSE=pr-read-failed; return 2; }
       case "$state" in
@@ -709,7 +734,7 @@ tracker_terminal() {
         MERGED|CLOSED) ;;
         *) TRACKER_CAUSE=pr-state-invalid; return 2 ;;
       esac
-    done <<<"$pr_numbers"
+    done <<<"$pr_rows"
   fi
   case "$tracker" in
     linear)
@@ -754,6 +779,7 @@ tracker_terminal() {
         --jq '.state + " " + (.stateReason // "")' \
         || { TRACKER_CAUSE=read-failed; return 2; }
       read -r state reason <<<"$value"
+      if [[ "$state" == MERGED ]]; then ITEM_END=completed; return 0; fi
       [[ "$state" == CLOSED ]] || return 1
       # Only COMPLETED says the work shipped. NOT_PLANNED, DUPLICATE and an
       # issue closed before GitHub recorded a reason all end it unshipped.
@@ -792,14 +818,14 @@ fi
 # away, the queue's own membership standing for every required check green
 # since nothing enters it otherwise, and mergeStateStatus CLEAN saying the
 # same for an armed pull request outside the queue, and both standing for the
-# approval the base requires; and the review-gate reducer, whose silence means no open thread, no
+# approval the base requires; and the github skill's reducer, whose silence means no open thread, no
 # objection and no disarmed or stale-review line (pr-watch.sh --help holds the
 # exact condition), never an approval. Nothing here counts a check or a thread
 # itself. Each refusal names the
 # condition it stopped on and changes nothing.
 # Dependency parks use only the provider, OPEN dependency and lane evidence.
 # PARK_HEAD and PARK_REPO carry what the record will hold.
-PR_WATCH="${OVERSEE_WATCH_PR_WATCH:-$SCRIPT_DIR/../../review-gate/scripts/pr-watch.sh}"
+PR_WATCH="${OVERSEE_WATCH_PR_WATCH:-$SCRIPT_DIR/../../github/scripts/pr-watch.sh}"
 PARK_QUEUE_QUERY='query($owner: String!, $repo: String!, $number: Int!) { repository(owner: $owner, name: $repo) { pullRequest(number: $number) { isInMergeQueue mergeQueueEntry { position } } } }'
 # The queue answer as a word: a payload without the boolean is unparsed.
 PARK_QUEUE_JQ='.data.repository.pullRequest | if (.isInMergeQueue | type) != "boolean" then error("queue-field field=isInMergeQueue") elif .isInMergeQueue or .mergeQueueEntry != null then "yes" else "no" end'
@@ -853,7 +879,7 @@ park_worktree_read() {
   return "$rc"
 }
 park_judge() {
-  local err view fields pr_state pr_head pr_branch armed merge_state queue queued out rc=0 kinds target clean
+  local err view fields pr_state pr_head pr_branch armed merge_state queue queued out rc=0 kinds target clean target_repo connected
   [[ -n "$host" ]] || { message park-refused "item=$ITEM" "reason=local" >&2; exit 1; }
   [[ -x "$LANE_HOST" ]] || { message record-invalid "item=$ITEM" "field=lane-host" >&2; exit 1; }
   err="$(mktemp)" || { message park-refused "item=$ITEM" "reason=provider-unsupported" "cause=stderr-unsaved" >&2; exit 1; }
@@ -869,10 +895,20 @@ park_judge() {
     tracker_read PARK_REPO env -u GH_REPO -u GITHUB_REPOSITORY gh repo view --json nameWithOwner --jq .nameWithOwner \
       || { message park-refused "item=$ITEM" "reason=repo-unresolved" >&2; exit 1; }
   fi
+  target_repo="${PARK_UNTIL_REPO:-$PARK_REPO}"
+  if [[ -n "$PARK_UNTIL_REPO" ]]; then
+    source "$SCRIPT_DIR/lib/gh-repo.sh"
+    connected="$(orch_connected_repos "$PARK_REPO")" \
+      || { message park-refused "item=$ITEM" reason=connected-repos-unread >&2; exit 1; }
+    if [[ "$PARK_UNTIL_REPO" != "$(printf '%s' "$PARK_REPO" | tr '[:upper:]' '[:lower:]')" ]] \
+        && ! grep -qxF -- "$PARK_UNTIL_REPO" <<<"$connected"; then
+      message park-refused "item=$ITEM" reason=repo-unwatched "repo=$PARK_UNTIL_REPO" >&2; exit 1
+    fi
+  fi
   target="${PARK_UNTIL_PR:-$PARK_PR}"
-  tracker_read view env -u GH_REPO -u GITHUB_REPOSITORY gh pr view "$target" --repo "$PARK_REPO" \
+  tracker_read view env -u GH_REPO -u GITHUB_REPOSITORY gh pr view "$target" --repo "$target_repo" \
       --json state,headRefOid,headRefName,autoMergeRequest,mergeStateStatus \
-    || { message park-refused "item=$ITEM" "reason=pr-read-failed" "pr=$target" "repo=$PARK_REPO" >&2; exit 1; }
+    || { message park-refused "item=$ITEM" "reason=pr-read-failed" "pr=$target" "repo=$target_repo" >&2; exit 1; }
   # One tab-separated line, the arm read as a word: a null autoMergeRequest is
   # a pull request nothing will merge unless the queue holds it.
   fields="$(jq -r '[.state, .headRefOid, .headRefName, (if .autoMergeRequest == null then "no" else "yes" end), .mergeStateStatus] | @tsv' <<<"$view" 2>/dev/null)" \
@@ -956,8 +992,8 @@ park_sandbox() {
   fi
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   "$WORKFLOW_STATE" ${STATE_ARGS[@]+"${STATE_ARGS[@]}"} update oversee \
-    --arg item "$ITEM" --arg pr "$PARK_PR" --arg until "$PARK_UNTIL_PR" --arg head "$PARK_HEAD" --arg repo "$PARK_REPO" --arg at "$at" \
-    'if any(.lanes[]; .item == $item) then (.lanes[] | select(.item == $item)) |= (.status = "parked" | .parked = ({head: $head, repo: $repo, at: $at} + (if $pr == "" then {} else {pr: ($pr | tonumber)} end) + (if $until == "" then {} else {until_pr: ($until | tonumber)} end)) | del(.pending_pr)) else error("lane record disappeared") end' \
+    --arg item "$ITEM" --arg pr "$PARK_PR" --arg until "$PARK_UNTIL_PR" --arg until_repo "$PARK_UNTIL_REPO" --arg head "$PARK_HEAD" --arg repo "$PARK_REPO" --arg at "$at" \
+    'if any(.lanes[]; .item == $item) then (.lanes[] | select(.item == $item)) |= (.status = "parked" | .parked = ({head: $head, repo: $repo, at: $at} + (if $pr == "" then {} else {pr: ($pr | tonumber)} end) + (if $until == "" then {} else {until_pr: ($until | tonumber)} end) + (if $until_repo == "" then {} else {until_repo: $until_repo} end)) | del(.pending_pr)) else error("lane record disappeared") end' \
     >/dev/null || { message state-write-failed "item=$ITEM" "status=parked" >&2; exit 1; }
   [[ "$PARK_BRANCH_SOURCE" == worktree ]] || fields+=("branch-source=$PARK_BRANCH_SOURCE")
   message parked "${fields[@]}" "head=$PARK_HEAD" "status=parked"
@@ -1105,25 +1141,6 @@ refuse_listed_launch_pane() {
   esac
 }
 
-# The close row keeps the session and account after a later launch rewrites
-# the lane record. A last directive's readings stay in that same row.
-# The record already reads done and keeps directive_send, so a row that cannot
-# be written refuses as fleet-log-failed with nothing else to undo.
-log_send_cause() {
-  local row file
-  row="$(jq -c --arg item "$ITEM" '
-    {kind: "close", item: $item, text: ("cloud lane closed; session=\(.session_id // "none") account=\(.account // "none")"
-      + (.directive_send | if type == "object" then " send=\(.result) "
-        + (.credit | if type == "object" then "credit=\(.remaining_dollars // "none") locked=\(.locked_reason // "none")" else "credit=unread" end)
-        + " cli=\(.text | gsub("\\s+"; " ") | .[0:300])" else "" end))}' <<<"$record")" \
-    || { message record-invalid "item=$ITEM" "field=directive_send" >&2; exit 1; }
-  file="$(mktemp)" || { message fleet-log-failed "item=$ITEM" "cause=scratch-unmade" >&2; exit 1; }
-  printf '%s\n' "$row" > "$file"
-  "$WORKFLOW_STATE" ${STATE_ARGS[@]+"${STATE_ARGS[@]}"} append-file oversee fleet_log "$file" >/dev/null \
-    || { rm -f -- "$file"; message fleet-log-failed "item=$ITEM" "cause=append" >&2; exit 1; }
-  rm -f -- "$file"
-}
-
 # The record's host kind declares whether this machine can stop its lane. A
 # stop=none kind, a Claude cloud session, has no harness or sandbox to reach
 # and no mailbox to ask: the close removes the item's files, then closes the
@@ -1152,7 +1169,14 @@ case "$host_stop" in
     [[ -x "$WORKTREE" ]] || { message helper-missing "item=$ITEM" "path=$WORKTREE" >&2; exit 1; }
     "$WORKTREE" remove "$mail_root" >&2 || { message worktree-remove-failed "item=$ITEM" "path=$mail_root" >&2; exit 1; }
     update_status done || { message state-write-failed "item=$ITEM" "status=done" >&2; exit 1; }
-    log_send_cause
+    if ! CLOUD_CLOSE_LOG_CAUSE="$(cloud_close_log "$record" ${STATE_ARGS[@]+"${STATE_ARGS[@]}"})"; then
+      if [[ "$CLOUD_CLOSE_LOG_CAUSE" == record-invalid ]]; then
+        message record-invalid "item=$ITEM" "field=directive_send" >&2
+      else
+        message fleet-log-failed "item=$ITEM" "cause=$CLOUD_CLOSE_LOG_CAUSE" >&2
+      fi
+      exit 1
+    fi
     lane_capability host_kind kind
     message host-kept "kind=$host_kind" "session=$(record_field session_id)"
     exit 0 ;;
@@ -1229,7 +1253,10 @@ if [[ -n "$pane_id" ]]; then
   # from a detached session that may already have disappeared.
   ORCH_LANE_HOST="${host:-local}" lane_state state listed "$pane_cmd" "$pane_pid" "$pane_screen" "" "" "" "$hosted_item" "$harness" "$hosted_source" \
     || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
-  [[ "$host_pane" != verb || "$state" != unjudged ]] || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
+  # A Pi pane with no idle marker reads unjudged off a capture that worked;
+  # the state switch below closes it only on the record's merge with its
+  # worktree gone. A failed status or capture read is no observation at all.
+  [[ "$host_pane" != verb || "$state" != unjudged || ( "$harness" == pi && "$LANE_PANE_SOURCE" == provider ) ]] || { message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1; }
   pane_screen="$LANE_PANE_SCREEN" hosted_source="$LANE_PANE_SOURCE"
 else
   # A window gone with its work finished, a tmux restart or a reboot among the
@@ -1329,9 +1356,9 @@ fi
 
 case "$state" in
   exited | windowless) ;;
-  idle | unjudged)
+  idle | rate-limit-switch | unjudged)
     tracker_rc=1
-    if [[ "$state" == idle ]]; then
+    if [[ "$state" != unjudged ]]; then
       tracker_rc=0
       tracker_terminal || tracker_rc=$?
     elif [[ "$harness" != pi ]]; then
@@ -1372,8 +1399,8 @@ pane_now_exited() {
   [[ "$current_state" == exited ]]
 }
 
-# The harness is ended by signal to its own process, never by keystrokes into
-# its pane. A hosted lane is signalled by its provider, which alone reaches the
+# Copilot's /exit writes its session totals before the signal fallback.
+# A hosted lane is signalled by its provider, which alone reaches the
 # host's process table; a local lane by the same library stop against the
 # launch identity its record names, or one read off its pane where it names
 # none or a stale one, then the turn its record's wake names (lib/lane-state.sh
@@ -1394,6 +1421,26 @@ stop_answered_worktree_removed() { # STDERR_FILE
 }
 stop_harness() {
   local out err rc=0 removed=false wake_pid wake_start fields=("item=$ITEM" "harness=$harness")
+  if [[ "$harness" == copilot && -n "$pane_id" ]]; then
+    source "$SCRIPT_DIR/lib/pane-write.sh"
+    local kind=pane target="$pane_id" expect=copilot
+    if [[ "$host_pane" == verb ]]; then kind=host target="$ITEM"
+    elif [[ -n "$host" ]]; then expect=ssh; fi
+    if ORCH_LANE_HOST="${host:-local}" pane_write "$kind" "$target" "$expect" key C-c; then
+      ORCH_LANE_HOST="${host:-local}" pane_write "$kind" "$target" "$expect" text /exit || :
+      while [[ "$passes" -gt 0 ]]; do
+        rc=0; pane_now_exited || rc=$?
+        case "$rc" in
+          0) STOPPED_COUNT=0; return 0 ;;
+          1) ;;
+          *) message pane-read-failed "item=$ITEM" "pane=$pane_id" >&2; exit 1 ;;
+        esac
+        passes=$((passes - 1))
+        sleep 0.2
+      done
+    fi
+  fi
+  rc=0
   if [[ -n "$host" ]]; then
     [[ -x "$LANE_HOST" ]] || { message record-invalid "item=$ITEM" "field=lane-host" >&2; exit 1; }
     err="$(mktemp)" || { message stop-failed "${fields[@]}" "cause=stderr-unsaved" >&2; exit 1; }
@@ -1439,9 +1486,9 @@ stop_harness() {
   fi
 }
 
-# End the harness by signal and wait for its pane to read exited, for an idle
-# lane's close and for a park alike; a park's lane is working, and the
-# signal is the same. A skipped stop, or no pane to wait on, ends the close-out.
+# End the harness and wait for its pane to read exited, for an idle
+# lane's close and for a park alike. A skipped stop, or no pane to wait on,
+# ends the close-out.
 stop_and_await_exit() {
   case "$harness" in
     claude|codex|pi|copilot) ;;
@@ -1451,9 +1498,9 @@ stop_and_await_exit() {
   close_secs="${ORCH_LANE_CLOSE_SECS:-15}"
   [[ "$close_secs" =~ ^[1-9][0-9]*$ ]] \
     || { message record-invalid "item=$ITEM" "field=ORCH_LANE_CLOSE_SECS" >&2; exit 1; }
+  passes=$((close_secs * 5))
   stop_harness
   [[ "$STOP_SKIPPED" == false && -n "$pane_id" ]] || finish_close
-  passes=$((close_secs * 5))
   while :; do
     rc=0
     pane_now_exited || rc=$?

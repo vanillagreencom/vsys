@@ -154,7 +154,9 @@ Dependencies:
   their dependencies. npm install there removes the link and installs locally,
   leaving main intact. To keep a private install, remove its node_modules path
   from WORKTREE_SYMLINKS. Otherwise setup restores the link and removes the
-  private install. Keep the link only for projects that accept it.
+  private install. Setup removes a dropped entry's recorded link only when
+  it still points at main's copy. Real paths and foreign links stay in place.
+  Keep the link only for projects that accept it.
   Limitation: linked node_modules
   resolves pnpm workspace dependencies (workspace:/link:) to main's source, so
   a worktree's checks see main's copy of sibling packages.
@@ -557,6 +559,28 @@ print_push_help() {
   worktree_message help push
   cat <<'EOF'
 Usage: worktree push [ID|/path] [--set-upstream|-u] [--no-rebase]
+       worktree push [ID|/path] --prepare-base
+       worktree push [ID|/path] --to-base BASE_OID
+
+Base delivery: --prepare-base fetches origin/<default>, rebases onto it even
+with a merge queue, and folds all item commits into one normal commit with
+commit hooks. Its tree must equal the pre-fold tree. A hook refusal restores
+the item head and preserves hook edits in the index. Repair the finding and
+prepare again. A hook-changed tree refuses before validation or publication.
+Each rewritten commit is mapped through the existing rebase-map channel.
+It pushes nothing and prints:
+  prepared-base: base=BRANCH before=BASE_OID commit=SHA
+
+Validate that final head locally before --to-base BASE_OID. This transport
+fetches origin/<default> again and refuses worktree-push-base-conflict when
+it differs from BASE_OID or is absent from the item head. It never rebases.
+It requires a clean item branch with one commit above that base. It pushes
+that exact commit to origin refs/heads/<default>, never with force or lease.
+A concurrent base push refuses worktree-push-base-rejected. Restack, prepare
+and validate again after either refusal. Success prints:
+  pushed-base: base=BRANCH before=BASE_OID commit=SHA at=UTC
+UTC is captured after the successful push. Neither base mode accepts
+--no-rebase, --set-upstream or the other base mode. Both need a full checkout.
 
 Push worktree branch to remote.
 Uses BOT_REMOTE_NAME from project config if set, otherwise falls back to
@@ -780,13 +804,14 @@ Symlink entries that shadow tracked content:
 
 info/exclude entries:
   The ignore entry setup writes for each symlinked path goes into the COMMON
-  git dir's info/exclude, which every checkout reads. New entries use '/<path>'.
+  git dir's info/exclude, which every checkout reads. Entries use '/<path>'.
   The leading slash limits the entry to the repository root. When the path
   holds tracked content, setup follows the entry with '!/<path>/' (a trailing-slash
   pattern matches a real directory but NOT a symlink pointing at one).
   Runtime-only paths keep the plain entry. The shape is re-evaluated on every
-  create/fix-links against both indexes, either one enough. Existing bare
-  patterns and other rules are preserved.
+  create/fix-links against both indexes, either one enough. Exact bare rules
+  and bare negations for configured WORKTREE_SYMLINKS entries are anchored
+  before a missing source or a healthy link can skip setup. Other rules stay.
 
 Git-hook auto-repair:
   create and fix-links install shared post-checkout, post-merge, and

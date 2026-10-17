@@ -55,6 +55,7 @@ parse_argv() {
   WAKE=false
   WAIT_SLOT=false
   OVER_CAP=false
+  LIVE_DISPLAY=false
   ITEMS=()
 
   while [[ $# -gt 0 ]]; do
@@ -87,6 +88,7 @@ parse_argv() {
       --wake) WAKE=true; shift ;;
       --wait-slot) WAIT_SLOT=true; shift ;;
       --over-cap) OVER_CAP=true; shift ;;
+      --live-display) LIVE_DISPLAY=true; shift ;;
       # The bare word too, so the form a caller learned on a sibling orch CLI
       # answers here rather than reaching the loader. `help` is not a work item.
       --help | -h | help) usage; exit 0 ;;
@@ -120,6 +122,15 @@ CLAIM_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 export CLAIM_ROOT
 # shellcheck source=lib/kendex-env.sh
 source "$SCRIPT_DIR/lib/kendex-env.sh"
+# The Linear credentials this launcher inherited, named before its checkout's
+# load can add that checkout's: linear_team_key drops only the added ones. The
+# load keeps every inherited value, so the names are all it needs.
+linear_credentials=(LINEAR_APP_TOKEN LINEAR_CLIENT_ID LINEAR_CLIENT_SECRET LINEAR_API_KEY)
+inherited_linear_credentials=" "
+for name in "${linear_credentials[@]}"; do
+  [[ -z "${!name+set}" ]] || inherited_linear_credentials+="$name "
+done
+unset name
 kendex_load_project_env "$PROJECT_ROOT"
 # shellcheck source=lib/gh-repo.sh
 source "$SCRIPT_DIR/lib/gh-repo.sh"
@@ -150,6 +161,8 @@ source "$SCRIPT_DIR/lib/lane-relaunch.sh"
 source "$SCRIPT_DIR/lib/lane-cap.sh"
 # shellcheck source=lib/lane-capabilities.sh
 source "$SCRIPT_DIR/lib/lane-capabilities.sh"
+# shellcheck source=lib/cloud-close-log.sh
+source "$SCRIPT_DIR/lib/cloud-close-log.sh"
 WORKTREE_CLI="${WORKTREE_CLI:-$SKILLS_DIR/worktree/scripts/worktree}"
 # `worktree create --reuse --keep-on-conflict` handed back a tree whose rebase
 # conflicted, unrebased (`worktree create --help`).
@@ -169,6 +182,10 @@ LANE_SSH_PROMPT_DEFAULT=60
 LANE_SSH_PROMPT_SECS="${ORCH_LANE_SSH_PROMPT_SECS:-$LANE_SSH_PROMPT_DEFAULT}"
 
 parse_argv "$@"
+[[ "$LIVE_DISPLAY" != true ]] || lane_launch_keep_live_session
+# Each item starts from this scrub; lane_live_display_apply changes it for a
+# woken item alone.
+LAUNCH_SCRUB_BASE=("${LANE_LAUNCH_SCRUB[@]}")
 # The threshold is FORWARDED, never defaulted here: `lanes` owns the bound, its
 # default and ORCH_LANE_MAX_PCT, and a second default in this script is what let
 # a pick typed from the oversee directive refuse an account this gate allowed.
@@ -215,14 +232,23 @@ if [[ -z "$LANE_HOST" ]]; then
   [[ "$host_rc" -eq 0 ]] || { ot_message host-resolve-failed "exit=$host_rc" >&2; exit 1; }
 fi
 preference_host="$LANE_HOST"
-# Prints the record `lanes pick --json` judged the lane on; pick_record_env
-# reads the launch prefix from it.
+# Prints the `lanes pick --json` record for pick_record_env.
+# Returns the helper's status, or local status 6 when a successful API-credit
+# pick conflicts with the requested harness pool.
 pick_auto_lane() {
-  local model_args=() state_env=()
+  local model_args=() state_env=() pick_harness="$LANE_HARNESS" record rc=0
+  # An explicit auto pool cannot substitute plan room for Pi API credit.
+  # Preference entries already name the harness whose model they spend.
+  if [[ "$PREFERENCE_ACTIVE" != true && "$(lane_pick_pool "$LAUNCH_HARNESS" "$LAUNCH_MODEL")" == api-credit ]]; then
+    pick_harness="$LAUNCH_HARNESS"
+  fi
   [[ -z "$LAUNCH_MODEL" ]] || model_args=(--model "$LAUNCH_MODEL")
   [[ "$FLEET" != true ]] || state_env=("ORCH_STATE_DIR=$STATE_DIR")
-  env ${state_env[@]+"${state_env[@]}"} ORCH_LANE_HOST="$LANE_HOST" "$LANES_CLI" pick --harness "$LANE_HARNESS" \
-    ${LANE_PCT_ARGS[@]+"${LANE_PCT_ARGS[@]}"} ${model_args[@]+"${model_args[@]}"} "$@" --json
+  record="$(env ${state_env[@]+"${state_env[@]}"} ORCH_LANE_HOST="$LANE_HOST" "$LANES_CLI" pick --harness "$pick_harness" \
+    ${LANE_PCT_ARGS[@]+"${LANE_PCT_ARGS[@]}"} ${model_args[@]+"${model_args[@]}"} "$@" --json)" || rc=$?
+  printf '%s\n' "$record"
+  [[ "$rc" -eq 0 ]] || return "$rc"
+  [[ "$pick_harness" == "$LANE_HARNESS" ]] || return 6
 }
 # The prefix `lanes pick` prints without --json, through the same
 # lib/lane-launch.sh mapping on the same harness, account and model.
@@ -359,6 +385,13 @@ if [[ "$WAKE" != true && -n "${ORCH_LANE_PREFERENCE:-}" \
   fi
   OL_WALK_SOURCE_HARNESS="$preference_harness" OL_WALK_SOURCE_FLAGS="${preference_input[*]+${preference_input[*]}}"
 fi
+# Every `lanes` read below prints no model line (lib/overseer-launch.sh §
+# OL_LINES_HELD). This launch prints those lines only for the entry
+# preference_select's walk picks (ol_model_line); a launch whose text names its
+# model prints none, since that model reaches the harness as written. Set
+# after the preference walk's source of that file, which reads the hold before
+# it exports it.
+export ORCH_MODEL_LINES_HELD=1
 
 # One owner chooses and rebuilds a preference launch from the original input.
 # Permission eligibility and flag translation belong to the overseer walk.
@@ -369,7 +402,9 @@ preference_select() {
   fi
   PREFERENCE_ENTRY="" PREFERENCE_LANE_ENV=""
   for preference_entry in "${OL_ENTRIES[@]}"; do
-    ol_entry_model "$preference_entry"
+    ol_entry_model "$preference_entry" || {
+      ot_message preference-class-unread "entry=$preference_entry" >&2; printf '%s\n' "$OL_CLASS_ERR" >&2; return 1;
+    }
     OL_HARNESS="$OL_ENTRY_HARNESS" OL_WALK_SKIPS=()
     if ! ol_entry_permitted "$preference_entry"; then
       ot_message entry-permission-untransferable "entry=$preference_entry" \
@@ -377,7 +412,7 @@ preference_select() {
       continue
     fi
     LANE_HOST="${OL_ENTRY_HOST:-$preference_host}"
-    LANE_HARNESS="$OL_ENTRY_HARNESS" LAUNCH_MODEL="$OL_ENTRY_MODEL"
+    LANE_HARNESS="$OL_ENTRY_HARNESS" LAUNCH_MODEL="$OL_ENTRY_MODEL" LAUNCH_CLASS="$OL_ENTRY_CLASS"
     lane_capabilities_read "$SCRIPT_DIR/lane-host" "$LANE_HOST" "${PROJECT_ROOT:-$PWD}" || {
       ot_message host-capabilities-failed "host=$LANE_HOST" >&2; return 1;
     }
@@ -404,6 +439,7 @@ preference_select() {
     esac
   done
   [[ -n "$PREFERENCE_ENTRY" ]] || { ot_message lane-unavailable "walk=$ORCH_LANE_PREFERENCE" >&2; return 1; }
+  ol_model_line "$OL_ENTRY_WARNING"
   ol_launch_flags --question-off "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" "$OL_ENTRY_EFFORT" \
     "$OL_ENTRY_MODEL" "$preference_harness" ${preference_input[@]+"${preference_input[@]}"} || {
     ot_message lane-resolution-failed "entry=$PREFERENCE_ENTRY" "step=$OL_REASON" >&2; return 1;
@@ -461,10 +497,6 @@ lane_capability HOST_KIND kind
 lane_capability HOST_LAUNCH launch
 lane_capability HOST_PANE pane
 host_launch_judge() {
-  if [[ "$HOST_PANE" == verb && "$RELAUNCH" == true ]]; then
-    ot_message host-relaunch-deferred "host=$LANE_HOST" pane=verb follow-up=KEN-3996 >&2
-    return 1
-  fi
 case "$HOST_LAUNCH" in
   window | ssh) ;;
   cloud-session)
@@ -620,8 +652,7 @@ LANE_SPEC_HARNESS=""
 #
 # --harness wins where both are given: the harness command is built for THAT
 # flag, so it is the harness that will read the model word out of the launch
-# text. The pick keeps following the spec it was handed, which is a different
-# question — which account to open on — and is asked where that branch is.
+# text. The pick follows the spec where it names the pool the model spends.
 #
 # Empty only where NOTHING in the argv names a harness: a named config dir or
 # alias with no --harness. Such a launch carries its own argv in --cmd, no row
@@ -661,7 +692,7 @@ if [[ -n "$LANE" && -n "$(launch_choice_row "$LAUNCH_HARNESS")" ]]; then
   launch_choice_missing=false
   if [[ -z "$LAUNCH_MODEL" ]]; then
     ot_message launch-model-missing "harness=$LAUNCH_HARNESS" "lane=$LANE" \
-      "spellings=${LAUNCH_MODEL_SPELLINGS// /,}" >&2
+      "spellings=${LAUNCH_MODEL_SPELLINGS// /,}" ${LAUNCH_CLASS:+"class=$LAUNCH_CLASS"} >&2
     launch_choice_missing=true
   fi
   if [[ -n "$LAUNCH_EFFORT_SPELLINGS" && -z "$LAUNCH_EFFORT" ]]; then
@@ -1007,22 +1038,26 @@ pi_lane_root_apply() {
   fi
   [[ "$PI_GATE_DEFERRED" != true ]] || pi_local_gate
 }
-# The refusal for an `auto` pick `lanes` answered with RC, the fields after it
-# appended, by the account lane_pick_harness says the launch spends. Every one
-# stops the launch, and each names what answers it: 3 is no candidate with
-# room, which for the Copilot pool is every pool read at or above the
-# threshold, a pool the lane host read reopening at its binding_resets_at and a
-# stated one moving only when the owner restates it; 5 is a Pi pick where no
-# read measured any pool, a read to repair as the `fix=` line `lanes` printed
-# above says, or one on a provider nothing measures; anything else is lanes
-# failing, a failed accounts read that a retry can answer among them.
-auto_pick_refusal() { # RC [FIELD...]
-  local rc="$1"
-  shift
-  if [[ "$(lane_pick_pool "$LANE_HARNESS" "$LAUNCH_MODEL")" == api-credit ]]; then
+# Prints a refusal for pick_auto_lane's RC and RECORD, appending FIELDs.
+# Statuses 3 and 5 are account refusals. Status 6 is the local API-credit
+# pool mismatch. Other statuses are helper failures. The caller stops the launch.
+auto_pick_refusal() { # RC RECORD [FIELD...]
+  local rc="$1" record="$2" grant_refused
+  shift 2
+  if [[ "$(lane_pick_pool "$LANE_HARNESS" "$LAUNCH_MODEL")" == api-credit \
+     || "$(lane_pick_pool "$LAUNCH_HARNESS" "$LAUNCH_MODEL")" == api-credit ]]; then
+    if [[ "$rc" -eq 3 ]]; then
+      grant_refused="$(jq -r 'any(.refusals[]; .refusal.cause == "api-credit")' <<<"$record")" \
+        || { ot_message lane-resolution-failed step=pick-record "$@" >&2; return; }
+      if [[ "$grant_refused" == false ]]; then
+        ot_message lane-unavailable harness=pi "$@" >&2
+        return
+      fi
+    fi
     case "$rc" in
       3) ot_message lane-credit-refused cause=api-credit retry-at=none "$@" ;;
-      5) ot_message lane-provider-unmeasured "harness=$LANE_HARNESS" "model=${LAUNCH_MODEL:-none}" "$@" ;;
+      5) ot_message lane-provider-unmeasured harness=pi "model=${LAUNCH_MODEL:-none}" "$@" ;;
+      6) ot_message lane-pool-mismatch "lane=$LANE" "harness=$LAUNCH_HARNESS" pool=api-credit "$@" ;;
       *) ot_message lane-resolution-failed "exit=$rc" "$@" ;;
     esac >&2
     return
@@ -1231,7 +1266,7 @@ if [[ -n "$LANE" ]]; then
       if [[ -n "$PREFERENCE_ENTRY" ]]; then LANE_ENV="$PREFERENCE_LANE_ENV"
       else
         LANE_PICK_RECORD="$(pick_auto_lane)" || lane_rc=$?
-        [[ "$lane_rc" -eq 0 ]] || { auto_pick_refusal "$lane_rc"; exit 1; }
+        [[ "$lane_rc" -eq 0 ]] || { auto_pick_refusal "$lane_rc" "$LANE_PICK_RECORD"; exit 1; }
         LANE_ENV="$(pick_record_env "$LANE_PICK_RECORD")" || exit 1
       fi
       ;;
@@ -1396,7 +1431,7 @@ launch_ambient_codex_home() {
 # once and later launch writes keep it until close or a new park replaces it.
 UNPARK_JQ='def unpark($at): (if .parked.at == null then .
   else .pauses = ((.pauses // []) + [{from: .parked.at, to: $at, cause: "parked"}]) end)
-  | (if .parked == null then . else .pending_pr = (.parked | {pr, repo, head} + (if .until_pr == null then {} else {until_pr: .until_pr} end)) end) | del(.parked);'
+  | (if .parked == null then . else .pending_pr = (.parked | {pr, repo, head} + (if .until_pr == null then {} else {until_pr: .until_pr} end) + (if .until_repo == null then {} else {until_repo: .until_repo} end)) end) | del(.parked);'
 
 # One lane record per item in the oversee workflow state WORKFLOW_STATE_ARGS
 # addresses, which is what oversee-watch --state reads the live fleet from.
@@ -1416,9 +1451,9 @@ UNPARK_JQ='def unpark($at): (if .parked.at == null then .
 # window, so no write here inits by hand; a wake creates nothing and writes
 # into the state a launch already made. Every field the launch does not know is
 # null, never "": a reader tests presence, and a hosted lane is one whose host
-# is set. LAUNCH_PREPARE is recorded as `prepare`,
-# and any other launch or relaunch drops an earlier one, as it drops the
-# `parked` record a park left: the resumed lane is running again. A launch or
+# is set. LAUNCH_PREPARE is recorded as `prepare`, and --live-display as
+# `live_display`; any other launch or relaunch drops an earlier one, as it
+# drops the `parked` record a park left: the resumed lane is running again. A launch or
 # relaunch recording the lane running stamps `running_at` with the time it
 # does so, which a relaunch renews and a wake keeps: oversee-watch measures a
 # lane's start from it, never from launched_at, which a background
@@ -1429,7 +1464,7 @@ UNPARK_JQ='def unpark($at): (if .parked.at == null then .
 # never to one a relaunch retired. Every launch and relaunch writes `launch`,
 # the lane's launch identity lane-close stops its harness by: the window's pane
 # and tmux server pid, and a local lane's harness pid and start once its launch
-# is confirmed, null off tmux; a wake keeps it. A wake writes `wake`, the
+# is confirmed, or the shell that starts a local GUI session; a wake keeps it. A wake writes `wake`, the
 # identity of the detached turn it started, which lane-close stops before the
 # record reads done or stopped, null where none was read; every launch and
 # relaunch keeps it. `pick` is the LANE_PICK_RECORD reading the lane's account
@@ -1444,7 +1479,8 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
   # is the floor the watch applies to merges and new issues, and the model is
   # the one LAUNCH_MODEL judged the lane on, so the record names what ran.
   local mode="$1" item="$2" window="$3" mail_root="$4" session_id="$5" launched_at="$6" status="${7:-running}" rec host="" account="" surface=gui report record_repo
-  local running_at=""
+  local running_at="" record_model previous
+  record_model="$(launch_choice_model_id "$LAUNCH_HARNESS" "$LAUNCH_MODEL" launch)" || return 1
   [[ "$status" != running ]] || running_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   [[ "$LANE_HOST" == local ]] || host="$LANE_HOST"
   [[ -z "$LANE_ENV" ]] || account="${LANE_ENV#*=}"
@@ -1462,17 +1498,18 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
   [[ -n "$record_repo" ]] || record_repo="$CONNECTED_REPO"
   rec="$(jq -cn --arg item "$item" --arg tracker "$TRACKER" --arg repo "$record_repo" --arg harness "$LAUNCH_HARNESS" \
     --arg window "$window" --arg account "$account" --arg host "$host" \
-    --arg mail_root "$mail_root" --arg surface "$surface" --arg model "$LAUNCH_MODEL" --arg effort "$LAUNCH_EFFORT" --arg preference_entry "$PREFERENCE_ENTRY" \
+    --arg mail_root "$mail_root" --arg surface "$surface" --arg model "$record_model" --arg effort "$LAUNCH_EFFORT" --arg preference_entry "$PREFERENCE_ENTRY" \
     --arg session_id "$session_id" --arg launched_at "$launched_at" --arg status "$status" --argjson prepare "${LAUNCH_PREPARE:-null}" \
-    --arg over_cap "$CAP_PASSED" --arg running_at "$running_at" --argjson allow_all "${LAUNCH_ALLOW_ALL:-null}" \
+    --arg over_cap "$CAP_PASSED" --arg running_at "$running_at" --argjson allow_all "${LAUNCH_ALLOW_ALL:-null}" --argjson live_display "${LIVE_DISPLAY:-false}" \
     --argjson tier_record "$LAUNCH_TIER_RECORD" --arg pane "$LAUNCH_PANE" --arg server "$LAUNCH_SERVER" --arg kind "$HOST_KIND" \
     --arg harness_pid "${LAUNCH_HARNESS_ID%% *}" --arg harness_start "${LAUNCH_HARNESS_ID#* }" --argjson wake "${LAUNCH_WAKE:-null}" \
-    --argjson pick "${LANE_PICK_RECORD:-null}" \
+    --argjson pick "${LANE_PICK_RECORD:-null}" --argjson cloud_repo_access "${LAUNCH_REPO_ACCESS:-null}" \
     --arg recovery_cwd "$CLAIM_ROOT" --arg recovery_flags "$LAUNCH_FLAGS" --arg recovery_session "$LAUNCH_SESSION" --argjson recovery_refresh "$LANE_REFRESH" --arg custom "$CMD_TEMPLATE" \
     '{item: $item, tracker: $tracker, repo: $repo, harness: $harness, window: $window, account: $account, host: $host, kind: $kind, mail_root: $mail_root, surface: $surface, model: $model, effort: $effort, session_id: $session_id, session_since: $launched_at, launched_at: $launched_at, running_at: $running_at, status: $status, over_cap: $over_cap}
      | map_values(if . == "" then null else . end) + {allow_all: $allow_all} + $tier_record
        + {recovery: (if $custom != "" then null else {cwd: $recovery_cwd, flags: $recovery_flags, session: $recovery_session, refresh: $recovery_refresh} end)}
        + (if $preference_entry == "" then {} else {preference_entry: $preference_entry} end)
+       + (if $live_display then {live_display: true} else {} end)
        + (if $pick == null then {} else {pick: ($pick | {account: .config_dir, binding_bucket, claims,
            burn_pct_per_lane_hour, session_burn_pct_per_lane_hour, session_charge_hours,
            binding_projected_headroom_pct, session_projected_headroom_pct, projected_headroom_pct, selection_score})} end)
@@ -1480,9 +1517,29 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
            {harness: $prepare.harness, account: ($prepare.account | sub("^[^=]*="; "")), model: $prepare.model, effort: $prepare.effort}
          else {} end)
        + (if $prepare == null or ($prepare.step == "selection" and $status == "running") then {} else {prepare: $prepare} end)
-       + {launch: (if $pane == "" then null else {pane: $pane, server: $server, pid: $harness_pid, start: $harness_start}
+       + {launch: (if $pane == "" and $harness_pid == "" then null else {pane: $pane, server: $server, pid: $harness_pid, start: $harness_start}
          | map_values(if . == "" then null else . end) | (.pid, .server) |= (if . == null then null else tonumber end) end)}
-       + (if $wake == null then {} else {wake: $wake} end)')" || return 1
+       + (if $wake == null then {} else {wake: $wake} end)
+       + (if $cloud_repo_access == null then {} else {cloud_repo_access: $cloud_repo_access} end)')" || return 1
+  # lane-close stamps done before appending its close row, so status cannot
+  # prove that the archive holds this session. Save only an unlogged cloud
+  # predecessor before replacement. A wake keeps the predecessor.
+  if [[ "$mode" != wake ]]; then
+    previous="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} get oversee \
+      '{lanes: (.lanes // []), fleet_log: (.fleet_log // [])}' | jq -c --arg item "$item" '
+        .fleet_log as $log
+        | .lanes[] | select(.item == $item and .kind == "claude-cloud")
+        | . as $lane
+        | {session: (.session_id // "none"), account: (.account // "none")} as $identity
+        | any($log[]; .kind == "close" and .item == $item
+            and ((.text | capture("session=(?<session>[^ ]+) account=(?<account>[^ ]+)")) == $identity)) as $logged
+        | select($logged | not)
+        | $lane')" || return 1
+    if [[ -n "$previous" ]]; then
+      CLOUD_CLOSE_LOG_CAUSE="$(cloud_close_log "$previous" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"})" \
+        || { ot_message cloud-close-log-failed "item=$item" "cause=$CLOUD_CLOSE_LOG_CAUSE" >&2; return 1; }
+    fi
+  fi
   # update-report, so the refusal and the write are one locked step: a wake
   # that names no entry leaves the state as it was and reports so.
   report="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} update-report oversee \
@@ -1491,8 +1548,8 @@ lane_record_write() { # MODE ITEM WINDOW MAIL_ROOT SESSION_ID LAUNCHED_AT [STATU
        | if $rec.over_cap == null then . else . + {over_cap: $rec.over_cap} end
        | if .status == "running" or .prepare.step == "selection" then . else del(.harness, .model, .effort, .preference_entry, .pick, .account, .session_id, .recovery) end else . end) as $patch
      | if any($l[]; .item == $rec.item)
-       then {state: (.lanes = ($l | map(if .item == $rec.item then (if $mode == "wake" then . else del(.prepare) | unpark($rec.launched_at)
-         | if $rec.status == "running" or $rec.prepare.step == "selection" then del(.preference_entry, .pick) else . end end) + $patch else . end))), report: "rewritten"}
+       then {state: (.lanes = ($l | map(if .item == $rec.item then (if $mode == "wake" then . else del(.prepare, .live_display) | unpark($rec.launched_at)
+         | if $rec.status == "running" or $rec.prepare.step == "selection" then del(.preference_entry, .pick) | del(.cloud_repo_access) else . end end) + $patch else . end))), report: "rewritten"}
        elif $mode == "wake" then {state: ., report: "unrecorded"}
        else {state: (.lanes = $l + [$rec]), report: "appended"} end' --argjson rec "$rec" --arg mode "$mode")" || return 1
   [[ "$report" != '"unrecorded"' ]] || return 2
@@ -1510,6 +1567,24 @@ lane_record_read() { # WT_ID FIELD
       '[.lanes[]? | objects | select(.item == "'"$1"'") | .'"$2"'] | first // "absent"')"; then
     ot_message state-read-failed "item=$1" >&2
     return 2
+  fi
+}
+
+# A wake reads the owner's live display from the lane record (live_display):
+# the woken turn is a new process the scrub would clear, and the overseer's
+# wake names no --live-display. A manual relaunch takes the option alone, as it
+# takes --lane-refresh, so one that drops a recorded declaration says so. Each
+# item starts from the launch's own scrub, so one item's record never reaches
+# the next.
+lane_live_display_apply() { # WT_ID ITEM
+  LANE_LAUNCH_SCRUB=("${LAUNCH_SCRUB_BASE[@]}")
+  [[ "$FLEET" == true && "$LIVE_DISPLAY" != true && ( "$WAKE" == true || "$RELAUNCH" == true ) ]] || return 0
+  lane_record_read "$1" live_display || return 1
+  [[ "$LANE_RECORD_VALUE" == true ]] || return 0
+  if [[ "$WAKE" == true ]]; then
+    lane_launch_keep_live_session
+  else
+    ot_message live-display-dropped "item=$2" >&2
   fi
 }
 
@@ -2426,10 +2501,17 @@ open_tmux() { # DIR TITLE CMD BRIEF [SSH_TARGET REMOTE_PATH]
   [[ -n "$LAUNCH_PANE" ]] || tmux_window_open "$dir" "$title" || return 1
   pane="$LAUNCH_PANE"
   if [[ -n "$target" && "${HOST_PANE:-local}" == verb ]]; then
+    if [[ "$host_command_restart" == pending ]]; then
+      host_harness_stop prior || return 1
+      host_command_restart=completed
+    fi
+    if [[ -n "$RELAUNCH_HANDOFF_DIR" ]]; then
+      ot_message session-retired "item=$title" "harness=$HARNESS"
+    fi
     # remote-prefix owns the detached sandbox session. The control process
     # holds no interactive terminal and the local window receives no input.
     HOST_PANE_LAUNCH=owned
-    ssh -T -o BatchMode=yes -- "$target" "$cmd" < /dev/null \
+    ssh -T -o BatchMode=yes -o "ConnectTimeout=$LANE_SSH_PROMPT_SECS" -- "$target" "$cmd" < /dev/null \
       || { ot_message host-exec-failed "item=$title" >&2; return 1; }
     local viewer viewer_rc=0
     viewer="$(host_transport viewer-prefix --item "$wt_id")" || viewer_rc=$?
@@ -2630,7 +2712,9 @@ open_gui() {
   # launcher runs: only the ghostty arm carries --title, and it is tried last.
   # The title is the item id, validated against GH_ISSUE_PATTERN before it
   # reaches here — the premise `cd '$dir'` already rests on.
-  local shell_cmd="printf '\033]0;%s\007' '$title'; cd '$dir' && $cmd"
+  # The lane's shell clears what the scrub lists, the terminal having kept the
+  # live session below.
+  local shell_cmd="unset ${LANE_LAUNCH_SCRUB[*]}; printf '\033]0;%s\007' '$title'; cd '$dir' && $cmd"
   launchable_dir "$dir" "$title" || return 1
   local -a launcher=()
   if [[ -n "${TERMINAL:-}" ]] && command -v "$TERMINAL" >/dev/null 2>&1; then
@@ -2650,7 +2734,9 @@ open_gui() {
   # carrying arguments — is otherwise substituted in silence.
   [[ -z "${TERMINAL:-}" || "$chosen" == "$TERMINAL" ]] ||
     ot_message terminal-fallback "requested=$TERMINAL" "selected=$chosen" "item=$title" >&2
-  run_detached /dev/null "${launcher[@]}"
+  # The terminal opens its window on the owner's desktop, so it keeps the live
+  # session the scrub would clear.
+  ( lane_launch_keep_live_session && run_detached /dev/null "${launcher[@]}" )
   ot_message terminal-opened "item=$title" "path=$dir"
 }
 
@@ -2783,8 +2869,9 @@ host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
 # relaunch starts fresh. Or the lane's handoff record stands,
 # by the one judge `workflow-state handoff-standing` owns, read through
 # lib/lane-state.sh: the lane handed its work to the record, so its session is
-# retired. Only a fresh start carries the record on, since ../workflows/start.md § 0
-# reads it and a resumed session never runs that step.
+# retired. Only a fresh start carries the record on: ../workflows/start.md § 0
+# reads it from the main checkout, and ../workflows/start-worktree.md § 1 step 3
+# runs that § 0 from a lane's worktree cwd. A resumed session runs neither.
 #
 # The handoff record is asked from the lane's worktree with no --state-dir and
 # that worktree named, the places the fresh start's § 0 reads it too: the
@@ -2801,25 +2888,35 @@ host_pi_gate() ( # ITEM WT_ID PI_ROOT REMOTE_ROOT
 # the harness; launch_finish reads that result.
 RELAUNCH_ROUTE=resume HOST_SELECTION_FILE="" RELAUNCH_HANDOFF_DIR=""
 host_harness_stop() { # [prior]
-  local rc=0 target="$HARNESS"
+  local rc=0 target="$HARNESS" out
   # Retirement precedes replacement of the record's harness. Cleanup follows
   # launch and must name the requested successor instead.
   if [[ "${1:-}" == prior && "$FLEET" == true ]]; then
     lane_record_read "$wt_id" harness || return 1
     [[ "$LANE_RECORD_VALUE" == absent ]] || target="$LANE_RECORD_VALUE"
   fi
-  host_transport stop --item "$wt_id" --harness "$target" || rc=$?
-  [[ "$rc" -ne 0 ]] || return 0
+  if [[ "${HOST_PANE:-local}" == verb ]]; then
+    out="$(host_transport stop --item "$wt_id" --harness "$target")" || rc=$?
+    if [[ "$rc" -eq 0 ]] && lane_recovery_stop_confirmed "$out" "$wt_id"; then return 0; fi
+  else
+    host_transport stop --item "$wt_id" --harness "$target" || rc=$?
+    [[ "$rc" -ne 0 ]] || return 0
+  fi
   ot_message host-stop-failed "item=$item" "exit=$rc" >&2
   return 1
 }
 relaunch_route() { # ITEM STATE_ID WORKTREE
   local judge
   RELAUNCH_ROUTE=resume HOST_SELECTION_FILE="" RELAUNCH_HANDOFF_DIR=""
+  # A saved selection belongs to the successor that already started.
+  if [[ "$host_pending_step" == selection ]]; then
+    [[ "$HARNESS" != codex ]] || HOST_SELECTION_FILE="tmp/lane-mail/$2/relaunch-selection"
+    return 0
+  fi
   LANE_RECORD_VALUE=absent
   [[ "$FLEET" != true ]] || lane_record_read "$2" harness || return 1
   if [[ "$LANE_RECORD_VALUE" != absent && "$LANE_RECORD_VALUE" != "$HARNESS" ]]; then
-    [[ "$HOST_RELAUNCH" != true || "$host_command_restart" == completed ]] || host_harness_stop prior || return 1
+    [[ "$HOST_RELAUNCH" != true || "$HOST_PANE" == verb || "$host_command_restart" == completed ]] || host_harness_stop prior || return 1
     ot_message harness-switched "item=$1" "harness=$HARNESS" "recorded=$LANE_RECORD_VALUE"
     RELAUNCH_ROUTE=fresh
     return 0
@@ -2830,9 +2927,6 @@ relaunch_route() { # ITEM STATE_ID WORKTREE
       codex) RELAUNCH_ROUTE=resume-or-fresh; HOST_SELECTION_FILE="tmp/lane-mail/$2/relaunch-selection" ;;
       pi) RELAUNCH_ROUTE=resume-or-fresh ;;
     esac
-    # A selection checkpoint follows a harness already started. Complete its
-    # record without judging or stopping that surviving process again.
-    [[ "$host_pending_step" != selection ]] || return 0
     judge="cd $(lane_single_quote "$remote_path") && .agents/skills/orch/scripts/workflow-state handoff-standing $(lane_single_quote "$2") --worktree $(lane_single_quote "$remote_path")" || return 1
     # The provider prefix owns harness launch, not synchronous reads. The
     # remote judge uses its own project settings, as the start workflow does.
@@ -2843,9 +2937,9 @@ relaunch_route() { # ITEM STATE_ID WORKTREE
   case "$LANE_HANDOFF_STATE" in
     none) return 0 ;;
     stands)
-      [[ "$HOST_RELAUNCH" != true || "$host_command_restart" == completed ]] || host_harness_stop prior || return 1
+      [[ "$HOST_RELAUNCH" != true || "$HOST_PANE" == verb || "$host_command_restart" == completed ]] || host_harness_stop prior || return 1
       [[ "$HOST_RELAUNCH" != true ]] || RELAUNCH_HANDOFF_DIR="${LANE_HANDOFF_FILE%/*}"
-      ot_message session-retired "item=$1" "harness=$HARNESS"
+      [[ "$HOST_RELAUNCH" == true && "$HOST_PANE" == verb ]] || ot_message session-retired "item=$1" "harness=$HARNESS"
       RELAUNCH_ROUTE=fresh HOST_SELECTION_FILE=""
       return 0 ;;
   esac
@@ -2860,6 +2954,7 @@ relaunch_route() { # ITEM STATE_ID WORKTREE
 # substitution here is checked explicitly.
 launch_finish() {
   local context_session brief_prompt_file="" brief_prompt_dir brief_command_file rc=0
+  local gui_session="" gui_dir="" gui_owner="" gui_binding=false gui_flags="$LAUNCH_FLAGS" gui_waited=0
   LANE_MARKER_REASON=marker-failed
   if [[ "$host_pending_step" == selection ]]; then
     record_session="" LAUNCH_ALLOW_ALL=null
@@ -2897,8 +2992,21 @@ launch_finish() {
   if [[ -n "$session_file" ]] && ! record_session="$(session_id_of "$HARNESS" "$session_file")"; then
     ot_message session-scan-failed "item=$item" "harness=$HARNESS" >&2; return 1
   fi
+  # A GUI has no pane to bind the model-switch callback to. Choose the native
+  # session before launch, then bind it to the shell that starts this command.
+  # Claude's documented --session-id takes a UUID; transcript discovery cannot
+  # distinguish this launch from another fresh session in the same worktree.
+  if [[ "$FLEET" == true && "$LANE_HOST" == local && "$TERMINAL_MODE" != tmux && "$WAKE" != true && "$HARNESS" == claude && -z "$CMD_TEMPLATE" ]]; then
+    gui_binding=true
+    if [[ -z "$record_session" ]]; then
+      command -v python3 >/dev/null 2>&1 || { ot_message launch-session-failed "item=$item" "step=uuid" "dependency=python3" "cause=missing" >&2; return 1; }
+      gui_session="$(python3 -c 'import uuid; print(uuid.uuid4())')" \
+        || { ot_message launch-session-failed "item=$item" "step=uuid" "dependency=python3" "cause=failed" >&2; return 1; }
+      gui_flags+=" --session-id $gui_session"
+    fi
+  fi
   if [[ "$WAKE" != true && -d "$wt" ]]; then
-    context_session="$record_session"
+    context_session="${gui_session:-$record_session}"
     # Pi resumes by file path, but its hook records the session header's id.
     if [[ "$HARNESS" == pi && -n "$session_file" ]]; then
       context_session="$(jq -Rrn 'first(inputs|fromjson?|select(.type=="session")|.id)//empty' "$session_file")" \
@@ -2929,7 +3037,8 @@ launch_finish() {
       && printf '%s' "$BRIEF_TEXT" > "$brief_prompt_file" \
       || { ot_message brief-prompt-failed "item=$item" >&2; return 1; }
   fi
-  cmd="$(start_cmd "$item" "$wt_id" "$repo" "$record_session" "${wake_args[0]-}" "$brief_prompt_file")" || return 1
+  cmd="$(LAUNCH_FLAGS="$gui_flags" start_cmd "$item" "$wt_id" "$repo" "$record_session" "${wake_args[0]-}" "$brief_prompt_file")" || return 1
+  [[ -z "$gui_session" ]] || record_session="$gui_session"
   # The lane record's `allow_all`: whether this copilot command grants the full
   # allow-all mode, the one posture a policy block can take away
   # (lib/copilot-session.sh copilot_session_lane_note). Null for another harness.
@@ -3058,10 +3167,60 @@ launch_finish() {
   elif [[ "$TERMINAL_MODE" == "tmux" ]]; then
     open_tmux "$wt" "$title" "$cmd" "$brief" "$ssh_target" "$remote_path" || { UNTAKEN_PANE="$LAUNCH_PANE"; return 1; }
   else
-    open_gui "$wt" "$title" "$cmd" || return 1
+    if [[ "$gui_binding" == true ]]; then
+      brief_prompt_dir="$(git -C "$wt" rev-parse --absolute-git-dir)" \
+        || { ot_message launch-identity-unread "item=$item" "step=gui" "cause=git-dir" >&2; return 1; }
+      gui_owner="$(lane_process_start "$$")" \
+        || { ot_message launch-identity-unread "item=$item" "step=gui" "cause=controller" >&2; return 1; }
+      gui_dir="$(mktemp -d "$brief_prompt_dir/gui-launch.XXXXXX")" \
+        || { ot_message launch-identity-unread "item=$item" "step=gui" "cause=scratch" >&2; return 1; }
+      # The starting shell waits for its recorded identity before the harness
+      # can emit callbacks. Removing this private directory cancels a late
+      # terminal; the verified controller lifetime bounds the shell's wait.
+      cmd="bash -c $(lane_single_quote '
+        . "$1" || exit 1
+        gui_dir=$2
+        [[ -d "$gui_dir" ]] || exit 1
+        trap '\''rm -rf -- "$gui_dir"'\'' EXIT
+        lane_identity_record "$gui_dir/identity" || exit 1
+        while [[ -d "$gui_dir" && ! -e "$gui_dir/ready" ]]; do
+          lane_identity_status "$4" "$5" || [[ -e "$gui_dir/ready" ]] || exit 1
+          sleep 0.05
+        done
+        [[ -e "$gui_dir/ready" ]] || exit 1
+        rm -rf -- "$gui_dir" || exit 1
+        trap - EXIT
+        eval "$3"
+      ') gui $(lane_single_quote "$SCRIPT_DIR/lib/lane-state.sh") $(lane_single_quote "$gui_dir") $(lane_single_quote "$cmd") $$ $(lane_single_quote "$gui_owner")"
+    fi
+    if ! open_gui "$wt" "$title" "$cmd"; then
+      [[ -z "$gui_dir" ]] || rm -rf -- "$gui_dir"
+      return 1
+    fi
+    if [[ -n "$gui_dir" ]]; then
+      # The terminal may start asynchronously. Read only the identity this
+      # launch owns, never another GUI process found by directory or name.
+      while [[ ! -s "$gui_dir/identity" && "$gui_waited" -lt 10 ]]; do sleep 0.5; gui_waited=$((gui_waited + 1)); done
+      if lane_identity_read "$gui_dir/identity" && lane_identity_status "$LANE_IDENTITY_PID" "$LANE_IDENTITY_START"; then
+        LAUNCH_HARNESS_ID="$LANE_IDENTITY_PID $LANE_IDENTITY_START"
+      else
+        ot_message launch-identity-unread "item=$item" "step=gui" "cause=startup" >&2
+        rm -rf -- "$gui_dir"
+        return 1
+      fi
+    fi
   fi
   [[ -z "$session_file" || "$WAKE" == true ]] || ot_message session-resumed "item=$item" "harness=$HARNESS" "transcript=$session_file"
-  launch_record_finish
+  if ! launch_record_finish; then
+    [[ -z "$gui_dir" ]] || rm -rf -- "$gui_dir"
+    return 1
+  fi
+  if [[ -n "$gui_dir" ]] && ! : > "$gui_dir/ready"; then
+    ot_message launch-identity-unread "item=$item" "step=gui" "cause=release" >&2
+    rm -rf -- "$gui_dir"
+    return 1
+  fi
+  return 0
 }
 
 # Selection can be refused after the harness starts. Its continuation finishes
@@ -3119,6 +3278,8 @@ launch_record_finish() {
 # state, so they do not create a fleet. A retry reads this before create.
 host_launch_pending() { # STEP
   local pending
+  # Preparation cannot replace a record whose predecessor still owns it.
+  [[ "${HOST_PANE:-local}" != verb || "$host_command_restart" != pending ]] || return 0
   pending="$(jq -cn --arg line "$host_line" --arg host "$LANE_HOST" --arg step "$1" --arg since "$launched_at" \
     --arg account "$LANE_ENV" --arg harness "$HARNESS" --argjson relaunch "$RELAUNCH" \
     --arg model "$LAUNCH_MODEL" --arg effort "$LAUNCH_EFFORT" --arg command "$CMD_TEMPLATE" \
@@ -3142,6 +3303,19 @@ host_launch_pending() { # STEP
 host_launch_resume() { # [admitted]
   local key="$wt_id" query='.host_launch' pending
   if [[ "${1:-}" == admitted ]]; then
+    if [[ "$HOST_PANE" == verb && "$RELAUNCH" == true ]]; then
+      if [[ "$host_pending_step" == selection ]]; then
+        HOST_PANE_LAUNCH=owned
+        return 0
+      fi
+      LANE_RECORD_VALUE=absent
+      [[ "$FLEET" != true ]] || lane_record_read "$wt_id" status || return 1
+      case "$LANE_RECORD_VALUE" in
+        stopped|parked) host_command_restart=completed ;;
+        *) host_command_restart=pending ;;
+      esac
+      return 0
+    fi
     [[ "$host_command_restart" == pending ]] || return 0
     host_harness_stop prior || return 1
     host_launch_ready completed || return 1
@@ -3188,6 +3362,10 @@ host_launch_ready() { # completed|failed
     failed)
       mail_root="$remote_path"
       if [[ "${HOST_PANE:-local}" == verb ]]; then
+        if [[ "$host_command_restart" == pending ]]; then
+          [[ -z "$UNTAKEN_PANE" ]] || tmux_window_close "$UNTAKEN_PANE" "$title" || return 1
+          return 0
+        fi
         case "${HOST_PANE_LAUNCH:-unstarted}" in
           unjudged) return 1 ;;
           owned)
@@ -3225,14 +3403,14 @@ host_launch_ready() { # completed|failed
 # that cannot be read is refused as one that sets it. CCR_FORCE_BUNDLE in the
 # environment the CLI starts with, the tmux server's and not this script's,
 # is cleared on cloud_session_launch's launch line.
-cloud_bundle_risk() { # ACCOUNT
+cloud_bundle_risk() { # ACCOUNT, origin into CLOUD_ORIGIN
   local file
   for file in "$1/settings.json" "$CLAIM_ROOT/.claude/settings.json"; do
     [[ -e "$file" ]] || continue
     jq -e '(.env.CCR_FORCE_BUNDLE // null | tostring) != "1"' "$file" >/dev/null 2>&1 \
       || { ot_message cloud-bundle-risk "item=$item" cause=settings "path=$file" >&2; return 1; }
   done
-  kendex_github_origin_slug "$CLAIM_ROOT" >/dev/null \
+  CLOUD_ORIGIN="$(kendex_github_origin_slug "$CLAIM_ROOT")" \
     || { ot_message cloud-bundle-risk "item=$item" cause=remote >&2; return 1; }
 }
 
@@ -3350,7 +3528,16 @@ cloud_cli_wait() { # PANE
 # 75 is an item another session owns; 1 a failure, its keyed line printed.
 cloud_session_launch() {
   local wt branch words choice cmd form line pane session prompt prompt_file rc=0 launched_at record_rc=0 detached=false exit_rc=0
+  local CLOUD_ORIGIN="" connected repositories LAUNCH_REPO_ACCESS=null
   cloud_bundle_risk "${LANE_ENV#*=}" || return 1
+  connected="$(
+    if [[ "$OVERSEER_BIND" == connected ]]; then
+      cd -- "$OVERSEER_DIR" || exit 1
+      unset ORCH_CONNECTED_REPOS KENDEX_ENV_FILE
+    fi
+    orch_connected_repos "$CLOUD_ORIGIN" "$repo"
+  )" || return 1
+  repositories="$(printf '%s\n' "$CLOUD_ORIGIN" "$repo" "$connected" | tr '[:upper:]' '[:lower:]' | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')" || return 1
   wt="$("$WORKTREE_CLI" create "$wt_id" --no-checkout)" || rc=$?
   [[ "$rc" -ne 75 ]] || { ot_message item-owned "item=$item" "exit=75" >&2; return 75; }
   [[ "$rc" -eq 0 ]] || { ot_message worktree-failed "item=$item" "exit=$rc" >&2; return 1; }
@@ -3437,10 +3624,21 @@ cloud_session_launch() {
     esac
   fi
   ot_message cloud-session-started "item=$item" "session=$session"
+  cloud_repo_access_manual "$session" "$repositories" || return 1
   [[ "$FLEET" == true ]] || return 0
   LAUNCH_PREPARE="" LAUNCH_HARNESS_ID="" LAUNCH_WAKE="" LAUNCH_ALLOW_ALL=null
   lane_record_write "$RECORD_MODE" "$wt_id" "$LAUNCH_SESSION:$title" "$wt" "$session" "$launched_at" || record_rc=$?
   [[ "$record_rc" -eq 0 ]] || { ot_message cloud-record-failed "item=$item" "session=$session" >&2; return 1; }
+}
+
+# --cloud exposes no repository-grant interface. The overseer reads this step
+# through workflow-state and the keyed launch output, even when no card is yet
+# visible. Account-level /web-setup is interactive and replaces credentials.
+cloud_repo_access_manual() { # SESSION REPOSITORIES_JSON
+  local url="https://claude.ai/code/$1"
+  LAUNCH_REPO_ACCESS="$(jq -cn --arg step cloud-repo-access-manual --argjson repositories "$2" --arg url "$url" \
+    '{step: $step, repositories: $repositories, url: $url}')" || return 1
+  ot_message cloud-repo-access-manual "item=$item" "repositories=$2" "url=$url" >&2
 }
 
 # The preparation record a lane handed to a background job carries: the launch
@@ -3582,7 +3780,7 @@ lane_rejudge() { # ITEM
     [[ "$FLEET" != true || "$LAUNCH_HARNESS" != copilot ]] || COPILOT_HOOKS_GATED=true
   elif [[ "$LANE_AUTO" == true ]]; then
     record="$(pick_auto_lane)" || rc=$?
-    [[ "$rc" -eq 0 ]] || { auto_pick_refusal "$rc" "item=$1" "launched=$launched"; return 1; }
+    [[ "$rc" -eq 0 ]] || { auto_pick_refusal "$rc" "$record" "item=$1" "launched=$launched"; return 1; }
     next="$(pick_record_env "$record")" || return 1
     LANE_PICK_RECORD="$record"
     ! lane_value_error "$next" || return 1
@@ -3590,6 +3788,62 @@ lane_rejudge() { # ITEM
   elif [[ "$LANE_GATE" == true ]]; then
     named_lane_judge
   fi
+}
+
+# Linear owns blocker status normalization. A fresh fleet lane must read that
+# live result before creating a worktree or spending a host launch. This local
+# dispatch check implements the existing Ancestor gate, not a new policy.
+launch_blockers_gate() { # ITEM
+  local selected="$1" next="$1" row parent blockers="[]" seen=" " records
+  local linear="$SCRIPT_DIR/../../linear/scripts/linear.sh"
+  [[ "$FLEET" == true && "$TRACKER" == linear ]] || return 0
+  if [[ "$RELAUNCH" == true || "$WAKE" == true ]]; then
+    records="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} get oversee '.lanes // []')" || return 1
+    if jq -e --arg item "$selected" 'any(.[]; .item == $item)' <<<"$records" >/dev/null; then return 0; fi
+  fi
+  while [[ -n "$next" ]]; do
+    if [[ "$seen" == *" $next "* ]] || [[ ! -x "$linear" ]] \
+      || ! row="$("$linear" issues get "$next" --format=safe)" \
+      || ! jq -e --arg id "$next" '
+          .id == $id and (.parent_id | type == "string")
+          and (.blocked_by_open | type == "array" and all(.[]; type == "string" and length > 0))
+        ' <<<"$row" >/dev/null; then
+      ot_message launch-blocked-unread "item=$selected" "read=$next" >&2
+      return 1
+    fi
+    seen+="$next "
+    blockers="$(jq -cn --argjson known "$blockers" --argjson row "$row" '$known + $row.blocked_by_open | unique')" || return 1
+    parent="$(jq -r '.parent_id' <<<"$row")" || return 1
+    next="$parent"
+  done
+  blockers="$(jq -r 'join(",")' <<<"$blockers")" || return 1
+  [[ -n "$blockers" ]] || return 0
+  ot_message launch-blocked "item=$selected" "blockers=$blockers" "fix=complete blockers $blockers before launch" >&2
+  return 1
+}
+
+# linear_team_key TEAM [DIR] — prints the key of the Linear team named TEAM, or
+# refuses as item-repo-unresolved. With DIR the read runs there with this
+# launcher's team and private-file selectors dropped, and every credential its
+# checkout's load added, so DIR's checkout picks the workspace and credential:
+# linear.sh reads them from its working directory's checkout, and a value in
+# its environment can outrank that checkout's. A credential the launcher
+# inherited stays, as the overseer's own linear.sh calls there see it.
+linear_team_key() {
+  local record
+  record="$(
+    if [[ -n "${2:-}" ]]; then
+      cd -- "$2" || exit 1
+      unset KENDEX_ENV_FILE LINEAR_TEAM
+      for name in "${linear_credentials[@]}"; do
+        [[ "$inherited_linear_credentials" == *" $name "* ]] || unset "$name"
+      done
+    fi
+    "$linear_cli" teams get "$1" --format raw
+  )" \
+    || { ot_message item-repo-unresolved tracker=linear "team=$1" >&2; return 1; }
+  jq -er '.team.key | strings | select(length > 0)' <<<"$record" \
+    || { ot_message item-repo-unresolved tracker=linear "team=$1" >&2; return 1; }
 }
 
 repo="$(resolve_repo)"
@@ -3602,15 +3856,35 @@ if [[ "$TRACKER" == github ]]; then
 elif [[ -n "${LINEAR_TEAM:-}" ]]; then
   linear_cli="$SKILLS_DIR/linear/scripts/linear.sh"
   [[ -x "$linear_cli" ]] || { ot_message helper-missing "path=$linear_cli" >&2; exit 1; }
-  team_record="$("$linear_cli" teams get "$LINEAR_TEAM" --format raw)" \
-    || { ot_message item-repo-unresolved tracker=linear "team=$LINEAR_TEAM" >&2; exit 1; }
-  checkout_repo="$(jq -er '.team.key | strings | select(length > 0)' <<<"$team_record")" \
-    || { ot_message item-repo-unresolved tracker=linear "team=$LINEAR_TEAM" >&2; exit 1; }
+  checkout_repo="$(linear_team_key "$LINEAR_TEAM")" || exit 1
 fi
 # A fleet launch runs in its overseer's repository, or in one the overseer's
 # checkout lists in ORCH_CONNECTED_REPOS; lib/lane-cap.sh's overseer_bind judges
 # it.
 [[ "$FLEET" != true ]] || overseer_bind || exit 1
+# A connected launch also admits the overseer checkout's own Linear team: the
+# overseer lists the repository because that team's items run there.
+# overseer_team_key reads it once, for the first item the launch checkout's
+# team does not take, so a launch of that team's items never depends on it.
+# The team name and its key are read in the overseer's directory with this
+# launcher's settings dropped, as the caps below are, because they can be this
+# checkout's, whose Linear workspace can differ from the overseer's.
+overseer_repo=""
+overseer_team_read=false
+overseer_team_key() {
+  local team
+  [[ "$overseer_team_read" != true ]] || return 0
+  [[ -x "$SCRIPT_DIR/orch-env" ]] || { ot_message helper-missing "path=$SCRIPT_DIR/orch-env" >&2; return 1; }
+  team="$(cd -- "$OVERSEER_DIR" && unset LINEAR_TEAM KENDEX_ENV_FILE && "$SCRIPT_DIR/orch-env" LINEAR_TEAM "")" || return 1
+  [[ -z "$team" ]] || overseer_repo="$(linear_team_key "$team" "$OVERSEER_DIR")" || return 1
+  overseer_team_read=true
+}
+# same_key ITEM KEY — prints whether the item's repository or team is KEY,
+# compared case-insensitively, or refuses as item-repo-unresolved.
+same_key() {
+  jq -n --arg item "$1" --arg key "$2" '$item | ascii_downcase == ($key | ascii_downcase)' \
+    || { ot_message item-repo-unresolved "tracker=$TRACKER" >&2; return 1; }
+}
 if [[ "$CAP_GATED" == true ]]; then
   [[ -x "$SCRIPT_DIR/orch-env" ]] || { ot_message helper-missing "path=$SCRIPT_DIR/orch-env" >&2; exit 1; }
   if [[ "$OVERSEER_BIND" == connected ]]; then
@@ -3674,9 +3948,11 @@ for raw in "${ITEMS[@]}"; do
   item_repo="$repo"
   [[ "$TRACKER" != linear ]] || item_repo="${item%-*}"
   if [[ -n "$checkout_repo" ]]; then
-    repo_match="$(jq -n --arg item "$item_repo" --arg checkout "$checkout_repo" \
-      '$item | ascii_downcase == ($checkout | ascii_downcase)')" \
-      || { ot_message item-repo-unresolved "tracker=$TRACKER" >&2; exit 1; }
+    repo_match="$(same_key "$item_repo" "$checkout_repo")" || exit 1
+    if [[ "$repo_match" != true && "$TRACKER" == linear && "$OVERSEER_BIND" == connected ]]; then
+      overseer_team_key || exit 1
+      [[ -z "$overseer_repo" ]] || repo_match="$(same_key "$item_repo" "$overseer_repo")" || exit 1
+    fi
     if [[ "$repo_match" != true ]]; then
       ot_message item-foreign "repo=$item_repo" route=peer-mail >&2
       exit 1
@@ -3694,6 +3970,14 @@ for raw in "${ITEMS[@]}"; do
         || { ot_message state-unwritable "state=oversee" >&2; exit 1; }
     fi
     state_ready=true
+  fi
+  if ! lane_live_display_apply "$wt_id" "$item"; then
+    failed=$((failed + 1))
+    continue
+  fi
+  if ! launch_blockers_gate "$item"; then
+    failed=$((failed + 1))
+    continue
   fi
   # `--lane auto` is re-resolved for every item after the first: the claim the
   # previous window recorded is what moves this item off that account, and a
@@ -3856,9 +4140,9 @@ for raw in "${ITEMS[@]}"; do
   host_args=(create --item "$wt_id" --repo "$repo" --harness "$HARNESS" --account "${LANE_ENV#*=}")
   [[ "$RELAUNCH" != true ]] || host_args+=(--relaunch)
   if [[ "$LANE_HOST" != local ]]; then
-    # Stop does not remove saved sessions. The custom command below still
-    # takes its own fresh route, after create reconnects the stopped harness.
-    if [[ "$RELAUNCH" == true && -n "$CMD_TEMPLATE" && -z "$host_line" && "$host_command_restart" != completed ]] && ! host_harness_stop prior; then
+    # Local-pane commands reconnect after stop. Provider-owned commands keep
+    # the predecessor until replacement setup succeeds.
+    if [[ "$HOST_PANE" == local && "$RELAUNCH" == true && -n "$CMD_TEMPLATE" && -z "$host_line" && "$host_command_restart" != completed ]] && ! host_harness_stop prior; then
       failed=$((failed + 1))
       continue
     fi
@@ -3965,10 +4249,9 @@ for raw in "${ITEMS[@]}"; do
     failed=$((failed + 1))
     continue
   fi
-  # Hosted no-command relaunches wait here before handoff judgment. Fresh and
-  # custom-command fleet launches hand preparation to the background job;
-  # without fleet state every preparation waits here.
-  if [[ "$host_state" == preparing && "$FLEET" == true && -z "$HOST_SELECTION_FILE" && -z "$host_pending_step" && ( "$RELAUNCH" != true || -n "$CMD_TEMPLATE" ) ]]; then
+  # A provider-owned replacement prepares in the foreground so the background
+  # preparing record cannot replace its still-running predecessor's record.
+  if [[ "$host_state" == preparing && "$FLEET" == true && -z "$HOST_SELECTION_FILE" && -z "$host_pending_step" && ( "$RELAUNCH" != true || -n "$CMD_TEMPLATE" && "$HOST_PANE" == local ) ]]; then
     launch_handoff || { failed=$((failed + 1)); continue; }
     preparing=$((preparing + 1))
   else
@@ -3978,6 +4261,10 @@ for raw in "${ITEMS[@]}"; do
     [[ "$host_state" != preparing || "$host_pending_step" == marker || "$host_pending_step" == selection ]] || host_transport wait --item "$wt_id" || wait_rc=$?
     if [[ "$wait_rc" -eq "$LANE_HOST_BUSY_EXIT" ]]; then
       ot_message lane-host-busy "item=$item" step=wait >&2
+      if [[ "$HOST_PANE" == verb && "$host_command_restart" == pending ]]; then
+        failed=$((failed + 1))
+        continue
+      fi
       host_launch_pending wait || { failed=$((failed + 1)); continue; }
       preparing=$((preparing + 1))
       continue
@@ -3994,6 +4281,10 @@ for raw in "${ITEMS[@]}"; do
     [[ "$LANE_HOST" == local || "$FLEET" == true ]] || host_launch_pending "${host_pending_step:-marker}" || { failed=$((failed + 1)); continue; }
     if ! launch_finish; then
       if [[ "$LANE_HOST" != local && "$LANE_MARKER_REASON" == lane-host-busy ]]; then
+        if [[ "$HOST_PANE" == verb && "$host_command_restart" == pending ]]; then
+          failed=$((failed + 1))
+          continue
+        fi
         host_launch_pending "$([[ "$host_pending_step" == selection ]] && echo selection || echo marker)" || { failed=$((failed + 1)); continue; }
         preparing=$((preparing + 1))
         continue

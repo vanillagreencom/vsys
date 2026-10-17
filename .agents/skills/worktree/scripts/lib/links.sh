@@ -79,6 +79,7 @@ exclude_from_worktree_index() (
   local wt="$1" path="$2" has_tracked="${3:-false}"
   [[ -z "$path" ]] && return 0
   local common_dir info_exclude entry negation tmp="" candidate="" filtered="" rc=0 exists=false
+  local original="" line="" ending=""
   local failure=read operation=git-common-directory result=0
   trap '
     result=$?
@@ -95,31 +96,54 @@ exclude_from_worktree_index() (
   info_exclude="$common_dir/info/exclude"
   entry="/$path"
   negation="!/$path/"
-  # Move only the current anchored negation after the entry.
-  # Bare rules and other patterns stay in place.
+  # Migration runs before source and link-health skips. It changes only the
+  # configured entry's exact old lines, without inventing a missing rule.
   operation=filter
   if [[ -e "$info_exclude" || -L "$info_exclude" ]]; then
     [[ -f "$info_exclude" && ! -L "$info_exclude" ]] || return 1
     exists=true
-    # The sentinel retains final newlines; grep's empty result is successful.
-    filtered="$(
-      grep -vxF -e "$negation" -- "$info_exclude" 2>/dev/null || rc=$?
-      [[ "$rc" -le 1 ]] || exit 1
-      printf '.' 2>/dev/null
-    )" || return 1
-    filtered="${filtered%.}"
+    original="$(cat -- "$info_exclude" 2>/dev/null && printf '.')" || return 1
+    original="${original%.}"
+    if [[ "$has_tracked" == migrate ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        ending=""
+        [[ "$original" == *$'\n'* ]] && ending=$'\n'
+        original="${original#*"$line"$ending}"
+        case "$line" in
+          "$path") line="$entry" ;;
+          "!$path/") line="$negation" ;;
+        esac
+        filtered+="$line$ending"
+      done <<<"${original%$'\n'}"
+    else
+      # The sentinel retains final newlines; grep's empty result is successful.
+      filtered="$(
+        grep -vxF -e "$negation" -- "$info_exclude" 2>/dev/null || rc=$?
+        [[ "$rc" -le 1 ]] || exit 1
+        printf '.' 2>/dev/null
+      )" || return 1
+      filtered="${filtered%.}"
+      # grep terminates an unterminated final user line. Keep its original bytes.
+      if [[ -n "$original" && "$original" != *$'\n' && "${original##*$'\n'}" != "$negation" ]]; then
+        filtered="${filtered%$'\n'}"
+      fi
+    fi
   fi
 
-  operation=entry-inspection
-  grep -qxF -- "$entry" <<<"$filtered" 2>/dev/null || rc=$?
-  [[ "$rc" -le 1 ]] || return 1
-  if [[ "$rc" -eq 1 ]]; then
-    [[ -z "$filtered" || "$filtered" == *$'\n' ]] || filtered+=$'\n'
-    filtered+="$entry"$'\n'
-  fi
-  if [[ "$has_tracked" == true ]]; then
-    [[ -z "$filtered" || "$filtered" == *$'\n' ]] || filtered+=$'\n'
-    filtered+="$negation"$'\n'
+  if [[ "$has_tracked" != migrate ]]; then
+    operation=entry-inspection
+    grep -qxF -- "$entry" <<<"$filtered" 2>/dev/null || rc=$?
+    [[ "$rc" -le 1 ]] || return 1
+    if [[ "$rc" -eq 1 ]]; then
+      [[ -z "$filtered" || "$filtered" == *$'\n' ]] || filtered+=$'\n'
+      filtered+="$entry"$'\n'
+    fi
+    if [[ "$has_tracked" == true ]]; then
+      [[ -z "$filtered" || "$filtered" == *$'\n' ]] || filtered+=$'\n'
+      filtered+="$negation"$'\n'
+    fi
+  elif [[ "$exists" == false ]]; then
+    return 0
   fi
 
   failure=write; operation=directory
@@ -937,6 +961,7 @@ repair_worktree_links() {
   split_worktree_config_words "${WORKTREE_SYMLINKS:-}"
   for path in ${WORKTREE_CONFIG_WORDS[@]+"${WORKTREE_CONFIG_WORDS[@]}"}; do
     path="$(normalize_worktree_config_path WORKTREE_SYMLINKS "$path" 2>/dev/null)" || continue
+    exclude_from_worktree_index "$wt" "$path" migrate || { blocked=true; continue; }
     src="$PROJECT_ROOT/$path"
     [[ -e "$src" ]] || { warn_missing_symlink_source "$wt" "$path" || true; continue; }
     # An entry with tracked content underneath never becomes a parent link
@@ -986,16 +1011,21 @@ repair_worktree_links() {
 # down, and the tracked content it hid is recreated from the index verbatim.
 # Callers re-apply setup afterwards, which re-links and re-marks the paths.
 #
-# No-op unless a configured entry actually shadows tracked files, so the
+# No-op unless a selected entry actually shadows tracked files, so the
 # ordinary runtime-only symlink case is left completely alone.
 unshadow_tracked_symlink_paths() {
   local wt="$1" path="" f="" checkout_err="" clear_rc=0
   local -a shadowed=() tracked=()
+  shift
   [[ -n "$wt" && -d "$wt" ]] || return 0
   validate_worktree_setup_config >/dev/null 2>&1 || return 0
 
-  split_worktree_config_words "${WORKTREE_SYMLINKS:-}"
-  for path in ${WORKTREE_CONFIG_WORDS[@]+"${WORKTREE_CONFIG_WORDS[@]}"}; do
+  # Dropped entries name their paths explicitly so they share this restore.
+  if [[ "$#" -eq 0 ]]; then
+    split_worktree_config_words "${WORKTREE_SYMLINKS:-}"
+    set -- ${WORKTREE_CONFIG_WORDS[@]+"${WORKTREE_CONFIG_WORDS[@]}"}
+  fi
+  for path in "$@"; do
     path="$(normalize_worktree_config_path WORKTREE_SYMLINKS "$path" 2>/dev/null)" || continue
     # NUL-delimited: a line-oriented list piped through xargs breaks on
     # filenames with spaces, tabs, or quotes, silently leaving their
@@ -1052,6 +1082,7 @@ restore_unshadowed_worktree_setup() {
 
 setup_worktree_links() {
   local wt="$1" root_nm_warned=0 copy_tracked=""
+  local exclude="" path="" configured="" target="" keep=false
   validate_worktree_setup_config || return 1
 
   # Nothing to provision when the destination IS the source. `push --rebase`
@@ -1076,6 +1107,31 @@ setup_worktree_links() {
     return 0
   fi
 
+  # Link creation records paths in the shared exclude file. Inspect those
+  # records instead of walking private dependency directories during reuse.
+  exclude="$(git -C "$wt" rev-parse --git-path info/exclude)" || return 1
+  split_worktree_config_words "${WORKTREE_SYMLINKS:-}"
+  if [[ -f "$exclude" ]]; then
+    while IFS= read -r path || [[ -n "$path" ]]; do
+      # Earlier releases wrote bare paths instead of root-anchored records.
+      path="${path#/}"
+      path="$(normalize_worktree_config_path WORKTREE_SYMLINKS "$path" 2>/dev/null)" || continue
+      keep=false
+      for configured in ${WORKTREE_CONFIG_WORDS[@]+"${WORKTREE_CONFIG_WORDS[@]}"}; do
+        strip_trailing_slashes "$configured" configured
+        if [[ "$path" == "$configured" || "$path" == "$configured/"* ]]; then keep=true; break; fi
+      done
+      [[ "$keep" == false && -L "$wt/$path" ]] || continue
+      target="$(readlink "$wt/$path" && printf .)" || return 1
+      target="${target%.}"; target="${target%$'\n'}"
+      [[ "$target" == "$PROJECT_ROOT/$path" ]] || continue
+      ensure_worktree_path_safe "$wt" "$path" false || return 1
+      rm -- "$wt/$path" || return 1
+      # Validation in the restore uses the shared config-word scratch array.
+      (unshadow_tracked_symlink_paths "$wt" "$path") || return 1
+    done <"$exclude"
+  fi
+
   # Project-configured mkdirs (run first so subsequent symlinks/copies can
   # land inside them if needed). Idempotent; ignores empty entries.
   split_worktree_config_words "${WORKTREE_MKDIRS:-}"
@@ -1089,6 +1145,7 @@ setup_worktree_links() {
   split_worktree_config_words "${WORKTREE_SYMLINKS:-}"
   for path in ${WORKTREE_CONFIG_WORDS[@]+"${WORKTREE_CONFIG_WORDS[@]}"}; do
     path="$(normalize_worktree_config_path WORKTREE_SYMLINKS "$path")" || return 1
+    exclude_from_worktree_index "$wt" "$path" migrate || return 1
     if [[ -e "$PROJECT_ROOT/$path" ]]; then
       symlink_into_worktree "$path" "$wt" || return 1
       # npm ci follows this directory link while clearing the old install.

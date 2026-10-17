@@ -1,6 +1,6 @@
 # Submit PR Workflow
 
-Run a local pre-PR review, push, create or update the PR, triage review comments, wait for the reviewer-gate verdict, verify CI, and confirm the merge gates. The review gate (§ 4) runs before CI verification (§ 5).
+With `pr` delivery, run a local pre-PR review, push, create or update the PR, triage review comments, wait for the reviewer-gate verdict, verify CI, and confirm the merge gates. The review gate (§ 4) runs before CI verification (§ 5).
 
 Run every long waiter below through [Waiter launch](../references/waiter-launch.md). `approval-wait --resolve-mode` runs directly, not through that launch. Exit `5` with the log line `<waiter>: mail=<count>` or `<waiter>: mail-unreadable=<path>` is no verdict: run `.agents/skills/mailbox/scripts/lane-mail inbox --item [ISSUE_ID]`, act on what it prints, then launch the same waiter again in a fresh run directory; route every other exit as written below.
 
@@ -37,7 +37,7 @@ git -C "[WORKTREE_PATH]" status --porcelain
 git -C "[WORKTREE_PATH]" diff "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]"...HEAD --stat
 ```
 
-Stop before pushing when the branch is empty (detached HEAD), equals the base branch, the working tree is dirty, or the committed diff against the base is empty. Then run `.agents/skills/preflight/scripts/preflight --base "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]" --repo [WORKTREE_PATH]` when installed. Read any already accepted dev receipt through `dev-artifact-check --file [WORKTREE_PATH]/tmp/dev-return-[ISSUE_ID]-[DEV_ROUND_ID].json`; this same acceptance reader refuses a `ci` receipt for an earlier HEAD. A valid `ci` receipt for the current commit accepts completed local edits with required CI pending after publication. Start no `DEV_VALIDATE_CMD` for that receipt. After publication, § 5 and its existing § 5.1 CI-fix route check required pull-request CI. For queue-only work, the existing queue route in [merge-pr.md § 5](merge-pr.md#5-execute-the-merge) proves required merge-group CI. Reuse a successful local validation result for the current commit whose mode is `full` and whose class covered the whole branch, from an accepted dev completion artifact's `validate_mode` with a `null` `validate_class_base` or a `validate_selection` of `battery`, or this submit session. A `range` pass, or any other `full` pass with a `validate_class_base`, is never reused, because it covers one fix round's changes and not the branch: submit then runs `DEV_VALIDATE_CMD` for the current commit as when no dev result exists. A failing dev validation artifact blocks submission and is reported without another validation run. A dev `no-verdict` result for the current commit, `full` or `range`, is not re-run: the run ended on a timeout or unavailable host check, its `validate_note` names the cause and scoped suites that passed, and CI is the full record. A run submit starts that ends `no-verdict` takes the fallback [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate) gives the dev round: its scoped suites once each, one red blocking the push and all green pushing with those suites named in the PR body; a diff whose fallback selects no suite file is a failing result and blocks the push. When no dev result exists, run the project's `DEV_VALIDATE_CMD` through `.agents/skills/orch/scripts/dev-validate-run`, started and polled as [dev SKILL.md § Long-Running Validation](../../dev/SKILL.md#long-running-validation) sets out, the same route [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate) takes. A start refused as `run-live` ran nothing: it blocks no push and returns nothing to the caller; take that section's route for that refusal, then start again. What the runner hands the command, and whose failure a full battery the class does not need is, are that section's. A changed commit needs a new result. Either check failing blocks the push. In managed lifecycle, return the failed preflight to the caller so the dev agent can normalize the branch and clean the worktree. Never create a PR from dirty or detached state.
+Stop before pushing when the branch is empty (detached HEAD), equals the base branch, the working tree is dirty, or the committed diff against the base is empty. Then run `.agents/skills/preflight/scripts/preflight --base "origin/[BASE_BRANCH_FROM_PREVIOUS_COMMAND]" --repo [WORKTREE_PATH]` when installed. Read any already accepted dev receipt through `dev-artifact-check --file [WORKTREE_PATH]/tmp/dev-return-[ISSUE_ID]-[DEV_ROUND_ID].json`; this same acceptance reader refuses a `ci` receipt for an earlier HEAD. A valid `ci` receipt for the current commit accepts completed local edits with required CI pending after publication. Start no `DEV_VALIDATE_CMD` for that receipt. After publication, § 5 and its existing § 5.1 CI-fix route read required pull-request CI, which proves no head where the change is queue-only: under the harness-ci default that run reports `CI` with no lane. The merge-group run proves the head, the run the receipt's record names by `ci-event=merge_group`, and the existing queue route in [merge-pr.md § 5](merge-pr.md#5-execute-the-merge) waits for it. A red merge-group run returns the change to its lane, and an unchanged head never re-enters the queue, per [merge-pr.md § 5](merge-pr.md#5-execute-the-merge) Recovery cycle. Reuse a successful local validation result for the current commit whose mode is `full` and whose class covered the whole branch, from an accepted dev completion artifact's `validate_mode` with a `null` `validate_class_base` or a `validate_selection` of `battery`, or this submit session. A `range` pass, or any other `full` pass with a `validate_class_base`, is never reused, because it covers one fix round's changes and not the branch: submit then runs `DEV_VALIDATE_CMD` for the current commit as when no dev result exists. A failing dev validation artifact blocks submission and is reported without another validation run. A dev `no-verdict` result for the current commit, `full` or `range`, is not re-run: the run ended on a timeout or unavailable host check, its `validate_note` names the cause and scoped suites that passed, and CI is the full record. A run submit starts that ends `no-verdict` takes the fallback [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate) gives the dev round: its scoped suites once each, one red blocking the push and all green pushing with those suites named in the PR body; a diff whose fallback selects no suite file is a failing result and blocks the push. When no dev result exists, run the project's `DEV_VALIDATE_CMD` through `.agents/skills/orch/scripts/dev-validate-run`, started and polled as [dev SKILL.md § Long-Running Validation](../../dev/SKILL.md#long-running-validation) sets out, the same route [dev-implement.md § 5. Validate](../../dev/workflows/dev-implement.md#5-validate) takes. A start refused as `run-live` ran nothing: it blocks no push and returns nothing to the caller; take that section's route for that refusal, then start again. What the runner hands the command, and whose failure a full battery the class does not need is, are that section's. A changed commit needs a new result. Either check failing blocks the push. In managed lifecycle, return the failed preflight to the caller so the dev agent can normalize the branch and clean the worktree. Never create a PR from dirty or detached state.
 
 Retain the mode of the validation result this section accepts as `SUBMIT_VALIDATE_MODE`. For an accepted dev receipt, use its `validate_mode`. For a run this submit starts or reuses, read its existing metadata below. Bind `[RUN_DIR]` to that accepted run's directory, including a `ci` run with `verdict=pending`:
 
@@ -84,9 +84,15 @@ Route the findings per the `review-finding` schema. Disposition every finding pe
 
 ## 2. Push And Submit
 
-When a cut follows the last review pass, set the existing `pre_delegate_sha` workflow-state boundary to the cut commit's parent, route exactly once through [review-pr.md § Bounded Re-Review](review-pr.md#bounded-re-review) before push, and keep the cut in a commit whose parent contains everything it deletes. Before every push, run `env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-view-json "[WORKTREE_PATH]" --json number,state,autoMergeRequest` and record whether `autoMergeRequest` is armed. While workflow state `pr_order` reads `open-first` or `push-first`, an armed read is a PR armed before its internal review returned: unarm it first by [merge-pr-restack.md](merge-pr-restack.md) step 1, whose hand-back pushes nothing and returns to the caller. After § 6.1 confirms all merge gates, an armed standalone submit enters [merge-pr.md](merge-pr.md) from its entry point, while an armed managed submit returns that recorded decision with its final result so the caller's merge stage owns the canonical lifecycle. Arming happens only through `github.sh pr-merge --auto`, which refuses with `arm: no-merge-gate` on a repository with no merge gate; a raw `gh pr merge --auto` is never the arm.
+Read the delivery setting in `[WORKTREE_PATH]` before any pull-request read or push:
 
-With `pr_order` reading `push-first`, read the existing PR's draft flag before any interim push. Keep or convert an open PR to draft with `env -u GH_REPO -u GITHUB_REPOSITORY gh pr ready [PR_NUMBER] --undo` from `[WORKTREE_PATH]`. Keep it draft until internal review returns `pass`.
+```bash
+.agents/skills/orch/scripts/orch-env ORCH_DELIVERY pr
+```
+
+`pr`, also when unset, follows the steps below. `push-base` runs § 2.1 instead, including when a tier enters only steps 1-4. A failed setting read stops publication.
+
+When a cut follows the last review pass, set the existing `pre_delegate_sha` workflow-state boundary to the cut commit's parent, route exactly once through [review-pr.md § Bounded Re-Review](review-pr.md#bounded-re-review) before push, and keep the cut in a commit whose parent contains everything it deletes. Before every push, run `env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-view-json "[WORKTREE_PATH]" --json number,state,autoMergeRequest` and record whether `autoMergeRequest` is armed. While workflow state `pr_order` reads `open-first` or `push-first`, an armed read is a PR armed before its internal review returned: unarm it first by [merge-pr-restack.md](merge-pr-restack.md) step 1, whose hand-back pushes nothing and returns to the caller. After § 6.1 confirms all merge gates, an armed standalone submit enters [merge-pr.md](merge-pr.md) from its entry point, while an armed managed submit returns that recorded decision with its final result so the caller's merge stage owns the canonical lifecycle. Arming happens only through `github.sh pr-merge --auto`, which refuses with `arm: no-merge-gate` on a repository with no merge gate; a raw `gh pr merge --auto` is never the arm.
 
 1. **Push**. With workflow state `pr_order` reading `open-first-returned` or `push-first-returned`, the first pass after the internal review of the PR [start-worktree.md](start-worktree.md) § 2.1 opened, first run § 3's triage pass (under `push-first-returned`, skip its bounded Copilot wait while the PR is draft), `⤵ workflows/review-pr-comments.md [PR_NUMBER] § 1-8 → § 2 step 1 push` with managed context, `[PR_NUMBER]` being the `number` this section's opening `pr-view-json` read printed: its fix round commits on top of the internal review's, its push through `worktree-push` by that workflow's § 6.1 carries both, and that workflow resolves its own fix SHAs through `.rebase_map` before its replies cite them, and the push below sends what remains. The triage returns to the `worktree-push` command below, never to this step's start, whose condition still holds.
 
@@ -106,7 +112,7 @@ With `pr_order` reading `push-first`, read the existing PR's draft flag before a
    .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] pr_order open-first-pushed
    ```
 
-   Then run [review-pr-comments.md](review-pr-comments.md) § 7.2, including its current-head Copilot wait before the mode read. Keep `[COPILOT_WAIT]` for its **Head moved** route. Bypass only its **Skip if** conditions: the triage's own § 7.2 routed no head on this pull request, so this run routes the pushed head whatever threads the triage answered. With no Copilot review, the head takes **Head moved**. Work already requested on that head counts as its request. Otherwise request that head even where the push moved nothing: GitHub's request event restarts pr-watch's quiet period, so the overseer's held `awaiting-stale` line rises again after the hold ends.
+   **Published-head route.** Run [review-pr-comments.md](review-pr-comments.md) § 7.2, including its current-head Copilot wait before the mode read. Keep `[COPILOT_WAIT]` for its **Head moved** route. Keep its body checks, policy and refusal handling, and **Head unmoved** notice for a completed review on the unchanged head. Bypass its **Skip if** conditions for this publication pass: the pre-push triage's § 7.2 routed no head while internal review was pending, so this run routes the published head whatever threads the triage answered. With no Copilot review, the head takes **Head moved**. Active work on that head counts as its request. For the unchanged early-requested push-first head with neither a Copilot review nor active work, bypass **Head moved**'s saved-head request guard for this replay only. Request through that route's existing request owner even when the early head record matches. Every other head keeps the existing request guard. GitHub's request event restarts pr-watch's quiet period, so the overseer's held `awaiting-stale` line rises again after the hold ends.
 
 2. **Check for an existing PR**:
 
@@ -148,13 +154,15 @@ With `pr_order` reading `push-first`, read the existing PR's draft flag before a
 
    Keep `## Merge decision`. For an existing PR, preserve its recorded head and route through body updates; use pending text only before any attempt is recorded. Omit other empty sections. Include each proposed rule once and do not perform it. Decision paths come only from `decisions search --issue [ISSUE_ID]`, each verified with `test -f [DECISION_FILE_PATH]` (one command per path) and omitted on failure. Every published SHA must be post-reconciliation.
 
+   Include qualified started bundle children in the child `Closes` lines. Their implementation is in this PR. Merge-pr completes each child again after merge and hands its remaining checks to the overseer.
+
 4. **Create or update the PR.** Never defer, queue, or gate CI behind bot review activity.
 
    ```bash
    .agents/skills/github/scripts/github.sh -C "[WORKTREE_PATH]" pr-create --title "[PREFIX]([ISSUE_ID]): [ISSUE_TITLE]" --body-file "$BODY_FILE"
    ```
 
-   With `pr_order` reading `push-first`, add `--draft` to that create command. Keep a push-first PR draft until internal review returns `pass`.
+   With `pr_order` reading `push-first`, add `--draft` to that create command. The caller's early request owns the ready transition.
 
    With an existing PR, update the body instead:
 
@@ -164,7 +172,7 @@ With `pr_order` reading `push-first`, read the existing PR's draft flag before a
 
    `[ISSUE_TITLE]` comes from `linear.sh issues get [ISSUE_ID]` or `gh issue view [N] --json title --jq '.title'`.
 
-   **Push-first ready head.** With `pr_order` reading `push-first-returned`, confirm the internal review's verdict is `pass`. Read the draft flag and head before marking it ready:
+   **Push-first ready head.** With `pr_order` reading `push-first-returned`, confirm the internal review's verdict is `pass`. The early request can have marked the PR ready already. Read the draft flag and head before requesting the combined head:
 
    ```bash
    .agents/skills/orch/scripts/pr-view-json "[WORKTREE_PATH]" --json number,state,isDraft,headRefOid
@@ -179,7 +187,7 @@ With `pr_order` reading `push-first`, read the existing PR's draft flag before a
    fi
    ```
 
-   The existing request owner checks the request policy before marking a draft ready. It confirms the head and requests it, including an already ready head with no recorded request. Route its answer by [Copilot requests](../references/gates.md#copilot-requests) before recording the head. A nonzero return stops this pass and leaves the request record unset, so the next pass resumes here. A head already recorded takes no request. Then move `pr_order` to `push-first-pushed` with `workflow-state set`, and write the lane's `Review: pass` line. Complete this request route before [review-pr-comments.md § 7.2](review-pr-comments.md#72-copilot-head-route)'s later wait. A draft pass before internal review sends no request and never runs the head route.
+   The existing request owner checks the request policy before marking a draft ready. It confirms the head and requests it, including an already ready head with no recorded request. Route its answer by [Copilot requests](../references/gates.md#copilot-requests) before recording the head. A nonzero return stops this pass and leaves the request record unset, so the next pass resumes here. This ready-head block sends no request for a head already recorded. Then move `pr_order` to `push-first-pushed` with `workflow-state set`, and write the lane's `Review: pass` line. After those state and status writes, run step 1's **Published-head route**. The early submit returns to its caller for the first request; this ready-head block preserves a request on each later unrecorded head.
 
 5. **Arm auto-merge** as soon as the PR exists, on every pass through this section, for a PR that will take the queue: the arm reads [merge-pr.md](merge-pr.md) § 5 step 1's merge route and arms nothing where that route takes the PR past the queue. **Skip if** `orch-env ORCH_MERGE_AUTONOMY auto` prints anything but `auto`: the arm is the merge consent that setting holds back. **Skip if** workflow state `pr_order` reads `open-first` or `push-first`: the internal review of the PR [start-worktree.md](start-worktree.md) § 2.1 opened has not returned, and the pass after [review-pr.md](review-pr.md) § 9 arms it, as a review-first PR is armed once its review returns.
 
@@ -214,6 +222,62 @@ Once the PR exists, this run is a continuing action. Clear any stop a capped run
 ```bash
 .agents/skills/orch/scripts/workflow-state update [ISSUE_ID] '.post_pr_stop = null'
 ```
+
+### 2.1 Base publication
+
+`pr-order` selects `review-first` for `ORCH_DELIVERY=push-base`, so no early pull request exists.
+
+**Open post-merge boxes.** Before any other step here, read the root item live, and for a single bundle each non-canceled child the commit implements: `.agents/skills/linear/scripts/linear.sh issues get [ID]` for Linear, `gh issue view [N] --repo [OWNER/REPO] --json body` for GitHub. The overseer's verification route takes its merge evidence from a merged pull request, and direct delivery creates none. An item whose Done-when holds an open post-merge box, in the form the project-management skill's SKILL.md § Disposition states, therefore takes the PR route. Write `[WORKTREE_PATH]/tmp/delivery-post-merge-[ISSUE_ID].md` with one `delivery-post-merge: issue=[ID] route=pr` line per such item, print it, send it with `.agents/skills/mailbox/scripts/lane-mail notice --item [ISSUE_ID] --file "[WORKTREE_PATH]/tmp/delivery-post-merge-[ISSUE_ID].md"`, and stop. The stop prepares, pushes and completes nothing. The overseer relaunches the item with `ORCH_DELIVERY=pr`. A failed read stops publication.
+
+Apply § 6.1 Gate 1 before preparation. Bind `[LIFECYCLE]` to `managed` or `self`. For a managed caller, bind `[REVIEW_VERDICT]` to the internal review's returned verdict. A standalone caller needs a non-empty `json_paths` record. Section 1.2's advisory external review supplies no substitute. Micro keeps its explicit internal-review exception.
+
+```bash
+if ! BASE_REVIEW_STATE="$(.agents/skills/orch/scripts/workflow-state get [ISSUE_ID] '{tier: (.tier // "standard"), json_paths: (.json_paths // [])}')"; then
+  exit 1
+fi
+if ! jq -e --arg lifecycle "[LIFECYCLE]" --arg verdict "[REVIEW_VERDICT]" '.tier == "micro" or (if $lifecycle == "managed" then $verdict == "pass" else (.json_paths | length) > 0 end)' <<<"$BASE_REVIEW_STATE" >/dev/null; then
+  printf 'delivery-review: issue=%s state=unaccepted\n' '[ISSUE_ID]' >&2
+  exit 1
+fi
+```
+
+A refused review check publishes nothing. Run [review-pr.md § 1-9](review-pr.md), then repeat this check with its result. Keep the tier's local validation. Bind `git -C [WORKTREE_PATH] rev-parse --verify HEAD` as `[BOUND_HEAD]`, then prepare:
+
+```bash
+.agents/skills/orch/scripts/worktree-push --prepare-base --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID]
+```
+
+This call runs the existing worktree preparation, normal commit hooks and SHA reconciliation. It returns before validation and transport. Bind `[PREPARED_BASE]` and `[PREPARED_HEAD]` from its `prepared-base: base=[BASE] before=[PREPARED_BASE] commit=[PREPARED_HEAD]` receipt. Apply [The Cycle, Rules reload after a rebase](../SKILL.md#the-cycle) at once against `[BOUND_HEAD]`. Re-read every changed loaded rule before continuing. If the new rules require edits or review, complete that work and restart this section. Keep both receipt values across this pause.
+
+```bash
+.agents/skills/orch/scripts/worktree-push --publish-base [PREPARED_BASE] [PREPARED_HEAD] --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID]
+```
+
+This call refuses a changed head before validation. It validates the prepared head locally, checks it again, then uses the existing pinned base transport without rebasing. Micro runs its final path check after the normal preparation hooks. Read `delivery: mode=push-base base=[BASE] commit=[PUSHED_SHA] at=[PUSHED_AT]` only after exit zero. `worktree-push --help` owns the failure contract. A `worktree-push-base-conflict`, `worktree-push-base-rejected` or `worktree-push-rebase-failed` refusal returns to [merge-pr-restack.md](merge-pr-restack.md). That direct route returns here after its guarded restack and rules reload. A red validation publishes nothing. A failed push sends no completion notice.
+
+**Linear completion.** Read the common checkout before entering the reused step, including for a standalone caller:
+
+```bash
+.agents/skills/orch/scripts/git-context common-root "[WORKTREE_PATH]"
+```
+
+Stop on a nonzero exit. Bind the printed path as `[MAIN_REPO_ROOT]`. Substitute that value into the next command; a shell variable from this command does not survive a separate tool call. Run [merge-pr.md § 5 step 2](merge-pr.md#5-execute-the-merge) alone. Bind `[ISSUE]` to this session's root `[ISSUE_ID]` and `[MERGED_AT]` to the receipt's `[PUSHED_AT]`. Skip that step's `gh pr view` timestamp read. Use the existing `issues complete --post-merge-at` command, verified box selections and evidence file. For a single bundle, repeat it for each non-canceled child implemented in the pushed commit. Follow that step's parent-outcome handoff. A completed container still takes its holder's existing `container-close` route after outcome evidence is recorded.
+
+**GitHub completion.** Use this session's resolved tracker and repository. Bind `[ISSUE_NUMBER]` to the root GitHub item's number from Tracker Resolution, then run:
+
+```bash
+gh issue close [ISSUE_NUMBER] --repo "[OWNER/REPO]" --reason completed
+```
+
+Repeat that command with each qualified started bundle child's resolved number and repository. These are the children the PR body's `Closes` lines would include. Normal item commits need no closing trailer. A tracker failure is reported with the pushed SHA and does not repeat transport.
+
+**Completion notice.** Write `[WORKTREE_PATH]/tmp/delivery-[ISSUE_ID].md` with `Pushed [PUSHED_SHA] to [BASE].` and the tracker completion result. Send that file through the existing lane mailbox:
+
+```bash
+.agents/skills/mailbox/scripts/lane-mail notice --item [ISSUE_ID] --file "[WORKTREE_PATH]/tmp/delivery-[ISSUE_ID].md"
+```
+
+The overseer records that single commit through [Direct-push cycle records](../references/oversee-events.md#direct-push-cycle-records) before closing the lane. Return the receipt to the caller. Skip PR creation, comment triage, review-gate waits, Copilot, CI waits, the merge queue and the merge workflow. A managed caller retires its agents through [start-worktree.md § 5.4](start-worktree.md#54-retire-agents), then ends. A standalone caller ends here.
 
 ---
 

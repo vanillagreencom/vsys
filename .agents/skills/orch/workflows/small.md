@@ -4,7 +4,7 @@ The tier for a change inside one subsystem and within the `small` ceiling in [re
 
 **A subsystem** is what the harness-ci skill's `scripts/change-class` counts as one for the `small` class; its `--help` `small` entry is the definition. The filing rule, the project-management skill's [SKILL.md](../../project-management/SKILL.md) § Disposition **One landing per subsystem**, and the launch read, [oversee.md](oversee.md) § Lane directive step 2, apply it to an item's Location paths before a diff exists.
 
-It runs [start-worktree.md](start-worktree.md)'s session, dev implementation, review, submit and merge, under the bounds in § 3. [oversee.md](oversee.md) § Item Tier picks the tier; a `micro` item runs [micro.md](micro.md) and every other item runs [start.md](start.md).
+It runs [start-worktree.md](start-worktree.md)'s session, dev implementation, review and publication, under the bounds in § 3. [oversee.md](oversee.md) § Item Tier picks the tier; a `micro` item runs [micro.md](micro.md) and every other item runs [start.md](start.md).
 
 | Command | Flow |
 |---------|------|
@@ -18,11 +18,13 @@ A lane never waits on the overseer for a step this workflow permits: [skill-rule
 
 ## 1. Open The Session
 
-Run [start-worktree.md](start-worktree.md) § 1, which records the tier as `standard`. Then record it as `small`, which is what bounds § 3 and § 4:
+Run [start-worktree.md](start-worktree.md) § 1, which records the tier as `standard`, on a handoff resume too. Then record it as `small`, which is what bounds § 3 and § 4:
 
 ```bash
 .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] tier small
 ```
+
+Where that § 1's step 3 stamped a handoff record, continue from the first entry of the record's `remaining` list instead of § 2-5.
 
 ## 2. Implement
 
@@ -47,6 +49,8 @@ Run [start-worktree.md](start-worktree.md) § 3 under these bounds:
 Before § 4, repeat the § 2 check on the tree the review left. `tier=small` continues; anything else escapes.
 
 ## 4. Submit
+
+`ORCH_DELIVERY=push-base` takes [submit-pr.md § 2.1](submit-pr.md#21-base-publication), which stops an item with an open post-merge box. Keep § 3's local validation and internal review. Report its pushed commit and take the direct-delivery finalize route below.
 
 Run [start-worktree.md](start-worktree.md) § 4. Bot threads get two rounds at most: `workflow-state cap REVIEW_MAX_EXTERNAL_ROUNDS --issue [ISSUE_ID]` reads a cap of 2 for this item. At that cap [review-pr-comments.md](review-pr-comments.md) answers every standing thread by reply. GitHub's approval and thread-resolution rules still apply.
 

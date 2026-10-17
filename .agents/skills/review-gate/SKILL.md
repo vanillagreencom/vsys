@@ -1,7 +1,7 @@
 ---
 name: review-gate
-description: "Load to watch pull requests, report the organization standard, or adopt consumer refresh."
-summary: "GitHub review-state reducer, organization-standard report, environment provisioning and consumer refresh."
+description: "Load to report the organization standard or adopt consumer refresh."
+summary: "Organization-standard report, environment provisioning and consumer refresh."
 license: MIT
 user-invocable: true
 dependencies:
@@ -26,11 +26,7 @@ tags: [review]
 
 # Review operations
 
-GitHub rulesets enforce approvals, stale-approval dismissal and review-thread resolution. This package watches pull requests, reports repository configuration and refreshes consumer installs. It posts no review status.
-
-## Watching pull requests
-
-Run `scripts/pr-watch.sh` through the harness's wake-up mechanism. Read its attention lines rather than watching review-state transitions. Output and exit codes: `pr-watch.sh --help`.
+GitHub rulesets enforce approvals, stale-approval dismissal and review-thread resolution. This package reports repository configuration and refreshes consumer installs. It posts no review status. When the github skill is installed, its `scripts/pr-watch.sh` is the pull-request watcher.
 
 ## Organization standard
 
@@ -44,15 +40,23 @@ Consumers refresh on a schedule or a manual run. An organization managed by flee
 
 ## 4. Operations
 
-A pull request with no automatic review needs a Copilot request. When orch is present, request through its mode owner, `approval-wait <PR#> --request-review --base-checkout PATH`, per orch's `references/gates.md` § Copilot requests, which routes its `off` and `fallback` answers. Without orch, request directly: `gh pr edit <PR#> --add-reviewer @copilot`. Ruleset targeting and request failures: [references/automatic-review.md](references/automatic-review.md).
+A pull request with no automatic review needs a Copilot request. When orch is present, request through its mode owner, `approval-wait <PR#> --request-review --base-checkout PATH`, per orch's `references/gates.md` § Copilot requests, which routes its `off` and `fallback` answers. Without orch, request directly: `gh pr edit <PR#> --add-reviewer @copilot`. Ruleset targeting and request failures, when the github skill is installed: its `references/automatic-review.md`. The central request workflow: [references/adoption.md § Central Copilot request workflow](references/adoption.md#central-copilot-request-workflow).
 
-The overseer's fallback approval and emergency merge follow the managing repository's merge workflow. This package grants no bypass and changes no ruleset.
+The overseer's fallback approval follows the managing repository's merge workflow. An emergency merge past a failing required check exists only in a consumer whose required-checks or merge-queue ruleset lists a bypass actor. A consumer whose rulesets list no bypass has no emergency merge.
+
+In that consumer, a merge group can fail to pass because a CI input read from the default branch broke: the classifier checkout, the lane declaration, the aggregate's needs or the change-class action. The overseer then asks the repository owner, or the person the owner delegates, by mailbox, naming the broken input and the repair's pull request. The repository owner, or the person the owner delegates, then:
+
+1. Adds a bypass for their own credential to the required-checks and merge-queue rulesets through the API, and reads both rulesets back.
+2. Merges that one repair head with `gh pr merge <N> --admin --match-head-commit <SHA>`.
+3. Removes both bypasses, and reads both rulesets back.
+4. Records the bypass and its removal on the repair's work item.
+
+No lane runs a raw `--admin` merge, and no app token gains a merge path. This package grants no bypass and changes no ruleset.
 
 ## Scripts
 
 | Script | Purpose |
 | --- | --- |
-| `scripts/pr-watch.sh` | Reduce open pull requests to attention lines from GitHub's review state. |
 | `scripts/validate-standard.sh` | Report rulesets, required checks, app installation and secret placement. |
 | `scripts/provision-environment.sh` | Provision the organization's declared app-secret environment. |
 | `refresh/adopt-refresh.sh` in the release checkout | Adopt the refresh workflow. `--retire-writer` opts into trusted retirement. |

@@ -13,9 +13,14 @@
 #   ol_preference          the ORCH_OVERSEER_PREFERENCE value, its default
 #                          where the setting is unset
 #   ol_preference_entries  the shared overseer and lane preference parse
+#   ol_model_class         a model word classified by kendex, a class
+#                          resolved to the model a launch runs
+#   ol_model_line          kendex's model-resolution line of the model a
+#                          launch runs, once per launch
 #   ol_account             the account a session spends, as `lanes` judges it
 #   ol_pi_model            a pi session's model, out of the sources naming it
-#   ol_entry_model         one entry's harness, model and effort, as written
+#   ol_entry_model         one entry's harness, model, class and effort, a
+#                          class resolved to its model
 #   ol_lanes               `lanes` on this machine's copy of each account
 #   ol_pick_record         one `lanes pick --json` record, for a caller's
 #                          own counts
@@ -62,19 +67,24 @@
 # Every function returns 0 for the answer its name promises and 1 for a
 # refusal the caller prints, with the reason in OL_REASON and its fields in
 # the OL_* variables each function documents; none of them prints a keyed
-# line of its own, save the preference deprecation warning and conversion, because
+# line of its own, save the preference deprecation warning and conversion and
+# kendex's model-resolution warning (ol_model_line), because
 # the caller owns its own refusal prefix and words: ol_checkout_notice and
 # ol_fleet_log_notice print theirs through the caller's `message`. Every
 # dependency writes its stderr to DEP_ERR, which the caller relays under its
 # keyed line.
 #
 # Requires, of a caller that runs its functions: SCRIPT_DIR (the orch scripts
-# directory), DEP_ERR (a file), lib/lane-launch.sh and lib/lane-state.sh
-# sourced by the caller, the github skill installed beside orch, whose
+# directory), DEP_ERR (a file), lib/lane-launch.sh sourced by the caller,
+# the github skill installed beside orch, whose
 # lib/bounded.sh ol_checkout_sync sources, and, of a caller that opens a
 # session or writes a notice to the fleet log, `message KEY FIELD=VALUE...`
 # defined, with a `checkout-unsynced` text of its own where it opens a
 # session. Sourcing it defines names and runs nothing. Sourced, never run.
+
+# The inspection reader carries the state owner's live-session classification.
+# shellcheck source=lane-state.sh
+declare -F lane_state_is >/dev/null || source "${BASH_SOURCE[0]%/*}/lane-state.sh"
 
 # The file a session's own event rows land in, which the record names: its
 # path is lib/session-rows.sh's, named by expansion as lib/lane-context.sh
@@ -105,15 +115,10 @@ ol_runtime_supported() {
   [[ "$OL_RUNTIME" == tmux ]] || { OL_REASON=runtime-unsupported; return 1; }
 }
 
-# ORCH_OVERSEER_PREFERENCE where no settings file names it: the owner's order,
-# Opus 5.5 on claude, then GPT-6.1 Sol on codex, each at high effort,
-# so an Opus wall moves the overseer onto the next
-# model with room, at a mark and at the wall alike. This value is the
-# setting's default and the only model order any script holds: the walk reads
-# the setting and nothing else, so a new or retired model is an edit to the
-# setting and never to a script. Set to empty, the setting names no entries,
-# which is a caller's own rule to read.
-OL_DEFAULT_PREFERENCE="claude:claude-opus-5-5:high,codex:gpt-6.1-sol:high"
+# The standard class on each harness, which ol_model_class resolves at launch:
+# claude's family alias for it, so a model release moves the overseer with no
+# orch release, and codex's native default. An empty setting names no entries.
+OL_DEFAULT_PREFERENCE="claude:standard:high,codex:standard:high"
 ol_preference() {
   printf '%s\n' "${ORCH_OVERSEER_PREFERENCE-$OL_DEFAULT_PREFERENCE}"
 }
@@ -122,13 +127,16 @@ ol_preference() {
 # comma-separated `harness:model:effort` entries, into OL_ENTRIES, with
 # an optional @host after the harness only in lane mode, for open-terminal.
 # OL_NAMED the count. `harness` is claude, codex, copilot or pi; `model` is
-# the model the harness's `--model` word takes, on pi its own `provider/id`;
+# a model class or the model the harness's `--model` word takes, which
+# ol_entry_model reads (ol_model_class), empty for its native default, on pi
+# its own `provider/id`;
 # `effort` is the level as that harness spells it, on pi its thinking level.
 # Consumer settings can still name a positive account number. Those entries
-# become harness::effort, which ol_entry_model resolves on the caller's model.
+# retain that number, which ol_entry_model resolves on the caller's model.
 # An overseer walk without that model uses the same-harness default entry.
-# OL_DEPRECATED_ENTRIES keeps their original spelling for the refresh report.
-# One stderr warning per process names the first deprecated entry.
+# OL_DEPRECATED_ENTRIES keeps their original spelling for the refresh report,
+# the numeric form alone: a claude old exact id is found by ol_entry_model,
+# which this parse does not run. ol_deprecated warns once per launch.
 # OL_REFUSED_ENTRIES holds every refused entry; a refusal returns 1 and keeps
 # the first in OL_BAD_ENTRY for launchers. Empty VALUE is no entries.
 OL_ENTRIES=()
@@ -136,7 +144,22 @@ OL_NAMED=0
 OL_BAD_ENTRY=""
 OL_REFUSED_ENTRIES=()
 OL_DEPRECATED_ENTRIES=()
-OL_DEPRECATION_WARNED=0
+# The once-per-process model lines, preference-deprecated (ol_deprecated) and
+# kendex's model-resolution line (ol_model_line), print only in the first
+# process of a launch to source this file. It reads ORCH_MODEL_LINES_HELD
+# unset, then exports it, so every process it starts inherits the hold and
+# prints neither line: a child `lanes` read's stderr is the caller's DEP_ERR
+# or a relayed refusal's cause, never a second copy. A script that starts
+# `lanes` before or without sourcing this file exports the hold itself
+# (lane-close, open-terminal, the lane-mail-check hook). Two kinds of child
+# drop it: a session launch (lib/lane-launch.sh LANE_LAUNCH_SCRUB,
+# overseer-run), whose own launches print theirs, and oversee-watch's walled
+# succession, whose preference walk no other process prints. A `lanes pick` a
+# person runs holds no latch and warns.
+OL_LINES_HELD=0
+[[ -z "${ORCH_MODEL_LINES_HELD:-}" ]] || OL_LINES_HELD=1
+export ORCH_MODEL_LINES_HELD=1
+OL_DEPRECATION_WARNED=$OL_LINES_HELD
 OL_DEPRECATION_CONVERTED=0
 ol_preference_entries() { # VALUE [lane]
   local rest="$1" entry parsed_entry host head LC_ALL=C status=0
@@ -163,12 +186,8 @@ ol_preference_entries() { # VALUE [lane]
     fi
     if [[ "$entry" =~ ^(claude|codex|copilot|pi):[1-9][0-9]*:[a-z]+$ ]]; then
       OL_DEPRECATED_ENTRIES+=("$entry")
-      if (( ! OL_DEPRECATION_WARNED )); then
-        printf 'preference-deprecated entry=%s form=harness:model:effort\n' "$entry" >&2
-        OL_DEPRECATION_WARNED=1
-      fi
-      entry="${entry%%:*}::${entry##*:}"
-    elif ! [[ "$parsed_entry" =~ ^(claude|codex|copilot):[a-z][a-z0-9.-]*:[a-z]+$ \
+      ol_deprecated "entry=$entry" form=harness:model:effort
+    elif ! [[ "$parsed_entry" =~ ^(claude|codex|copilot):([a-z][a-z0-9.-]*)?:[a-z]+$ \
        || "$parsed_entry" =~ ^pi:[a-z][a-z0-9.-]*/[a-z0-9][a-z0-9._/-]*:[a-z]+$ ]]; then
       (( status != 0 )) || OL_BAD_ENTRY="$entry"
       OL_REFUSED_ENTRIES+=("$entry")
@@ -179,6 +198,123 @@ ol_preference_entries() { # VALUE [lane]
     OL_NAMED=$((OL_NAMED + 1))
   done
   return "$status"
+}
+
+# ol_deprecated FIELD... — the one stderr warning per launch
+# (OL_LINES_HELD) for a retired model spelling, `preference-deprecated
+# FIELD...`: FIELD... names what was written and `form=` the form that
+# replaces it, harness:model:effort for a numeric entry and model-class for a
+# claude old exact id.
+ol_deprecated() { # FIELD...
+  (( ! OL_DEPRECATION_WARNED )) || return 0
+  printf 'preference-deprecated %s\n' "$*" >&2
+  OL_DEPRECATION_WARNED=1
+}
+
+# ol_model_class HARNESS MODEL — MODEL, as a preference entry or `lanes pick
+# --model` names it, classified by kendex: `kendex tier-model HARNESS --model
+# MODEL --json` under a runtime context with `unsupported` list evidence, core's
+# ModelRequest::parse the one judge of what is a class. Into OL_CLASS the
+# class MODEL names, a class or a legacy family alias such as opus, else
+# empty; into OL_CLASS_MODEL the model a launch runs; and into
+# OL_CLASS_WARNING the warning of the kendex answer that names that model,
+# which the caller prints once the launch runs that model (ol_model_line). A
+# claude class runs claude's
+# family alias for it, with the rank answer's warning (ol_claude_alias). A
+# codex or copilot class runs the runtime answer, which with no list evidence
+# is the harness default, an empty model, with that answer's warning. Any
+# other MODEL is an exact id, runs as written and prints no kendex line, since
+# the runtime answer's harness default is not what it launches. A trailing
+# Claude `[1m]` capacity annotation is read off before the read and put back
+# on the model a class runs, so the 1M window survives. A pi model is
+# `provider/id` and an empty MODEL the native default, so neither is read.
+# Returns 2 for a claude exact id kendex names old, which the caller warns on
+# (ol_deprecated), since a claude class replaces it. A codex or copilot exact
+# id is a supported form, since a class there runs no model in a lane, as
+# ../../references/lane-directive.md § Launch gate
+# states. Returns 1 where kendex refused or its answer could not be read, with
+# kendex's and jq's words in OL_CLASS_ERR, which the caller relays.
+OL_CLASS="" OL_CLASS_MODEL="" OL_CLASS_WARNING="" OL_CLASS_ERR=""
+ol_model_class() { # HARNESS MODEL
+  local word="$2" window="" context answer fields tag old_id warning
+  OL_CLASS="" OL_CLASS_MODEL="$2" OL_CLASS_WARNING="" OL_CLASS_ERR=""
+  [[ -n "$2" && "$1" =~ ^(claude|codex|copilot)$ ]] || return 0
+  if [[ "$word" =~ ^(.+)(\[1[mM]\])$ ]]; then
+    word="${BASH_REMATCH[1]}" window="${BASH_REMATCH[2]}"
+  fi
+  # Claude Code has no model list interface and codex's list does not reach
+  # a launch yet, hence `unsupported`. The read comes before `lanes pick`
+  # names an account or a host, and that evidence binds neither.
+  printf -v context '{"protocol":"model-resolution-v1","harness":"%s","account":"unpicked","host":"unpicked","providers":[],"currentProvider":null,"models":{"tag":"unsupported","source":"orch-launch"},"default":{"tag":"native-default"},"capacity":[],"rejected":[]}' "$1"
+  # kendex's stderr shares the capture: with --json a read that succeeds
+  # writes none, and a refusal's words are what the caller relays.
+  answer="$(kendex tier-model "$1" --model "$word" --json --runtime-context-json "$context" 2>&1)" \
+    || { OL_CLASS_ERR="$answer"; return 1; }
+  fields="$(jq -r 'if .protocol == "model-resolution-v1" and (.request.tag | type) == "string"
+      then [.request.tag, .request.class // "", any(.resolution.diagnostics[]?; .code == "old-id"), .warning // ""]
+        | map(tostring) | join("\u001f")
+      else error("no model-resolution answer") end' <<<"$answer" 2>&1)" \
+    || { OL_CLASS_ERR="$answer"$'\n'"$fields"; return 1; }
+  # A unit separator, not a tab, which read would fold with an empty class.
+  IFS=$'\x1f' read -r tag OL_CLASS old_id warning <<<"$fields"
+  if [[ "$tag" != class ]]; then
+    OL_CLASS=""
+    [[ "$old_id" != true || "$1" != claude ]] || return 2
+    return 0
+  fi
+  if [[ "$1" == claude ]]; then
+    ol_claude_alias "$OL_CLASS" || return 1
+    OL_CLASS_MODEL+="$window"
+  else
+    OL_CLASS_MODEL="" OL_CLASS_WARNING="$warning"
+  fi
+}
+
+# ol_model_line WARNING — WARNING, kendex's model-resolution line for the
+# model a launch runs, printed once per launch (OL_LINES_HELD). A preference
+# walk classifies each entry it reaches and prints only the line of the entry
+# it picks, after the pick (ol_walk, open-terminal preference_select), since
+# an entry it passes over names a model the launch does not run. `lanes pick
+# --model` prints its one word's.
+OL_CLASS_WARNED=$OL_LINES_HELD
+ol_model_line() { # WARNING
+  [[ -n "$1" ]] && (( ! OL_CLASS_WARNED )) || return 0
+  printf '%s\n' "$1" >&2
+  OL_CLASS_WARNED=1
+}
+
+# ol_claude_alias CLASS — claude's family alias for CLASS into OL_CLASS_MODEL,
+# a managed launch's selector, since Claude Code takes family aliases and
+# never a versioned pin, and the warning of the answer naming it into
+# OL_CLASS_WARNING: what `kendex tier-model claude RANK --json` answers for
+# the rank whose class is CLASS, walked from the first rank until it names
+# CLASS, and read once per class per process. This walk stands in for the
+# core word-answer follow-up proposed on KEN-3372, one `kendex tier-model`
+# call that returns claude's managed-launch alias with `model-classes`
+# overrides applied; the rank form applies no override, so none applies on
+# claude yet. Returns 1 with kendex's and jq's words in OL_CLASS_ERR where no
+# rank answers CLASS with an alias.
+ol_claude_alias() { # CLASS
+  local alias="OL_CLAUDE_ALIAS_$1" warning="OL_CLAUDE_WARNING_$1" rank=1 answer fields class selector
+  if [[ -n "${!alias:-}" ]]; then
+    OL_CLASS_MODEL="${!alias}" OL_CLASS_WARNING="${!warning:-}"
+    return 0
+  fi
+  while answer="$(kendex tier-model claude "$rank" --json 2>&1)"; do
+    fields="$(jq -r '[.request.class, .resolution.native_selector // "", .warning // ""] | map(tostring) | join("\u001f")' \
+      <<<"$answer" 2>&1)" || { OL_CLASS_ERR="$answer"$'\n'"$fields"; return 1; }
+    IFS=$'\x1f' read -r class selector OL_CLASS_WARNING <<<"$fields"
+    if [[ "$class" == "$1" ]]; then
+      [[ -n "$selector" ]] || break
+      OL_CLASS_MODEL="$selector"
+      printf -v "$alias" '%s' "$selector"
+      printf -v "$warning" '%s' "$OL_CLASS_WARNING"
+      return 0
+    fi
+    rank=$((rank + 1))
+  done
+  OL_CLASS_WARNING="" OL_CLASS_ERR="$answer"
+  return 1
 }
 
 # ol_account HARNESS MODEL — the account a session of HARNESS on MODEL spends,
@@ -223,27 +359,90 @@ ol_pi_model() { # MODEL...
   printf '\n'
 }
 
+# ol_default_entry HARNESS — the first OL_DEFAULT_PREFERENCE entry on
+# HARNESS into OL_DEFAULT_ENTRY and its model, a class, into OL_DEFAULT_MODEL;
+# 1 where the default names no entry on HARNESS.
+OL_DEFAULT_ENTRY="" OL_DEFAULT_MODEL=""
+ol_default_entry() { # HARNESS
+  local defaults="$OL_DEFAULT_PREFERENCE,"
+  OL_DEFAULT_ENTRY="" OL_DEFAULT_MODEL=""
+  while [[ -n "$defaults" ]]; do
+    OL_DEFAULT_ENTRY="${defaults%%,*}" defaults="${defaults#*,}"
+    [[ "${OL_DEFAULT_ENTRY%%:*}" == "$1" ]] || continue
+    OL_DEFAULT_MODEL="${OL_DEFAULT_ENTRY#*:}" OL_DEFAULT_MODEL="${OL_DEFAULT_MODEL%%:*}"
+    return 0
+  done
+  OL_DEFAULT_ENTRY=""
+  return 1
+}
+
 # ol_entry_model ENTRY — one entry ol_preference_entries admitted, split into
-# OL_ENTRY_HARNESS, OL_ENTRY_HOST, OL_ENTRY_MODEL and OL_ENTRY_EFFORT. A normalized numeric
-# entry has no model word and uses the caller's launch or observed model, which
-# is spelled for the caller's harness: ol_entry_permitted skips such an entry
-# naming another harness rather than hand that spelling to its CLI. The
+# OL_ENTRY_HARNESS, OL_ENTRY_HOST, OL_ENTRY_MODEL, OL_ENTRY_CLASS and
+# OL_ENTRY_EFFORT, its model classified and a class resolved to the model a
+# launch runs (ol_model_class), and into OL_ENTRY_WARNING the warning of the
+# kendex answer naming that model, unprinted (ol_model_line). A claude entry
+# naming an old exact id keeps that model and is deprecated (ol_deprecated).
+# Returns 1 where kendex could not classify the model, which leaves it
+# unresolved, OL_CLASS_ERR holding kendex's words. A numeric entry uses the
+# caller's launch or observed model, which is spelled for the caller's
+# harness: ol_entry_permitted skips such an entry naming another harness
+# rather than hand that spelling to its CLI. That model is classified for its
+# class alone, which the conversion names and the record carries: the launch
+# keeps the session's own model, so the entry keeps the answer's warning only
+# where that answer names the same model, and the numeric form's own warning
+# stands for an old id. A claude old exact id names no class, so the record
+# carries none and the conversion names no replacement, OL_ENTRY_CLASS_RC 2
+# telling ol_walk so. The
 # setting is the one source of which models the walk tries and in what order,
 # so nothing here holds a model list to check a name against: the launch line
 # carries the model the entry names, and a name its harness does not know is
 # the setting's to fix.
-OL_ENTRY_HARNESS="" OL_ENTRY_HOST="" OL_ENTRY_MODEL="" OL_ENTRY_EFFORT=""
+OL_ENTRY_HARNESS="" OL_ENTRY_HOST="" OL_ENTRY_MODEL="" OL_ENTRY_CLASS="" OL_ENTRY_EFFORT="" OL_ENTRY_DEPRECATED=false
+OL_ENTRY_WARNING=""
 # oversee-succeed supplies the observed model before account measurement,
 # which deliberately drops codex's model to judge its binding bucket.
 OL_PREFERENCE_CALLER_MODEL=""
 ol_entry_model() { # ENTRY
+  OL_ENTRY_DEPRECATED=false OL_ENTRY_CLASS="" OL_ENTRY_WARNING=""
   IFS=: read -r OL_ENTRY_HARNESS OL_ENTRY_MODEL OL_ENTRY_EFFORT <<<"$1"
   OL_ENTRY_HOST=""
   if [[ "$OL_ENTRY_HARNESS" == *@* ]]; then
     OL_ENTRY_HOST="${OL_ENTRY_HARNESS#*@}"
     OL_ENTRY_HARNESS="${OL_ENTRY_HARNESS%%@*}"
   fi
-  [[ -n "$OL_ENTRY_MODEL" ]] || OL_ENTRY_MODEL="${OL_WALK_CALLER_MODEL:-$OL_PREFERENCE_CALLER_MODEL}"
+  # Keep numeric entries distinct from an explicit native default.
+  if [[ "$OL_ENTRY_MODEL" =~ ^[1-9][0-9]*$ ]]; then
+    OL_ENTRY_DEPRECATED=true
+    OL_ENTRY_MODEL="${OL_WALK_CALLER_MODEL:-$OL_PREFERENCE_CALLER_MODEL}"
+    OL_ENTRY_CLASS_RC=0
+    ol_model_class "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" || OL_ENTRY_CLASS_RC=$?
+    (( OL_ENTRY_CLASS_RC != 1 )) || return 1
+    OL_ENTRY_CLASS="$OL_CLASS"
+    [[ "$OL_CLASS_MODEL" != "$OL_ENTRY_MODEL" ]] || OL_ENTRY_WARNING="$OL_CLASS_WARNING"
+    return 0
+  fi
+  ol_entry_class || return 1
+  (( OL_ENTRY_CLASS_RC != 2 )) || ol_deprecated "entry=$1" form=model-class
+}
+
+# ol_entry_class — OL_ENTRY_MODEL classified (ol_model_class) into
+# OL_ENTRY_CLASS and the model it resolves to, with that answer's warning in
+# OL_ENTRY_WARNING, ol_model_class's status in OL_ENTRY_CLASS_RC; 1 where
+# kendex could not classify it.
+OL_ENTRY_CLASS_RC=0
+ol_entry_class() {
+  OL_ENTRY_CLASS_RC=0
+  ol_model_class "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" || OL_ENTRY_CLASS_RC=$?
+  (( OL_ENTRY_CLASS_RC != 1 )) || return 1
+  OL_ENTRY_CLASS="$OL_CLASS" OL_ENTRY_MODEL="$OL_CLASS_MODEL" OL_ENTRY_WARNING="$OL_CLASS_WARNING"
+}
+
+# ol_class_unread ENTRY — ol_walk's refusal for an entry whose model kendex
+# could not classify: OL_REASON and OL_FIELDS, and kendex's words in DEP_ERR,
+# the one place a class read writes there.
+ol_class_unread() { # ENTRY
+  OL_REASON=preference-class-unread OL_FIELDS=("entry=$1")
+  printf '%s\n' "$OL_CLASS_ERR" >"$DEP_ERR"
 }
 
 # ol_lanes ARGS... — `lanes` as every overseer read of an account asks it,
@@ -338,9 +537,11 @@ ol_account_id() { # DIR
 # ol_walk TRIGGER EXCLUDE_DIR ENTRY... — the account walk every overseer
 # launch takes, a first launch and a succession alike: ENTRY... in order, the
 # first that names a lane into OL_CHOSEN, with OL_HARNESS, OL_MODEL,
-# OL_EFFORT and OL_LANE_DIR beside it and OL_PICK_MODEL the model its pick was
-# judged on. A named entry's pick is judged on the bucket that walls the model
-# the entry names (ol_entry_model), the model its launch passes; ol_pick_lane
+# OL_EFFORT and OL_LANE_DIR beside it, OL_MODEL_CLASS the entry's class, and
+# OL_PICK_MODEL the model its pick was judged on. The chosen entry's kendex
+# model line prints once it is chosen (ol_model_line). A named entry's pick is
+# judged on the bucket that walls the model the entry names, resolved from
+# its class (ol_entry_model), the model its launch passes; ol_pick_lane
 # picks at TRIGGER, leaving EXCLUDE_DIR out, and its exit 3 skips the entry.
 # An entry spending no account `lanes` measures takes no pick and no lane
 # (ol_pick_lane).
@@ -383,21 +584,22 @@ ol_account_id() { # DIR
 #
 # Returns 0 with an entry chosen, 3 where none qualifies, the counts in
 # OL_WALKED_WALLED and OL_WALKED_UNMEASURED, and 1 with OL_REASON
-# lanes-failed or pi-account-unknown and its fields in OL_FIELDS, the
-# dependency's words in DEP_ERR.
+# lanes-failed, pi-account-unknown or preference-class-unread and its fields
+# in OL_FIELDS, the dependency's words in DEP_ERR.
 OL_WALK_CALLER_HARNESS="" OL_WALK_CALLER_LANE="" OL_WALK_CALLER_MODEL="" OL_WALK_CALLER_EFFORT=""
 OL_WALK_CALLER_PICK_MODEL="" OL_WALK_CALLER_KEEP=0
 OL_WALK_SOURCE_HARNESS="" OL_WALK_SOURCE_FLAGS="" OL_WALK_SOURCE_ROWS=0 OL_WALK_REFUSE_ID="" OL_WALK_SUCCESSOR_BOUND=0
 OL_WALK_KEEP_UNMEASURED="" OL_KEPT_UNMEASURED=0
-OL_CHOSEN="" OL_HARNESS="" OL_MODEL="" OL_EFFORT="" OL_PICK_MODEL="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none
+OL_CHOSEN="" OL_HARNESS="" OL_MODEL="" OL_MODEL_CLASS="" OL_EFFORT="" OL_PICK_MODEL="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none
 OL_WALK_SKIPS=() OL_FIELDS=()
 ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
-  local trigger="$1" exclude="$2" entry permitted_entry rc count defaults default_entry deprecated_entry kept tab=$'\t'
+  local trigger="$1" exclude="$2" entry permitted_entry rc count deprecated_entry kept model_line tab=$'\t'
   shift 2
   OL_CHOSEN="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none OL_WALK_SKIPS=() OL_FIELDS=() OL_KEPT_UNMEASURED=0
   for entry in "$@"; do
     if [[ "$entry" == caller ]]; then
       OL_HARNESS="$OL_WALK_CALLER_HARNESS" OL_MODEL="$OL_WALK_CALLER_MODEL" OL_EFFORT="$OL_WALK_CALLER_EFFORT"
+      OL_MODEL_CLASS="" model_line=""
       OL_PICK_MODEL="$OL_WALK_CALLER_PICK_MODEL" OL_FALLBACK_WALKED="${OL_WALK_CALLER_HARNESS:-none}"
       ol_account "$OL_HARNESS" "$OL_PICK_MODEL"
       if [[ "$OL_ACCOUNT_HARNESS" == unknown ]]; then
@@ -414,26 +616,23 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
         return 0
       fi
     else
-      ol_entry_model "$entry"
+      ol_entry_model "$entry" || { ol_class_unread "$entry"; return 1; }
       permitted_entry="$entry"
-      if [[ -z "$OL_ENTRY_MODEL" ]]; then
-        defaults="$OL_DEFAULT_PREFERENCE,"
-        while [[ "$entry" == *::* && -n "$defaults" ]]; do
-          default_entry="${defaults%%,*}" defaults="${defaults#*,}"
-          [[ "${default_entry%%:*}" == "$OL_ENTRY_HARNESS" ]] || continue
-          OL_ENTRY_MODEL="${default_entry#*:}" OL_ENTRY_MODEL="${OL_ENTRY_MODEL%%:*}"
-          # This model belongs to the target harness, not the caller's harness.
-          [[ -z "$OL_ENTRY_MODEL" ]] || permitted_entry="$OL_ENTRY_HARNESS:$OL_ENTRY_MODEL:$OL_ENTRY_EFFORT"
-          break
-        done
+      if [[ -z "$OL_ENTRY_MODEL" && "$OL_ENTRY_DEPRECATED" == true ]] && ol_default_entry "$OL_ENTRY_HARNESS"; then
+        OL_ENTRY_MODEL="$OL_DEFAULT_MODEL"
+        ol_entry_class || { ol_class_unread "$OL_DEFAULT_ENTRY"; return 1; }
+        # This model belongs to the target harness, not the caller's harness.
+        permitted_entry="$OL_ENTRY_HARNESS:$OL_ENTRY_MODEL:$OL_ENTRY_EFFORT"
       fi
       OL_HARNESS="$OL_ENTRY_HARNESS" OL_MODEL="$OL_ENTRY_MODEL" OL_EFFORT="$OL_ENTRY_EFFORT"
-      OL_PICK_MODEL="$OL_ENTRY_MODEL"
-      if [[ "$entry" == *::* ]] && (( ! OL_DEPRECATION_CONVERTED )); then
+      OL_PICK_MODEL="$OL_ENTRY_MODEL" OL_MODEL_CLASS="$OL_ENTRY_CLASS" model_line="$OL_ENTRY_WARNING"
+      if [[ "$OL_ENTRY_DEPRECATED" == true ]] && (( ! OL_DEPRECATION_CONVERTED )); then
         for deprecated_entry in ${OL_DEPRECATED_ENTRIES[@]+"${OL_DEPRECATED_ENTRIES[@]}"}; do
-          [[ "$entry" == "${deprecated_entry%%:*}::${deprecated_entry##*:}" ]] || continue
-          if [[ -n "$OL_MODEL" ]]; then
-            printf 'preference-deprecated-conversion entry=%s replacement=%s:%s:%s\n' "$deprecated_entry" "$OL_HARNESS" "$OL_MODEL" "$OL_EFFORT" >&2
+          [[ "$entry" == "$deprecated_entry" ]] || continue
+          if [[ -n "$OL_MODEL" ]] && (( OL_ENTRY_CLASS_RC == 2 )); then
+            printf 'preference-deprecated-conversion entry=%s harness=%s model=%s (no class names this model, so no entry replaces it)\n' "$deprecated_entry" "$OL_HARNESS" "$OL_MODEL" >&2
+          elif [[ -n "$OL_MODEL" ]]; then
+            printf 'preference-deprecated-conversion entry=%s replacement=%s:%s:%s\n' "$deprecated_entry" "$OL_HARNESS" "${OL_MODEL_CLASS:-$OL_MODEL}" "$OL_EFFORT" >&2
           else
             printf 'preference-deprecated-conversion entry=%s harness=%s model=harness-default (the harness default model runs)\n' "$deprecated_entry" "$OL_HARNESS" >&2
           fi
@@ -494,6 +693,7 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       if (( count > 0 && count + 1 <= OL_WALK_SUCCESSOR_BOUND )); then continue; fi
     fi
     OL_LANE_DIR="$OL_PICKED_DIR" OL_CHOSEN="$entry" OL_KEPT_UNMEASURED="$kept"
+    ol_model_line "$model_line"
     return 0
   done
   return 3
@@ -526,7 +726,7 @@ ol_entry_permitted() { # ENTRY
     return 1
   fi
   [[ "$OL_HARNESS" != "$OL_WALK_SOURCE_HARNESS" ]] || return 0
-  if [[ "$1" == *::* ]]; then
+  if [[ "$OL_ENTRY_DEPRECATED" == true && "$1" =~ :[1-9][0-9]*: ]]; then
     (( OL_WALK_SOURCE_ROWS )) \
       || OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS${tab}model=${OL_MODEL:-none}")
     return 1
@@ -565,8 +765,8 @@ ol_entry_permitted() { # ENTRY
 # model the launch runs (MODEL, else the one the kept words name, else
 # PICK_MODEL) and, with --question-off, its question-tool words
 # (launch_choice_lead_settings). Returns 1 with OL_REASON
-# launch-choice-failed, or model-window-unknown where a claude model has no
-# window named, and its fields in OL_FIELDS.
+# launch-choice-failed, or model-window-unknown where the Claude handoff budget
+# could not be read, and its fields in OL_FIELDS.
 OL_FLAGS=()
 ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [FLAG...]
   local question=() words lead_model
@@ -576,7 +776,8 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
   OL_FLAGS=() OL_FIELDS=()
   OL_REASON=launch-choice-failed
   words="$(launch_choice_write "$harness" "$model" "$effort")" || { OL_FIELDS=("harness=$harness"); return 1; }
-  [[ -z "$words" ]] || eval "OL_FLAGS=($words)"
+  launch_choice_shell_words "$words" || return 1
+  OL_FLAGS=(${LAUNCH_CHOICE_ARGV[@]+"${LAUNCH_CHOICE_ARGV[@]}"})
   if [[ -z "$model" && -z "$effort" ]]; then
     LAUNCH_CHOICE_KEPT=("$@")
   elif [[ "$harness" == "$source" ]]; then
@@ -585,7 +786,8 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
     OL_FIELDS=(reason=permission-transfer "source=${source:-none}" "target=$harness")
     [[ -z "$source" ]] || launch_choice_permission_transferable "$source" "$*" || return 1
     words="$(launch_choice_permission_write "$harness")" || return 1
-    eval "OL_FLAGS+=($words)"
+    launch_choice_shell_words "$words" || return 1
+    OL_FLAGS+=(${LAUNCH_CHOICE_ARGV[@]+"${LAUNCH_CHOICE_ARGV[@]}"})
     LAUNCH_CHOICE_KEPT=()
     OL_FIELDS=()
   fi
@@ -594,7 +796,7 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
     "${LAUNCH_CHOICE_KEPT[*]+${LAUNCH_CHOICE_KEPT[*]}}")"
   [[ -n "$lead_model" ]] || lead_model="$pick_model"
   launch_choice_lead_settings ${question[@]+"${question[@]}"} ${lead_model:+--model "$lead_model"} \
-    "$harness" ${LAUNCH_CHOICE_KEPT[@]+"${LAUNCH_CHOICE_KEPT[@]}"}
+    "$harness" ${LAUNCH_CHOICE_KEPT[@]+"${LAUNCH_CHOICE_KEPT[@]}"} || { OL_FIELDS=("harness=$harness"); return 1; }
   if [[ "$LAUNCH_CHOICE_COMPACTION" == no-window ]]; then
     OL_REASON=model-window-unknown OL_FIELDS=("model=$lead_model")
     return 1
@@ -611,8 +813,11 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
 # effort read out of FLAG... by lib/lane-launch.sh's own readers, a pi model
 # with the provider a split `--provider` word names, so the
 # record a launch writes names what the line runs and nothing a caller
-# restated beside it. An identity jq could not build is left empty, which the
-# record writers refuse as their own step rather than record as unknown.
+# restated beside it, save `class`, the walk's OL_MODEL_CLASS where it names
+# one, which no launch word carries. An identity jq could not build is left
+# empty, which the record writers refuse as their own step rather than record
+# as unknown.
+# OL_CMD keeps executable selectors. OL_IDENTITY.model is for comparison.
 #
 # lane_single_quote preserves the brief through the pane's shell. HANDOFF is
 # held to a shell-inert alphabet by every caller. One plain sentence on
@@ -640,6 +845,7 @@ ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [F
 # The brief is a positional prompt on claude, codex and pi; copilot takes it
 # as the interactive option's value, which starts the session and submits it.
 OL_CMD="" OL_LANE_VAR="" OL_LAUNCH_HOME="" OL_FORM="" OL_TRUST_REASON="" OL_TRUST_ROUTE=""
+OL_HANDOFF_PROMPT='Read .agents/skills/orch/SKILL.md and follow .agents/skills/orch/workflows/oversee-takeover.md with the overseer handoff at '
 ol_command_line() { # [--brief TEXT] HARNESS HANDOFF LANE_DIR LAUNCH_DIR FLAG...
   local brief_given=0 caller_brief=""
   if [[ "${1:-}" == --brief ]]; then
@@ -648,11 +854,11 @@ ol_command_line() { # [--brief TEXT] HARNESS HANDOFF LANE_DIR LAUNCH_DIR FLAG...
   fi
   local harness="$1" handoff="$2" lane_dir="$3" launch_dir="$4" flag cmd brief brief_flag="" brief_join=" " model
   shift 4
-  brief="Read .agents/skills/orch/SKILL.md and execute the orch oversee workflow after reading the overseer handoff at $handoff"
+  brief="$OL_HANDOFF_PROMPT$handoff"
   case "$harness" in
     claude) cmd="claude -n overseer" ;;
     copilot) cmd="copilot" brief_flag=" -i" ;;
-    pi) cmd="pi" brief="/skill:orch oversee after reading the overseer handoff at $handoff" ;;
+    pi) cmd="pi" brief="/skill:orch follow .agents/skills/orch/workflows/oversee-takeover.md with the overseer handoff at $handoff" ;;
     *) cmd="codex" ;;
   esac
   (( ! brief_given )) || brief="$caller_brief"
@@ -683,13 +889,72 @@ ol_command_line() { # [--brief TEXT] HARNESS HANDOFF LANE_DIR LAUNCH_DIR FLAG...
   OL_LAUNCH_HOME="$LANE_TRUST_HOME"
   OL_FORM="$(lane_launch_form "$cmd" "$harness" "$OL_LAUNCH_HOME" "")"
   OL_CMD="$cmd"
+  # The overseer is not a lane: it keeps the owner's live desktop session, so
+  # a --live-display launch, a wake of a lane recorded with it and a GUI
+  # terminal it opens all have the display to hand on.
   if [[ -n "$OL_LAUNCH_HOME" ]]; then
-    OL_CMD="$(lane_launch_line "$cmd" "$harness" "$OL_LANE_VAR" "$OL_LAUNCH_HOME" "$OL_FORM")" || return 1
+    OL_CMD="$(lane_launch_keep_live_session && lane_launch_line "$cmd" "$harness" "$OL_LANE_VAR" "$OL_LAUNCH_HOME" "$OL_FORM")" || return 1
   else
-    OL_CMD="$(lane_launch_line "$cmd" "$harness" "" "" "$OL_FORM")" || return 1
+    OL_CMD="$(lane_launch_keep_live_session && lane_launch_line "$cmd" "$harness" "" "" "$OL_FORM")" || return 1
   fi
-  ol_identity "$harness" "$lane_dir" "$OL_LAUNCH_HOME" "$model" \
+  ol_identity "$harness" "$lane_dir" "$OL_LAUNCH_HOME" "$(launch_choice_model_id "$harness" "$model" launch)" \
     "$(launch_choice_effort "$harness" "$*")" "$launch_dir" || OL_IDENTITY=""
+  [[ -z "$OL_IDENTITY" || -z "$OL_MODEL_CLASS" ]] \
+    || OL_IDENTITY="$(jq -c --arg class "$OL_MODEL_CLASS" '. + {class: $class}' <<<"$OL_IDENTITY" 2>"$DEP_ERR")" \
+    || OL_IDENTITY=""
+}
+
+# Read the command ol_command_line writes. Its Claude argv ends with one
+# prompt, after the fixed session name. Prefix environment words stay outside
+# the returned flags. The producer's handoff prompt also supplies its bound
+# destination; an arbitrary --brief has none. No command text is evaluated.
+OL_COMMAND_FLAGS=() OL_COMMAND_MODEL="" OL_COMMAND_HANDOFF="" OL_COMMAND_CWD="" OL_COMMAND_HANDOFF_FILE=""
+ol_command_read() { # HARNESS LINE
+  local i end prompt handoff=""
+  OL_COMMAND_FLAGS=() OL_COMMAND_MODEL="" OL_COMMAND_HANDOFF="" OL_COMMAND_CWD="" OL_COMMAND_HANDOFF_FILE=""
+  launch_choice_shell_words "$2" || return 1
+  [[ ${#LAUNCH_CHOICE_ARGV[@]} -gt 0 ]] || return 1
+  end=$((${#LAUNCH_CHOICE_ARGV[@]} - 1))
+  [[ "$1" == claude ]] || return 1
+  prompt="${LAUNCH_CHOICE_ARGV[end]}"
+  if [[ "$prompt" == "$OL_HANDOFF_PROMPT"* ]]; then
+    handoff="${prompt#"$OL_HANDOFF_PROMPT"}"
+  elif [[ "$prompt" == 'Read .agents/skills/orch/SKILL.md and execute the orch oversee workflow after reading the overseer handoff at '* ]]; then
+    # Retained fleet records can hold the default brief from before the takeover route.
+    handoff="${prompt#'Read .agents/skills/orch/SKILL.md and execute the orch oversee workflow after reading the overseer handoff at '}"
+  fi
+  if [[ -n "$handoff" ]]; then
+    # Recovery must supply a path the public succession and watch can accept.
+    if [[ "$handoff" =~ ^[A-Za-z0-9._/-]+$ ]]; then OL_COMMAND_HANDOFF="$handoff"; fi
+  fi
+  for ((i = 0; i + 1 < end; i++)); do
+    [[ "${LAUNCH_CHOICE_ARGV[i]}" == -n && "${LAUNCH_CHOICE_ARGV[i+1]}" == overseer ]] || continue
+    i=$((i + 2))
+    [[ "${LAUNCH_CHOICE_ARGV[end-1]:-}" != -- ]] || end=$((end - 1))
+    OL_COMMAND_FLAGS=("${LAUNCH_CHOICE_ARGV[@]:i:end-i}")
+    OL_COMMAND_MODEL="$(launch_choice_launch_model "$1" "$2")" || return 1
+    return 0
+  done
+  return 1
+}
+
+# The record retains both halves of a relative file reference. Public commands
+# keep the accepted destination under the recorded launch directory; the
+# internal writer needs its pathname from any recovery working directory.
+# A directory with spaces cannot be folded into the public handoff argument.
+ol_command_recovery() { # RECORD
+  local line directory
+  OL_REASON=model-command-unavailable
+  line="$(jq -er '.launch_line | strings | select(length > 0)' <<<"$1" 2>"$DEP_ERR")" || return 1
+  ol_command_read claude "$line" && [[ -n "$OL_COMMAND_MODEL" && -n "$OL_COMMAND_HANDOFF" ]] || return 1
+  directory="$(jq -er '.cwd // "" | strings' <<<"$1" 2>"$DEP_ERR")" || return 1
+  [[ -z "$directory" || "$directory" == /* ]] || return 1
+  case "$OL_COMMAND_HANDOFF" in
+    /*) OL_COMMAND_HANDOFF_FILE="$OL_COMMAND_HANDOFF" ;;
+    *) [[ -n "$directory" ]] || return 1
+       OL_COMMAND_HANDOFF_FILE="${directory%/}/$OL_COMMAND_HANDOFF" ;;
+  esac
+  OL_COMMAND_CWD="$directory"
 }
 
 # The jq definitions every reader and writer of the record shares, so none
@@ -720,6 +985,14 @@ ol_command_line() { # [--brief TEXT] HARNESS HANDOFF LANE_DIR LAUNCH_DIR FLAG...
 # turn ends and tool calls; `oversee launch` reads it for its liveness
 # refusal, so a live pane a startless record names blocks a second overseer.
 OL_JQ_DEFS='def ol_identity: {harness, account, home, model, effort, cwd};
+  def ol_model_launch: {server,server_start,pane,generation,launch_line,cwd,session_id};
+  def ol_recovery_bound($request): ol_model_launch == ($request | ol_model_launch)
+    and .model_check.outcome == "switched" and .model_check.session_id == .session_id
+    and .model_check.launch_identity == ol_model_launch;
+  def ol_succession_owned($written):
+    (ol_model_launch | del(.session_id)) == ($written | ol_model_launch | del(.session_id))
+    and (($written.session_id // "") == "" or .session_id == $written.session_id)
+    and .pending == $written.pending;
   def ol_names($server; $start; $session): type == "object" and (.server // "") == $server
     and ((.pane // .session // "") == $session)
     and (.server_start | tostring) == $start;
@@ -758,12 +1031,15 @@ ol_identity() { # HARNESS ACCOUNT HOME MODEL EFFORT CWD
 # ol_record_line_identity LINE — into OL_IDENTITY, the launch identity OL_PRIOR
 # records for LINE: the pending successor's where LINE is its line, the
 # current session's where LINE is that one's, and every field null where the
-# record holds neither. A relaunch that replays a recorded line builds no
-# command of its own, and this is the identity that line was built with.
+# record holds neither. Each keeps the `class` it records (ol_command_line),
+# which the six positional fields leave out. A relaunch that replays a
+# recorded line builds no command of its own, and this is the identity that
+# line was built with.
 ol_record_line_identity() { # LINE
   OL_IDENTITY="$(jq -c --arg line "$1" "$OL_JQ_DEFS"'
-      if type == "object" and (.pending.launch_line // null) == $line then .pending | ol_identity
-      elif type == "object" and (.launch_line // null) == $line then ol_identity
+      def line_identity: ol_identity + (if has("class") then {class} else {} end);
+      if type == "object" and (.pending.launch_line // null) == $line then .pending | line_identity
+      elif type == "object" and (.launch_line // null) == $line then line_identity
       else null | ol_identity end' <<<"${OL_PRIOR:-null}" 2>"$DEP_ERR")"
 }
 
@@ -923,10 +1199,14 @@ ol_session_from_out() {
 # OL_INSPECT_PROBE the child probe's exit status where one of them is
 # `process-probe`. Returns 1 with OL_REASON=inspect-failed; the provider's own
 # line is in DEP_ERR.
+# OL_INSPECT_LIVE is the shared judge's permission, false for an unknown state
+# or a failed inspection. The provider's wire format remains unchanged.
 OL_INSPECT_STATE="" OL_INSPECT_WALL_KIND="" OL_INSPECT_SERVER="" OL_INSPECT_START="" OL_INSPECT_WINDOW="" OL_INSPECT_CAUSE="" OL_INSPECT_PROBE="" OL_INSPECT_LINE=""
+OL_INSPECT_LIVE=false
 ol_session_inspect() { # SESSION [--launch]
   local out word record socket caller_socket caller_server server start recorded_pane args=()
   OL_INSPECT_STATE="" OL_INSPECT_WALL_KIND="" OL_INSPECT_SERVER="" OL_INSPECT_START="" OL_INSPECT_WINDOW="" OL_INSPECT_CAUSE="" OL_INSPECT_PROBE="" OL_DETAIL=""
+  OL_INSPECT_LIVE=false
   record="${OL_PRIOR:-null}"
   socket=""
   recorded_pane=""
@@ -968,6 +1248,7 @@ ol_session_inspect() { # SESSION [--launch]
       probe=*) OL_INSPECT_PROBE="${word#probe=}" ;;
     esac
   done
+  if lane_state_is "$OL_INSPECT_STATE" live; then OL_INSPECT_LIVE=true; fi
   [[ "$out" != *$'\n'* ]] || OL_DETAIL="${out#*$'\n'}"
 }
 
@@ -1044,17 +1325,104 @@ ol_session_abandon() {
 # ol_session_verify's reasons at step 4 and stop-failed at step 5, the
 # provider's words in DEP_ERR, any successor left for the caller's
 # ol_session_abandon.
+# A competing record returns succession-unbound without overwriting it.
+# The hook passes its acquired record as private assertion data. Its absence
+# means ordinary succession. A missing command never removes a recovery request.
+OL_RECOVERY_RECORD=""
+OL_SUCCESSION_STAGE=""
+OL_SUCCESSION_EXPECTED=null
+OL_SUCCESSION_ORIGINAL_PENDING=null
+ol_model_recovery_check() { # REQUEST CURRENT
+  OL_REASON=model-recovery-unbound
+  jq -e --argjson request "$1" "$OL_JQ_DEFS"'ol_recovery_bound($request)' <<<"$2" > /dev/null 2>"$DEP_ERR" || return 1
+  ol_command_recovery "$1"
+}
+
+# Every succession write compares and changes the record under the state
+# writer's lock. The watch can publish a competing successor while the hook's
+# detached request is queued. An abandoned attempt restores only its own write.
+ol_succession_write() { # pending|current|restore PAYLOAD
+  local old_hup old_int old_term signal="" status=0
+  # A signal can arrive after the atomic write commits but before its reply
+  # reaches this shell. Finish recording ownership before the caller abandons.
+  local bounded="$SCRIPT_DIR/../../github/scripts/lib/bounded.sh"
+  [[ -r "$bounded" ]] && source "$bounded" || return 1
+  old_hup="$(trap -p HUP)" || return 1
+  old_int="$(trap -p INT)" || return 1
+  old_term="$(trap -p TERM)" || return 1
+  trap 'signal=HUP' HUP
+  trap 'signal=INT' INT
+  trap 'signal=TERM' TERM
+  ol_succession_update "$@" || status=$?
+  _kendex_github_restore_trap HUP "$old_hup"
+  _kendex_github_restore_trap INT "$old_int"
+  _kendex_github_restore_trap TERM "$old_term"
+  [[ -z "$signal" ]] || kill -s "$signal" "$$"
+  return "$status"
+}
+
+ol_succession_update() { # pending|current|restore PAYLOAD
+  local reply result prior
+  OL_REASON=succession-write-failed
+  reply="$("$SCRIPT_DIR/workflow-state" update-report oversee "$OL_JQ_DEFS"'
+      if (.overseer | ol_succession_owned($expected) | not)
+        or ($operation != "restore" and $request != null and (.overseer | ol_recovery_bound($request) | not))
+      then {state:., report:{result:"unbound"}}
+      else .overseer as $prior
+        | .overseer = (if $operation == "pending" then .overseer + {pending:$payload}
+          elif $operation == "current" then $payload
+          elif $operation == "restore" and $stage == "pending" then
+            .overseer | if $original_pending == null then del(.pending) else .pending=$original_pending end
+          elif $operation == "restore" then $payload
+          else error("succession-operation-invalid") end)
+        | {state:., report:{result:"written",prior:$prior,current:.overseer}}
+      end' --arg operation "$1" --arg stage "$OL_SUCCESSION_STAGE" \
+    --argjson expected "$OL_SUCCESSION_EXPECTED" --argjson request "${OL_RECOVERY_RECORD:-null}" \
+    --argjson payload "$2" --argjson original_pending "$OL_SUCCESSION_ORIGINAL_PENDING" \
+    2>"$DEP_ERR")" || return 1
+  result="$(jq -r .result <<<"$reply" 2>"$DEP_ERR")" || return 1
+  if [[ "$result" == unbound ]]; then OL_REASON=succession-unbound; return 2; fi
+  [[ "$result" == written ]] || return 1
+  if [[ "$1" == pending ]]; then
+    OL_PRIOR="$(jq -c .prior <<<"$reply" 2>"$DEP_ERR")" || return 1
+    OL_SUCCESSION_ORIGINAL_PENDING="$(jq -c '.pending // null' <<<"$OL_PRIOR" 2>"$DEP_ERR")" || return 1
+  elif [[ "$1" == current ]]; then
+    # Preserve a check acquired after pending was written. Remove only this
+    # attempt's pending command from the snapshot a refusal can restore.
+    prior="$(jq -c --argjson pending "$OL_SUCCESSION_ORIGINAL_PENDING" '
+      .prior | if $pending == null then del(.pending) else .pending=$pending end' <<<"$reply" 2>"$DEP_ERR")" || return 1
+    OL_PRIOR="$prior"
+  fi
+  OL_SUCCESSION_EXPECTED="$(jq -c .current <<<"$reply" 2>"$DEP_ERR")" || return 1
+  OL_SUCCESSION_STAGE="$1"
+  [[ "$1" != restore ]] || OL_SUCCESSION_STAGE=restored
+}
+
 ol_succession() { # PREDECESSOR CWD LINE IDENTITY PENDING LANE_VAR LANE_DIR FORM WAIT_SECS
   local predecessor="$1" cwd="$2" line="$3" identity="$4" pending="$5"
+  local write_rc=0
   shift 5
-  if [[ "$pending" == pending ]] && ! ol_record_pending "$line" "$identity"; then
-    ol_succession_hook pending-unrecorded || { OL_REASON=record-unwritten OL_STEP=pending; return 1; }
+  OL_SUCCESSION_STAGE=unwritten
+  OL_SUCCESSION_EXPECTED="${OL_PRIOR:-null}"
+  OL_SUCCESSION_ORIGINAL_PENDING="$(jq -c '.pending // null' <<<"$OL_SUCCESSION_EXPECTED" 2>"$DEP_ERR")" || return 1
+  if [[ "$pending" == pending ]]; then
+    ol_record_pending "$line" "$identity" || write_rc=$?
+    if (( write_rc != 0 )); then
+      OL_STEP=pending
+      (( write_rc != 2 )) && [[ -z "$OL_RECOVERY_RECORD" ]] || return 1
+      ol_succession_hook pending-unrecorded || { OL_REASON=record-unwritten; return 1; }
+    fi
   fi
   ol_session_open "$cwd" overseer "$line" --after "$predecessor" || return 1
   ol_succession_hook opened
-  if [[ -n "$OL_PRIOR" ]] \
-     && ! ol_record_write "$OL_RUNTIME" "$OL_SESSION" "$OL_WINDOW" "$OL_SERVER" "$identity" "$line"; then
-    ol_succession_hook record-unwritten || { OL_REASON=record-unwritten OL_STEP=write; return 1; }
+  write_rc=0
+  if [[ -n "$OL_PRIOR" ]]; then
+    ol_record_write "$OL_RUNTIME" "$OL_SESSION" "$OL_WINDOW" "$OL_SERVER" "$identity" "$line" || write_rc=$?
+    if (( write_rc != 0 )); then
+      OL_STEP=write
+      (( write_rc != 2 )) && [[ -z "$OL_RECOVERY_RECORD" ]] || return 1
+      ol_succession_hook record-unwritten || { OL_REASON=record-unwritten; return 1; }
+    fi
   fi
   ol_session_verify "$OL_SESSION" "$@" || return 1
   ol_succession_hook verified
@@ -1124,14 +1492,24 @@ ol_fleet_log_notice() { # KEY FIELD=VALUE...
 # OL_PRIOR empty. The caller decides whether that absence permits a launch.
 OL_PRIOR=""
 ol_record_read() {
-  OL_PRIOR="$(ol_record_get)" || { OL_PRIOR=""; return 1; }
+  ol_record_get OL_PRIOR || { OL_PRIOR=""; return 1; }
 }
-# The object on stdout, `null` where the state carries none; the one read of
-# it, which ol_record_read snapshots and ol_record_current only queries.
-ol_record_get() {
-  local record
-  record="$("$SCRIPT_DIR/workflow-state" get oversee '.overseer // null' 2>"$DEP_ERR")" || return 1
-  printf '%s\n' "${record:-null}"
+# The record into OUT_VAR, or stdout when omitted, null where the state carries
+# none. An initialized caller resolves through the state owner without its CLI
+# startup. Standalone overseer-run has no PROJECT_ROOT and needs the
+# CLI's initialization. Status 1 means no state or path; status 2 means
+# unreadable JSON in an initialized caller, with detail in DEP_ERR.
+ol_record_get() { # [OUT_VAR]
+  local state_file _org_record
+  if [[ -n "${PROJECT_ROOT:-}" ]]; then
+    state_file="$( { source "$SCRIPT_DIR/workflow-state" && workflow_state_path oversee; } 2>/dev/null)" || return 1
+    [[ -f "$state_file" ]] || return 1
+    _org_record="$(jq -r '.overseer // null' "$state_file" 2>"$DEP_ERR")" || return 2
+  else
+    _org_record="$("$SCRIPT_DIR/workflow-state" get oversee '.overseer // null' 2>"$DEP_ERR")" || return 1
+  fi
+  if [[ -n "${1:-}" ]]; then printf -v "$1" '%s' "${_org_record:-null}"
+  else printf '%s\n' "${_org_record:-null}"; fi
 }
 
 # ol_record_write RUNTIME SESSION WINDOW SERVER IDENTITY [LINE] — the record
@@ -1200,7 +1578,11 @@ ol_record_write() { # RUNTIME SESSION WINDOW SERVER IDENTITY [LINE]
          fresh: ($fresh | field_names)}' 2>"$DEP_ERR")" || return 1
   record="$(jq -c '.record' <<<"$result" 2>"$DEP_ERR")" || return 1
   fields="$(jq -r '[.record.generation, .retained, .fresh] | @tsv' <<<"$result" 2>"$DEP_ERR")" || return 1
-  "$SCRIPT_DIR/workflow-state" set oversee overseer "$record" >/dev/null 2>"$DEP_ERR" || return 1
+  if [[ -n "$OL_SUCCESSION_STAGE" ]]; then
+    ol_succession_write current "$record" || return $?
+  else
+    "$SCRIPT_DIR/workflow-state" set oversee overseer "$record" >/dev/null 2>"$DEP_ERR" || return 1
+  fi
   IFS=$'\t' read -r OL_GENERATION OL_RECORD_RETAINED OL_RECORD_FRESH <<<"$fields"
 }
 
@@ -1217,7 +1599,11 @@ ol_record_pending() { # LINE IDENTITY
   local record
   record="$(jq -cn --argjson identity "$2" --arg line "$1" '$identity + {launch_line: $line}' 2>"$DEP_ERR")" \
     || return 1
-  "$SCRIPT_DIR/workflow-state" set oversee overseer.pending "$record" >/dev/null 2>"$DEP_ERR"
+  if [[ -n "$OL_SUCCESSION_STAGE" ]]; then
+    ol_succession_write pending "$record"
+  else
+    "$SCRIPT_DIR/workflow-state" set oversee overseer.pending "$record" >/dev/null 2>"$DEP_ERR"
+  fi
 }
 
 # ol_record_current SERVER PANE — the launch identity the record holds for the
@@ -1231,15 +1617,12 @@ ol_record_pending() { # LINE IDENTITY
 # words in DEP_ERR. The `pending` member is never read here, and OL_PRIOR is
 # left as it was: that is a launcher's snapshot, which an abandoned launch
 # puts back, and a query is not a snapshot.
-OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD=""
+# oversee-succeed reads the bound command and model check from OL_CUR_RECORD.
+OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD="" OL_CUR_RECORD=null
 ol_record_current() { # SERVER PANE
-  local record fields start state_file sep=$'\x1f'
-  OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD=""
-  # Resolve once through the state owner, then read that file without reloading settings.
-  state_file="$("$SCRIPT_DIR/workflow-state" path oversee 2>/dev/null)" || return 1
-  [[ -f "$state_file" ]] || return 1
-  record="$(jq -r '.overseer // null' "$state_file" 2>"$DEP_ERR")" || return 2
-  record="${record:-null}"
+  local record fields start sep=$'\x1f'
+  OL_CUR_HARNESS="" OL_CUR_ACCOUNT="" OL_CUR_HOME="" OL_CUR_MODEL="" OL_CUR_EFFORT="" OL_CUR_CWD="" OL_CUR_RECORD=null
+  ol_record_get record || return $?
   # Unread, the start names no record bound to one: the caller keeps its own
   # readings, and nothing here acts on the record.
   start="$(ol_session_start "$1" "$2")" || start=""
@@ -1247,6 +1630,7 @@ ol_record_current() { # SERVER PANE
       if ol_names($server; $start; $pane) then ol_identity | map(. // "" | tostring) | join($sep)
       else empty end' <<<"$record" 2>"$DEP_ERR")" || return 2
   [[ -n "$fields" ]] || return 1
+  OL_CUR_RECORD="$record"
   IFS="$sep" read -r OL_CUR_HARNESS OL_CUR_ACCOUNT OL_CUR_HOME OL_CUR_MODEL OL_CUR_EFFORT OL_CUR_CWD <<<"$fields"
 }
 
@@ -1274,37 +1658,44 @@ ol_record_heal() { # SERVER PANE START HARNESS HOME SESSION_ID
       else error("overseer-native-unbound") end' >/dev/null 2>"$DEP_ERR"
 }
 
-# ol_record_exit_clear SERVER PANE — the record's `exit` member dropped where
-# the record names that session on that server: `overseer-run` asks it before
-# its line runs, so a launch line run again in the same pane leaves no status
-# its predecessor earned. Returns 1 with the writer's words in DEP_ERR.
-ol_record_exit_clear() { # SERVER PANE
-  local start
-  # Unread, the start names no record bound to one, and the update leaves it
-  # as it stands.
-  start="$(ol_session_start "$1" "$2")" || start=""
-  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg start "$start" --arg pane "$2" "$OL_JQ_DEFS"'
-      if (.overseer | ol_names($server; $start; $pane)) then .overseer |= del(.exit) else . end' \
-    >/dev/null 2>"$DEP_ERR"
+# The pane starts overseer-run before the launcher replaces OL_PRIOR. Wait
+# for that completed binding before the single start update. The update
+# rechecks the generation against a replacement between the read and write.
+ol_record_start() { # SERVER PANE PID PROCESS_START
+  local start record generation run passes=50
+  start="$(ol_session_start "$1" "$2")" || { printf 'server-start-unreadable\n' > "$DEP_ERR"; return 1; }
+  while :; do
+    ol_record_get record || { [[ -s "$DEP_ERR" ]] || printf 'record-unavailable\n' > "$DEP_ERR"; return 1; }
+    generation="$(jq -r --arg server "$1" --arg start "$start" --arg pane "$2" "$OL_JQ_DEFS"'
+      select(ol_names($server; $start; $pane)) | .generation // empty' <<<"$record" 2>"$DEP_ERR")" || return 1
+    [[ -z "$generation" ]] || break
+    passes=$((passes - 1))
+    [[ "$passes" -gt 0 ]] || { printf 'record-binding-timeout\n' > "$DEP_ERR"; return 1; }
+    sleep 0.1 || return 1
+  done
+  run="$(jq -cn --arg server "$1" --arg start "$start" --arg pane "$2" --argjson generation "$generation" \
+    --arg pid "$3" --arg process_start "$4" \
+    '{server: $server, server_start: ($start | tonumber), pane: $pane, generation: $generation,
+      harness_pid: $pid, harness_start: $process_start}' 2>"$DEP_ERR")" || return 1
+  "$SCRIPT_DIR/workflow-state" update oversee --argjson run "$run" "$OL_JQ_DEFS"'
+    if (.overseer | ol_names($run.server; ($run.server_start | tostring); $run.pane)
+        and .generation == $run.generation)
+    then .overseer |= (del(.exit) | .harness_pid = $run.harness_pid | .harness_start = $run.harness_start)
+    else error("overseer-run-unbound") end' >/dev/null 2>"$DEP_ERR" || return 1
+  printf '%s\n' "$run"
 }
 
-# ol_record_exit SERVER PANE STATUS — the harness's exit status and the UTC
-# time it returned, as the record's `exit` member `{status, at}`, written by
-# `overseer-run` once the launch line it runs returns. Only a record naming
-# that session on that server takes it: a line that outlived its record, a
-# successor's having replaced it, says nothing about the session recorded now.
-# oversee-watch reads it as the session's death where the pane's process is a
-# bare shell with nothing but shells under it, the state this return leaves.
-# Returns 1 with the writer's words in DEP_ERR.
-ol_record_exit() { # SERVER PANE STATUS
-  local at start
+# Only the run that installed the active identity can complete it. Retain
+# that identity under exit.run for inspect after clearing the active fields.
+ol_record_exit() { # RUN_JSON STATUS
+  local at
   at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
-  # Unread, as ol_record_exit_clear reads it: no exit is written.
-  start="$(ol_session_start "$1" "$2")" || start=""
-  "$SCRIPT_DIR/workflow-state" update oversee --arg server "$1" --arg start "$start" --arg pane "$2" \
-    --argjson status "$3" --arg at "$at" "$OL_JQ_DEFS"'
-      if (.overseer | ol_names($server; $start; $pane)) then .overseer.exit = {status: $status, at: $at} else . end' \
-    >/dev/null 2>"$DEP_ERR"
+  "$SCRIPT_DIR/workflow-state" update oversee --argjson run "$1" --argjson status "$2" --arg at "$at" "$OL_JQ_DEFS"'
+    if (.overseer | ol_names($run.server; ($run.server_start | tostring); $run.pane)
+        and .generation == $run.generation
+        and .harness_pid == $run.harness_pid and .harness_start == $run.harness_start)
+    then .overseer |= (del(.harness_pid, .harness_start) | .exit = {status: $status, at: $at, run: $run})
+    else error("overseer-run-unbound") end' >/dev/null 2>"$DEP_ERR"
 }
 
 # ol_caller_known SERVER PANE DIR — what the session SERVER PANE is known to
@@ -1342,7 +1733,11 @@ ol_caller_known() { # SERVER PANE DIR
 # launch line included. A prior of null removes the object. Returns 1 with
 # the writer's words in DEP_ERR.
 ol_record_restore() {
-  if [[ "${OL_PRIOR:-null}" == null ]]; then
+  if [[ "$OL_SUCCESSION_STAGE" == unwritten || "$OL_SUCCESSION_STAGE" == restored ]]; then
+    return 0
+  elif [[ -n "$OL_SUCCESSION_STAGE" ]]; then
+    ol_succession_write restore "${OL_PRIOR:-null}"
+  elif [[ "${OL_PRIOR:-null}" == null ]]; then
     "$SCRIPT_DIR/workflow-state" update oversee 'del(.overseer)' >/dev/null 2>"$DEP_ERR"
   else
     "$SCRIPT_DIR/workflow-state" set oversee overseer "$OL_PRIOR" >/dev/null 2>"$DEP_ERR"
