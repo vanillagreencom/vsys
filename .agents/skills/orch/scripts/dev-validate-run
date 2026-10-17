@@ -44,10 +44,21 @@
 # setsid. The log's first line is the runner line.
 #
 # Usage:
-#   dev-validate-run --worktree PATH [--poll SECS] [--validate-mode full|range|ci] [--base REF] [--attached] [--fresh]
+#   dev-validate-run --worktree PATH [--poll SECS] [--validate-mode full|range|ci] [--base REF] [--attached] [--fresh] [--reproduce | --restack]
 #       Start the run detached, then block until it ends. Prints the run
 #       directory first and the verdict last. Harness launch and resume routes:
 #       ../../dev/SKILL.md § Long-Running Validation.
+#       --reproduce marks the request as the local reproduction of a required
+#       run that failed, such as a red merge-group run, whose CI cannot prove
+#       the fix: it skips CI admission and the selector, runs the command its
+#       full or range mode runs, and records that mode and its pass, failure
+#       or no-verdict, never ci. It implies --fresh, so no earlier pass or
+#       bound-ended run answers it: the fix's tree always runs the command.
+#       With --validate-mode ci it is refused as reproduce-ci.
+#       --restack marks a ci request as the restack's own, which
+#       ../workflows/merge-pr-restack.md step 2 makes: a restack is no round,
+#       so CI admission runs no scoped suites and records CI pending at once.
+#       Any other mode refuses it as option-unused.
 #       A full start ignores --base and prints one stderr notice naming it.
 #       Range and ci starts require --base. Other unused options are refused.
 #       One run at a time per worktree: while a run directory there has no
@@ -120,7 +131,7 @@
 #       Print the newest run in that worktree that ran a full or range command
 #       to a pass or a finding-free no-verdict and whose start records the HEAD and tree it
 #       validated, read-only. restack-skip compares a restacked head with
-#       that tree. A ci run ran nothing and is never one. Exit 1 where the
+#       that tree. A ci run, scoped or not, is never one. Exit 1 where the
 #       worktree has none, or where a later full or range run did not pass,
 #       an unfinished one included: that run is named as red. A later run the
 #       bound ended whose log holds no finding line supplies its own tree
@@ -171,8 +182,7 @@
 #          lane it has, none stood down for that class.
 #   ci     a round deferred to required CI after publication.
 #          ORCH_DELIVERY=push-base keeps this request on local validation.
-#          It runs no command and completes the local round at once, with
-#          a zero-second wall time, only where the project names the status
+#          It defers to CI only where the project names the status
 #          check context that runs its validation in DEV_VALIDATE_CI_CONTEXT
 #          and the base branch requires that context. Under push-first,
 #          pr-order permits this before publication, when no PR exists and
@@ -187,8 +197,17 @@
 #          (GH_REPO, else the worktree). The base is the pull request's own,
 #          which a stacked pull request sets to a branch other than the
 #          default. A full request under push-first also
-#          takes CI where these coverage checks pass. --record reports
-#          verdict=pending, never a CI pass. Where --record names
+#          takes CI where these coverage checks pass. With no
+#          DEV_VALIDATE_SELECTION_CMD, or under --restack, a deferred round
+#          runs no command and completes at once, with a zero-second wall
+#          time, and start and --record carry no class-base= line. With a
+#          selector, it runs that selector once with DEV_VALIDATE_SCOPED=true,
+#          handed the class, docs verdict and paths of the round's changes
+#          since --base, or of the whole branch for a full request, and start
+#          and --record carry scoped=true and a class-base= line. --record
+#          reports a pass, or a round that ran nothing, as verdict=pending,
+#          never a CI pass; a scoped failure is FAILING and a bound or host
+#          end no-verdict, as for any local run. Where --record names
 #          ci-event=merge_group, as every queue-only change's does, the
 #          merge-group run proves the head; submit's pull-request wait
 #          proves nothing there. A red queue run returns the change to its
@@ -227,7 +246,8 @@
 # full request takes CI under the coverage checks above. Unset, failed or
 # unreported selection keeps full and range requests local. For an explicit
 # ci request, an unset selector preserves the existing CI route. A configured
-# selector must report all or subset before CI can skip local work.
+# selector must report all or subset before CI admission, and the admitted
+# round then runs its scoped suites as ci mode states.
 # Its evidence is the current round from
 # --base, including uncommitted edits, rather than the whole pull request.
 # The whole branch still determines whether CI covers the change class.
@@ -308,8 +328,9 @@
 #   run-dir=… pid=N                                                           (--live)
 #   live=none                                                                 (--live, exit 1)
 #
-# --record's verdict is pending for a ci run. A local run is pass only for
-# a sentinel of guard-exit=0, no-verdict
+# --record's verdict is pending for a ci run that passed or ran nothing. A
+# local run, a scoped ci run's included, is pass only for a sentinel of
+# guard-exit=0, no-verdict
 # for a sentinel carrying verdict=no-verdict, FAILING for any other exit, and
 # unfinished where no sentinel exists: a run still going, past its cap or lost.
 # Only pass is a passing validation. The timing fields follow every verdict a
@@ -403,6 +424,7 @@ die() {
       invalid-seconds) printf 'The value must be a whole number of seconds above zero.\n' ;;
       missing-command) printf 'Install it: the run needs it, so no run was started.\n' ;;
       group-leader-missing) printf 'Install the github skill beside orch: --attached starts its run through that skill'\''s process-group leader prefix.\n' ;;
+      reproduce-ci) printf 'A reproduction of a failed required run validates locally; request full or range.\n' ;;
       no-run) printf 'Start a run with --worktree before polling it.\n' ;;
       sentinel-unreadable) printf 'The sentinel does not carry a guard-exit value.\n' ;;
       timing-unreadable) printf 'The run has a verdict but no started-at, ended-at and seconds record of its wall time.\n' ;;
@@ -677,6 +699,8 @@ validate_mode_given=false
 base_given=false
 attached=false
 fresh=false
+reproduce=false
+restack=false
 proof_head=""
 proof_given=false
 expected_head=""
@@ -710,6 +734,8 @@ while (( $# > 0 )); do
     --base)     need "$1" $# "${2:-}"; once "$1" "$base_given"; base_given=true; base="$2"; shift 2 ;;
     --attached) once "$1" "$attached"; attached=true; shift ;;
     --fresh)    once "$1" "$fresh"; fresh=true; shift ;;
+    --reproduce) once "$1" "$reproduce"; reproduce=true; shift ;;
+    --restack)  once "$1" "$restack"; restack=true; shift ;;
     -h|--help)  usage; exit 0 ;;
     *)          die unknown-argument "argument=$1" ;;
   esac
@@ -724,6 +750,12 @@ done
 # a full start: its notice lets that resolved start proceed.
 [[ "$attached" == false || -z "$mode" || "$mode" == start ]] || die option-unused "option=--attached" "mode=$mode"
 [[ "$fresh" == false || -z "$mode" || "$mode" == start ]] || die option-unused "option=--fresh" "mode=$mode"
+[[ "$reproduce" == false || -z "$mode" || "$mode" == start ]] || die option-unused "option=--reproduce" "mode=$mode"
+[[ "$reproduce" == false || "$validate_mode" != ci ]] || die reproduce-ci "option=--reproduce" "validate-mode=$validate_mode"
+# A reproduction proves the fix by running the failed command on its tree.
+[[ "$reproduce" == false ]] || fresh=true
+[[ "$restack" == false || -z "$mode" || ( "$mode" == start && "$validate_mode" == ci ) ]] \
+  || die option-unused "option=--restack" "mode=$mode" "validate-mode=$validate_mode"
 [[ -z "$proof_head" || "$mode" == resolve ]] || die option-unused option=--require-proof "mode=$mode"
 [[ "$expected_head_given" == false || -n "$proof_head" ]] || die option-unused option=--expected-head "mode=$mode"
 [[ -z "$proof_head" || "$expected_head_given" == true ]] || die required option=--expected-head
@@ -788,6 +820,20 @@ preview_selection() {
       "$BASH" -c "$selection_cmd" 2>"$class_scratch/selection.log")" \
     && selection="$(sed -n '/^selection=/p' <<<"$selection")" \
     || { selection=""; return 1; }
+}
+
+# The selector owns scoped execution too; no second suite map or
+# project-specific command lives in this runner. A class read over the whole
+# branch records the branch merge base as its class base, so no reader takes
+# a scoped run for a pass of the branch.
+start_scoped() {
+  scoped=true
+  cmd="$selection_cmd"
+  if [[ -z "$class_base" ]]; then
+    scoped_base="$("$SCRIPT_DIR/resolve-base-branch" "$worktree")" \
+      && class_base="$(git merge-base HEAD "origin/$scoped_base")" \
+      || die scoped-base-unresolved
+  fi
 }
 
 # The contexts the base branch requires, one per line: those its rulesets'
@@ -947,6 +993,11 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
     (( ancestor_rc <= 1 )) || die ancestry-unreadable "base=$base_sha"
     (( ancestor_rc == 0 )) || orphaned_sha="$base_sha"
   fi
+  # The round's own class base: its --base commit, or empty, the whole
+  # branch, for a full request or a base a rebase left off the branch. The
+  # initial read, CI admission and the scoped ci start all read it.
+  round_class_base=""
+  [[ "$requested_mode" == full || -n "$orphaned_sha" ]] || round_class_base="$base_sha"
   # Read before the run directory exists, since that directory sits inside the
   # worktree the class judges. A range request is judged from its base, so a
   # fix round's command reads the round's changes even where the project's
@@ -955,7 +1006,7 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
   # base as class-base=, so submit takes such a full pass for the branch's
   # only where its command reports the whole battery.
   class_base=""
-  [[ "$validate_mode" != range || -n "$orphaned_sha" ]] || class_base="$base_sha"
+  [[ "$validate_mode" != range ]] || class_base="$round_class_base"
   classify "$class_base"
   if [[ -n "$proof_head" && "$snapshot_tree" != "$expected_tree" ]]; then
     printf 'validation-proof=missing cause=tree-mismatch expected-head=%s expected-tree=%s checkout-tree=%s\n' "$expected_head" "$expected_tree" "${snapshot_tree:-unreadable}"
@@ -963,7 +1014,7 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
   fi
   # A ci request runs as range where CI may not run the checks for the change;
   # --help's ci mode names when.
-  if [[ "$validate_mode" == ci || "$pr_order" == push-first || -n "$proof_head" ]]; then
+  if [[ "$reproduce" == false ]] && [[ "$validate_mode" == ci || "$pr_order" == push-first || -n "$proof_head" ]]; then
     ci_admission_attempted=true
     classify ""
     [[ "$requested_mode" == full ]] || validate_mode=range
@@ -976,13 +1027,14 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
         ci_fallback=selection-unread
         # CI eligibility uses the branch. The repository's local bound uses
         # the fix round, which --base names, before CI can bypass its checks.
+        # An admitted round keeps this classification and class base for
+        # its scoped suites.
         if [[ -z "$orphaned_sha" ]]; then
-          class_base=""
-          [[ "$requested_mode" == full ]] || class_base="$base_sha"
+          class_base="$round_class_base"
           classify "$class_base"
           if [[ -z "$class_fallback" ]] && preview_selection; then
             case "$selection" in
-              selection=all|selection=subset) validate_mode=ci; class_base="" ;;
+              selection=all|selection=subset) validate_mode=ci ;;
             esac
           fi
         fi
@@ -1010,29 +1062,21 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
   fi
   scoped=false
   if [[ "$validate_mode" != ci && "$selection_previewed" == false ]]; then
-    if [[ -n "${selection_cmd//[[:space:]]/}" ]]; then
+    if [[ "$reproduce" == false && -n "${selection_cmd//[[:space:]]/}" ]]; then
       if preview_selection && { [[ "$selection" == selection=all ]] \
           || [[ "$requested_mode" == range && "$selection" == selection=subset ]]; }; then
-        [[ "$ci_admission_attempted" == true ]] || ci_fallback=class-uncovered
         if [[ "$ci_admission_attempted" == false ]]; then
+          # CI covers the branch; the round's own classification, which the
+          # preview read, is restored for the run either way.
+          ci_fallback=class-uncovered
           classify ""
-        fi
-        if [[ "$ci_admission_attempted" == false ]] && ci_class_covered true && ci_runs_validation; then
-          validate_mode=ci
-          class_base=""
-        else
+          if ci_class_covered true && ci_runs_validation; then
+            validate_mode=ci
+          fi
           classify "$class_base"
         fi
         if [[ ( "$ci_fallback" == pr-not-open || ( "$pr_order" == push-first && "$ci_fallback" == class-uncovered ) ) && "$selection" == selection=all ]]; then
-          # The selector owns scoped execution too; no second suite map
-          # or project-specific command lives in this runner.
-          scoped=true
-          cmd="$selection_cmd"
-          if [[ -z "$class_base" ]]; then
-            scoped_base="$("$SCRIPT_DIR/resolve-base-branch" "$worktree")" \
-              && class_base="$(git merge-base HEAD "origin/$scoped_base")" \
-              || die scoped-base-unresolved
-          fi
+          start_scoped
         fi
       fi
     fi
@@ -1076,6 +1120,19 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
   fi
   [[ -n "$timeout_secs" ]] || timeout_secs=3600
   check_seconds setting=DEV_VALIDATE_TIMEOUT_SECS "$timeout_secs"
+  # CI admission leaves the proof of the head to the required run. A round
+  # with a selector still runs that selector's changed-file suites once,
+  # scoped, over the classification admission kept, so a defect they catch
+  # fails the round before the head reaches that run. A restack is no round.
+  if [[ "$validate_mode" == ci ]]; then
+    if [[ "$restack" == false && -n "${selection_cmd//[[:space:]]/}" ]]; then
+      start_scoped
+      # As for a range run, an orphaned base gives way to the branch's fork point.
+      [[ -z "$orphaned_sha" ]] || base_sha="$class_base"
+    else
+      class_base=""
+    fi
+  fi
   if ! finding_prefix="$("$SCRIPT_DIR/orch-env" DEV_VALIDATE_FINDING_PREFIX "")"; then
     die unreadable-setting setting=DEV_VALIDATE_FINDING_PREFIX
   fi
@@ -1140,6 +1197,7 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
     [[ -z "$orphaned_sha" ]] || printf 'validate-base-orphaned=%s\n' "$orphaned_sha"
     [[ "$validate_mode" == ci || -z "$ci_fallback" ]] || printf 'ci-fallback=%s\n' "$ci_fallback"
     [[ -z "$class_base" ]] || printf 'class-base=%s\n' "$class_base"
+    [[ "$validate_mode" != ci ]] || printf 'ci-event=%s\n' "$ci_event"
     [[ "$bound_ended" == false ]] || printf 'bound-run=%s\n' "$BOUND_RUN_DIR"
     [[ "$passed_before" == false ]] || printf 'pass-run=%s\n' "$PASS_RUN_DIR"
     [[ -z "$finding_prefix" || "$finding_prefix" == *$'\n'* ]] || printf 'finding-prefix=%s\n' "$finding_prefix"
@@ -1153,11 +1211,10 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
       "$class" "$docs_only" "${class_fallback:+ class-fallback=$class_fallback}"
   }
   launch_rc=0
-  if [[ "$validate_mode" == ci ]]; then
+  if [[ "$validate_mode" == ci && "$scoped" == false ]]; then
     # The local round can finish before publication. CI remains pending;
     # submit-pr's CI wait and existing queue route supply the validation proof.
     ci_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-    printf 'ci-event=%s\n' "$ci_event" >> "$run_dir/start"
     printf 'runner=none class=%s ci-event=%s: required CI validates this change\n' "$class" "$ci_event" > "$run_dir/log"
     write_verdict "$ci_at" "$ci_at" 0 "guard-exit=0 at=$ci_at"
   elif [[ "$bound_ended" == true ]]; then
@@ -1194,7 +1251,7 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
     4) die launch-failed "$JOB_UNIT_ERROR" ;;
     *) die launch-failed "status=$launch_rc" ;;
   esac
-  [[ "$attached" == true && "$validate_mode" != ci && "$bound_ended" == false && "$passed_before" == false ]] || started_line
+  [[ "$attached" == true && ( "$validate_mode" != ci || "$scoped" == true ) && "$bound_ended" == false && "$passed_before" == false ]] || started_line
   # Blocking form: the same poll --wait runs, with no per-call budget, so a
   # foreground caller returns only with the verdict.
   mode=wait
@@ -1426,7 +1483,7 @@ if [[ "$mode" == record ]]; then
       || die timing-unreadable "path=$run_dir/timing"
     record_timing=" seconds=$timing_seconds started-at=$timing_started ended-at=$timing_ended"
   fi
-  # CI has no executed validation. Bind the pending receipt to the same
+  # CI proves a ci run's head. Bind the pending receipt to the same
   # worktree snapshot the classifier judged, even when the round commits later.
   if [[ "$record_mode" == ci ]]; then
     record_tree="$(start_field "$run_dir/start" tree)"
