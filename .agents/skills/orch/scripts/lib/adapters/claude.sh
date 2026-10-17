@@ -7,31 +7,18 @@
 #
 # Sourced by lib/lane-context.sh, never run.
 
-# The window a Claude model runs on, as `PATTERN=WINDOW` rows matched in order
-# against the whole lowercased model name. The transcript names the model on
-# every assistant line (`claude-opus-5-5`) and never the window. The fable and
-# opus rows are the window this fleet has measured for any model of that tier.
-# The Sonnet 5 and Haiku 4.5 rows are the windows Claude Code's own model
-# registry and the model docs give: Sonnet 5 runs 1M with no 200K variant,
-# Haiku 4.5 runs 200K. Those rows name exact ids because an older Sonnet runs
-# 200K unless its `[1m]` variant was chosen, and the transcript names the same
-# model either way; a bare `sonnet` or `haiku` names none, since an
-# ANTHROPIC_DEFAULT_*_MODEL pin can move it, and a launch writes the id in its
-# place (lane_adapter_claude_model_id). A
-# model no row names has no window, and its sessions are reported unmeasured
-# rather than judged against a guess: too small a figure hands a session off
-# early, too large one lets it run into its wall.
-LANE_ADAPTER_CLAUDE_WINDOWS='*fable*=1000000 *opus*=1000000 claude-sonnet-5=1000000 claude-sonnet-5-5=1000000 claude-haiku-4-5=200000 claude-haiku-4-5-20251001=200000'
+# Family rules avoid a new row for each model release. Unknown families use
+# 200K, the smaller family budget, so missing metadata does not block a launch.
+# Sonnet aliases can select 200K sessions, so their budget cannot assume an
+# extended window. Larger sessions hand off at this conservative budget too.
+# Readings use the same budget. Only launch callers request the notice.
+LANE_ADAPTER_CLAUDE_WINDOWS='*fable*=1000000 *opus*=1000000 *sonnet*=200000 *haiku*=200000'
+LANE_ADAPTER_CLAUDE_DEFAULT_WINDOW=200000
 
-# lane_adapter_claude_window MODEL — the window MODEL runs (`claude-opus-5-5`,
-# `opus[1m]`), empty where no row matches it. The one rule both a
-# reading and a launch ask, so a model a launch refuses is exactly one whose
-# sessions would read unmeasured. read -a, not `for pair in $TABLE`, so a row's
-# pattern is never globbed against the working directory.
-lane_adapter_claude_window() { # MODEL
+lane_adapter_claude_window() { # MODEL [notice]
   local model pair
   local -a pairs=()
-  model=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+  model=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]') || return 1
   read -r -a pairs <<<"$LANE_ADAPTER_CLAUDE_WINDOWS"
   for pair in "${pairs[@]}"; do
     # shellcheck disable=SC2254 # the row is a pattern
@@ -39,17 +26,55 @@ lane_adapter_claude_window() { # MODEL
       ${pair%=*}) printf '%s\n' "${pair##*=}"; return 0 ;;
     esac
   done
+  if [[ "${2:-}" == notice && "${LANE_ADAPTER_CLAUDE_WINDOW_NOTICED:-false}" != true ]]; then
+    printf 'claude-window-default model=%s window=%s\n' "${1:-default}" "$LANE_ADAPTER_CLAUDE_DEFAULT_WINDOW" >&2
+    LANE_ADAPTER_CLAUDE_WINDOW_NOTICED=true
+  fi
+  printf '%s\n' "$LANE_ADAPTER_CLAUDE_DEFAULT_WINDOW"
 }
 
-# lane_adapter_claude_model_id MODEL — the model id a launch writes for MODEL:
-# the one the `sonnet` or `haiku` alias resolves to on the first-party API, and
-# MODEL itself for any other spelling.
-lane_adapter_claude_model_id() { # MODEL
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
-    sonnet) printf '%s\n' claude-sonnet-5-5 ;;
-    haiku) printf '%s\n' claude-haiku-4-5 ;;
-    *) printf '%s\n' "${1:-}" ;;
+# Claude owns family overrides and provider selection. Aliases remain launch
+# intent in arguments and records. A concrete observation matches an alias
+# only in its own family; explicit IDs retain every version field.
+lane_adapter_claude_model_id() { # MODEL [launch|resolved|recorded] [RECORDED_SELECTOR]
+  local model recorded
+  model="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" || return 1
+  case "${2:-}" in launch | resolved | recorded) model=${model%\[1m\]} ;; esac
+  if [[ "${2:-}" != resolved ]]; then
+    case "$model" in
+      sonnet | haiku | opus | fable)
+        [[ "${2:-}" != launch ]] || model=${1:-}
+        printf '%s\n' "$model"; return 0 ;;
+    esac
+  fi
+  case "$model" in
+    fable-[0-9]* | opus-[0-9]* | sonnet-[0-9]* | haiku-[0-9]*) model="claude-$model" ;;
   esac
+  # PostModelSwitch.to_model is the event target model ID. These strict forms
+  # normalize supported Claude IDs and version spellings. An unresolved
+  # alias cannot establish equality. A launch record retains its actual word
+  # when unresolved, so ordinary recovery still has the launch evidence.
+  if [[ "${2:-}" == launch || "${2:-}" == resolved || "${2:-}" == recorded ]]; then
+    case "$model" in
+      claude-*[0-9]*) [[ "$model" != *[[:space:]]* ]] || model="" ;;
+      *) model="" ;;
+    esac
+    if [[ -z "$model" ]]; then
+      [[ "${2:-}" == launch ]] || return 0
+      model=${1:-}
+    fi
+  elif [[ -z "$model" ]]; then
+    model=${1:-}
+  fi
+  if [[ -n "${3:-}" ]]; then
+    recorded=$(printf '%s' "$3" | tr '[:upper:]' '[:lower:]') || return 1
+    recorded=${recorded%\[1m\]}
+    case "$recorded" in
+      sonnet | haiku | opus | fable)
+        case "$model" in claude-"$recorded"-[0-9]*) model=$recorded ;; esac ;;
+    esac
+  fi
+  printf '%s\n' "${model}"
 }
 
 # One reading from a Claude Code transcript on stdin: `<tokens>\t<window>\t<model>`
@@ -59,7 +84,7 @@ lane_adapter_claude_model_id() { # MODEL
 # input tokens plus the two cache counts, and the response it wrote, which the
 # next request sends back. `fromjson?` skips the partial line a
 # byte window opens on and the line the harness is still appending. The window
-# is the model window only when inherited launch settings disable compaction.
+# is the family or default budget only when launch settings disable compaction.
 #
 # A `<synthetic>` line is the harness recording an API error, with every count
 # zero and no model a window belongs to, so it is no reading of the session.

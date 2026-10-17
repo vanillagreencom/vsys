@@ -1,6 +1,6 @@
 # Micro Workflow
 
-The tier for an item estimated to change a few lines. One agent reads the item, edits, commits, pushes, opens the pull request and waits the merge out: no dev subagent, no review cycle, no QA cycle, and no full validation battery. [oversee.md](oversee.md) § Item Tier picks the tier through `item-tier`, and § 4 checks the changed paths through that script. A `small` item runs [small.md](small.md); every other item runs [start.md](start.md).
+The tier for an item estimated to change a few lines. One agent reads the item, edits, commits and pushes the change: no dev subagent, no review cycle, no QA cycle, and no full validation battery. [oversee.md](oversee.md) § Item Tier picks the tier through `item-tier`, and § 4 checks the changed paths through that script. A `small` item runs [small.md](small.md); every other item runs [start.md](start.md).
 
 | Command | Flow |
 |---------|------|
@@ -63,7 +63,7 @@ A container, a blocked child, or a bundle escapes here (§ Escape condition 1).
 git -C [MAIN_REPO_ROOT] checkout -b [BRANCH]
 ```
 
-In a lane worktree the branch already exists: gate on base freshness through [start-worktree.md](start-worktree.md) § 1 step 6 instead, and stop on its failure.
+In a lane worktree the branch already exists: gate on base freshness through [start-worktree.md](start-worktree.md) § 1 step 7 instead, and stop on its failure.
 
 Read the branch both routes now stand on and initialize the item's workflow state with it. Its output binds `[BRANCH]` on the lane route, where nothing has named the branch yet, and confirms it on the other. `[BRANCH]` is the only name this workflow gives that branch, including § 4's `[PR_BRANCH]`:
 
@@ -88,6 +88,12 @@ Read the branch both routes now stand on and initialize the item's workflow stat
 ```bash
 .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] worktree "[WT_PATH]"
 .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] branch "[BRANCH]"
+```
+
+Record this tier after either state route. Direct publication uses it to retain this tier's commit-hook-only validation:
+
+```bash
+.agents/skills/orch/scripts/workflow-state set [ISSUE_ID] tier micro
 ```
 
 ## 2. Edit And Commit
@@ -120,9 +126,19 @@ Read the branch both routes now stand on and initialize the item's workflow stat
    git -C [WT_PATH] commit -m "[PREFIX]([ISSUE_ID]): [DESCRIPTION]"
    ```
 
-   A successful commit with escape condition 3 recorded escapes now. Any other successful commit continues to § 3. A repository-rule refusal escapes as condition 4 with the staged edit still present; § Escape transfers that exact state.
+   A successful commit with escape condition 3 recorded escapes now. Any other successful commit continues to step 6. A repository-rule refusal escapes as condition 4 with the staged edit still present; § Escape transfers that exact state.
+
+6. **Post the completion summary**. **Skip if** `TRACKER` is GitHub. This tier runs no dev round, so this comment is the item's only Completion Summary, and `container-close` refuses a container whose child has none. Write `[WT_PATH]/tmp/completion-summary-[ISSUE_ID].md` under a `## Completion Summary` heading: the commit `git -C [WT_PATH] log -1 --oneline` prints, one line per committed path saying what changed, and the commit chain as what checked it. Post it at once, as the standard tier's dev-implement.md § 9 does, so it is on the item before any lane lands the change:
+
+   ```bash
+   .agents/skills/linear/scripts/linear.sh comments create [ISSUE_ID] --body-file [WT_PATH]/tmp/completion-summary-[ISSUE_ID].md
+   ```
+
+   A rate-limited post is held under the linear skill's `patterns/workflow-actions.md` § Quota Holds. Continue to § 3.
 
 ## 3. Push And Open The PR
+
+`ORCH_DELIVERY=push-base` takes [submit-pr.md § 2.1](submit-pr.md#21-base-publication) through the shared entry below, which stops an item with an open post-merge box. It runs this tier's commit hooks and final path check before the base push. A wider tier stops before transport and takes § Escape condition 3. On successful direct delivery, restore the main checkout as below, then go to § 5. Report `[PUSHED_SHA]` and `[BASE]` in place of the PR and merge rows. Skip § 4.
 
 **Run Workflow**: `⤵ workflows/submit-pr.md § 2 steps 1-4 → § 3 tail` with context `worktree`, `lifecycle: "managed"`, `issue_id`. That range owns the push and its `sha-reconcile:` routing, and the create. The body is the three lines below rather than step 3's template. No headings and no other section.
 
@@ -132,7 +148,7 @@ Read the branch both routes now stand on and initialize the item's workflow stat
 Closes [ISSUE_REF]
 ```
 
-`[ISSUE_TITLE]` for the create comes from the § 1 read. **Main checkout only**, return to the base branch now that the pull request holds the work:
+`[ISSUE_TITLE]` for the create comes from the § 1 read. **Main checkout only**, return to the base branch after publication:
 
 ```bash
 git -C [MAIN_REPO_ROOT] checkout [BASE_BRANCH]
@@ -150,7 +166,7 @@ Bind what [merge-pr.md](merge-pr.md) § 1 binds once per run, which its §§ 4-7
 mkdir -p [MAIN_REPO_ROOT]/tmp
 ```
 
-Read the pull request's exact endpoints through the GitHub skill and bind them as `[BASE_SHA]` and `[HEAD_SHA]`:
+The pull request's recorded base can trail the base branch's tip: the harness-ci skill's `wiring.md` reference, § The endpoint expressions. Read that recorded base and the head through the GitHub skill and bind them as `[BASE_SHA]` and `[HEAD_SHA]`:
 
 ```bash
 env -u GH_REPO -u GITHUB_REPOSITORY [MAIN_REPO_ROOT]/.agents/skills/github/scripts/github.sh -C [MAIN_REPO_ROOT] pr-view [PR_NUMBER] --json baseRefOid,headRefOid
@@ -210,7 +226,7 @@ The tier holds only while the item and its change stay inside it. Each condition
 
 1. § 1 read a container, a blocked child, or a bundle. This tier implements one item's own Done-when and nothing else.
 2. The repository's commit chain is not armed, or the answer could not be read.
-3. The edit reached a file that gates a merge, runs in a commit or turn hook, enforces a guard rule, launches a lane, or sets this tier's own boundary: this workflow, [small.md](small.md), [oversee.md](oversee.md) § Item Tier and the `item-tier` script it runs, `install-git-hooks`, and the shared path rules, whose files are the `# [boundary]` group of [references/narrow-change.conf](../references/narrow-change.conf) under the rule that group states. § 2 step 4 reads the changed paths against this class. [references/narrow-change.conf](../references/narrow-change.conf) holds that class as globs a script can read, together with the lock-format, manifest-parser and render-inventory paths the wider `small` class also refuses; every `path` line there escapes this tier except one a `superseded` line names, which is kept for older readers and skipped as the list's header states, so a reader checks a path against every other `path` line. Its `instruction` lines name the agent instruction files, `AGENTS.md` and `SKILL.md` at any depth: an edit reaching one answers `small` where it would earn micro, so it escapes this tier too. It also carries this tier's production ceiling, which `item-tier` selects on.
+3. The edit reached a file that gates a merge, runs in a commit or turn hook, enforces a guard rule, decides whether validation runs, launches a lane, or sets this tier's own boundary: this workflow, [small.md](small.md), [oversee.md](oversee.md) § Item Tier and the `item-tier` script it runs, `install-git-hooks`, and the shared path rules, whose files are the `# [boundary]` group of [references/narrow-change.conf](../references/narrow-change.conf) under the rule that group states. § 2 step 4 reads the changed paths against this class. [references/narrow-change.conf](../references/narrow-change.conf) holds that class as globs a script can read, together with the lock-format, manifest-parser and render-inventory paths the wider `small` class also refuses; every `path` line there escapes this tier except one a `superseded` line names, which is kept for older readers and skipped as the list's header states, so a reader checks a path against every other `path` line. Its `instruction` lines name the agent instruction files, `AGENTS.md` and `SKILL.md` at any depth: an edit reaching one answers `small` where it would earn micro, so it escapes this tier too. It also carries this tier's production ceiling, which `item-tier` selects on.
 4. The commit chain refuses the commit over a repository rule. A missing changelog fragment and a rejected commit message are this workflow's own to fix and are not escapes.
 5. A review finding on the pull request needs a change condition 3 excludes.
 6. § 4 cannot prove all three parts of its precheck. Either the `item-tier` answer is not `tier=micro`, or `approval-wait --resolve-mode` does not print `approval`, or `pr-merge --check` returns no valid readiness object for an open pull request.

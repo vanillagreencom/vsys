@@ -32,6 +32,7 @@ Resources:
   session-status  Aggregated session status for /start workflow
   auth-check      Credential, actor and team preflight (--strict fails with no team)
   auth-mint       Mint app token JSON from the client pair without writing files
+  journal         Opt-in bounded attempt metadata (start, stop, read)
 
 Every read goes to Linear's API as it runs; no local copy is kept. The
 removed cache verb refuses naming the live command to run instead, and the
@@ -89,8 +90,9 @@ Environment:
                   team, other writes refuse and reads run without a team
                   filter.
                   Only issues/projects/cycles/
-                  labels create, labels audit, cycles list and statuses
-                  list/get take --team <key-or-name> as a per-call override.
+                  labels create, labels audit, projects audit, cycles list
+                  and statuses list/get take --team <key-or-name> as a
+                  per-call override.
 
 For resource-specific help:
   ./linear.sh <resource> --help
@@ -119,6 +121,11 @@ case "$resource" in
 esac
 
 case "$resource" in
+    journal)
+        LINEAR_SKIP_API_KEY_RESOLUTION=1
+        source "$SCRIPT_DIR/lib/common.sh"
+        linear_journal_command "$@"
+        ;;
     # The local store is gone. Each removed verb answers with one line naming
     # what to run instead and exits nonzero, so a caller still running it fails
     # rather than reading a store that no longer exists.

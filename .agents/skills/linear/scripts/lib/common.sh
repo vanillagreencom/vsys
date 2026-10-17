@@ -174,6 +174,9 @@ source "$_LIB_DIR/cycle-dates.sh"
 # shellcheck source=auth.sh
 source "$_LIB_DIR/auth.sh"
 
+_LINEAR_JOURNAL_ENTRY="${BASH_SOURCE[1]:-linear.sh}"
+_LINEAR_JOURNAL_ENTRY="${_LINEAR_JOURNAL_ENTRY##*/}"
+
 # Every command but auth-mint reads the selected credential, so op://
 # references resolve at startup and an authentication failure surfaces before
 # any read or write. auth-mint resolves the client pair on its own.
@@ -189,6 +192,233 @@ check_api_key() {
 curl_config_quote() {
     printf '%s' "$1" | jq -Rs .
 }
+
+# The pair binding survives token renewal. Journal and quota holds share it.
+linear_credential_binding() {
+    case "$LINEAR_AUTH_KIND" in
+    app) linear_key_fingerprint "$LINEAR_CLIENT_ID:$LINEAR_CLIENT_SECRET:$_LINEAR_APP_SCOPE" ;;
+    app-token) linear_key_fingerprint "app-token:$LINEAR_APP_TOKEN" ;;
+    api-key) linear_key_fingerprint "api-key:$LINEAR_API_KEY" ;;
+    *) return 1 ;;
+    esac
+}
+
+linear_journal_load() {
+    local dir="${LINEAR_JOURNAL_DIR:-}" file
+    [[ "$dir" == /* && -d "$dir" && ! -L "$dir" && -O "$dir" ]] || return 1
+    for file in session.json attempts.jsonl; do
+        [[ -f "$dir/$file" && ! -L "$dir/$file" && -O "$dir/$file" ]] || return 1
+    done
+    _LJ_SESSION=$(jq -ce '
+        select(.schema == 1 and .status == "active") |
+        select(.started_at | type == "number" and . == floor) |
+        select(.expires_at == (.started_at + 3600)) |
+        select(.max_bytes | type == "number" and . > 0 and . <= 999999999 and . == floor) |
+        select(.binding | type == "string" and test("^[0-9a-f]{12}$")) |
+        select(.actor.id | type == "string" and test("^[0-9a-fA-F-]{36}$")) |
+        select(.actor.source == "supplied") |
+        select(.actor.kind == "application" or .actor.kind == "user")' "$dir/session.json") || return 1
+}
+
+linear_journal_incomplete() {
+    # An exclusive, fixed marker also reports a lock owner that never returned.
+    (set -o noclobber; printf '%s\n' incomplete >"$LINEAR_JOURNAL_DIR/stopped") 2>/dev/null || true
+    printf 'linear-journal: state=incomplete cause=%s\n' "$1" >&2
+}
+
+linear_journal_lock() {
+    local tries
+    for ((tries = 0; tries < 20; tries++)); do
+        if mkdir -- "$LINEAR_JOURNAL_DIR/writer.lock" 2>/dev/null; then
+            trap 'rmdir -- "$LINEAR_JOURNAL_DIR/writer.lock"' EXIT
+            return 0
+        fi
+        sleep 0.05 || return 1
+    done
+    return 1
+}
+
+linear_journal_headers() {
+    jq -Rn '
+        reduce inputs as $line ({};
+            if $line | startswith("HTTP/") then {}
+            else ($line | ascii_downcase |
+                (capture("^(?<key>x-ratelimit-[a-z0-9-]+|x-complexity):[ \\t]*(?<value>[0-9]{1,15}(?:\\.[0-9]{1,6})?)[ \\t\\r]*$")? // null)) as $h |
+                if $h == null then . else .[$h.key] = $h.value end
+            end)' <<<"$1"
+}
+
+linear_journal_record() (
+    [[ -n "${LINEAR_JOURNAL_DIR:-}" ]] || return 0
+    local _LJ_SESSION binding now headers actor caller item record bytes used
+    if ! linear_journal_load; then
+        printf 'linear-journal: state=unavailable cause=session-unread\n' >&2
+        return 0
+    fi
+    [[ ! -e "$LINEAR_JOURNAL_DIR/stopped" ]] || return 0
+    if ! linear_journal_lock; then
+        linear_journal_incomplete lock-unavailable
+        return 0
+    fi
+    [[ ! -e "$LINEAR_JOURNAL_DIR/stopped" ]] || return 0
+    if ! now=$(date +%s) || ! [[ "$now" =~ ^[0-9]{1,12}$ ]]; then
+        linear_journal_incomplete clock-unavailable
+        return 0
+    fi
+    if ((now >= $(jq -r '.expires_at' <<<"$_LJ_SESSION"))); then
+        printf '%s\n' expired >"$LINEAR_JOURNAL_DIR/stopped" || linear_journal_incomplete stop-write
+        return 0
+    fi
+    if ! binding=$(linear_credential_binding) || ! headers=$(linear_journal_headers "$2"); then
+        linear_journal_incomplete metadata-unavailable
+        return 0
+    fi
+    actor=$(jq -c --arg binding "$binding" '
+        if .binding == $binding then .actor
+        else {kind: null, id: null, source: "unread"} end' <<<"$_LJ_SESSION") || return 0
+    caller="${LINEAR_JOURNAL_CALLER:-$_LINEAR_JOURNAL_ENTRY}"
+    item="${LINEAR_JOURNAL_ITEM:-}"
+    # These are identifiers, never free text or a command line.
+    if ! [[ "$caller" =~ ^[a-zA-Z0-9_.-]{1,160}$ ]] ||
+        [[ "$caller" == *lin_* || "$caller" == *ghp_* || "$caller" == *ghs_* || "$caller" == *gho_* || "$caller" == *ghu_* || "$caller" == *github_pat_* || "$caller" == *sk-ant-* ]]; then
+        caller="$_LINEAR_JOURNAL_ENTRY"
+    fi
+    if ! [[ "$item" =~ ^[A-Za-z][A-Za-z0-9_-]*-[0-9]+$ || "$item" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]]; then
+        item=''
+    fi
+    if ! record=$(jq -cn --argjson session "$_LJ_SESSION" --argjson actor "$actor" \
+        --argjson headers "$headers" --argjson at "$now" --arg binding "$binding" \
+        --arg request "${_LJ_REQUEST_ID:-$BASHPID}" --arg repository "$PROJECT_ROOT" \
+        --arg caller "$caller" --arg supplied "${LINEAR_JOURNAL_CALLER:-}" --arg item "$item" \
+        --arg credential "$LINEAR_AUTH_KIND" --arg transport "${_LJ_TRANSPORT:-graphql}" \
+        --arg operation "${_LJ_OPERATION:-unnamed}" --arg method "${_LJ_METHOD:-POST}" \
+        --arg cause "${_LJ_CAUSE:-request}" --arg status "$1" \
+        --argjson attempt "$3" --argjson phase "${_LJ_PHASE:-0}" '
+        {schema:1, session_id:$session.started_at, request_id:$request, at:$at,
+         actor:$actor, credential:{kind:$credential,binding:$binding},
+         caller:{repository:$repository,script:$caller,
+             source:(if $supplied == $caller then "supplied" else "entry" end),
+             item:(if $item == "" then null else $item end)},
+         transport:$transport,operation:$operation,method:$method,cause:$cause,
+         http_status:$status,transport_ok:($status != "000"),attempt:$attempt,
+         authorization_phase:$phase,headers:$headers}'); then
+        linear_journal_incomplete record-unavailable
+        return 0
+    fi
+    if ! bytes=$(printf '%s\n' "$record" | LC_ALL=C wc -c) ||
+        ! used=$(LC_ALL=C wc -c <"$LINEAR_JOURNAL_DIR/attempts.jsonl"); then
+        linear_journal_incomplete size-unavailable
+        return 0
+    fi
+    if ((used + bytes > $(jq -r '.max_bytes' <<<"$_LJ_SESSION"))); then
+        printf '%s\n' byte-cap >"$LINEAR_JOURNAL_DIR/stopped" || linear_journal_incomplete stop-write
+        return 0
+    fi
+    printf '%s\n' "$record" >>"$LINEAR_JOURNAL_DIR/attempts.jsonl" || linear_journal_incomplete append-failed
+    return 0
+)
+
+linear_journal_command() (
+    local action="${1:-help}" max='' actor='' binding now _LJ_SESSION status=active
+    shift || true
+    if [[ "$action" == help || "$action" == --help || "$action" == -h ]]; then
+        cat <<'EOF'
+Usage: linear.sh journal start --max-bytes BYTES --actor-id UUID
+       linear.sh journal stop
+       linear.sh journal read
+
+Set LINEAR_JOURNAL_DIR to an absolute new directory before start and in each
+participating process. Output is <directory>/attempts.jsonl. Start records a
+supplied actor bound to the selected credential without an API probe. Each
+session stops after one hour, at its byte cap, or on a journal error. Use a
+new directory for each session. The byte cap covers the journal; small fixed
+session, stop and lock metadata are additional. Stop and read need no credential.
+LINEAR_JOURNAL_CALLER and LINEAR_JOURNAL_ITEM label known callers and items.
+EOF
+        return 0
+    fi
+    if [[ "${LINEAR_JOURNAL_DIR:-}" != /* || "$LINEAR_JOURNAL_DIR" == */ ]]; then
+        printf 'linear-journal: refused=directory value=absolute-new-directory-required\n' >&2
+        return 1
+    fi
+    case "$action" in
+    start)
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+            --max-bytes) max="${2:-}" ;;
+            --actor-id) actor="${2:-}" ;;
+            *) printf 'linear-journal: refused=option\n' >&2; return 1 ;;
+            esac
+            [[ $# -ge 2 ]] || return 1
+            shift 2
+        done
+        if ! [[ "$max" =~ ^[1-9][0-9]{0,8}$ && "$actor" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            printf 'linear-journal: refused=start-fields\n' >&2
+            return 1
+        fi
+        linear_check_credentials && linear_resolve_credentials || return 1
+        binding=$(linear_credential_binding) || return 1
+        now=$(date +%s) || return 1
+        [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+        umask 077
+        mkdir -m 700 -- "$LINEAR_JOURNAL_DIR" || return 1
+        trap 'rm -f -- "$LINEAR_JOURNAL_DIR/session.json" "$LINEAR_JOURNAL_DIR/attempts.jsonl"; rmdir -- "$LINEAR_JOURNAL_DIR"' EXIT
+        : >"$LINEAR_JOURNAL_DIR/attempts.jsonl" || return 1
+        jq -cn --argjson now "$now" --argjson max "$max" --arg actor "$actor" \
+            --arg binding "$binding" --arg kind "$LINEAR_AUTH_KIND" '
+            {schema:1,status:"active",started_at:$now,expires_at:($now+3600),max_bytes:$max,
+             binding:$binding,actor:{id:$actor,source:"supplied",
+             kind:(if $kind == "api-key" then "user" else "application" end)}}' \
+            >"$LINEAR_JOURNAL_DIR/session.json" || return 1
+        trap - EXIT
+        jq -cn --arg path "$LINEAR_JOURNAL_DIR/attempts.jsonl" '{status:"active",output:$path}'
+        ;;
+    stop|read)
+        [[ $# == 0 ]] || return 1
+        linear_journal_load || { printf 'linear-journal: state=unavailable cause=session-unread\n' >&2; return 1; }
+        linear_journal_lock || { linear_journal_incomplete lock-unavailable; return 1; }
+        now=$(date +%s) || return 1
+        [[ "$now" =~ ^[0-9]{1,12}$ ]] || return 1
+        if ((now >= $(jq -r '.expires_at' <<<"$_LJ_SESSION"))); then status=expired; fi
+        if [[ "$action" == stop ]]; then
+            if [[ ! -e "$LINEAR_JOURNAL_DIR/stopped" ]]; then
+                [[ "$status" == expired ]] || status=stopped
+                printf '%s\n' "$status" >"$LINEAR_JOURNAL_DIR/stopped" || return 1
+            fi
+        fi
+        if [[ -f "$LINEAR_JOURNAL_DIR/stopped" && ! -L "$LINEAR_JOURNAL_DIR/stopped" ]]; then
+            status=$(cat -- "$LINEAR_JOURNAL_DIR/stopped") || return 1
+        fi
+        jq -s --argjson session "$_LJ_SESSION" --arg status "$status" \
+            --arg output "$LINEAR_JOURNAL_DIR/attempts.jsonl" '
+            def counts:
+                {attempts:length,
+                 complexity_measured:([.[] | select(.headers["x-complexity"] != null)] | length),
+                 complexity_missing:([.[] | select(.headers["x-complexity"] == null)] | length),
+                 known_complexity:([.[] | .headers["x-complexity"]? // empty | tonumber] | add // 0),
+                 actor_known:([.[] | select(.actor.id != null)] | length),
+                 caller_supplied:([.[] | select(.caller.source == "supplied")] | length),
+                 item_known:([.[] | select(.caller.item != null)] | length)};
+            (group_by(.caller.repository,.caller.script) |
+                map({caller:(.[0].caller | {repository,script})} + counts) |
+                sort_by(-.attempts,.caller.repository,.caller.script)) as $callers |
+            {status:$status,output:$output,started_at:$session.started_at,expires_at:$session.expires_at,
+             complete:($status == "expired"),totals:counts,callers:$callers,
+             top_five_by_attempts:$callers[:5],
+             transports:(group_by(.transport) | map({transport:.[0].transport} + counts)),
+             limitations:["Only participating installed transport processes on this host are covered.",
+               "Only returned X-Complexity contributes to known complexity; shared bucket deltas are not costs.",
+               "Missing complexity values leave the complexity total partial.",
+               "Supplied actor identity is not independently verified; changed credentials leave it unread.",
+               "The window uses the host clock and includes completed attempts only.",
+               "Attempts completed after expiry or killed before recording can be absent.",
+               "A quota refusal does not identify who exhausted a shared bucket.",
+               "Storage attempts need not consume Linear GraphQL quota."]}' \
+            "$LINEAR_JOURNAL_DIR/attempts.jsonl"
+        ;;
+    *) printf 'linear-journal: refused=action\n' >&2; return 1 ;;
+    esac
+)
 
 # Validate field length and return error if exceeded
 # Usage: validate_length "field_name" "$value" $max_length
@@ -212,22 +442,126 @@ linear_header_value() {
     awk -v name="$1:" 'tolower($1) == name { gsub("\r", "", $2); value = $2 } END { print value }' <<<"$2"
 }
 
-# Reports a rate-limited final answer, a GraphQL request's or a download's,
-# as one JSON line on stderr naming the time the request quota refills, so a
-# caller can hold its write until then. The time is an ISO-8601 UTC instant
-# read from Linear's X-RateLimit-Requests-Reset header (epoch milliseconds),
-# or "unavailable" when the answer carried no usable value.
-# Usage: linear_rate_limited "$headers"; return 1
-linear_rate_limited() {
-    local value reset
-    value=$(linear_header_value x-ratelimit-requests-reset "$1") || return 1
-    if [[ "$value" =~ ^[0-9]{1,15}$ ]]; then
-        reset=$(jq -rn --arg ms "$value" '$ms | tonumber / 1000 | floor | todate') || return 1
-    else
-        reset=unavailable
+linear_quota_unavailable() {
+    jq -cn --arg cause "$1" '{code:"LINEAR_HOLD_UNAVAILABLE",error:"Linear quota hold state is unavailable",cause:$cause}' >&2
+}
+
+# Read every directory the shared private-store owner can select. A token
+# cache that becomes writable again must not hide a hold saved in TMPDIR.
+linear_quota_read() {
+    local binding="$1" dir file value result=''
+    linear_private_paths
+    for dir in "${_LINEAR_PRIVATE_PATHS[@]}"; do
+        linear_private_eligible "$dir" || continue
+        file="$dir/quota-$binding.json"
+        if [[ -d "$dir" && ( ! -r "$dir" || ! -x "$dir" ) ]]; then
+            linear_quota_unavailable "directory:$dir"; return 1
+        fi
+        [[ -e "$file" || -L "$file" ]] || continue
+        if [[ -L "$file" || ! -f "$file" || ! -O "$file" || ! -r "$file" ]]; then
+            linear_quota_unavailable "ownership:$file"; return 1
+        fi
+        if ! value=$(jq -ce --arg binding "$binding" '
+            select(.schema == 1 and .binding == $binding and .code == "RATELIMITED") |
+            select((.requests_reset | type) == "string" and (.error | type) == "string" and .hold_storage == "stored") |
+            select(.quota.status == "future") |
+            select(.quota.reset_epoch | type == "number" and . > 0 and . == floor) |
+            select(.quota.reset == (.quota.reset_epoch | todateiso8601)) |
+            select(.quota.limit == "requests" or .quota.limit == "complexity" or .quota.limit == "endpoint" or .quota.limit == "unknown")' "$file" 2>/dev/null); then
+            linear_quota_unavailable "read:$file"; return 1
+        fi
+        result=$(printf '%s\n%s\n' "$result" "$value" | jq -sc 'max_by(.quota.reset_epoch)') || return 1
+    done
+    [[ -z "$result" ]] || printf '%s\n' "$result"
+}
+
+# Parallel watches can learn different deadlines. Serialize the replacement
+# and keep the later receipt. A stranded lock refuses; no saved PID is killed.
+linear_quota_store() (
+    local result="$1" binding="$2" staged='' lock='' dir file old tries acquired=0
+    umask 077
+    trap '[[ -z "$staged" ]] || rm -f -- "$staged"; [[ -z "$lock" ]] || rmdir -- "$lock"' EXIT
+    if ! linear_private_stage quota; then
+        linear_quota_unavailable "store:$_LINEAR_PRIVATE_FAILURES"; return 1
     fi
-    jq -cn --arg reset "$reset" \
-        '{error: ("Rate limited. Requests-Reset=" + $reset), code: "RATELIMITED", requests_reset: $reset}' >&2
+    staged="$_LINEAR_PRIVATE_STAGE" dir="$_LINEAR_PRIVATE_DIR"
+    chmod 700 -- "$dir" || { linear_quota_unavailable "private:$dir"; return 1; }
+    file="$dir/quota-$binding.json"
+    for ((tries=0; tries<20; tries++)); do
+        if mkdir -- "$dir/.quota-$binding.lock" 2>/dev/null; then
+            lock="$dir/.quota-$binding.lock"; acquired=1; break
+        fi
+        sleep 0.05
+    done
+    [[ "$acquired" == 1 ]] || { linear_quota_unavailable "lock:$file"; return 1; }
+    old=$(linear_quota_read "$binding") || return 1
+    result=$(printf '%s\n%s\n' "$result" "$old" | jq -sc --arg binding "$binding" '
+        .[0] as $new | (.[1] // null) as $old | $new |
+        if $old != null and $old.quota.reset_epoch > .quota.reset_epoch then .quota = $old.quota else . end |
+        . + {schema:1,binding:$binding,hold_storage:"stored"}') || return 1
+    if ! { printf '%s\n' "$result" >"$staged" && mv -f -- "$staged" "$file"; }; then
+        linear_quota_unavailable "write:$file"; return 1
+    fi
+    printf '%s\n' "$result"
+)
+
+linear_quota_check() {
+    local binding record now epoch
+    binding=$(linear_credential_binding) || return 1
+    record=$(linear_quota_read "$binding") || return 1
+    [[ -n "$record" ]] || return 0
+    now=$(date +%s) || return 1
+    epoch=$(jq -r '.quota.reset_epoch' <<<"$record") || return 1
+    ((now < epoch)) || return 0
+    jq -c 'del(.schema,.binding) | .source="local"' <<<"$record" >&2
+    return 1
+}
+
+# requests_reset keeps the raw request header's meaning. quota is the selected
+# scheduling receipt consumed by the watch and held-write workflow. Linear's
+# documented endpoint-name header identifies that limit. Its refusal text can
+# name requests or complexity; otherwise the latest usable future reset wins.
+linear_quota_response() {
+    local requests complexity endpoint endpoint_name now result binding stored status
+    requests=$(linear_header_value x-ratelimit-requests-reset "$1") || return 1
+    complexity=$(linear_header_value x-ratelimit-complexity-reset "$1") || return 1
+    endpoint=$(linear_header_value x-ratelimit-endpoint-requests-reset "$1") || return 1
+    endpoint_name=$(linear_header_value x-ratelimit-endpoint-name "$1") || return 1
+    now=$(date +%s) || return 1
+    result=$(jq -Rsc --arg requests "$requests" --arg complexity "$complexity" --arg endpoint "$endpoint" \
+        --arg endpoint_name "$endpoint_name" --argjson now "$now" '
+        def epoch: if test("^[0-9]{1,15}$") then tonumber / 1000 | ceil else null end;
+        (fromjson? // {}) as $body |
+        [$body.errors[]? | select(.extensions.code == "RATELIMITED") | .message // ""] | join(" ") as $message |
+        (if $endpoint_name != "" then "endpoint"
+         elif ($message | test("\\bcomplexity\\b";"i")) then "complexity"
+         elif ($message | test("\\brequests\\b";"i")) then "requests" else "unknown" end) as $limit |
+        [{limit:"requests",raw:$requests},{limit:"complexity",raw:$complexity},{limit:"endpoint",raw:$endpoint}] |
+        map(. + {epoch:(.raw | epoch)}) |
+        (if $limit == "unknown" then . else map(select(.limit == $limit)) end) as $candidates |
+        ([$candidates[] | select(.epoch != null and .epoch > $now)] | max_by(.epoch)) as $future |
+        ([$candidates[] | select(.epoch != null)] | max_by(.epoch)) as $valid |
+        ($future // $valid) as $chosen |
+        (if $requests | test("^[0-9]{1,15}$") then ($requests | tonumber / 1000 | floor | todateiso8601) else "unavailable" end) as $raw_reset |
+        {code:"RATELIMITED",error:("Rate limited. Requests-Reset=" + $raw_reset),requests_reset:$raw_reset,source:"response",
+         quota:{limit:$limit,
+           status:(if $future != null then "future" elif $valid != null then "elapsed"
+             elif any($candidates[]; .raw != "") then "invalid" else "missing" end),
+           reset:(if $chosen == null then "unavailable" else ($chosen.epoch | todateiso8601) end),
+           reset_epoch:($chosen.epoch // null)}}' <<<"${2:-}") || return 1
+    status=$(jq -r '.quota.status' <<<"$result") || return 1
+    if [[ "$status" == future ]]; then
+        binding=$(linear_credential_binding) || return 1
+        if stored=$(linear_quota_store "$result" "$binding"); then result="$stored"
+        else result=$(jq -c '.hold_storage="unavailable"' <<<"$result") || return 1; fi
+    fi
+    jq -c 'del(.schema,.binding)' <<<"$result"
+}
+
+linear_rate_limited() {
+    local result
+    result=$(linear_quota_response "$@") || return 1
+    printf '%s\n' "$result" >&2
 }
 
 # Whether a request is sent again after an answer, every Linear request and
@@ -274,16 +608,19 @@ linear_retry_wait() {
 # One POST to Linear, sent again while linear_retry_wait says so. Linear
 # serves its RATELIMITED code under a 400 and could serve it under any
 # status, so a body carrying it is a rate-limited answer whatever the status.
-# A rate-limited final answer is reported by linear_rate_limited and
-# returns 1.
+# A usable future reset is saved and returned before another attempt. Other
+# rate refusals retain the bounded retry and return the selected receipt.
 # Otherwise prints the final status on the first line and the body after it.
 # CONFIG is the curl config lines naming the request; KIND is its
 # linear_retry_wait kind.
 # Usage: reply=$(linear_http_post "$config" read) || return 1
 linear_http_post() {
-    local config="$1" kind="$2" attempt=1 raw code body headers
+    local config="$1" kind="$2" attempt=1 raw code body headers quota
     local delimiter="___HTTP_CODE___"
     while true; do
+        if [[ "${_LJ_TRANSPORT:-graphql}" == graphql ]]; then
+            linear_quota_check || return 1
+        fi
         headers=''
         # Headers go to stdout ahead of the body ("-" is curl's own stdout
         # stream, so they cannot interleave), and are split off below.
@@ -298,15 +635,24 @@ linear_http_post() {
             headers="${body%%$'\r\n\r\n'*}"
             body="${body#*$'\r\n\r\n'}"
         done
+        linear_journal_record "$code" "$headers" "$attempt"
         if jq -e '[.errors[]? | select(.extensions.code == "RATELIMITED")] | length > 0' >/dev/null 2>&1 <<<"$body"; then
             code=429
+        fi
+        quota=''
+        if [[ "$code" == 429 ]]; then
+            quota=$(linear_quota_response "$headers" "$body") || return 1
+            if jq -e '.quota.status == "future"' >/dev/null <<<"$quota"; then
+                printf '%s\n' "$quota" >&2
+                return 1
+            fi
         fi
         if linear_retry_wait "$kind" "$code" "$attempt" "$headers"; then
             attempt=$((attempt + 1))
             continue
         fi
         if [[ "$code" == 429 ]]; then
-            linear_rate_limited "$headers"
+            printf '%s\n' "$quota" >&2
             return 1
         fi
         printf '%s\n%s' "$code" "$body"
@@ -332,11 +678,18 @@ graphql_request() {
     fi
     local authorization auth_renewed=0 payload reply http_code response kind=write
     local read_pattern='^[[:space:]]*query[^_[:alnum:]]'
+    local _LJ_REQUEST_ID="$BASHPID-$RANDOM-$RANDOM" _LJ_PHASE=0
+    local _LJ_TRANSPORT=graphql _LJ_METHOD=POST _LJ_OPERATION=unnamed _LJ_CAUSE=request
+    local operation_pattern='^[[:space:]]*(query|mutation)[[:space:]]+([_A-Za-z][_A-Za-z0-9]*)'
+    if [[ "$query" =~ $operation_pattern ]]; then
+        _LJ_OPERATION="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+    fi
     if [[ "$query" =~ $read_pattern ]]; then
         kind=read
     fi
 
     check_api_key || return 1
+    linear_quota_check || return 1
     authorization=$(linear_authorization) || return 1
     # Variables go in on stdin: one argv string is capped at 128 KiB
     # (MAX_ARG_STRLEN), which a long description or a large id filter
@@ -399,6 +752,8 @@ graphql_request() {
             ;;
         401)
             if [[ "$LINEAR_AUTH_KIND" == "app" && "$auth_renewed" == 0 ]]; then
+                _LJ_PHASE=1
+                linear_quota_check || return 1
                 authorization=$(linear_authorization renew) || return 1
                 auth_renewed=1
                 continue
@@ -611,7 +966,14 @@ parse_filter() {
         --created-since)
             linear_require_option_value "$@" || return 1
             local created_since
-            created_since=$(linear_iso_days_ago "$1" "$2") || return 1
+            if [[ "$2" == *T* ]]; then
+                # Watch discovery persists its successful scan's UTC start.
+                created_since=$(jq -ern --arg value "$2" '$value
+                    | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                    | select((fromdateiso8601 | todateiso8601) == .)') || return 1
+            else
+                created_since=$(linear_iso_days_ago "$1" "$2") || return 1
+            fi
             filter_parts+=("$(jq -cn --arg v "$created_since" '{createdAt: {gte: $v}}')")
             shift 2
             ;;
@@ -881,9 +1243,9 @@ linear_cross_team_refusal() {
 LINEAR_TEAM_PASSED=" "
 
 # Refuse, before any write, a write to an issue outside this checkout's team.
-# An identifier's team is its prefix, judged with no request; any other
-# reference (a UUID) is read for its team. LINEAR_TEAM is always resolved to
-# its key, even when it equals the prefix: one team's key can be another
+# Linear keeps old identifiers resolvable after a team move, so every
+# reference is read for its current team before authorization is cached.
+# LINEAR_TEAM is always resolved to its key: one team's key can be another
 # team's name, and only resolve_team_node refuses that ambiguity.
 # Usage: linear_guard_issue_team ACTION REF... || return 1
 linear_guard_issue_team() {
@@ -899,16 +1261,13 @@ linear_guard_issue_team() {
         return 0
     fi
     for ref in "${refs[@]}"; do
-        if [[ "$ref" =~ ^[A-Za-z0-9]+-[0-9]+$ ]]; then
-            team=$(tr '[:lower:]' '[:upper:]' <<<"${ref%-*}")
-        else
-            vars=$(jq -cn --arg id "$ref" '{id: $id}')
-            if ! result=$(graphql_query 'query IssueTeam($id: String!) { issue(id: $id) { team { key } } }' "$vars") \
-                || ! team=$(jq -er '.issue.team.key | strings | select(length > 0)' <<<"$result"); then
-                echo "linear: refused=cross-team-unread action=$action issue=$ref" >&2
-                echo "The issue's team could not be read (see the previous error), so nothing was written." >&2
-                return 1
-            fi
+        [[ "$LINEAR_TEAM_PASSED" != *" $ref "* ]] || continue
+        vars=$(jq -cn --arg id "$ref" '{id: $id}')
+        if ! result=$(graphql_query 'query IssueTeam($id: String!) { issue(id: $id) { team { key } } }' "$vars") \
+            || ! team=$(jq -er '.issue.team.key | strings | select(length > 0)' <<<"$result"); then
+            echo "linear: refused=cross-team-unread action=$action issue=$ref" >&2
+            echo "The issue's team could not be read (see the previous error), so nothing was written." >&2
+            return 1
         fi
         linear_own_team || return 1
         if [[ "$team" != "$(jq -r '.key' <<<"$LINEAR_OWN_TEAM")" ]]; then
@@ -1191,7 +1550,7 @@ linear_finish_entity_write() {
 }
 
 # Resolve workflow state name to UUID for a specific team
-# Usage: resolve_state_id "In Progress" "team-uuid-or-name"
+# Usage: resolve_state_id "In Progress" "team-uuid-or-name" [raw]
 # Second arg can be team UUID, key or name (will resolve)
 resolve_state_id() {
     local state_name="$1"
@@ -1205,7 +1564,7 @@ resolve_state_id() {
     fi
 
     # Look up state by name + team
-    local query='query GetState($name: String!, $teamId: ID!, $after: String) { workflowStates(filter: {name: {eq: $name}, team: {id: {eq: $teamId}}}, after: $after) { pageInfo { hasNextPage endCursor } nodes { id } } }'
+    local query='query GetState($name: String!, $teamId: ID!, $after: String) { workflowStates(filter: {name: {eq: $name}, team: {id: {eq: $teamId}}}, after: $after) { pageInfo { hasNextPage endCursor } nodes { id type } } }'
     local vars result
     vars=$(jq -cn --arg name "$state_name" --arg teamId "$team_id" '{name: $name, teamId: $teamId}')
     result=$(graphql_pages "$query" "$vars" workflowStates) || return 1
@@ -1227,7 +1586,11 @@ resolve_state_id() {
         return 1
     fi
 
-    echo "$state_id"
+    if [ "${3:-}" = raw ]; then
+        jq -c '.workflowStates.nodes[0]' <<<"$result"
+    else
+        echo "$state_id"
+    fi
 }
 
 # Resolve label name to UUID
@@ -1392,19 +1755,23 @@ linear_label_message() {
     esac
 }
 
-# Print the declared label names as a JSON array, or nothing when the
-# repository declares no taxonomy. A declared taxonomy this cannot read
-# refuses: enforcing nothing then would pass every label it exists to stop.
-linear_declared_labels() {
-    local file block rc=0 first=""
+# Print the first ```json block under HEADING in the project instructions of
+# every render, as the jq FILTER (with JQ_ARGS) validates and prints it, or
+# nothing when no render carries the heading. One reader serves every block a
+# repository declares there; MESSENGER is the block's refusal function, called
+# as `MESSENGER unreadable FILE` and `MESSENGER renders-differ FILE OTHER`.
+# Usage: linear_declared_block HEADING MESSENGER [JQ_ARGS...] FILTER
+linear_declared_block() {
+    local heading="$1" messenger="$2" file block rc=0 first=""
+    shift 2
     [[ ${#LINEAR_TAXONOMY_RENDERS[@]} -gt 0 ]] || return 0
     for file in "${LINEAR_TAXONOMY_RENDERS[@]}"; do
         rc=0
-        block=$(awk '
+        block=$(awk -v heading="$heading" '
             $0 == "<!-- kendex:project-instructions:start -->" { inside = 1; next }
             $0 == "<!-- kendex:project-instructions:end -->" { inside = 0; next }
             !inside { next }
-            state == 0 && $0 == "### Project taxonomy" { state = 1; next }
+            state == 0 && $0 == heading { state = 1; next }
             state == 1 && /^```json *$/ { state = 2; next }
             state == 1 && /^##?#? / { exit 3 }
             state == 2 && /^``` *$/ { state = 3; exit }
@@ -1413,28 +1780,35 @@ linear_declared_labels() {
         ' "$file") || rc=$?
         [[ -n "$first" ]] || first="$rc:$block"
         if [[ "$rc:$block" != "$first" ]]; then
-            linear_label_message renders-differ "$LINEAR_TAXONOMY_FILE" "$file" >&2
+            "$messenger" renders-differ "$LINEAR_TAXONOMY_FILE" "$file" >&2
             return 1
         fi
     done
-    # Exit 5 is no heading: the repository declares no taxonomy. A heading
+    # Exit 5 is no heading: the repository declares no such block. A heading
     # whose block is empty reaches jq with no input, which refuses it.
     [[ "$rc" != 5 ]] || return 0
     if [[ "$rc" != 0 ]]; then
-        linear_label_message unreadable "$LINEAR_TAXONOMY_FILE" >&2
+        "$messenger" unreadable "$LINEAR_TAXONOMY_FILE" >&2
         return 1
     fi
-    if ! jq -ce --arg agents "${LINEAR_AGENT_LABELS:-}" '
+    if ! jq -ce "$@" <<<"$block" 2>/dev/null; then
+        "$messenger" unreadable "$LINEAR_TAXONOMY_FILE" >&2
+        return 1
+    fi
+}
+
+# Print the declared label names as a JSON array, or nothing when the
+# repository declares no taxonomy. A declared taxonomy this cannot read
+# refuses: enforcing nothing then would pass every label it exists to stop.
+linear_declared_labels() {
+    linear_declared_block "### Project taxonomy" linear_label_message --arg agents "${LINEAR_AGENT_LABELS:-}" '
         select(type == "object" and (.categories | type == "object")
             and all(.categories[]; type == "object"
                 and ((.labels // []) | type == "array" and all(type == "string"))
                 and ((.match.parent // "") | type == "string")))
         | [.categories[] | (.labels // [])[], (.match.parent // empty)]
             + [$agents | splits("[, ]+") | select(length > 0)]
-        | unique' <<<"$block" 2>/dev/null; then
-        linear_label_message unreadable "$LINEAR_TAXONOMY_FILE" >&2
-        return 1
-    fi
+        | unique'
 }
 
 # Refuse, before any write, a label name the taxonomy does not declare.
@@ -1460,6 +1834,120 @@ linear_require_declared_labels() {
     [[ -n "$undeclared" ]] || return 0
     linear_label_message undeclared "$undeclared" >&2
     return 1
+}
+
+# Project map
+# -----------------------------------------------------------------------------
+# A repository declares which projects its issues may live in once: the first
+# ```json block under `### Project map` in the same project instructions as the
+# label taxonomy, read by linear_declared_block from the same renders. The
+# project-management skill's references/project-map.md states the format and
+# what each field means. With no such heading the repository declares no map,
+# and no rule below applies.
+
+# The comparison form of a project, initiative or label name: lowercase, with
+# every character but a-z and 0-9 dropped. The map's uniqueness rule and
+# `projects audit`'s name collisions read names through this one definition.
+LINEAR_NAME_KEY_JQ='def name_key: ascii_downcase | gsub("[^a-z0-9]"; "");'
+
+# Every project map refusal: the keyed first line, then the JSON error. A
+# refusal naming the legal projects takes them as a JSON array in OTHER.
+linear_project_message() {
+    local key="$1" value="$2" other="${3:-}"
+    case "$key" in
+    unreadable)
+        printf 'linear-projects: map-unreadable map=%s\n' "$value"
+        jq -cn --arg file "$value" \
+            '{error: ("The repository declares a project map in " + $file + " but its ### Project map section holds no readable JSON contract (project-management references/project-map.md § Declaration), so no project can be judged. Fix the manifest [skill-instructions].project-management and render it.")}'
+        ;;
+    renders-differ)
+        printf 'linear-projects: map-unreadable map=%s differs=%s\n' "$value" "$other"
+        jq -cn --arg file "$value" --arg other "$other" \
+            '{error: ("The project-management renders " + $file + " and " + $other + " carry different ### Project map sections, so no project can be judged: one is a stale render. Render the manifest [skill-instructions].project-management again (kendex refresh) so every render carries one map.")}'
+        ;;
+    declared-missing)
+        printf 'linear-projects: declared-missing project=%s map=%s\n' "$value" "$LINEAR_TAXONOMY_FILE"
+        jq -cn --arg project "$value" --arg file "$LINEAR_TAXONOMY_FILE" \
+            '{error: ("The project map in " + $file + " declares project " + ($project | tojson) + " but this team has no live Linear project of that name. Create the project or correct the map, then retry.")}'
+        ;;
+    ambiguous)
+        printf 'linear-projects: ambiguous project=%s map=%s\n' "$value" "$LINEAR_TAXONOMY_FILE"
+        jq -cn --arg project "$value" --arg file "$LINEAR_TAXONOMY_FILE" \
+            '{error: ("The project map in " + $file + " declares project " + ($project | tojson) + " and this team has more than one live Linear project of that name, so the map cannot say which one it means. Rename or cancel the extra project, then retry.")}'
+        ;;
+    project-missing)
+        printf 'linear-projects: project-missing map=%s\n' "$LINEAR_TAXONOMY_FILE"
+        jq -cn --arg file "$LINEAR_TAXONOMY_FILE" --argjson projects "$other" \
+            '{projects: $projects, error: ("This repository declares a project map in " + $file + ", so every create names its project: pass --project with the map project the item belongs in (project-management references/project-map.md § Routing), or hold the item as project_needed.")}'
+        ;;
+    off-map)
+        printf 'linear-projects: off-map project=%s map=%s\n' "$value" "$LINEAR_TAXONOMY_FILE"
+        jq -cn --arg project "$value" --arg file "$LINEAR_TAXONOMY_FILE" --argjson projects "$other" \
+            '{projects: $projects, error: ("Refusing project " + ($project | tojson) + ": the project map in " + $file + " does not list it. Use a map project (project-management references/project-map.md § Routing), or hold the item as project_needed until the map lists the project it needs.")}'
+        ;;
+    no-team)
+        printf 'linear-projects: no-team\n'
+        jq -cn '{error: "projects audit reads the open issues of one team: set LINEAR_TEAM in kendex.settings.toml [env] or pass --team <key-or-name>."}'
+        ;;
+    *)
+        printf 'linear-projects: unknown-message key=%s\n' "$key"
+        return 1
+        ;;
+    esac
+}
+
+# Print the declared project map as {initiatives, projects}, or nothing when
+# the repository declares none. A declared map this cannot read refuses, as an
+# unreadable taxonomy does.
+linear_project_map() {
+    linear_declared_block "### Project map" linear_project_message "$LINEAR_NAME_KEY_JQ"'
+        def text: type == "string" and length > 0;
+        select(type == "object"
+            and (.projects | type == "array" and length > 0)
+            and ((.initiatives // []) | type == "array"))
+        | {initiatives: (.initiatives // []), projects}
+        | select(all(.initiatives[]; type == "object" and (.name | text) and (.outcome | text)
+                and (.projects | type == "array" and all(.[]; text))))
+        | select(all(.projects[]; type == "object" and (.name | text) and (.admits | text)
+                and ((.kind == "deliverable" and (has("role") | not)
+                        and ((has("ends_when") | not) or (.ends_when | text))
+                        and ((has("initiative") | not) or (.initiative | text)))
+                    or (.kind == "standing" and (.role | IN("area", "concern"))
+                        and (has("ends_when") | not) and (has("initiative") | not)))))
+        | . as $map
+        | select(all($map.projects[] | select(has("initiative"));
+                .name as $p | .initiative as $i
+                | any($map.initiatives[]; .name == $i and any(.projects[]; . == $p))))
+        | select(all($map.initiatives[]; .name as $i
+                | all(.projects[]; . as $p
+                    | any($map.projects[]; .name == $p and .initiative == $i))))
+        | select([.projects[].name, .initiatives[].name] | map(name_key) | length == (unique | length))'
+}
+
+# Read each map project's Linear project, every page, as one array in map
+# order: {name, id, state, target_date, live}. `live` counts the live projects
+# of that name, so 0 with an id is a canceled-only project and 0 without one
+# is none. TEAM_ID scopes the read to the team's projects; empty reads the
+# workspace. PROJECT_PICK_JQ (lib/formatters.sh) picks the node, the rule
+# resolve_project_id reads.
+# Usage: linear_map_projects MAP [TEAM_ID]
+linear_map_projects() {
+    local map="$1" team_id="${2:-}" query variables result
+    query='query ProjectMap($names: [String!], $after: String) { projects(filter: {name: {in: $names}}, first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id name state targetDate } } }'
+    variables=$(jq -c '{names: [.projects[].name]}' <<<"$map") || return 1
+    if [[ -n "$team_id" ]]; then
+        query='query ProjectMap($names: [String!], $teamId: ID!, $after: String) { projects(filter: {name: {in: $names}, accessibleTeams: {some: {id: {eq: $teamId}}}}, first: 100, after: $after) { pageInfo { hasNextPage endCursor } nodes { id name state targetDate } } }'
+        variables=$(jq -c --arg teamId "$team_id" '. + {teamId: $teamId}' <<<"$variables") || return 1
+    fi
+    result=$(graphql_pages "$query" "$variables" projects) || return 1
+    jq -c --argjson map "$map" "$PROJECT_PICK_JQ"'
+        (.projects.nodes // []) as $nodes
+        | [$map.projects[] | .name as $n
+            | [$nodes[] | select(.name == $n)] as $named
+            | (($named | live_project_pick($n)) // $named[0] // {}) as $pick
+            | {name: $n, id: ($pick.id // null), state: ($pick.state // null),
+               target_date: ($pick.targetDate // null),
+               live: ([$named[] | select(project_is_live)] | length)}]' <<<"$result"
 }
 
 # A milestone reference that is already a UUID, and so needs no project to

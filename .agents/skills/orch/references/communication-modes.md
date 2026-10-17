@@ -82,9 +82,9 @@ An overseer's question to the owner is one owner ask: the template above for the
 .agents/skills/mailbox/scripts/lane-mail ask --item overseer --to owner --options [OPTION_A],[OPTION_B] --recommend [RECOMMENDED_OPTION] --file [PATH] --issue [ITEM] --do [ACTION_AND_CLOSING_EVIDENCE]
 ```
 
-For an item ask, set `ORCH_OWNER_ASK_LABEL` and the owner email to enable the Linear route. `ORCH_OWNER_EMAIL` names the person and defaults to `KENDEX_USER_EMAIL`. The item supplies its own team. The overseer assigns that person, adds the label without replacing other labels, and posts the question with its options, recommendation, deadline and `ask=` id. Linear sends the assignment notification. After the complete tracker question is confirmed, Slack posts one line with the question's first line and the item link. A failed tracker write keeps the full chat question, options and deadline. It retains the item binding for cleanup and uses the chat deadline route. Unset settings report `lane-mail: tracker-unwritten issue=<ID> cause=settings-unset`. A failed settings read reports `cause=settings-unreadable`. An ask with no item stays on the chat route and creates no issue.
+For an item ask, set `ORCH_OWNER_ASK_LABEL` and the owner email to enable the Linear route. `ORCH_OWNER_EMAIL` names the person and defaults to `KENDEX_USER_EMAIL`. The item supplies its own team. The overseer assigns that person, adds the label without replacing other labels, and posts the question as one plain comment. Its first line mentions that person by the Linear profile URL, built from the workspace key the tracker reports and the person's display name, so Linear notifies them. Then come the question text, its options, the recommendation or the reserved note with the deadline, the draft on a draft ask, the reply instruction, and a last line `Requested by` naming the asking overseer. The comment carries no ask header, ask id or Slack id: the posting record keeps the comment's id, and the watch finds replies after that comment. Linear sends the assignment notification. After the complete tracker question is confirmed, Slack posts one line with the question's first line and the item link. A failed tracker write keeps the full chat question, options and deadline, and the pending ask names the failed operation as `tracker_cause`. It retains the item binding for cleanup and uses the chat deadline route. Unset settings report `lane-mail: tracker-unwritten issue=<ID> cause=settings-unset`. A failed settings read reports `cause=settings-unreadable`. An ask with no item stays on the chat route and creates no issue.
 
-An item ask requires `--do TEXT`: at most two sentences in plain words saying what the person does and what evidence closes it. A missing or empty action refuses as `owner-action-missing`; an action over two sentences refuses as `owner-action-long sentences=N`. Both refusals name `--do` as the fix and write nothing. The label update also opens the description with `**<FIRST_NAME>, what you do:** <TEXT>`, a blank line, then the existing body. The first name comes from the Linear user the route assigns. A later ask replaces the opening line. The existing long watch pass restores a missing line from the ask's `do` field.
+An item ask requires `--do TEXT`: plain words saying what the person does and what evidence closes it. A missing or empty action refuses as `owner-action-missing`, names `--do` as the fix and writes nothing. The label update also opens the description with `**<FIRST_NAME>, what you do:** <TEXT>`, a blank line, then the existing body. The first name comes from the Linear user the route assigns. A later ask replaces the opening line. The existing long watch pass restores a missing line from the ask's `do` field.
 
 The person answers with one comment on the issue and changes no state. `ok`, `yes` or `done`, alone and in any case, accepts the recommendation or approves the action a reserved ask proposes. Any other text is a change request. The overseer acts on that request and replies on the same issue. Each long watch pass reads new comments by that person's email after the ask's comment. Each comment ID is its delivery ID, so a repeated read delivers nothing new. A failed tracker read reports `KEN-3624-unread` and leaves the other checks running.
 
@@ -181,6 +181,9 @@ For the Jarvis session and every overseer, a conversation stays in the medium wh
 10. Report account headroom for every harness the fleet runs (Claude, Codex, Copilot), side by side.
 11. Own a mistake in one line, with its repair.
 12. Attach a screenshot or an image when it shows the point better than words: `slack post --file`, with `--thread TS` to place it under a message.
+13. Give every number the owner reads its yardstick and its verdict in the same bullet: the earlier value, the target or the normal range; good, bad or not known; and what is done about it. When the yardstick is not read yet, say so and name the reading that settles it (the owner's Slack messages 1792172820, 1792172887 and 1792172957; Jarvis note 1792173119).
+14. Report a measure that depends on load against that load: a lane's or session's length beside the work it handled, a machine's use beside what ran on it. Length or use alone never claims an improvement (the owner's Slack messages 1792172820, 1792172887 and 1792172957; Jarvis note 1792173119).
+15. Before posting, read each topic once as the owner and ask "so what for me?". A topic whose text does not answer that gets the answer or is cut (the owner's Slack messages 1792172820, 1792172887 and 1792172957; Jarvis note 1792173119).
 
 Markup for a text posted alone, standard Markdown:
 
@@ -236,6 +239,8 @@ Use this mrkdwn template for the report file's comment. For a post without a fil
 
 Every hold in the handoff, the report's Next row or lane state names its items and an open owner ask id or a blocking pull request or tracker item. At each start, read the named ask from `lane-mail pending --item overseer --to owner` and the named blocker from GitHub or the live tracker. Drop a hold with no id, a resolved or absent ask, or a blocker whose live state is terminal. Count its items as ready, then apply `oversee.md` § 2 Select Work.
 
+The installed snapshot has this shape. The writer generates the Start here line.
+
 ```markdown
 Start here: [YYYY-MM-DDThh:mm:ssZ] generation=[FLEET RECORD'S .overseer.generation]
 
@@ -256,7 +261,9 @@ In flight: [EACH TRACKER ID WITH ONE NEXT ACTION]
 [CURRENT SESSION'S OPEN PROGRESS ONLY: ONE LINE PER ACTION WITH ITS TIME, OPERATION, OBSERVED RESULT AND DECISION REASON; EXCLUDE RULINGS AND FILING HISTORY (FLEET LOG), AND VERIFYING READINGS (THEIR TRACKER ITEMS)]
 ```
 
-The handoff is a current snapshot. At every rewrite, replace the file, never prepend. Use the exact UTC write time and the writer's fleet generation. For live self-succession, `oversee-succeed` refuses `handoff-stale` when the Start here generation is absent or differs from the fleet record; it does not judge the time. Dead and walled recovery use the existing handoff plus bounded live records, even when the handoff is stale or absent: their callers cannot write a live snapshot. At succession, promote open progress into the sections above and cut the log. Keep no archive copy: commits, the tracker, mailboxes and Slack hold history.
+The handoff is a current snapshot. Prepare the complete body below Start here in a separate ignored scratch file. At Stop and succession, write it with `oversee-succeed --write-only --handoff-body [BODY]` under [oversee.md § 5](../workflows/oversee.md#5-stop). Add `--handoff [PATH]` when the fleet uses another destination. Require a successful write before completing preparation, attempting plain succession, claiming a current installed snapshot or recording it for manual recovery. A failed write stops preparation; report its cause. The writer replaces the complete snapshot and supplies its current fleet generation and UTC write time. It refuses the installed handoff as body input, links to it and any body with a Start here line. The body is replaceable session scratch with no archive role. The caller keeps ownership of it. The successor and recovery read only the installed handoff.
+
+For live self-succession, `oversee-succeed` refuses `handoff-stale` when the Start here generation is absent or differs from the fleet record; it does not judge the time. Plain succession never rewrites retained content. Dead and walled recovery use the existing handoff plus bounded live records, even when the handoff is stale or absent: their callers cannot write a live snapshot. At succession, promote open progress into the sections above and cut the log. Keep no archive copy: commits, the tracker, mailboxes and Slack hold history.
 
 Drop each closed tracker id from State. Keep its completion evidence on the item. Keep a line only when the successor would act wrongly or redo work without it. Remove a temporary instruction when its end event occurs or its standing home states it. An unresolved checkout condition belongs in State until its cause clears. Account, PID and lane facts stay in their own records. Hosted idle wakes use [oversee-lanes.md § Talking to a lane](oversee-lanes.md#talking-to-a-lane)'s Pane paste.
 
@@ -265,6 +272,8 @@ Standing procedures and traps go to the orch skill through a lane. Record ruling
 [oversee.md](../workflows/oversee.md) § 5 uses this shape. This file's stance is not copied into a handoff. Its owner summary uses [§ Owner messages](#owner-messages).
 
 ## Recording
+
+Record a directive's stated speaker and source. Use Jarvis as Source for a Jarvis note and the overseer as Source for overseer words. Attribute words to the owner only when received directly from the owner or explicitly quoted with their original source. Keep the speaker distinction, note id and original quoted source in delegated filing input through the existing prose fields. The mailbox's `send:overseer` path sets `from=owner` for every sender; that routing value alone does not prove authorship. Attribution changes neither authority nor the ask set.
 
 | Decision | Record |
 |----------|--------|

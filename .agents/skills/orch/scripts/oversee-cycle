@@ -11,7 +11,9 @@
 #
 # --state-dir is the fleet state's directory, as workflow-state takes it.
 # stages reads a running lane without writing a cycle. It reads the item key,
-# then pr-N from the lane record when the item has no state. Rows sort by start:
+# then pr-N for the lane's current PR, its pending_pr or parked PR, when the
+# item has no state, and the copy merge-pr saved for that PR after live state
+# removal. Rows sort by start:
 #   stage item=ITEM kind=K round_id=RID start=EPOCH end=EPOCH|-
 # Superseded rounds carry superseded=1 after end=.
 # Restack validation rows also carry reason=restack. workflow-state new-round-id
@@ -24,14 +26,18 @@
 #
 # record reads the lane record ITEM names in the oversee state, the merged
 # pull request's stamps from the github skill's `pr-timeline`, and the class
-# of the merged diff from harness-ci's classifier through lib/change-class.sh,
+# of the merged diff from trusted Actions evidence through lib/change-class.sh,
 # over the merge commit's first parent to the merge commit, read from this
 # checkout, which fetches the merge commit from origin where it lacks it. Run
 # it from a checkout of the lane's repository: where the lane's worktree names
 # another origin, or --repo another repository, the class is unread with
-# cause checkout-other-repo. A classifier answer whose `measured=` marker is
-# not true is no class. --repo
-# defaults to the lane record's repo, then this checkout's. The recorded launch
+# cause checkout-other-repo. Classification supports only kendex's
+# Classify the diff merge-group job in .github/workflows/skill-tests.yml.
+# Consumer repositories have no supported producer: their cycles keep a null
+# class and verdict=unclassified with class_cause=origin-untrusted. Their timing
+# remains in the unclassified rollup. They produce no miss or repeat-miss.
+# An unmeasured answer is no class. Missing or mismatched evidence runs no local proof.
+# --repo defaults to the lane record's repo, then this checkout's. The recorded launch
 # tier wins; a differing --tier refuses as tier-mismatch naming launch and given.
 # A record whose tier is null, a launch that judged none, takes --tier where
 # given and otherwise records none, printed `-`, with escaped null.
@@ -45,38 +51,45 @@
 # such push, merged and actual are null and stderr carries
 # `oversee-cycle: merged-unread commit=SHA cause=C`, C one of
 # repo-unresolved, base-unresolved, launch-unreadable, activity-unread,
-# compare-failed or no-push. Its first parent to the commit uses the same
-# classifier.
-# No CI check is read. pr_opened, gate_green, ci_green and armed are null,
-# as are open, phase, gate waits, pr_rounds and refixed. The verdict compares
-# measured lane time with the class base. The cycle object carries commit
-# instead of pr, and the
-# cycle line below uses commit=SHA instead of pr=N. actual and escaped still
-# enter the per-class rollup. Exactly one of --pr and --commit is required.
+# compare-failed or no-push. Ordinary direct pushes have no classification:
+# push runs carry no merge-group measurement. A kendex direct push records
+# class_cause=ci-proof-missing and verdict=unclassified. It produces no miss or
+# repeat-miss. Its timing remains in the unclassified rollup.
+# pr_opened, ready, gate_green, ci_green and armed are null,
+# as are open, phase, gate waits, pr_rounds, escaped and refixed.
+# The cycle object carries commit instead of pr, and the cycle line below
+# uses commit=SHA instead of pr=N. Exactly one of --pr and --commit is required.
 # The round counts and stage times come from
 # the lane's own workflow state, read as oversee-report reads it through
 # lib/lane-gitfile.sh's lane_item_state. A hosted lane's is read on its host
 # in the state directory the lane resolves from its own worktree's settings,
-# never this caller's ORCH_STATE_DIR; once the host answers that its
-# worktree is gone, from the archive the fleet log's last `kept=PATH` row for
-# the item since its session began names. A lane
-# whose state is gone, which
-# ../workflows/merge-pr.md § 5 removes, records its rounds as null, never as zero, and a
-# read that failed also prints `oversee-cycle: rounds-unread item=ITEM` and
-# the reason on stderr. A lane whose host kind declares files=none, a Claude
+# never this caller's ORCH_STATE_DIR. Live state is read under ITEM, then
+# pr-N for --pr N. After live state removal it reads
+# clone/tmp/cycle-state/workflow-state-pr-N.json, the copy merge-pr § 5 saved
+# for that merge, never a copy another merge of the item saved. --commit has
+# no saved copy to read.
+# The owning fleet repository's watch rows address a gone worktree's clone,
+# even when this command runs from a connected repository checkout.
+# A gone hosted lane can also read the archive the fleet log's last
+# `kept=PATH` row for the item since its session began names. An absent or
+# failed state read records rounds as null, never as zero, and prints
+# `oversee-cycle: rounds-unread item=ITEM` and the paths tried on stderr.
+# A lane whose host kind declares files=none, a Claude
 # cloud session, has no state that read reaches: its rounds are null and
 # nothing is printed.
 #
 # It writes the record's `cycle` object, appends one `cycle` row to the fleet
 # log, and prints the same line:
 #   cycle item=ITEM pr=N class=C tier=T target=S merge_group=S ci_head=S ci_clean=S lane=S actual=S open=S verdict=V
-#     phase=P phase_secs=S cause=W bot_wait=S thread_fix=S paused=S missing=A,B
+#     phase=P phase_secs=S cause=W bot_wait=S draft=S thread_fix=S paused=S missing=A,B
 #     review=N fix=N bot=N full_validations=N pr_rounds=N escaped=B refixed=B
 # (one line). A value it could not read prints `-`.
 #   stamps    launched (the record's launched_at), first_commit, pr_opened,
 #             gate_green (pr-timeline's gate_met), ci_green, armed (armed,
 #             else queued), merged
-#   missing   the stamps that are null
+#             ready is the earliest non-null top-level ready_times entry,
+#             null without a ready event; it enters neither phase nor missing
+#   missing   the seven phase stamps that are null
 #   target    the class base plus merge_group and ci_clean, each null as 0
 #   merge_group  those merge-group CI seconds, `-` when null
 #   ci_head   pr-timeline's ci_head_secs, including earlier attempts
@@ -114,19 +127,22 @@
 #                           `pauses`, and a `parked` still standing, which runs
 #                           on past the gap; a record whose pauses do not read
 #                           refuses as pauses-unreadable
-#               bot_wait    the rest of the time after a push up to the next
+#               draft       unpaused time before the last ready_for_review
+#                           event at or before the gate, read from ready_times
+#               bot_wait    the rest of the time after ready and a push up to
+#                           the next
 #                           bot review: the bot reviewing the push
 #               thread_fix  the rest of the time after a bot review up to the
 #                           next push or the gate: the lane working the threads
-#             the gap opens in the wait the latest push or bot review before
-#             it opened, bot_wait where there is neither
+#             draft takes unpaused time before ready; after ready, the gap
+#             uses the latest push or bot review, bot_wait where neither exists.
 #             pushes and bot reviews are pr-timeline's `push_times`, the
 #             head branch's push log, and `bot_review_times`. Null while
 #             the phase is, where gate_green falls outside the span, or
 #             where pr-timeline's `push_times` is null:
 #             no head branch named, or no push in its log for the life the
 #             PR opened in
-#   cause     the largest gate wait, the earlier of bot_wait, thread_fix and
+#   cause     the largest gate wait, the earlier of bot_wait, draft, thread_fix and
 #             paused winning a tie, where the phase is gate_green. Where the
 #             phase is ci_green, the largest part of its gap split at
 #             pr-timeline's last_push: work, the rounds pushed before the
@@ -188,13 +204,14 @@
 # recorded lane, in the order of the target table, then unclassified; with no
 # fleet state yet it prints nothing and exits 0. report prints the same rows
 # and writes nothing, for a reader without write access to the fleet state:
-#   rollup class=C items=N median=S p90=S lane_median=S open_median=S miss_share=M/N misses=N review=N fix=N bot=N
+#   rollup class=C items=N median=S p90=S lane_median=S open_median=S miss_share=M/N misses=N draft=S review=N fix=N bot=N
 #     full_validations=N rounds_unread=N escaped=N refixed=N pr_rounds=N
 #     pr_rounds_unread=N round_median=S fix_median=S rounds_untimed=N
 # lane_median and open_median are nearest-rank medians of lane_secs and open.
 # miss_share is the fraction of measured lane_secs over the class base,
 # or - with no measured lane time or no class base. Old records with no
 # lane_secs enter neither its median nor its miss share.
+# draft sums the recorded draft seconds; it prints - when none are recorded.
 # median and p90 are nearest-rank over the measured launch-to-merge seconds;
 # the round figures are sums over the records that carry rounds, and
 # rounds_unread counts the records that do not. pr_rounds is the nearest-rank
@@ -225,6 +242,8 @@ LANE_HOST="$SCRIPT_DIR/lane-host"
 source "$SCRIPT_DIR/lib/change-class.sh"
 # shellcheck source=lib/lane-gitfile.sh
 source "$SCRIPT_DIR/lib/lane-gitfile.sh"
+# shellcheck source=lib/watch-host-kinds.sh
+source "$SCRIPT_DIR/lib/watch-host-kinds.sh"
 # shellcheck source=../../github/scripts/lib/gh-repo.sh
 source "$SCRIPT_DIR/../../github/scripts/lib/gh-repo.sh"
 
@@ -283,21 +302,58 @@ fi
 
 # record and stages resolve the same live or archived state. A failed read
 # never falls back: another key cannot answer for an unreadable record.
+read_item_state() {
+  local rc=0
+  lane_item_state "$@" || rc=$?
+  # An absent key can still have a retained clone address or a PR-key copy.
+  [[ "$rc" != 2 || "$LANE_ITEM_STATE_REASON" != state-absent ]] || return 0
+  return "$rc"
+}
+
+# read_lane_state [PR]: PR is the merge whose saved copy alone may answer.
 read_lane_state() {
-  local pr_key
+  local saved_key="" key phase clone="" watch_dir rc tried=() keys=("$ITEM")
   LANE_HOST_SPEC="$(jq -r '.host // empty' <<<"$lane" 2>"$WORK/state.err")" || return 1
   LANE_ROOT="$(jq -r '.mail_root // empty' <<<"$lane" 2>"$WORK/state.err")" || return 1
   LANE_SINCE="$(jq -r '.session_since // .launched_at // ""' <<<"$lane" 2>"$WORK/state.err")" || return 1
   LANE_KEPT="$(jq -r --arg item "$ITEM" --arg since "$LANE_SINCE" '
     [.fleet_log[]? | select(.item == $item and ((.at // "") >= $since)) | .text | strings
      | capture("(^|\\s)kept=(?<p>/.*[^\\s])\\s*$") | .p] | last // empty' "$STATE_FILE" 2>"$WORK/state.err")" || return 1
-  lane_item_state "$WORKFLOW_STATE" "$LANE_HOST" "${ORCH_STATE_DIR:-tmp}" "$ITEM" \
-    "$LANE_HOST_SPEC" "$LANE_ROOT" "$WORK" ${LANE_KEPT:+"$LANE_KEPT"} || return $?
-  [[ -z "$LANE_ITEM_STATE" ]] || return 0
-  pr_key="$(jq -r '.pending_pr.pr // .parked.pr // .cycle.pr // empty' <<<"$lane" 2>"$WORK/state.err")" || return 1
-  [[ "$pr_key" =~ ^[1-9][0-9]*$ ]] || return 0
-  lane_item_state "$WORKFLOW_STATE" "$LANE_HOST" "${ORCH_STATE_DIR:-tmp}" "$ITEM" \
-    "$LANE_HOST_SPEC" "$LANE_ROOT" "$WORK" "$LANE_KEPT" "pr-$pr_key"
+  if [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; then
+    saved_key="pr-$1"
+    keys+=("$saved_key")
+  fi
+  for phase in live retained; do
+    if [[ "$phase" == retained ]]; then
+      [[ "$LANE_ITEM_STATE_REASON" != files-none ]] || break
+      # Both live keys miss before the clone holding the saved copy resolves.
+      if [[ -n "$LANE_HOST_SPEC" && "$LANE_HOSTED_GONE" != 1 ]]; then
+        clone="$LANE_HOSTED_CLONE"
+      elif [[ -z "$LANE_HOST_SPEC" && ( -z "$LANE_ROOT" || -d "$LANE_ROOT" ) ]]; then
+        clone="$("$SCRIPT_DIR/git-context" common-root "${LANE_ROOT:-.}" 2>"$WORK/state.err")" || return 1
+      else
+        watch_dir="$(lane_watch_state_dir "$PWD" "$STATE_FILE" 2>"$WORK/state.err")" || return $?
+        lane_retained_clone "$ITEM" "$watch_dir" 2>"$WORK/state.err" || return $?
+        clone="$LANE_RETAINED_CLONE"
+        # A local gone-root read already uses the caller's checkout for its
+        # live path. Keep that clone when the watch recorded no address.
+        if [[ -z "$clone" && -z "$LANE_HOST_SPEC" ]]; then
+          clone="$("$SCRIPT_DIR/git-context" common-root . 2>"$WORK/state.err")" || return 1
+        fi
+      fi
+      [[ -n "$clone" ]] || break
+    fi
+    for key in "${keys[@]}"; do
+      rc=0
+      read_item_state "$WORKFLOW_STATE" "$LANE_HOST" "${ORCH_STATE_DIR:-tmp}" "$ITEM" \
+        "$LANE_HOST_SPEC" "$LANE_ROOT" "$WORK" "$LANE_KEPT" "$key" false "$clone" "$saved_key" || rc=$?
+      tried+=(${LANE_ITEM_STATE_TRIED[@]+"${LANE_ITEM_STATE_TRIED[@]}"})
+      LANE_ITEM_STATE_TRIED=(${tried[@]+"${tried[@]}"})
+      [[ "$rc" -eq 0 ]] || return "$rc"
+      [[ -z "$LANE_ITEM_STATE" ]] || return 0
+    done
+  done
+  LANE_ITEM_STATE_TRIED=(${tried[@]+"${tried[@]}"})
 }
 
 print_stages() {
@@ -313,7 +369,10 @@ if [[ "$VERB" == stages ]]; then
   lane="$(jq -c --arg item "$ITEM" '[.lanes[]? | select(.item == $item)] | first // empty' "$STATE_FILE" 2>"$WORK/state.err")" \
     || refuse stages-unread "$ITEM" "$WORK/state.err"
   [[ -n "$lane" ]] || refuse record-missing "$ITEM"
-  read_lane_state || refuse stages-unread "$ITEM" "$WORK/state.err"
+  # A recorded cycle's PR is an earlier run's merge, never the running one.
+  stage_pr="$(jq -r '.pending_pr.pr // .parked.pr // empty' <<<"$lane" 2>"$WORK/state.err")" \
+    || refuse stages-unread "$ITEM" "$WORK/state.err"
+  read_lane_state "$stage_pr" || refuse stages-unread "$ITEM" "$WORK/state.err"
   if [[ -z "$LANE_ITEM_STATE" ]]; then
     printf 'oversee-cycle: stages-unread item=%s cause=no-state\n' "$ITEM" >&2
     exit 1
@@ -350,6 +409,7 @@ if [[ "$VERB" != record ]]; then
           | if ($measured | length) == 0 or $targets[$class] == null then "-"
             else "\($measured | map(select(. > $targets[$class])) | length)/\($measured | length)" end)"
       + " misses=\([$c[] | select(.verdict == "miss")] | length)"
+      + " draft=\([$c[] | .gate_waits.draft // empty] | add | n)"
       + " review=\(sum(.review) | n) fix=\(sum(.fix) | n) bot=\(sum(.bot) | n)"
       + " full_validations=\(sum(.full_validations) | n)"
       + " rounds_unread=\([$c[] | select(.rounds == null)] | length)"
@@ -425,12 +485,11 @@ case "$TIER" in '' | micro | small | standard) ;; *) usage_error --tier ;; esac
 # an earlier run of a relaunched item is never read as this one's. The path
 # is the rest of the row, since a fleet directory may hold spaces and the
 # provider prints it unescaped as the line's last field.
-rounds=null stages=null refusals=null rounds_unread=""
-if ! read_lane_state; then
+rounds=null stages=null rounds_unread=""
+if ! read_lane_state "$PR"; then
+  lane_item_state_paths "$ITEM" "$WORK"
   rounds_unread="$WORK/state.err"
 elif [[ -n "$LANE_ITEM_STATE" ]]; then
-  refusals="$(jq -c '.repeat_refusals // []' <<<"$LANE_ITEM_STATE" 2>"$WORK/state.err")" \
-    || refuse state-unreadable "$ITEM" "$WORK/state.err"
   stages="$(jq -c '.stages // null' <<<"$LANE_ITEM_STATE" 2>"$WORK/state.err")" \
     || { stages=null; rounds_unread="$WORK/state.err"; }
   rounds="$(jq -c '{review: ((if .first_panel then 1 else 0 end) + (.rereview_cycles // 0)),
@@ -438,6 +497,9 @@ elif [[ -n "$LANE_ITEM_STATE" ]]; then
      bot: (.pr_comment_review.iterations // 0),
      full_validations: ([.validate_rounds[]? | select(.mode == "full")] | length)}' \
     <<<"$LANE_ITEM_STATE" 2>"$WORK/state.err")" || { rounds=null; rounds_unread="$WORK/state.err"; }
+elif [[ "$LANE_ITEM_STATE_REASON" != files-none ]]; then
+  lane_item_state_absent "$ITEM" "$WORK"
+  rounds_unread="$WORK/state.err"
 fi
 
 if [[ -n "$PR" ]]; then
@@ -482,9 +544,10 @@ elif ! base="$(git -C "$checkout" rev-parse --verify -q "$merge^1^{commit}")" \
   && ! { git -C "$checkout" fetch -q origin "$merge" 2>"$WORK/class.err" \
          && base="$(git -C "$checkout" rev-parse --verify -q "$merge^1^{commit}")"; }; then
   class_cause="merge-commit-absent"
-elif change_class_read "$base" "$merge" "$checkout" "$WORK/class.err"; then
-  class_evidence="$(sed -n 's/^class: class=[^ ]* measured=[^ ]* cause=//p' "$WORK/class.err" | tail -1)" \
-    || refuse class-log-unreadable "$ITEM"
+elif ! evidence_repo="$(unset GH_REPO; kendex_github_resolve_gh_repo "$checkout" 2>/dev/null)"; then
+  class_cause=repo-unresolved
+elif change_class_merged "$base" "$merge" "$checkout" "$evidence_repo" "$WORK/class.err"; then
+  class_evidence="$CHANGE_CLASS_EVIDENCE"
   class_reason="${class_evidence%% *}"
   if [[ "$CHANGE_CLASS_MEASURED" != true ]]; then
     class_cause="class-unmeasured"
@@ -563,13 +626,13 @@ negatives="$(jq -r --arg item "$ITEM" "$CYCLE_DEFS"'.rounds // [] | .[] | select
   | "oversee-cycle: negative-interval item=\($item) kind=\(.kind) head=\(.head) secs=\(.secs)"' <<<"$timeline")" \
   || refuse timeline-failed "${PR:-$COMMIT}"
 
-cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson rounds "$rounds" --argjson stages "$stages" --argjson pauses "$pauses" --argjson refusals "$refusals" \
+cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson rounds "$rounds" --argjson stages "$stages" --argjson pauses "$pauses" \
   --argjson targets "$TARGETS" --arg class "$class" --arg cause "$class_cause" --arg tier "$TIER" \
   --arg class_reason "$class_reason" --arg evidence "$class_evidence" "$CYCLE_DEFS"'
   # The gate waits of the gap FROM..TO, epoch seconds: an instant a pause
-  # covers is paused, any other is the wait the latest push or bot review at
-  # or before it opened, bot_wait where neither came yet. A push and a bot
-  # review in one second read the push first.
+  # covers is paused; before ready, any other is draft. After ready, the
+  # latest push or bot review sets the wait, bot_wait where neither came yet.
+  # A push and a bot review in one second read the push first.
   # The same union measures gate holds, merge holds and the time a check
   # ran. This local calculation adds no merge policy or new lane record.
   def covered_seconds($spans; $from; $to):
@@ -580,12 +643,15 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
     | [$union[] | .b - .a] | add // 0;
   def paused_seconds($from; $to): covered_seconds($pauses; $from; $to);
   def gate_waits($from; $to):
-    ([$t.push_times[] | {at: fromdate, wait: "bot_wait"}] + [$t.bot_review_times[] | {at: fromdate, wait: "thread_fix"}]
+    ([$t.ready_times[]? | select(. != null) | fromdate | select(. <= $to)] | max) as $ready
+    | ([$t.push_times[] | {at: fromdate, wait: "bot_wait"}] + [$t.bot_review_times[] | {at: fromdate, wait: "thread_fix"}]
+       + (if $ready == null then [] else [{at: $ready, wait: "bot_wait"}] end)
      | sort_by(.at, .wait)) as $events
     | ([{at: $from, wait: ([$events[] | select(.at <= $from)] | last | .wait // "bot_wait")}]
        + [$events[] | select(.at > $from and .at < $to)] + [{at: $to}])
-    | [range(1; length) as $i | {wait: .[$i - 1].wait, secs: ((.[$i].at - .[$i - 1].at) - paused_seconds(.[$i - 1].at; .[$i].at))}]
+    | [range(1; length) as $i | {wait: (if $ready != null and .[$i - 1].at < $ready then "draft" else .[$i - 1].wait end), secs: ((.[$i].at - .[$i - 1].at) - paused_seconds(.[$i - 1].at; .[$i].at))}]
     | {bot_wait: ([.[] | select(.wait == "bot_wait") | .secs] | add // 0),
+       draft: ([.[] | select(.wait == "draft") | .secs] | add // 0),
        thread_fix: ([.[] | select(.wait == "thread_fix") | .secs] | add // 0),
        paused: paused_seconds($from; $to)};
   $t.stamps as $s
@@ -629,7 +695,7 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
   | (if $t.commit == null then {pr: $t.pr} else {commit: $t.commit} end)
     + {class: $class, class_cause: (if $cause == "" then null else $cause end),
      class_reason: (if $class_reason == "" then null else $class_reason end),
-     tier_inputs: $lane.tier_inputs, tier: $tier, stamps: $stamps, target: $target, merge_group: $merge_group, ci_head: $ci_head, ci_clean: $ci_clean, lane_secs: $lane_secs, actual: $actual, open: $open,
+     tier_inputs: $lane.tier_inputs, tier: $tier, stamps: ($stamps + {ready: ([$t.ready_times[]? | select(. != null)] | min)}), target: $target, merge_group: $merge_group, ci_head: $ci_head, ci_clean: $ci_clean, lane_secs: $lane_secs, actual: $actual, open: $open,
      verdict: (if $class == null then "unclassified" elif $lane_secs == null then "unmeasured"
                elif $lane_secs > $targets[$class] then "miss" else "met" end),
      phase: $dominant.phase, phase_secs: $dominant.secs, gate_waits: $waits,
@@ -645,7 +711,7 @@ cycle="$(jq -c -n --argjson lane "$lane" --argjson t "$timeline" --argjson round
                    elif $group > 0 and $group >= $rest then "merge_group"
                    else $t.merge_decision.route end
              else null end),
-     missing: $missing, rounds: $rounds, stages: $stages, repeat_refusals: $refusals,
+     missing: $missing, rounds: $rounds, stages: $stages,
      pr_rounds: ($t.rounds | if . == null then null else map(.secs |= interval) end),
      escaped: (if $class == null or $tier == null then null
                else ($tier == "micro" and ($class | IN("small", "standard")))
@@ -668,15 +734,14 @@ line="$(jq -r --arg item "$ITEM" 'def n: if . == null then "-" else tostring end
   + " class=\(.class | n) tier=\(.tier | n) target=\(.target | n)"
   + " merge_group=\(.merge_group | n) ci_head=\(.ci_head | n) ci_clean=\(.ci_clean | n) lane=\(.lane_secs | n)"
   + " actual=\(.actual | n) open=\(.open | n) verdict=\(.verdict) phase=\(.phase | n) phase_secs=\(.phase_secs | n)"
-  + " cause=\(.cause | n) bot_wait=\(.gate_waits.bot_wait | n) thread_fix=\(.gate_waits.thread_fix | n)"
+  + " cause=\(.cause | n) bot_wait=\(.gate_waits.bot_wait | n) draft=\(.gate_waits.draft | n) thread_fix=\(.gate_waits.thread_fix | n)"
   + " paused=\(.gate_waits.paused | n)"
   + " missing=\(if .missing == [] then "-" else .missing | join(",") end)"
   + " review=\(.rounds.review | n) fix=\(.rounds.fix | n) bot=\(.rounds.bot | n)"
   + " full_validations=\(.rounds.full_validations | n)"
   + " pr_rounds=\(if .pr_rounds == null then null else [.pr_rounds[] | select(.kind == "review")] | length end | n)"
   + " escaped=\(.escaped | n) tier_inputs=\(.tier_inputs | n)"
-  + " class_reason=\(.class_reason | n) escape_cause=\(.escape_cause | n) refixed=\(.refixed | n)"
-  + " refusals=\(if .repeat_refusals == null then null else .repeat_refusals | length end | n)"' <<<"$cycle")"
+  + " class_reason=\(.class_reason | n) escape_cause=\(.escape_cause | n) refixed=\(.refixed | n)"' <<<"$cycle")"
 log_row "$ITEM" "$line"
 printf '%s\n' "$line"
 [[ -z "$class_cause" ]] || printf 'oversee-cycle: class-unread cause=%s\n' "$class_cause" >&2

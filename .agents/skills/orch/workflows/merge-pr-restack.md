@@ -1,6 +1,8 @@
 # Merge-pr restack cycle
 
-Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-base-conflict` refusal that [submit-pr.md](submit-pr.md) § 2 step 1 routes here: steps 1-3, and step 4 returns to that step instead of `merge-pr.md`. [§ Unarm at a stop](#unarm-at-a-stop) runs step 1 alone, to unarm a PR, and pushes or restacks nothing. A base conflict is not a CI failure.
+Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-base-conflict` refusal that [submit-pr.md](submit-pr.md) § 2 step 1 routes here: steps 1-3, then continue that caller. Step 4 returns a merge caller to `merge-pr.md`. [§ Unarm at a stop](#unarm-at-a-stop) runs step 1 alone, to unarm a PR, and pushes or restacks nothing. A base conflict is not a CI failure.
+
+With `ORCH_DELIVERY=push-base`, skip step 1 because no PR exists. Run step 2 through completion of the guarded restack and its rules reload. Before that step's validation, return to [submit-pr.md § 2.1](submit-pr.md#21-base-publication) from its entry. That shared route checks internal review, prepares, returns control for another rules reload, then validates and transports the exact prepared head against its pinned base. Skip step 3 and the remaining PR proof and merge steps. A failed restack, validation or transport hands back without a completion notice.
 
 1. Unarm the PR before any push. If live `autoMergeRequest` is set, disable auto-merge first. If `isInMergeQueue` remains true, read the PR node id with `gh pr view [PR_NUMBER] --json id`, call GraphQL `dequeuePullRequest`, then re-read both fields. Either still set means hand back without pushing. This order prevents an armed PR from re-entering the queue while it is dequeued.
 
@@ -47,7 +49,7 @@ Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-
    [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/dev-validate-run --worktree [WT_PATH] --validate-mode ci --base origin/[BASE_BRANCH]
    ```
 
-   `validate-mode=ci` runs that command with `--validate-mode ci`, records its pending CI result through the existing `--record` owner, then goes to step 3 with no local range run or skip check. `validate-mode=full` means the project sets no `DEV_VALIDATE_RANGE_CMD`: go to step 3 with no run. `validate-mode=range` first asks whether the restacked head can skip its range re-test. `dev-validate-run --help` owns candidate selection under `--last-pass`:
+   `validate-mode=ci` runs that command with `--validate-mode ci`, records its pending CI result through the existing `--record` owner, then goes to step 3 with no local range run or skip check. `validate-mode=full` means the project sets no `DEV_VALIDATE_RANGE_CMD`. Both `full` and `range` first ask whether the restacked head can skip its range re-test. `dev-validate-run --help` owns candidate selection under `--last-pass`:
 
    ```bash
    [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/restack-skip --worktree [WT_PATH] --base origin/[BASE_BRANCH]
@@ -56,10 +58,10 @@ Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-
    Exit 0 prints `restack=skip condition=[CONDITION] ... head=[HEAD] paths=[PATHS]`: the restacked tree is that run's tree merged with the base's new commits, a merge that conflicted nowhere (`no-conflict`) or only over the version field commit-guards reads and changelog entries in the files it left conflicted (`version-only`), which `restack-skip --help` states. It starts no run. Record the skip in workflow state, with `[CONDITION]` the line's `condition=` value, `[VALIDATED_HEAD]` its `validated-head=` value and `[PATHS]` its `paths=` value, then go to step 3:
 
    ```bash
-   .agents/skills/orch/scripts/workflow-state update [ISSUE] --arg head [HEAD] --arg condition [CONDITION] --arg validated [VALIDATED_HEAD] --arg paths [PATHS] '.restack_skips = ((.restack_skips // []) + [{head: $head, condition: $condition, validated_head: $validated, paths: (if $paths == "none" then [] else ($paths | split(",")) end)}])'
+   .agents/skills/orch/scripts/workflow-state update [ISSUE] --arg head [HEAD] --arg condition [CONDITION] --arg validated [VALIDATED_HEAD] --arg paths [PATHS] '.restack_skips = (((.restack_skips // []) | map(select(.head != $head))) + [{head: $head, condition: $condition, validated_head: $validated, paths: (if $paths == "none" then [] else ($paths | split(",")) end)}])'
    ```
 
-   A lane also rewrites its status file's validation line, which names the skip, its condition and its paths, as [dev-start.md § Validation status](dev-start.md#validation-status) sets out. Any other exit, whatever it prints, runs the range command over the branch as it now sits on the base, started and polled as [dev SKILL.md § Long-Running Validation](../../dev/SKILL.md#long-running-validation) sets out for the harness, the way a fix round's run is:
+   A lane also rewrites its status file's validation line, which names the skip, its condition and its paths, as [dev-start.md § Validation status](dev-start.md#validation-status) sets out. A skip proves tree equivalence. Step 3 asks the validation owner for its separate proof before either caller can admit the queue or merge. Any other skip exit under `full` goes to step 3 with no run. Any other exit under `range`, whatever it prints, runs the range command over the branch as it now sits on the base, started and polled as [dev SKILL.md § Long-Running Validation](../../dev/SKILL.md#long-running-validation) sets out for the harness, the way a fix round's run is:
 
    ```bash
    [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/dev-validate-run --worktree [WT_PATH] --validate-mode range --base origin/[BASE_BRANCH]
@@ -85,21 +87,37 @@ Use this cycle for a `conflicting` queue-wait verdict, and for a `worktree-push-
 
    This step is not skippable and no other push replaces it: the restack in step 2 rewrote every branch commit, and this command is the only thing that reconciles the SHAs workflow state recorded before it. A non-zero exit hands back, because republishing `Fixed in <sha>` replies or a closing comment over unreconciled SHAs publishes commits the branch no longer has. What it reconciles from and what its summary lines mean are in `worktree-push --help`.
 
-   A `ci` record goes straight to step 4 after the push. Its proof is the exact published head, including any head the push rebased. After a local range run, compare the pushed head with the `head=` value of that run's record; after a skip, with the `head=` value of the skip line:
+   A `ci` record needs no local head comparison after the push. Its proof is the exact published head, including any head the push rebased. After a local range run, compare the pushed head with the `head=` value of that run's record; after a skip, with the `head=` value of the skip line:
 
    ```bash
    git -C [WT_PATH] rev-parse HEAD
    ```
 
-   A different head means the push rebased the branch again, onto a base that moved during the run, and pushed a head no run validated. The PR is still unarmed from step 1, so that head cannot enter the queue. Run step 2's skip check again on it, and where it does not skip, its range run and record read. Route a non-passing result as step 2 does. After a pass, bind `[RUN_DIR]` to this second run and record its timing through the same owner:
+   A different head means the push rebased the branch again, onto a base that moved during the run, and pushed a head no run validated. The PR is still unarmed from step 1, so that head cannot enter the queue. Run step 2's mode read and skip check again on it, recording a new skip for that head. Where range mode does not skip, run its range command and record read. The proof read below uses this resulting head. Route a non-passing result as step 2 does. After a pass, bind `[RUN_DIR]` to this second run and record its timing through the same owner:
 
    ```bash
    [MAIN_REPO_ROOT]/.agents/skills/orch/scripts/worktree-push --record-restack-validation [RUN_DIR] --worktree [WT_PATH] --issue [ISSUE]
    ```
 
-   This command publishes nothing. Its timing write is advisory (`worktree-push --help`). A pass or a skip goes to step 4 with no second push, and a base that moves again returns through the next queue-wait verdict. `--no-rebase` cannot hold the head still here: that push carries none of the restack's force-with-lease authorization, and git refuses the rewritten branch as a non-fast-forward push.
+   This command publishes nothing. Its timing write is advisory (`worktree-push --help`). A pass or a skip takes the proof read below with no second push, and a base that moves again returns through the next queue-wait verdict. `--no-rebase` cannot hold the head still here: that push carries none of the restack's force-with-lease authorization, and git refuses the rewritten branch as a non-fast-forward push.
 
-4. The head changed. Re-confirm the gate mode, then return to `merge-pr.md` § 5 step 1 to read the new exact head, wait for its CI and take the merge route again.
+   **Restack proof.** Before either caller resumes, bind `[WORKTREE_PATH]` to `[WT_PATH]`, `[STATE_KEY]` to `[ISSUE]` and `[PREPARED_HEAD]` to the pushed head. Read the current head's recorded skip. `dev-validate-run --help` owns the proof rule and its local base resolution. A reused tree alone supplies no passing validation. This read starts no validation:
+
+   ```bash
+   if ! RESTACK_SKIPS="$(.agents/skills/orch/scripts/workflow-state get [STATE_KEY] '.restack_skips // []')"; then
+     exit 1
+   fi
+   if ! RESTACK_PROOF_HEAD="$(jq -r --arg head [PREPARED_HEAD] '[.[] | select(.head == $head)] | last | .validated_head // empty' <<<"$RESTACK_SKIPS")"; then
+     exit 1
+   fi
+   if [[ -n "$RESTACK_PROOF_HEAD" ]]; then
+     .agents/skills/orch/scripts/dev-validate-run --resolve-mode --require-proof "$RESTACK_PROOF_HEAD" --expected-head [PREPARED_HEAD] --worktree [WORKTREE_PATH] || exit $?
+   fi
+   ```
+
+   A nonzero exit hands back with the proof result and keeps the PR unarmed. This includes submission's steps 1-3 route, before creation or update can arm the queue. Keep the owner's `validation-proof=` line with the merge decision. A CI answer stays pending until the existing exact-head CI wait or queue proves it.
+
+4. The head changed. Re-confirm the gate mode, then return to `merge-pr.md` § 5 step 1 to read the new exact head, repeat its proof read, wait for CI and take the merge route again.
 
 ## Unarm at a stop
 

@@ -12,6 +12,88 @@
 # lib/lane-gitfile.sh and lib/lane-capabilities.sh, which that script sources
 # before this file.
 
+# The writer supplies its checkout. A recorder in a connected repository uses
+# the fleet's registered cwd, then its state directory, to find that checkout.
+# Keep linked-worktree roots: the watch stores its rows there, not in the clone.
+# A fleet with no checkout address uses the caller, as a watch without state does.
+lane_watch_state_dir() { # CALLER_ROOT [FLEET_STATE_FILE]
+  local owner="" dir="" root candidate git_context="${BASH_SOURCE[0]%/*}/../git-context"
+  if [[ -n "${OVERSEE_WATCH_STATE_DIR:-}" ]]; then
+    printf '%s\n' "$OVERSEE_WATCH_STATE_DIR"
+    return 0
+  fi
+  if [[ -n "${2:-}" ]]; then
+    owner="$(jq -r '.overseer.cwd // empty' "$2")" || return 2
+    dir="${2%/*}"
+    [[ "$dir" != "$2" ]] || dir=.
+  fi
+  for candidate in "$owner" "$dir" "$1"; do
+    [[ -n "$candidate" ]] || continue
+    if root="$("$git_context" repo-root "$candidate" 2>/dev/null)"; then
+      printf '%s/tmp/oversee-watch\n' "$root"
+      return 0
+    fi
+  done
+  printf '%s/tmp/oversee-watch\n' "$1"
+}
+
+# Shared row reads also serve the cycle recorder after worktree disposal.
+lane_row_value() { # ROW PREFIX
+  LANE_ROW_VALUE="${1#"$2"}"
+  [[ "$1" == "$2"* && "$LANE_ROW_VALUE" != *$'\t'* ]]
+}
+lane_row_get() {
+  local row prefix="$1"$'\t'"$3"$'\t' value
+  if [[ "$MAIL_ROW_MODE" -eq 1 ]]; then
+    mail_row_find "$prefix"
+    LANE_ROW=""
+    [[ "$MAIL_ROW_INDEX" -lt 0 ]] || LANE_ROW="${MAIL_ROW_VALUES[$MAIL_ROW_INDEX]}"
+    [[ -z "$LANE_ROW" ]] || printf '%s\n' "$LANE_ROW"
+    return 0
+  fi
+  LANE_ROW=""
+  while IFS= read -r row; do
+    [[ "$row" == "$prefix"* ]] || continue
+    lane_row_value "$row" "$prefix" || continue
+    value="$LANE_ROW_VALUE"
+    LANE_ROW+="$value"$'\n'
+  done <<<"$2"
+  LANE_ROW="${LANE_ROW%$'\n'}"
+  [[ -z "$LANE_ROW" ]] || printf '%s\n' "$LANE_ROW"
+  return 0
+}
+
+# The watch retains clone-root rows for all its repositories in its primary
+# repository's .mail file. A recorder has no --since binding, so all files
+# must agree on this item; selecting
+# one of conflicting roots could read another launch's rounds.
+LANE_RETAINED_CLONE=""
+lane_retained_clone() { # ITEM DIRECTORY
+  local file rows roots root MAIL_ROW_MODE=0
+  LANE_RETAINED_CLONE=""
+  for file in "$2/"*.mail; do
+    [[ -e "$file" || -L "$file" ]] || continue
+    if ! rows="$(cat -- "$file")"; then
+      printf 'lane-gitfile: clone-root-unread item=%s path=%s\n' "$1" "$file" >&2
+      return 2
+    fi
+    roots="$(lane_row_get clone-root "$rows" "$1")" || return 2
+    while IFS= read -r root; do
+      [[ -n "$root" ]] || continue
+      if [[ "$root" != /* || "$root" == *$'\t'* ]]; then
+        printf 'lane-gitfile: clone-root-invalid item=%s path=%s value=%s\n' "$1" "$file" "$root" >&2
+        return 2
+      fi
+      if [[ -n "$LANE_RETAINED_CLONE" && "$LANE_RETAINED_CLONE" != "$root" ]]; then
+        printf 'lane-gitfile: clone-root-ambiguous item=%s path=%s first=%s other=%s\n' "$1" "$file" "$LANE_RETAINED_CLONE" "$root" >&2
+        LANE_RETAINED_CLONE=""
+        return 2
+      fi
+      LANE_RETAINED_CLONE="$root"
+    done <<<"$roots"
+  done
+}
+
 # The records host_route sorts by their host kind: the host each hosted record
 # names, as `<item>=<host>`, the items whose kind declares no mailbox channel,
 # no file access or no status read, and those whose status is a provider verb.

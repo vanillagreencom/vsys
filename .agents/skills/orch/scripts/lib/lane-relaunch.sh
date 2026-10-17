@@ -15,22 +15,46 @@
 # and custom commands cannot recover their original permissions, so the watch
 # must refuse before stopping a lane. The host and tracker retain their existing
 # lane-record meanings, including null host meaning local.
-lane_recovery_args() { # RECORD ACCOUNT STATE_DIR LAUNCHER
-  local fields item harness flags refresh tracker repo pane rc=0
+lane_recovery_args() { # RECORD ACCOUNT STATE_DIR LAUNCHER [model-switched]
+  local fields item harness flags refresh tracker repo live rc=0 model effort choice launch_model launch_id selector_id surface terminal=--tmux
+  local -a words=() choice_words=()
   LANE_RECOVERY_CAUSE=permission-choice-unrecorded
   LANE_RECOVERY_ARGS=() LANE_RECOVERY_CWD="" LANE_RECOVERY_HOST="" LANE_RECOVERY_SESSION=""
   fields="$(jq -er 'select((.recovery | type) == "object"
       and (.recovery.cwd | type) == "string" and (.recovery.cwd | length) > 0
       and (.recovery.flags | type) == "string" and (.recovery.refresh | type) == "boolean")
     | [.item, .harness, .recovery.cwd, .recovery.flags, (.recovery.refresh | tostring),
-       (.host // "local"), (.recovery.session // ""), .tracker, (.repo // "")]
+       (.host // "local"), (.recovery.session // ""), .tracker, (.repo // ""), (.surface // "tmux"),
+       (.live_display == true | tostring)]
     | join("\u001f")' <<<"$1")" || return 1
-  IFS=$'\x1f' read -r item harness LANE_RECOVERY_CWD flags refresh LANE_RECOVERY_HOST LANE_RECOVERY_SESSION tracker repo <<<"$fields"
+  IFS=$'\x1f' read -r item harness LANE_RECOVERY_CWD flags refresh LANE_RECOVERY_HOST LANE_RECOVERY_SESSION tracker repo surface live <<<"$fields"
   # The launcher records relative provider paths without their resolution base.
   case "$LANE_RECOVERY_HOST" in
     local|claude-cloud|/*) ;;
     *) LANE_RECOVERY_CAUSE=relative-provider-deferred:KEN-3996; return 1 ;;
   esac
+  if [[ "${5:-}" == model-switched ]]; then
+    LANE_RECOVERY_CAUSE=model-unrecorded
+    model="$(jq -er '.model | strings | select(length > 0)' <<<"$1")" || return 1
+    model="$(launch_choice_model_id "$harness" "$model" recorded)" || return 1
+    [[ -n "$model" ]] || return 1
+    launch_model="$(launch_choice_launch_model "$harness" "$flags")" || return 1
+    launch_id="$(launch_choice_model_id "$harness" "$model" recorded "$launch_model")" || return 1
+    selector_id="$(launch_choice_model_id "$harness" "$launch_model" recorded)" || return 1
+    # Carry the suffix only from a matching explicit ID or family selector.
+    if [[ "$harness" == claude && "$launch_model" == *\[1[mM]\]
+        && "$launch_id" == "$selector_id" ]]; then
+      model="${model}[1m]"
+    fi
+    effort="$(jq -r '.effort // ""' <<<"$1")" || return 1
+    [[ -n "$effort" ]] || effort="$(launch_choice_effort "$harness" "$flags")" || return 1
+    read -r -a words <<<"$flags"
+    launch_choice_strip "$harness" ${words[@]+"${words[@]}"} || return 1
+    choice="$(launch_choice_write "$harness" "$model" "$effort")" || return 1
+    # The writer emits shell words; --launch-flags takes plain tokens instead.
+    eval "choice_words=($choice)" || return 1
+    flags="${LAUNCH_CHOICE_KEPT[*]+${LAUNCH_CHOICE_KEPT[*]}}${LAUNCH_CHOICE_KEPT[*]:+ }${choice_words[*]+${choice_words[*]}}"
+  fi
   LANE_RECOVERY_CAUSE=checkout-unavailable
   LANE_RECOVERY_CWD="$(cd -- "$LANE_RECOVERY_CWD" && pwd -P)" || return 1
   lane_capabilities_read "$SCRIPT_DIR/lane-host" "$LANE_RECOVERY_HOST" "$LANE_RECOVERY_CWD" || rc=$?
@@ -38,18 +62,102 @@ lane_recovery_args() { # RECORD ACCOUNT STATE_DIR LAUNCHER
     LANE_RECOVERY_CAUSE="host-capabilities-unavailable exit=$rc"
     return "$rc"
   fi
-  lane_capability pane pane
-  if [[ "$pane" == verb ]]; then
-    LANE_RECOVERY_CAUSE=relaunch-deferred:KEN-3996
-    return 1
-  fi
-  LANE_RECOVERY_ARGS=("$4" --tmux --relaunch --continue-resume --harness "$harness" --lane "$2"
+  [[ "$LANE_RECOVERY_HOST" != local || "$surface" != gui ]] || terminal=--ghostty
+  LANE_RECOVERY_ARGS=("$4" "$terminal" --relaunch --continue-resume --harness "$harness"
     --launch-flags "$flags" --state-dir "$3" --host "$LANE_RECOVERY_HOST" --tracker "$tracker")
   [[ -z "$repo" ]] || LANE_RECOVERY_ARGS+=(--repo "$repo")
   [[ "$refresh" != true ]] || LANE_RECOVERY_ARGS+=(--lane-refresh)
+  [[ "$live" != true ]] || LANE_RECOVERY_ARGS+=(--live-display)
+  # An omitted account preserves the launcher's inherited-account behavior.
+  [[ -z "$2" ]] || LANE_RECOVERY_ARGS+=(--lane "$2")
   if [[ "$tracker" == github ]]; then LANE_RECOVERY_ARGS+=("${item#issue-}")
   else LANE_RECOVERY_ARGS+=("$item"); fi
   LANE_RECOVERY_CAUSE=""
+}
+
+lane_recovery_stop_confirmed() { # OUTPUT ITEM
+  local out="$1" item="$2"
+  [[ "$out" =~ ^stopped\ item=([^\ ]+)\ processes=([0-9]+)$ && "${BASH_REMATCH[1]}" == "$item" ]]
+}
+
+lane_model_recovery_result() { # RECORD STATE_DIR SCRIPTS SESSION RESULT
+  "$3/workflow-state" --state-dir "$2" update oversee '
+    (.fleet_log[]? | select(.kind == "model-switched" and .item == $record.item
+      and .session_id == $session
+      and .launch_identity == ($record | {launch,launched_at}))).recovery = $result
+    ' --argjson record "$1" --arg session "$4" --arg result "$5" >/dev/null
+}
+
+# The hook acquires one session's recovery under workflow-state's lock before
+# starting this outside the predecessor's process group. Check the recovery
+# arguments before stopping it; account selection and launch follow the stop.
+lane_model_recovery() { # RECORD STATE_DIR SCRIPTS SESSION
+  local record="$1" state_dir="$2" SCRIPT_DIR="$3" session="$4" fields item host harness pane pid start wake_pid wake_start account out claim pane_pid identity limit rc=0 result
+  fields="$(jq -er '[.item, (.host // "local"), .harness, (.launch.pane // ""),
+    (.launch.pid // ""), (.launch.start // ""), (.wake.pid // ""),
+    (.wake.start // ""), (.account // "")] | join("\u001f")' <<<"$record")" || return 1
+  IFS=$'\x1f' read -r item host harness pane pid start wake_pid wake_start account <<<"$fields"
+  limit="$("$SCRIPT_DIR/orch-env" ORCH_MODEL_RECOVERY_LIMIT 3)" || return 1
+  claim="$("$SCRIPT_DIR/workflow-state" --state-dir "$state_dir" update-report oversee '
+    first(.lanes[]? | select(.item == $item)) as $current
+    | if $current.launch != $record.launch or $current.launched_at != $record.launched_at
+        or $current.session_id != $record.session_id or $current.model_check.session_id != $session
+        or $current.model_check.recovery_started == true
+      then {state:.,report:false}
+      else (.lanes[] | select(.item == $item)).model_check.recovery_started = true
+        | (reduce (.fleet_log[]? | select(.item == $item)) as $row (0;
+            if $row.kind == "model-recovery-reset" then 0
+            elif $row.kind == "model-switched" and ($row.recovery == "replaced"
+              or ($row.recovery == "starting" and $row.launch_identity != $current.model_check.launch_identity))
+            then . + 1 else . end)) as $recoveries
+        | if $recoveries + 1 >= ($limit | tonumber) then
+            ("lane-relaunch: model-recovery=limit item=" + $item
+              + " recoveries=" + ($recoveries | tostring) + " limit=" + $limit) as $text
+            | .fleet_log = ((.fleet_log // []) + [{kind:"model-recovery-limit",item:$item,
+                at:(now|strftime("%Y-%m-%dT%H:%M:%SZ")),recoveries:$recoveries,
+                limit:($limit|tonumber),text:$text}])
+            | {state:.,report:$text}
+          else {state:.,report:true} end
+      end' --arg item "$item" --arg session "$session" --argjson record "$record" --arg limit "$limit")" || return 1
+  if [[ "$claim" != true && "$claim" != false ]]; then
+    jq -r . <<<"$claim" >&2 || return 1
+    return 1
+  fi
+  [[ "$claim" == true ]] || return 0
+  lane_recovery_args "$record" "$account" "$state_dir" "$SCRIPT_DIR/open-terminal" model-switched || {
+    printf 'lane-relaunch: model-recovery=prepare-failed item=%s cause=%s\n' "$item" "$LANE_RECOVERY_CAUSE" >&2
+    return 1
+  }
+  if [[ "$host" == local ]]; then
+    # Older launches recorded the pane but no process identity. Read that
+    # identity once; a stale positive recorded identity never takes this path.
+    if [[ -z "$pid$start" ]]; then
+      pane_pid="$(tmux display-message -p -t "$pane" '#{pane_pid}')" || return 1
+      identity="$(lane_harness_identity "$pane_pid" "$harness")" || return 1
+      pid=${identity%% *} start=${identity#* }
+    fi
+    # Never substitute a pane's new process for this predecessor's identity.
+    lane_stop_local "" "$pid" "$start" "$wake_pid" "$wake_start" "$harness" || {
+      printf 'lane-relaunch: model-recovery=stop-failed item=%s cause=%s\n' "$item" "$LANE_STOP_CAUSE" >&2
+      return 1
+    }
+  else
+    out="$(ORCH_LANE_HOST="$host" "$SCRIPT_DIR/lane-host" stop --item "$item" --harness "$harness")" || return 1
+    lane_recovery_stop_confirmed "$out" "$item" || return 1
+  fi
+  "$SCRIPT_DIR/workflow-state" --state-dir "$state_dir" update oversee \
+    '(.lanes[] | select(.item == $item and .launched_at == $launch)) |= (.status = "stopped")' \
+    --arg item "$item" --arg launch "$(jq -r '.launched_at' <<<"$record")" >/dev/null || return 1
+  export ORCH_TMUX_SESSION="$LANE_RECOVERY_SESSION"
+  cd -- "$LANE_RECOVERY_CWD" || return 1
+  # A new mismatch can arrive before the launcher returns. Its new launch
+  # identity proves that this pending replacement reached a live harness.
+  lane_model_recovery_result "$record" "$state_dir" "$SCRIPT_DIR" "$session" starting || return 1
+  "${LANE_RECOVERY_ARGS[@]}" || rc=$?
+  result=replaced
+  [[ "$rc" -eq 0 ]] || result=failed
+  lane_model_recovery_result "$record" "$state_dir" "$SCRIPT_DIR" "$session" "$result" || return 1
+  return "$rc"
 }
 
 # Pi resolves a relative session directory from the process working directory,
@@ -215,6 +323,14 @@ recorded_session_file() { # HARNESS ACCOUNT NATIVE_ID SESSION_FILE
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   set -euo pipefail
+  if [[ "${1:-}" == model-recovery ]]; then
+    scripts="$(cd -- "${BASH_SOURCE[0]%/*}/.." && pwd -P)" || exit 1
+    . "$scripts/lib/lane-state.sh"
+    . "$scripts/lib/lane-launch.sh"
+    . "$scripts/lib/lane-capabilities.sh"
+    lane_model_recovery "$2" "$3" "$scripts" "$4"
+    exit
+  fi
   LAUNCH_FLAGS="$3" LANE_ENV=""
   LANES_CLI="$(cd -- "${BASH_SOURCE[0]%/*}/.." && pwd -P)/lanes" || exit 2
   session_file="" lookup_rc=0

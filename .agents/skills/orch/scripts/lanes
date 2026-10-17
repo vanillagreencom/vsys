@@ -24,6 +24,7 @@
 #   lanes context [--json]
 #   lanes check <config-dir|name>
 #   lanes state <item> [--json]
+#   lanes facts --state-dir DIR ITEM
 #
 #   list  Print every lane found, measured, with its live claim count and the
 #         age of its usage figure. A lane whose access token has expired is
@@ -265,6 +266,8 @@
 #         A seat is judged against the reserve too: a running lane hands off
 #         at its first turn end at or below it, so it can overrun by one turn.
 #         --for-overseer exempts the overseer's own mark from the reserve.
+#         Under --json, usage_cache names the local measured record's path and
+#         served_until epoch, or is null when no local figure was measured.
 #         Exit 0 has room and prints the env prefix, or the lane's record under
 #         --json; 3 is a wall at or above --max-pct no credit room lifts, or
 #         `verdict=seat-reserve` at or below the seat reserve; 5 is a lane nothing
@@ -335,13 +338,15 @@
 #         fleet, and that row alone carries `caller: true` — the report says
 #         which row is the reader's session so no reader has to work it out.
 #   state  Print what the lane for <item> is doing, as the one word
-#          lib/lane-state.sh judges it to be: working, idle, asking, walled,
-#          exited or unjudged. <item> is the lane's tmux window name, which is
+#          lib/lane-state.sh judges it to be: working, idle, rate-limit-switch,
+#          asking, walled, exited or unjudged. rate-limit-switch adds a fix line
+#          on stderr to dismiss the reminder and keep the current model.
+#          <item> is the lane's tmux window name, which is
 #          the tracker id (TEAM-N) or gh-N; the SESSION:WINDOW form a lane
 #          record's `window` carries is accepted too, and names that window
 #          under exactly that session. Pass the record's `window` as it stands:
-#          the whole name selects the pane, and its window part alone is the
-#          item the hosted probe below names. A hosted record declaring
+#          the whole name selects the pane. The hosted probe uses the record's
+#          item, or the window part when no record exists. A hosted record declaring
 #          status=verb checks the remote harness first. Its pane=verb capture
 #          comes from the provider; other lanes keep the local pane reading.
 #          This answers exactly as oversee-watch does
@@ -361,12 +366,28 @@
 #          the same silence from here. `gone` is the judge's answer for a
 #          window a caller has already found absent, which this verb never
 #          asserts, so it is not among the words printed here. Where
-#          ORCH_LANE_HOST names a provider, `lane-host touch` then says whether
+#          the lane's resolved host names a provider, `lane-host touch` says whether
 #          the HOST answers; a failed probe prints `lanes: host-unreachable`
 #          on stderr with the provider's own message, one lane-host refused at
 #          its per-home cap `lanes: lane-host-busy`, and either leaves the state
 #          alone. --json prints {"item":..,"state":..}. Exit 1 when a scan
 #          failed rather than answered.
+#   facts  Read one exact launched item from DIR's oversee workflow state.
+#          Print one JSON object: item; status (read, absent or failed); reason
+#          (null on read, a stable key otherwise); stage (the last recorded
+#          stage kind or null); review_rounds, fix_receipts, validation_runs,
+#          restacks and repeated_class_rounds (recorded-derived numbers or
+#          "unread", using lane_state_rounds); post_pr_stop (null or the recorded
+#          gate and name). Non-read results carry null for all facts.
+#          Exit 0 means read; 1 means confirmed absence; 2 means failed or
+#          unbound read. Absence reasons are root-gone, state-absent and
+#          files-none. Failure reasons are fleet-unread, record-missing,
+#          record-ambiguous, record-invalid, root-unbound, root-unread,
+#          state-unread, state-invalid and scratch-unavailable.
+#          DIR binds the fleet state. The lane's host and mail_root bind its
+#          own state. Reads use existing host capabilities and file transport.
+#          No read uses another item key or the caller checkout as fallback.
+#          A parked sandbox stays stopped. No live activity or GitHub is read.
 #   check  Exit 0 when no lane setting excludes or retires <config-dir>, or the
 #         lane a bare name or alias names; exit 4 with `lanes: lane-excluded`
 #         or `lanes: lane-retired` when one does, so a caller can tell a
@@ -449,6 +470,21 @@
 #                    on the shared windows alone; behind a host row with no
 #                    window for NAME, a local reading with no model window, or
 #                    a stale one, stays unmeasured (see pick).
+#                    On claude, codex and copilot, `kendex tier-model`
+#                    classifies NAME (lib/overseer-launch.sh §
+#                    ol_model_class): a class is judged as claude's family
+#                    alias for it, a `[1m]` suffix kept, and as no NAME on
+#                    codex and copilot, whose class runs the harness default;
+#                    kendex's warning for that answer prints once. Any other
+#                    NAME is judged as written. A claude exact id warns once
+#                    as `preference-deprecated` with `form=model-class`; a
+#                    codex or copilot exact id is a supported form and warns
+#                    nothing. Under ORCH_MODEL_LINES_HELD, which every orch
+#                    script that starts `lanes` exports to its children,
+#                    pick prints neither line. A NAME kendex cannot
+#                    classify, kendex missing or refusing the manifest,
+#                    exits 1 as `model-class-unread`, kendex's words after
+#                    it.
 #   --binding-floor  pick: hold the account's own binding bucket to the same
 #                    bound as well, so a lane is room only where BOTH clear it.
 #                    With --model the two can differ: an account whose binding
@@ -551,6 +587,11 @@
 #                      config dir on this machine: the setting says the account
 #                      is not this fleet's to use, which a copy of it on another
 #                      machine does not change.
+#   ORCH_MODEL_RECOVERY_LIMIT (default 3): refuse this item's Nth consecutive
+#                      model-switch recovery after N-1 successful replacements.
+#                      A replacement's first turn without a mismatch resets it.
+#                      Refusal: lane-relaunch: model-recovery=limit item=ITEM
+#                      recoveries=COUNT limit=N. The fleet log keeps one row.
 #   ORCH_LANE_MAX_PCT  The default of --max-pct (default 95), read against the
 #                      binding bucket or, with --model, against the window that
 #                      walls that model, and never compared with
@@ -920,6 +961,11 @@ message() {
     invalid-pick-harness)
       printf 'lanes: invalid-pick-harness option=%s\n' "--harness"
       printf '%s\n' "pick --harness must be claude, codex, copilot or pi"
+      ;;
+    model-class-unread)
+      printf 'lanes: model-class-unread harness=%s model=%s\n' "$1" "$2"
+      printf '%s\n' "kendex tier-model could not classify the model, so whether it names a class is unknown and no window is judged on it. kendex is missing, or it refused this project's manifest or personal settings; its words follow. Install or repair kendex, or fix the setting they name."
+      printf '%s\n' "$3"
       ;;
     pick-provider-unmeasured)
       printf 'lanes: pick-provider-unmeasured harness=%s model=%s\n' "$1" "$2"
@@ -3563,8 +3609,23 @@ cmd_pick_lane() {
 	# the launch question, the chooser's own wall.
 	lane_tier_inputs "[$record]" "$harness" "$model" || return 1
 	record="$(lane_judge "$record" "$model" "$binding_floor" "$burn" "$max_pct" "$projected_verdict" "$credit_floor" "$SEATS" "$SEAT_RESERVE")" || { message pick-lane-failed "$dir" wall >&2; return 1; }
-	local judged
-	judged="$(jq -r "$LANE_MODEL_JQ"'.verdict, (if .verdict != "seat-reserve" then del(.verdict) else . end | lane_public | tojson)' <<<"$record")" || { message pick-lane-failed "$dir" verdict >&2; return 1; }
+	local judged cache_path="" cache_at="" at
+	usage_cache_file "$harness" "$found" silent
+	# The record is served while its own sample time is within the serve age,
+	# read_usage_cache's rule. The row's age was observed before this judge, so
+	# a clock read here can be a second past it.
+	if [[ -f "$USAGE_CACHE_FILE" ]] && at="$(jq -r '.usage_fetched_at // .fetched_at' "$USAGE_CACHE_FILE" 2>/dev/null)" \
+		&& [[ "$at" =~ ^[0-9]+$ ]]; then
+		cache_path="$USAGE_CACHE_FILE" cache_at="$at"
+	fi
+	usage_serve_max_age silent
+	judged="$(jq -r --arg cache "$cache_path" --argjson at "${cache_at:-null}" --argjson max "$USAGE_SERVE_MAX_AGE" "$LANE_MODEL_JQ"'
+	  .usage_cache = (if $cache != "" and .measured_through == "local"
+	    and (.headroom_pct | type) == "number" and (.usage_age_s | type) == "number" then
+	      {path: $cache, served_until: ([$at + $max,
+	        (.resets[], .model_buckets[]?.resets_at | reset_epoch | select(. != null))] | min)}
+	    else null end)
+	  | .verdict, (if .verdict != "seat-reserve" then del(.verdict) else . end | lane_public | tojson)' <<<"$record")" || { message pick-lane-failed "$dir" verdict >&2; return 1; }
 	{ IFS= read -r verdict; IFS= read -r record; } <<<"$judged"
 	if [[ "$verdict" == walled || "$verdict" == unmeasured ]]; then
 		refusal="$(jq -r 'if .refusal == null then empty else [.refusal.cause, (.refusal.retry_at // "none")] | @tsv end' <<<"$record")" || return 1
@@ -3885,6 +3946,8 @@ parse_argv() {
 			--lane=*) LANE_ARG="${1#--lane=}"; need_val --lane "$LANE_ARG"; shift ;;
 			--exclude-lane) need_val "$@"; EXCLUDE_LANE="$2"; shift 2 ;;
 			--exclude-lane=*) EXCLUDE_LANE="${1#--exclude-lane=}"; need_val --exclude-lane "$EXCLUDE_LANE"; shift ;;
+			--state-dir) [[ "$SUB" == facts ]] || die unknown-option "$@"; need_val "$@"; FACTS_STATE_DIR="$2"; shift 2 ;;
+			--state-dir=*) [[ "$SUB" == facts ]] || die unknown-option "$@"; FACTS_STATE_DIR="${1#--state-dir=}"; need_val --state-dir "$FACTS_STATE_DIR"; shift ;;
 			--json) AS_JSON=true; shift ;;
 			--no-cache) USE_CACHE=false; shift ;;
 			--max-age) need_val "$@"; USAGE_MAX_AGE="$2"; shift 2 ;;
@@ -3893,7 +3956,7 @@ parse_argv() {
 			*)
 				# `check` takes one config dir and `state` one item; anything
 				# else is an option typo.
-				[[ ( "$SUB" == check || "$SUB" == state ) && -z "$LANE_ARG" && "$1" != -* ]] || die unknown-option "$@"
+				[[ ( "$SUB" == check || "$SUB" == state || "$SUB" == facts ) && -z "$LANE_ARG" && "$1" != -* ]] || die unknown-option "$@"
 				LANE_ARG="$1"
 				shift
 				;;
@@ -4284,9 +4347,76 @@ validate_lane_settings() {
 	[[ "$SUB" != check ]] || prune_usage_cache
 }
 
+facts_result() { # STATUS REASON
+	jq -cn --arg item "$LANE_ARG" --arg status "$1" --arg reason "$2" '
+		{item: $item, status: $status, reason: $reason, stage: null,
+		 review_rounds: null, fix_receipts: null, validation_runs: null,
+		 restacks: null, repeated_class_rounds: null, post_pr_stop: null}'
+}
+
+cmd_facts() (
+	local fleet records record host root scratch state result rc=0
+	[[ -n "$LANE_ARG" ]] || die missing-value facts
+	[[ -n "${FACTS_STATE_DIR:-}" ]] || die missing-value --state-dir
+	if ! fleet="$("$SCRIPT_DIR/workflow-state" --state-dir "$FACTS_STATE_DIR" get oversee)"; then
+		facts_result failed fleet-unread; exit 2
+	fi
+	if ! records="$(jq -ce --arg item "$LANE_ARG" '
+		if type == "object" and (.lanes | type) == "array"
+		then [.lanes[] | select(.item == $item)] else error("invalid fleet state") end
+	' <<<"$fleet")"; then
+		facts_result failed fleet-unread; exit 2
+	fi
+	case "$(jq 'length' <<<"$records")" in
+		0) facts_result failed record-missing; exit 2 ;;
+		1) ;;
+		*) facts_result failed record-ambiguous; exit 2 ;;
+	esac
+	record="$(jq -c '.[0]' <<<"$records")" || exit 2
+	if ! jq -e '(.host == null or (.host | type) == "string") and
+		(.mail_root == null or (.mail_root | type) == "string")' <<<"$record" >/dev/null; then
+		facts_result failed record-invalid; exit 2
+	fi
+	host="$(jq -r '.host // ""' <<<"$record")" || exit 2
+	root="$(jq -r '.mail_root // ""' <<<"$record")" || exit 2
+	scratch="$(mktemp -d)" || { facts_result failed scratch-unavailable; exit 2; }
+	trap 'rm -rf -- "${scratch:?}"' EXIT
+	# shellcheck source=lib/lane-gitfile.sh
+	source "$SCRIPT_DIR/lib/lane-gitfile.sh" || exit 2
+	lane_item_state "$SCRIPT_DIR/workflow-state" "$SCRIPT_DIR/lane-host" "${ORCH_STATE_DIR:-tmp}" \
+		"$LANE_ARG" "$host" "$root" "$scratch" "" "$LANE_ARG" true || rc=$?
+	if [[ "$rc" -ne 0 ]]; then
+		[[ ! -s "$scratch/state.err" ]] || cat "$scratch/state.err" >&2
+		facts_result failed "${LANE_ITEM_STATE_REASON:-state-unread}"; exit 2
+	fi
+	if [[ -z "$LANE_ITEM_STATE" ]]; then
+		facts_result absent "${LANE_ITEM_STATE_REASON:-state-absent}"; exit 1
+	fi
+	state="$(jq -cse 'if length == 1 and (.[0] | type) == "object"
+		then .[0] else error("invalid item state") end' <<<"$LANE_ITEM_STATE")" || {
+		facts_result failed state-invalid; exit 2
+	}
+	lane_state_rounds "$state" "$scratch/state.err" || {
+		cat "$scratch/state.err" >&2
+		facts_result failed state-invalid; exit 2
+	}
+	result="$(jq -c --arg item "$LANE_ARG" \
+		--argjson review "$LANE_REVIEW_ROUNDS" --arg fix "$LANE_FIX_RECEIPTS" \
+		--argjson validation "$LANE_VALIDATION_RUNS" --argjson restacks "$LANE_RESTACKS" \
+		--arg repeated "$LANE_REPEATED_CLASS_ROUNDS" '
+		{item: $item, status: "read", reason: null, stage: (.stages[-1].kind // null),
+		 review_rounds: $review, fix_receipts: ($fix | fromjson? // $fix),
+		 validation_runs: $validation, restacks: $restacks,
+		 repeated_class_rounds: ($repeated | fromjson? // $repeated),
+		 post_pr_stop: (if .post_pr_stop == null then null else .post_pr_stop | {gate, name} end)}
+	' <<<"$state")" || { facts_result failed state-invalid; exit 2; }
+	printf '%s\n' "$result"
+)
+
 parse_argv "$@"
 
 case "$SUB" in
+	facts) cmd_facts; exit $? ;;
 	list)
 		HARNESS="${HARNESS:-all}"
 		[[ "$HARNESS" =~ ^(claude|codex|copilot|all)$ ]] || die invalid-harness "$@"
@@ -4345,6 +4475,15 @@ case "$SUB" in
 		;;
 	pick)
 		HARNESS="${HARNESS:-claude}"
+		# A class becomes its model before any window is matched to it.
+		model_rc=0
+		ol_model_class "$HARNESS" "$MODEL" || model_rc=$?
+		case "$model_rc" in
+			0) ol_model_line "$OL_CLASS_WARNING" ;;
+			2) ol_deprecated "harness=$HARNESS" "model=$MODEL" form=model-class ;;
+			*) die model-class-unread "$HARNESS" "$MODEL" "$OL_CLASS_ERR" ;;
+		esac
+		MODEL="$OL_CLASS_MODEL"
 		# The accounts this launch spends, which both forms judge it on: a Pi
 		# launch on a Claude seat is a claude pick in every respect.
 		PICK_HARNESS="$(lane_pick_harness "$HARNESS" "$MODEL")"
@@ -4409,6 +4548,8 @@ case "$SUB" in
 		state_host="$(jq -r '.host // "local"' <<<"${state_record:-null}")"
 		[[ -n "$state_record" ]] || state_host="${ORCH_LANE_HOST:-local}"
 		state_item="$(jq -r '.item // empty' <<<"${state_record:-null}")"
+		state_probe_item="$state_item"
+		[[ -n "$state_record" ]] || state_probe_item="${LANE_ARG#*:}"
 		state_harness="$(jq -r '.harness // empty' <<<"${state_record:-null}")"
 		state_mode=local state_source="" state_status=pane
 		if [[ "$state_host" != local ]]; then
@@ -4433,6 +4574,9 @@ case "$SUB" in
 		ORCH_LANE_HOST="$state_host" lane_state LANE_STATE_ANSWER listed "$LANE_PANE_CMD" "$LANE_PANE_PID" "$LANE_PANE_SCREEN" "" "" "$STATE_ROWS" "$state_item" "$state_harness" "$state_source" \
 			|| lane_state_rc=$?
 		[[ "$lane_state_rc" -ne 2 ]] || die lane-scan-failed "$LANE_ARG"
+		if [[ "$LANE_STATE_ANSWER" == rate-limit-switch ]]; then
+			printf 'fix=item=%s state=rate-limit-switch; dismiss the Codex model-switch reminder and keep the current model; close the lane if its work is finished\n' "$LANE_ARG" >&2
+		fi
 		# A hosted lane's harness is on another machine, so `unjudged` here is
 		# "no pane on this server carries the name", never "the lane is dead".
 		# The provider is asked whether the host itself answers, and its answer
@@ -4445,10 +4589,10 @@ case "$SUB" in
 		# session is still running on the remote host. lane-mail's failed read
 		# says `host-unreachable` for this same probe and asserts no lane state
 		# either.
-		if [[ "$LANE_STATE_ANSWER" == unjudged && "${ORCH_LANE_HOST:-local}" != local && -z "$LANE_PANE_SCREEN" ]]; then
+		if [[ "$LANE_STATE_ANSWER" == unjudged && "$state_host" != local && -z "$LANE_PANE_SCREEN" ]]; then
 			probe_rc=0
 			# The provider knows the item, never the session a window sits in.
-			probe_err="$("$SCRIPT_DIR/lane-host" touch --item "${LANE_ARG#*:}" 2>&1 >/dev/null)" || probe_rc=$?
+			probe_err="$(ORCH_LANE_HOST="$state_host" "$SCRIPT_DIR/lane-host" touch --item "$state_probe_item" 2>&1 >/dev/null)" || probe_rc=$?
 			if [[ "$probe_rc" -eq "$LANE_HOST_BUSY_EXIT" ]]; then
 				printf '%s\n' "$probe_err" >&2
 				message lane-host-busy touch "$LANE_ARG" >&2

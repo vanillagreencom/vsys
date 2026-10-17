@@ -98,7 +98,7 @@ Merge-mode exit codes:
 
 Exit 75 is volatile:
   A queue ejection can disarm merge state. Block on .agents/skills/orch/scripts/queue-wait <N> <poll> <budget> --json before returning; it produces the verdict for the head just armed. Size the poll and budget as orch merge-pr.md § 5 step 1 does: the default budget outlives any foreground call an agent harness holds, so a call without them is killed before the verdict.
-  Route verdicts through queue-wait --help Verdicts, named by SKILL.md § PR Merge Outcomes; the review-gate reducer still reports fleet attention.
+  Route verdicts through queue-wait --help Verdicts, named by SKILL.md § PR Merge Outcomes; this skill's scripts/pr-watch.sh still reports fleet attention.
   Re-arm only through the merge route of orch merge-pr.md § 5 step 1 after
   that route: the workflow picks the direct attempt or an explicit queue
   arm after its readiness and approval checks.
@@ -194,8 +194,14 @@ Merge route:
 
   The queue-only class is read only once everything else allows the admin
   route, from <skills>/harness-ci/scripts/change-class, else change-class on
-  PATH, over the PR's base and head. The classifier takes a merge-base diff, so both commits AND an ancestor they share must be in this
-  checkout, and baseRefOid is the base branch's current tip: the two SHAs
+  PATH, over the PR's range from the base branch's current tip to its head.
+  It is read only where the PR's recorded baseRefOid is that tip. Where the
+  two differ, the PR's CI may have classified against a base between them,
+  so no read stands for it: the PR is queue-only, detail line
+  cause=base-moved recorded=<sha> tip=<sha>, per
+  <skills>/harness-ci/references/wiring.md § The endpoint expressions.
+  The classifier takes a merge-base diff, so both commits AND an ancestor
+  they share must be in this checkout: the two SHAs
   are fetched from origin (no tags, no FETCH_HEAD rewrite) when the range is
   not readable, and it is checked again. Its stderr
   `queue-only: queue_only=true|false` line is the class, and change-class
@@ -396,18 +402,28 @@ checkout_root() {
 }
 
 # The pull request's range as GitHub reports it: the base branch's current
-# tip and the head, blank-separated. Non-zero where it cannot be read, with
-# gh's own words, or the missing end, on stderr for the caller to keep.
+# tip, the base recorded on the pull request (its baseRefOid) and the head,
+# blank-separated. Non-zero where it cannot be read, with gh's own words, or
+# the missing end, on stderr for the caller to keep. The tip is read off the
+# branch because the recorded base can predate it:
+# .agents/skills/harness-ci/references/wiring.md § The endpoint expressions.
 pr_range() { # PR
-    local range_json base_sha head_sha
-    range_json=$(gh pr view "$1" --json baseRefOid,headRefOid) || return 1
-    base_sha=$(jq -r '.baseRefOid // ""' <<<"$range_json") || return 1
+    local range_json branch encoded tip_sha recorded_sha head_sha
+    range_json=$(gh pr view "$1" --json baseRefName,baseRefOid,headRefOid) || return 1
+    branch=$(jq -r '.baseRefName // ""' <<<"$range_json") || return 1
+    recorded_sha=$(jq -r '.baseRefOid // ""' <<<"$range_json") || return 1
     head_sha=$(jq -r '.headRefOid // ""' <<<"$range_json") || return 1
-    if [ -z "$base_sha" ] || [ -z "$head_sha" ]; then
-        echo "pr-merge: pull request #$1 reports no base or head commit" >&2
+    if [ -z "$branch" ] || [ -z "$recorded_sha" ] || [ -z "$head_sha" ]; then
+        echo "pr-merge: pull request #$1 reports no base branch, recorded base or head commit" >&2
         return 1
     fi
-    printf '%s %s' "$base_sha" "$head_sha"
+    encoded=$(jq -nr --arg v "$branch" '$v | @uri') || return 1
+    tip_sha=$(gh api "repos/{owner}/{repo}/branches/$encoded" --jq '.commit.sha // ""') || return 1
+    if [ -z "$tip_sha" ]; then
+        echo "pr-merge: base branch $branch reports no tip commit" >&2
+        return 1
+    fi
+    printf '%s %s %s' "$tip_sha" "$recorded_sha" "$head_sha"
 }
 
 # The range, as this checkout can read it: both ends present AND an ancestor
@@ -420,7 +436,7 @@ pr_range_present() { # ROOT BASE HEAD
         git -C "$1" merge-base "$2" "$3" >/dev/null 2>&1
 }
 
-# Make the range readable here, or say why it is not. baseRefOid is the base
+# Make the range readable here, or say why it is not. A base can be the base
 # branch's CURRENT tip, which a checkout that has not fetched since another
 # pull request merged does not hold, and no classifier can read a diff to a
 # commit that is not here. Fetch the TWO SHAs, never every ref, without tags
@@ -528,7 +544,7 @@ run_checks() {
         esac
         if [ "$required_state" != ready ]; then
             checks_json="$ci_json"
-            head_runs_json=$(scope_current_run <<<"$ci_json" | jq -c "$CI_RUN_JQ_DEFS"'head_runs')
+            head_runs_json=$(scope_current_run "$required_json" <<<"$ci_json" | jq -c "$CI_RUN_JQ_DEFS"'head_runs')
         else
             rollup=$(echo "$ci_json" | classify_checks_rollup "$required_json")
             checks_json=$(jq -c '.checks' <<<"$rollup")
@@ -778,8 +794,8 @@ volatile_note() {
         *) repo="" ;;
     esac
     echo "  NOTE: queue/auto-merge state is VOLATILE — an ejection or a failed protection check disarms it silently; follow orch merge-pr.md § 5 for PR #$pr_num" >&2
-    local reducer="GH_REPO=$repo .agents/skills/review-gate/scripts/pr-watch.sh (disarmed lines)"
-    [ -n "$repo" ] || reducer=".agents/skills/review-gate/scripts/pr-watch.sh with GH_REPO set to the repository (not resolvable locally here)"
+    local reducer="GH_REPO=$repo .agents/skills/github/scripts/pr-watch.sh (disarmed lines)"
+    [ -n "$repo" ] || reducer=".agents/skills/github/scripts/pr-watch.sh with GH_REPO set to the repository (not resolvable locally here)"
     echo "  Block on .agents/skills/orch/scripts/queue-wait $pr_num --json once, with a poll interval and budget sized as orch merge-pr.md § 5 step 1 does; route its verdict by that same step, and never re-arm an unrecognized verdict. The fleet reducer is $reducer; repair what the cause names, then re-arm only through the merge route of orch merge-pr.md § 5 step 1, which picks the direct attempt or an explicit queue arm after readiness and approval checks" >&2
 }
 
@@ -992,11 +1008,18 @@ merge_route() { # PR TOKEN HEAD QUEUE ACCEPTED...
 # read that failed: gh's, git's or the classifier's own. Anything short of a
 # readable line is queue-only: the queue is the route that runs the change in
 # a merge group before it lands.
+#
+# The range is classified only where the base recorded on the pull request
+# is the base branch's tip. The pull request's CI classified against that
+# recorded base or a base between it and the tip, and a `:queue` mark or a
+# setting can come and go between them, so where the two differ no single
+# read answers for the CI run and the change takes the queue, cause=base-moved:
+# .agents/skills/harness-ci/references/wiring.md § The endpoint expressions.
 QUEUE_ONLY=""
 QUEUE_ONLY_DETAIL=""
 QUEUE_ONLY_NOTES=""
 read_queue_only() { # PR HEAD
-    local pr_num="$1" pinned="$2" classifier root notes range base_sha head_sha line status=0
+    local pr_num="$1" pinned="$2" classifier root notes range tip_sha recorded_sha head_sha
     QUEUE_ONLY=true
     QUEUE_ONLY_NOTES=""
     classifier=$(sibling_script harness-ci change-class) || classifier=""
@@ -1015,24 +1038,15 @@ read_queue_only() { # PR HEAD
     if ! range=$(pr_range "$pr_num" 2>"$notes"); then
         QUEUE_ONLY_DETAIL="cause=range-unreadable"
     else
-        base_sha="${range% *}"
-        head_sha="${range#* }"
+        read -r tip_sha recorded_sha head_sha <<<"$range"
         # A push between the head read and this range read would classify a
         # head the merge is not pinned to.
         if [ "$head_sha" != "$pinned" ]; then
             QUEUE_ONLY_DETAIL="cause=head-moved classified=$head_sha pinned=$pinned"
-        elif ! pr_range_materialize "$root" "$base_sha" "$head_sha" 2>"$notes"; then
-            QUEUE_ONLY_DETAIL="cause=range-absent base=$base_sha head=$head_sha"
+        elif [ "$recorded_sha" != "$tip_sha" ]; then
+            QUEUE_ONLY_DETAIL="cause=base-moved recorded=$recorded_sha tip=$tip_sha"
         else
-            run_checkout_child "$notes" "$root" "$classifier" --event pull_request \
-                --base "$base_sha" --head "$head_sha" --repo . >/dev/null || status=$?
-            line=$(sed -n 's/^queue-only: //p' "$notes" | tail -1) || line=""
-            case "$status:$line" in
-            "0:queue_only=true "*) QUEUE_ONLY_DETAIL="$line" ;;
-            "0:queue_only=false "*) QUEUE_ONLY=false; QUEUE_ONLY_DETAIL="$line" ;;
-            0:*) QUEUE_ONLY_DETAIL="cause=classifier-unreadable" ;;
-            *) QUEUE_ONLY_DETAIL="cause=classifier-exit-$status" ;;
-            esac
+            queue_only_at "$root" "$classifier" "$notes" "$tip_sha" "$head_sha"
         fi
     fi
     case "$QUEUE_ONLY_DETAIL" in
@@ -1040,6 +1054,26 @@ read_queue_only() { # PR HEAD
     *) QUEUE_ONLY_NOTES=$(cat -- "$notes") || QUEUE_ONLY_NOTES="" ;;
     esac
     rm -f -- "${notes:?}"
+}
+
+# One read of the class, the range from BASE to HEAD: sets QUEUE_ONLY and
+# QUEUE_ONLY_DETAIL as read_queue_only states, the diagnostics in NOTES.
+queue_only_at() { # ROOT CLASSIFIER NOTES BASE HEAD
+    local root="$1" classifier="$2" notes="$3" base_sha="$4" head_sha="$5" line status=0
+    QUEUE_ONLY=true
+    if ! pr_range_materialize "$root" "$base_sha" "$head_sha" 2>"$notes"; then
+        QUEUE_ONLY_DETAIL="cause=range-absent base=$base_sha head=$head_sha"
+        return 0
+    fi
+    run_checkout_child "$notes" "$root" "$classifier" --event pull_request \
+        --base "$base_sha" --head "$head_sha" --repo . >/dev/null || status=$?
+    line=$(sed -n 's/^queue-only: //p' "$notes" | tail -1) || line=""
+    case "$status:$line" in
+    "0:queue_only=true "*) QUEUE_ONLY_DETAIL="$line" ;;
+    "0:queue_only=false "*) QUEUE_ONLY=false; QUEUE_ONLY_DETAIL="$line" ;;
+    0:*) QUEUE_ONLY_DETAIL="cause=classifier-unreadable" ;;
+    *) QUEUE_ONLY_DETAIL="cause=classifier-exit-$status" ;;
+    esac
 }
 
 main() {
@@ -1261,6 +1295,17 @@ main() {
     # and its already-queued stderr is version-dependent.
     local post_snapshot post_state post_auto post_head post_in_queue post_queue_entry post_queue_state
     post_snapshot=$(post_merge_snapshot "$pr_num" "$token")
+    # GitHub can accept the arm before its queue entry is visible. Bound the
+    # wait, and leave a changed head for the refusal below.
+    local post_attempt
+    for post_attempt in 1 2; do
+        if ! jq -e --arg expected "$expected_head" '
+            .state != "MERGED" and (.in_merge_queue or .merge_queue_entry or .auto_merge | not)
+            and (.head == "" or .head == $expected)
+        ' >/dev/null <<<"$post_snapshot"; then break; fi
+        sleep 1
+        post_snapshot=$(post_merge_snapshot "$pr_num" "$token")
+    done
     post_state=$(jq -r '.state' <<<"$post_snapshot")
     post_auto=$(jq -r '.auto_merge' <<<"$post_snapshot")
     post_head=$(jq -r '.head' <<<"$post_snapshot")

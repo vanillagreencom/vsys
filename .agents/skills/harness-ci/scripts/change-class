@@ -3,14 +3,15 @@
 #
 # Usage:
 #   change-class --event EVENT [--base REF] [--head REF] [--repo DIR]
-#                [--output FILE] [--lanes-from DIR] [--covers-all-lanes BOOL]
+#                [--output FILE] [--lanes-from DIR] [--queue-only-default BOOL]
 #
 # --output appends lanes=true|false and lanes_cause beside the class and queue
 # verdicts. The lane rules are ../references/wiring.md § Per-lane verdicts.
 # --lanes-from names a separate trusted checkout with .github/ci-lanes.conf;
-# empty by default, so no lane is declared. --covers-all-lanes defaults to
-# false, matching the action. It describes workflow coverage for CI proof;
-# local runs never read a proof record and never answer proof-reused.
+# empty by default, so no lane is declared. --queue-only-default true asks
+# for the queue-only default's stand-down, as the harness-ci template's
+# `queue-only-default: true` input does; false, the default, matches a
+# workflow that passes none.
 #
 # Flags carry the meanings `harness-only --help` gives them, except --mode and
 # --paths-output, which this script does not take. Every read of a diff range
@@ -47,6 +48,16 @@
 #                         group for
 #   queue-settings-unreadable
 #                         the base commit's settings could not be read
+#   per-push-unset        the base's HARNESS_CI_PER_PUSH_REASON is unset or
+#                         blank: the repository takes the default, where the
+#                         merge-queue run is the only proof of a head, so
+#                         every change takes the queue and a pull request's
+#                         stub CI run never opens the admin route. A blank
+#                         value also prints one `setting-refused:
+#                         setting=HARNESS_CI_PER_PUSH_REASON
+#                         cause=empty-reason` line and a warning; the
+#                         opt-back needs its reason. The per-push line
+#                         below carries the mode on every verdict
 #   lane-declaration-unreadable
 #                         the base commit's .github/ci-lanes.conf could not
 #                         be read
@@ -73,6 +84,7 @@
 #                         of HARNESS_CI_QUEUE_PATHS, and the selector, where
 #                         the base declares one, names no job
 #
+# The causes after per-push-unset are read only where the base names a reason.
 # The first two answer where no changed path reaches the judgement; the rest
 # up to repository-queue-path are judged on every changed path harness-only
 # read, before any refusal or rule below. The selector's two are judged last,
@@ -96,6 +108,14 @@
 # --output FILE carries the same value as `queue_only=true|false` beside
 # `change_class=`. This paragraph is the one statement of when the line reads
 # true; other docs point here.
+# Every verdict also prints one `per-push: state=unset|set|unread` line
+# after the queue-only line: the repository's mode, whichever cause that
+# line names. unset is the default, the base's HARNESS_CI_PER_PUSH_REASON
+# unset or blank; set, it names a reason; unread, the base commit's settings
+# could not be read. The change-class action's stand-down reads this line,
+# never the cause, so a change a cause above answers before the reason is
+# read, such as queue-path, stands down in a repository that takes the
+# default.
 # The render proof runs `kendex verify --scope
 # project --json` in the head revision's private checkout, with `--base` set to the base-rev:
 # line harness-only printed and `--at-record` beside it, and reads its
@@ -215,8 +235,10 @@
 # exclusions before render and size classes, blank-separated, unset or empty adds none),
 # HARNESS_CI_QUEUE_PATHS (the repository's
 # own queue globs, blank-separated, set empty where the shipped list is the
-# whole list) and HARNESS_CI_QUEUE_SELECTOR (unset, no selector runs) come
-# from those tables alone, never from the environment. The private env file
+# whole list), HARNESS_CI_QUEUE_SELECTOR (unset, no selector runs) and
+# HARNESS_CI_PER_PUSH_REASON (the reason the repository runs its lanes on
+# each pull-request push; unset, every change is queue-only) come from those
+# tables alone, never from the environment. The private env file
 # is never read.
 # A caller that acts on the verdict without review runs the DEFAULT BRANCH's
 # copy of this script against the pull request's tree; the branch can change
@@ -323,7 +345,7 @@ head="HEAD"
 repo="."
 output="${GITHUB_OUTPUT:-}"
 lanes_from=""
-covers_all_lanes=false
+queue_default=false
 changed=""
 # The queue-only class. Until the changed paths are read, the diff is
 # unreadable, and an unreadable diff reads queue-only.
@@ -354,16 +376,23 @@ while [ "$#" -gt 0 ]; do
     --repo) need_value "$1" "$#" "${2:-}"; repo="$2"; shift 2 ;;
     --output) need_value "$1" "$#" "${2:-}"; output="$2"; shift 2 ;;
     --lanes-from) need_value "$1" "$#" "${2:-}"; lanes_from="$2"; shift 2 ;;
-    --covers-all-lanes) need_value "$1" "$#" "${2:-}"; covers_all_lanes="$2"; shift 2 ;;
+    --queue-only-default) need_value "$1" "$#" "${2:-}"; queue_default="$2"; shift 2 ;;
+    # Retired with proof reuse; read until the next major release.
+    --covers-all-lanes)
+      need_value "$1" "$#" "${2:-}"
+      printf 'option-retired: option=--covers-all-lanes\n' >&2
+      echo "change-class: --covers-all-lanes is ignored since proof reuse was retired; drop it" >&2
+      shift 2 ;;
     -h | --help) usage; exit 0 ;;
     *) die "cause=unknown-argument argument=$1" "unknown argument '$1'" ;;
   esac
 done
 
 [ -n "$event" ] || die "cause=missing-event option=--event" "--event is required"
-case "$covers_all_lanes" in
+case "$queue_default" in
   true | false) ;;
-  *) die "cause=invalid-setting option=--covers-all-lanes" "coverage must be true or false" ;;
+  *) die "cause=invalid-setting option=--queue-only-default value=$queue_default" \
+    "--queue-only-default must be true or false" ;;
 esac
 
 work="$(mktemp -d 2>/dev/null)" || work=""
@@ -389,19 +418,24 @@ harness_err="$work/harness-stderr"
 # its author decides otherwise, which is the way round that cannot hand a
 # waiver to a diff nothing read. stdout is unchanged: one `change_class=` line.
 answer() { # CLASS FIELDS [measured]
+  local queue_line per_push_line
   measured=true
   [ "$1" != standard ] || measured=false
   [ "${3:-}" != measured ] || measured=true
   [ "$QUEUE_ONLY" = true ] || queue_selection "$1"
+  per_push_mode
+  queue_line="queue-only: queue_only=$QUEUE_ONLY $QUEUE_CAUSE"
+  per_push_line="per-push: state=$PER_PUSH"
   if [ -n "$output" ] && [ "$output" != /dev/null ]; then
     local lane_docs
     lane_docs="$("$HARNESS_ONLY" --mode docs "${harness_args[@]}" \
       --paths-output "$work/paths" --outside-output "$work/outside" \
       --output /dev/null)" || die "cause=path-reader-failed" "could not read lane inputs"
     # harness-only owns the resolved endpoints; render move checks read them.
-    cp "$harness_err" "$work/class-log"
+    # The two records below are the ones the action's log carries.
+    { cat -- "$harness_err"; printf '%s\n%s\n' "$queue_line" "$per_push_line"; } >"$work/class-log"
     change_class_lanes "$1" "$lane_docs" "$event" "$repo" "$head" \
-      "$QUEUE_ONLY" "$work" "$lanes_from" >&2
+      "$QUEUE_ONLY" "$work" "$lanes_from" "$queue_default" >&2
   fi
   if [ -n "$output" ]; then
     if ! { printf 'change_class=%s\nqueue_only=%s\n' "$1" "$QUEUE_ONLY"
@@ -411,7 +445,7 @@ answer() { # CLASS FIELDS [measured]
         "could not append the verdict to '$output'"
     fi
   fi
-  printf 'queue-only: queue_only=%s %s\n' "$QUEUE_ONLY" "$QUEUE_CAUSE" >&2
+  printf '%s\n%s\n' "$queue_line" "$per_push_line" >&2
   printf 'class: class=%s measured=%s %s\n' "$1" "$measured" "$2" >&2
   printf 'change_class=%s\n' "$1"
   exit 0
@@ -510,19 +544,20 @@ path_class_matches() { # PHASE CLASS
 # from the judged tree: a branch cannot choose the ceilings or the roots its
 # own size is scored against, nor the paths that keep it in the queue, and a
 # settings file the branch changes answers standard as a configuration source
-# and is queue-only. That commit is the one --base names, the pull request's base tip or
-# a merge group's base, never the merge base, which the author picks by
+# and is queue-only. That commit is the one --base names, the pull request's base end
+# ../references/wiring.md § The endpoint expressions names or a merge
+# group's base, never the merge base, which the author picks by
 # choosing where to fork. The tables are parsed by orch's kendex-env.sh, the
 # shared settings reader, in its ladder's order,
 # so .kendex/settings.toml outranks kendex.settings.toml; nothing is sourced,
 # so the private env file its KENDEX_ENV_FILE names never reaches this script.
 # A key this process's environment carries keeps that value, as it does on the
-# ladder, save the standard paths, queue list and selector: a caller's environment is its own
+# ladder, save the standard paths, queue list, selector and per-push reason: a caller's environment is its own
 # checkout's settings, which github.sh's router exports from the working
 # tree, so these are dropped from it and the base's alone decide. The load runs in a
 # subshell and hands back these keys alone.
-unset HARNESS_CI_QUEUE_PATHS HARNESS_CI_QUEUE_SELECTOR HARNESS_CI_STANDARD_PATHS
-BASE_SETTINGS_KEYS='ORCH_SIZE_RENDER_ROOTS ORCH_SIZE_TEST_PATHS HARNESS_CI_TRIVIAL_MAX_LINES HARNESS_CI_TRIVIAL_PATHS HARNESS_CI_QUEUE_PATHS HARNESS_CI_QUEUE_SELECTOR HARNESS_CI_STANDARD_PATHS'
+unset HARNESS_CI_QUEUE_PATHS HARNESS_CI_QUEUE_SELECTOR HARNESS_CI_STANDARD_PATHS HARNESS_CI_PER_PUSH_REASON
+BASE_SETTINGS_KEYS='ORCH_SIZE_RENDER_ROOTS ORCH_SIZE_TEST_PATHS HARNESS_CI_TRIVIAL_MAX_LINES HARNESS_CI_TRIVIAL_PATHS HARNESS_CI_QUEUE_PATHS HARNESS_CI_QUEUE_SELECTOR HARNESS_CI_STANDARD_PATHS HARNESS_CI_PER_PUSH_REASON'
 BASE_SETTINGS_FILES='kendex.settings.toml .kendex/settings.toml'
 
 # The bytes of PATH as the commit --base names holds it, written to OUT:
@@ -617,6 +652,33 @@ queue_lane_of_paths() {
   done
 }
 
+# The repository's per-push mode, as PER_PUSH: `unset` where the base
+# commit's HARNESS_CI_PER_PUSH_REASON is unset or blank, the default, where
+# no pull-request run proves a head and every change takes the queue; `set`
+# where it names a reason; `unread` where those settings could not be read.
+# It is a fact about the repository, not about this change, so it is read
+# once and printed on its own line whichever queue-only cause answers: the
+# change-class action's stand-down reads it there. A blank reason is refused
+# as unset, never as a wiring error: the base holds it, so exit 2 would
+# redden every pull request, the one that repairs it included.
+PER_PUSH=""
+per_push_mode() {
+  [ -z "$PER_PUSH" ] || return 0
+  if ! base_settings; then
+    PER_PUSH=unread
+    return 0
+  fi
+  case "${HARNESS_CI_PER_PUSH_REASON:-}" in
+    *[![:space:]]*) PER_PUSH=set ;;
+    *)
+      if [ -n "${HARNESS_CI_PER_PUSH_REASON+x}" ]; then
+        printf 'setting-refused: setting=HARNESS_CI_PER_PUSH_REASON cause=empty-reason\n' >&2
+        echo "::warning title=per-push opt-back refused::HARNESS_CI_PER_PUSH_REASON is set without a reason in the base commit's settings, so every change stays queue-only; give the reason the repository runs its lanes on each pull-request push" >&2
+      fi
+      PER_PUSH=unset ;;
+  esac
+}
+
 # The queue-only class, from the whole changed-path set before any rule below
 # trims it, so every verdict from here on carries it. A list this script
 # cannot read, or one from before the `queue` group, keeps the unreadable
@@ -648,10 +710,11 @@ queue_only_of_paths() {
   # HARNESS_CI_QUEUE_PATHS, and a repository that declares none, the key
   # unset, has named no list the shipped one can be judged complete against:
   # queue-only. Set, even empty, the declaration is the rest of the list.
-  if ! base_settings; then
-    QUEUE_CAUSE="cause=queue-settings-unreadable"
-    return
-  fi
+  per_push_mode
+  case "$PER_PUSH" in
+    unread) QUEUE_CAUSE="cause=queue-settings-unreadable"; return ;;
+    unset) QUEUE_CAUSE="cause=per-push-unset"; return ;;
+  esac
   if ! queue_lane_of_paths; then
     QUEUE_CAUSE="cause=lane-declaration-unreadable"
     return

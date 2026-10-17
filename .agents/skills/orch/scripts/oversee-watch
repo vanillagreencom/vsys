@@ -231,7 +231,7 @@ source "$SCRIPT_DIR/../../mailbox/scripts/lib/mailbox-append.sh"
 OWNER_TRACKER_ACTIVE=0
 OWNER_TRACKER_DELIVERED=0
 if owner_tracker_settings "$SCRIPT_DIR/../../mailbox/scripts"; then OWNER_TRACKER_ACTIVE=1; fi
-PR_WATCH="${OVERSEE_WATCH_PR_WATCH:-$SKILLS_DIR/review-gate/scripts/pr-watch.sh}"
+PR_WATCH="${OVERSEE_WATCH_PR_WATCH:-$SKILLS_DIR/github/scripts/pr-watch.sh}"
 TRACKER="${OVERSEE_WATCH_TRACKER:-$SKILLS_DIR/linear/scripts/linear.sh}"
 WORKFLOW_STATE="${OVERSEE_WATCH_WORKFLOW_STATE:-$SCRIPT_DIR/workflow-state}"
 LANE_MAIL="${OVERSEE_WATCH_LANE_MAIL:-$SCRIPT_DIR/../../mailbox/scripts/lane-mail}"
@@ -265,7 +265,7 @@ case "$WORKFLOW_STATE_DIR" in
   /*) ;;
   *) WORKFLOW_STATE_DIR="$PROJECT_ROOT/$WORKFLOW_STATE_DIR" ;;
 esac
-PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
+PW_STATE_DIR="$(lane_watch_state_dir "$PROJECT_ROOT")"
 # Two state files per fleet: the first repository's baseline, which the long
 # pass writes, and the mail pass's file beside it, which only the mail pass and
 # the scheduler around it write. The long pass runs while mail passes go on,
@@ -290,10 +290,14 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   merged<TAB><item><TAB><repo>#<number>[ <repo>#<number>...]
 #   outside-contribution<TAB><repo>#<number><TAB><pr HEAD_SHA|issue>
 #   refresh-failing<TAB><repo><TAB><newest run's REFRESH_RUN as JSON>|[<passes since reported>|<cause>|unjudged]
-#   main-push-failing<TAB><repo><TAB>[<sorted failed jobs>,<sorted failure identities or null for unread logs>] as JSON
+#   main-push-failing<TAB><repo>:<workflow><TAB>[<sorted failed jobs>,<sorted failure identities or null for unread logs>] as JSON
+#   main-schedule-failing<TAB><repo>:<workflow><TAB>the same, for the nightly scheduled run
+#     (a row keyed <repo> alone is skill-tests.yml's, from before the workflow key)
+#   main-workflow-absent<TAB><repo>:<workflow><TAB><branch|unwatched>, for a workflow ORCH_MAIN_WORKFLOWS names that no run list reads
 #   security-alert, bot-fix and security-alerts-unread rows, which
 #   lib/security-alerts.sh sets out above check_security_alerts
 #   account<TAB><harness>|<through>|<config dir><TAB><status>|<verdict>|<binding_resets_at or ->|<status of the last saved unmeasured reading, or ->
+#   tracker-quota<TAB>fleet<TAB><Linear's selected scheduling receipt as JSON>
 # And in the mail pass's file:
 #   lane-mail<TAB><item>[@clone]<TAB><to-overseer.jsonl lines already drained> <first id>
 #   directive<TAB><item>[@clone]<TAB><to-lane.cursor reported read> <last line reported unread>[:<passes since unread reported>] <first id>
@@ -307,7 +311,11 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 #   overseer-mark<TAB><server> <pane><TAB><kind>|<passes since it was reported>
 #   overseer-dead<TAB><server> <pane><TAB><count>|pending:<N>|reported
 #   overseer-walled<TAB><server> <pane><TAB><count>|pending:<N>|reported
+#   overseer-walled<TAB><server> <pane><TAB>reserve:pending:<N>|reserve:reported
 #   overseer-context-gap<TAB><server> <pane><TAB><gap>|told|alerted
+# A reserve value keeps the coordinator live. A measured below-mark result
+# clears it; an unread or unmeasured result keeps it. A real failure clears
+# the reserve value before starting its own recovery attempts.
 # overseer-dead (harness gone) and overseer-walled (account spent, harness
 # running) are one machinery in two rows, so a pane flipping between the two
 # starts its count over rather than counting a wall towards a death.
@@ -315,6 +323,8 @@ PW_STATE_DIR="${OVERSEE_WATCH_STATE_DIR:-$PROJECT_ROOT/tmp/oversee-watch}"
 # it carries `|` of its own.
 # The reported columns keep a re-run, which follows every event, from
 # delivering a line again for a walled, idle or exited lane or a merged --item.
+# close-pending<TAB><lane><TAB><notification row>|<key> keeps a deferred close
+# independent of the notification's reported latch.
 # Long-pass helpers take a baseline blob. Mail helpers consume the loaded
 # parent-owned rows and serialize at each item commit. `lane-exited` and
 # `lane-idle` hold a needed first pass in a row, not a global: a pass that
@@ -323,31 +333,6 @@ LANE_ROW=""
 # Mail callers inherit this mode, including clone fallback getters in subshells.
 # Long-pass callers retain their independent baseline blob.
 MAIL_ROW_MODE=0
-lane_row_value() { # ROW PREFIX
-  LANE_ROW_VALUE="${1#"$2"}"
-  [[ "$1" == "$2"* && "$LANE_ROW_VALUE" != *$'\t'* ]]
-}
-lane_row_get() {
-  local row prefix="$1"$'\t'"$3"$'\t' value
-  if [[ "$MAIL_ROW_MODE" -eq 1 ]]; then
-    mail_row_find "$prefix"
-    LANE_ROW=""
-    [[ "$MAIL_ROW_INDEX" -lt 0 ]] || LANE_ROW="${MAIL_ROW_VALUES[$MAIL_ROW_INDEX]}"
-    [[ -z "$LANE_ROW" ]] || printf '%s\n' "$LANE_ROW"
-    return 0
-  fi
-  LANE_ROW=""
-  while IFS= read -r row; do
-    [[ "$row" == "$prefix"* ]] || continue
-    lane_row_value "$row" "$prefix" || continue
-    value="$LANE_ROW_VALUE"
-    LANE_ROW+="$value"$'\n'
-  done <<<"$2"
-  LANE_ROW="${LANE_ROW%$'\n'}"
-  [[ -z "$LANE_ROW" ]] || printf '%s\n' "$LANE_ROW"
-  return 0
-}
-
 lane_row_clear() {
   local row prefix="$1"$'\t'"$3"$'\t'
   if [[ "$MAIL_ROW_MODE" -eq 1 ]]; then mail_row_update "$prefix" clear; return 0; fi
@@ -498,10 +483,16 @@ mail_rows_serialize() {
 # The same two-phase flush triage uses, on the same file: nothing is written
 # when the pass changed nothing, and the event has already printed.
 lane_row_commit() {
-  [[ "$1" != "${PW_SEEN[0]}" ]] || return 0
-  pw_stage_state "$(pw_state_file "${REPOS[0]}")" "$1"
+  local next="$1"
+  # A tracker refusal can arrive after a caller took its local row snapshot.
+  # That later receipt must survive the caller's merge or terminal commit.
+  if [[ -n "${TRACKER_QUOTA:-}" ]]; then
+    next="$(lane_row_set tracker-quota "$next" fleet "$TRACKER_QUOTA")" || die state-read-failed "" "row=tracker-quota"
+  fi
+  [[ "$next" != "${PW_SEEN[0]}" ]] || return 0
+  pw_stage_state "$(pw_state_file "${REPOS[0]}")" "$next"
   pw_commit_state "$(pw_state_file "${REPOS[0]}")"
-  PW_SEEN[0]="$1"
+  PW_SEEN[0]="$next"
 }
 # The same flush, on the mail pass's file.
 MAIL_SEEN=""
@@ -543,9 +534,22 @@ lane_session_windows() {
 
 # The one presence answer, for a pass and for repeat mode's lane records.
 lane_window_listed() { # LANE
-  local existing
-  existing="$(lane_session_windows "$1")" || die window-list-failed "$existing" "lane=$1"
-  grep -qxF -- "${1#*:}" <<<"$existing"
+  local existing session="$WATCH_SESSION" i found=0 window
+  [[ "$1" != *:* ]] || session="${1%%:*}"
+  if [[ "${LANE_WINDOW_CACHE:-0}" == 1 ]]; then
+    for i in ${LANE_WINDOW_SESSIONS[@]+"${!LANE_WINDOW_SESSIONS[@]}"}; do
+      [[ "${LANE_WINDOW_SESSIONS[$i]}" == "$session" ]] || continue
+      existing="${LANE_WINDOW_LISTINGS[$i]}"; found=1; break
+    done
+  fi
+  if [[ "$found" == 0 ]]; then
+    existing="$(lane_session_windows "$1")" || die window-list-failed "$existing" "lane=$1"
+    if [[ "${LANE_WINDOW_CACHE:-0}" == 1 ]]; then
+      LANE_WINDOW_SESSIONS+=("$session"); LANE_WINDOW_LISTINGS+=("$existing")
+    fi
+  fi
+  while IFS= read -r window; do [[ "$window" != "${1#*:}" ]] || return 0; done <<<"$existing"
+  return 1
 }
 
 parse_argv "$@"
@@ -639,6 +643,21 @@ LANE_AGE_SECS="${ORCH_WATCH_LANE_AGE_SECS:-12600}"
 # (wall_route), `ask` reports it with the pick's answer for the overseer.
 WALL_RELAUNCH="${ORCH_WALL_RELAUNCH:-auto}"
 [[ "$WALL_RELAUNCH" == auto || "$WALL_RELAUNCH" == ask ]] || die wall-relaunch-invalid "" "value=$WALL_RELAUNCH"
+# The workflows each repository names beyond the defaults check_main_push
+# reads, as " <repo>:<file> ... " with the repository lowercased as REPOS is.
+# kendex_load_project_env above already applied the settings ladder orch-env
+# reads, so the value is taken from the environment like every watch setting.
+# Judged here so a repeat run is refused at its start, not at its first pass.
+MAIN_DECLARED=" "
+main_list=()
+IFS=$' \t\n' read -ra main_list -d '' <<<"${ORCH_MAIN_WORKFLOWS-}" || true
+for main_entry in ${main_list[@]+"${main_list[@]}"}; do
+  [[ "$main_entry" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+\.ya?ml$ ]] \
+    || die main-workflows-invalid "" "entry=$main_entry"
+  main_entry="$(printf '%s' "${main_entry%%:*}" | tr '[:upper:]' '[:lower:]'):${main_entry#*:}"
+  [[ "$MAIN_DECLARED" == *" $main_entry "* ]] || MAIN_DECLARED+="$main_entry "
+done
+unset main_entry main_list
 # The state's records the pane never judges and the start-stall check reads,
 # rebuilt by every fleet read: `<window>=<item>` for each Pi lane, judged from
 # the rows its own hook writes (lib/session-rows.sh), and `<item>=<epoch it went
@@ -836,10 +855,20 @@ PREPARE_ROWS=""
 PARKED_ROWS_FILTER='
   (.lanes // [])[] | select(type == "object" and .status == "parked")
   | if ((.item? | type) != "string" or (.item | length) == 0) then error("lane-field field=item value=\(.item | tojson)")
-    elif (((.parked.until_pr // .parked.pr) | type) != "number" or (.parked.repo? | type) != "string") then error("lane-field field=parked value=\(.parked | tojson)")
-    else "\(.item)\u001f\(.parked.repo | ascii_downcase)#\(.parked.until_pr // .parked.pr)\u001f\(.launched_at | if . == null then "" else (fromdateiso8601 | tostring) end)" end'
+    elif (((.parked.until_pr // .parked.pr) | type) != "number" or ((.parked.until_repo // .parked.repo) | type) != "string") then error("lane-field field=parked value=\(.parked | tojson)")
+    else "\(.item)\u001f\((.parked.until_repo // .parked.repo) | ascii_downcase)#\(.parked.until_pr // .parked.pr)\u001f\(.launched_at | if . == null then "" else (fromdateiso8601 | tostring) end)" end'
 PARKED_ITEMS=()
 PARKED_KEYS=()
+MERGED_FIELDS=""
+MERGED_FIELDS_FILTER='
+  (.lanes // [])[] | objects | . as $lane
+  | (try (
+      (select(.status == "parked") | .parked.until_pr // empty | ["until", $lane.item, .]),
+      ((.parked // .pending_pr) | select(.until_pr != null)
+       | ["dependency", $lane.item, "1"], ["pr", $lane.item, (.pr // "")],
+         ["repo", $lane.item, (.repo | ascii_downcase)])
+    ) catch ["invalid", $lane.item, "parked"])
+  | map(tostring) | join("\u001f")'
 
 # The one reader of the state, asked by the repeat wrapper before every pass
 # and by the pass itself before every loop: the live set changes on every
@@ -869,9 +898,10 @@ fleet_merge() { # [quiet]
   merged="$(jq -r '(('"$LANE_ROWS_FILTER"') | "running\u001e\(.)"),
     (('"$PREPARE_ROWS_FILTER"') | "prepare\u001e\(.)"),
     (('"$PARKED_ROWS_FILTER"') | "parked\u001e\(.)"),
-    ((.lanes // [])[] | objects | .item | strings | "recorded\u001e\(.)")' <<<"$state" 2>&1)" \
+    ((.lanes // [])[] | objects | .item | strings | "recorded\u001e\(.)"),
+    (('"$MERGED_FIELDS_FILTER"') | "merge\u001e\(.)")' <<<"$state" 2>&1)" \
     || die state-invalid "$merged" "option=--state" "path=$STATE_FILE"
-  rows=""; PREPARE_ROWS=""; parked=""; recorded=""
+  rows=""; PREPARE_ROWS=""; parked=""; recorded=""; MERGED_FIELDS=""
   while IFS= read -r line; do
     tag="${line%%$'\x1e'*}"
     line="${line#*$'\x1e'}"
@@ -880,6 +910,7 @@ fleet_merge() { # [quiet]
       prepare) PREPARE_ROWS+="$line"$'\n' ;;
       parked) parked+="$line"$'\n' ;;
       recorded) recorded+="$line"$'\n' ;;
+      merge) MERGED_FIELDS+="$line"$'\n' ;;
     esac
   done <<<"$merged"
   rows="${rows%$'\n'}"; PREPARE_ROWS="${PREPARE_ROWS%$'\n'}"
@@ -1292,8 +1323,9 @@ item_state_dir() { # ITEM
 }
 # Run the one lane close-out verb where a hosted item's lane-exited is reported,
 # once per pane, after its merge. Exit 3 is a checkout with user-owned changes:
-# the user settles it, so it is reported and never retried or forced. Any other
-# exit returns 1 with its message on stderr: the caller commits the rows it
+# the user settles it, so it is reported and never retried or forced. A quota
+# refusal defers close. Any other exit returns 1 with its message on stderr:
+# the caller commits the rows it
 # already settled, other lanes' closes among them, before the pass exits 2.
 #
 # A TERM part way through, how a repeat loop stops its pass, is noted in
@@ -1304,9 +1336,31 @@ item_state_dir() { # ITEM
 # early. pass_stop spares its tree, read from CLOSE_PID_FILE.
 CLOSE_TERMED=""
 CLOSE_RESULT=failed
+lane_tracker_held() { # ITEM
+  [[ "$TRACKER_STOP" != 0 ]] || return 1
+  local tracker
+  tracker="$(jq -r --arg item "$1" '[.lanes[]? | select(.item == $item) | .tracker // empty] | first // empty' <<<"${FLEET_STATE:-"{}"}")" \
+    || die state-invalid "" "path=$STATE_FILE" "field=tracker"
+  [[ -n "$tracker" ]] || tracker="$(lane_key_tracker "$1")"
+  [[ "$tracker" == linear ]]
+}
+
+lane_terminal_read() { # ITEM; publishes LANE_TERMINAL
+  local rc=0
+  LANE_TERMINAL=unknown
+  lane_tracker_held "$1" && return 0
+  LANE_TERMINAL="$("$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" --terminal-state "$1" 2>"$WORK_DIR/terminal.err")" || rc=$?
+  if [[ "$rc" -ne 0 ]] && tracker_quota_refusal "$WORK_DIR/terminal.err"; then
+    LANE_TERMINAL=unknown
+    return 0
+  fi
+  return "$rc"
+}
+
 close_hosted_lane() { # ITEM [--if-terminal]
   local out line path="" rc=0 close_pid
   CLOSE_RESULT=failed
+  if lane_tracker_held "$1"; then CLOSE_RESULT=deferred; return 0; fi
   trap 'CLOSE_TERMED=1' TERM
   "$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" "$@" > "$WORK_DIR/lane-close.out" 2>&1 &
   close_pid=$!
@@ -1319,6 +1373,10 @@ close_hosted_lane() { # ITEM [--if-terminal]
   rm -f -- "$CLOSE_PID_FILE"
   trap - TERM
   out="$(cat -- "$WORK_DIR/lane-close.out")"
+  if [[ "$rc" -ne 0 ]] && tracker_quota_refusal "$WORK_DIR/lane-close.out"; then
+    CLOSE_RESULT=deferred
+    return 0
+  fi
   case "$rc" in
     0)
       CLOSE_RESULT=closed
@@ -1374,16 +1432,25 @@ close_finished_hosted_lane() { # LANE ROW KEY; updates check_lanes' asking_state
     # Commit before the irreversible close so a stopped pass cannot repeat it.
     lane_row_commit "$asking_state"
     if ! close_hosted_lane "$LANE_ITEM"; then
-      asking_state="$(lane_row_set "$2" "$asking_state" "$1" "$3")"
       close_failed=1
     fi
+    case "$CLOSE_RESULT" in
+      failed)
+        asking_state="$(lane_row_set "$2" "$asking_state" "$1" "$3")"
+        asking_state="$(lane_row_clear close-pending "$asking_state" "$1")" ;;
+      deferred)
+        asking_state="$(lane_row_set close-pending "$asking_state" "$1" "$2|$3")" ;;
+      closed|refused)
+        asking_state="$(lane_row_clear close-pending "$asking_state" "$1")"
+        PASS_EVENT=1 ;;
+    esac
     [[ -z "$CLOSE_TERMED" ]] || { lane_row_commit "$asking_state"; exit 143; }
   fi
 }
 
 # Stopped and parked records have no pane or mailbox to watch. Read the close
-# verb's terminal judge, including a retained PR wait and Done-when boxes, on every
-# fleet pass, and keep only provider refusals:
+# verb's terminal judge, including a retained PR wait and Done-when boxes, on each
+# fleet pass unless its tracker is held, and keep only provider refusals:
 # user-owned changes need an overseer's action, not another provider call.
 check_terminal_lanes() {
   [[ -n "$STATE_FILE" ]] || return 0
@@ -1397,14 +1464,16 @@ check_terminal_lanes() {
       || die state-invalid "" "path=$STATE_FILE" "field=item"
     items+=("$item")
     rc=0
-    terminal="$("$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" --terminal-state "$item" 2>"$WORK_DIR/terminal.err")" || rc=$?
+    lane_terminal_read "$item" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
       ow_message lane-close-failed "item=$item" "exit=$rc" >&2
       cat -- "$WORK_DIR/terminal.err" >&2
       PASS_FAILED=1
       continue
     fi
+    terminal="$LANE_TERMINAL"
     case "$terminal" in
+      unknown) continue ;;
       open) rows="$(lane_row_clear terminal-close "$rows" "$item")"; continue ;;
       completed|canceled) ;;
       *) die state-invalid "$terminal" "item=$item" "field=terminal-state" ;;
@@ -1455,7 +1524,7 @@ check_terminal_lanes() {
       if [[ "$CLOSE_RESULT" == refused ]]; then rows="$(lane_row_set terminal-close "$rows" "$item" "$key")"; fi
       # A close may have rewritten the fleet. Read it before pane and merge
       # checks, so they cannot report a closed record as still parked.
-      if [[ "$CLOSE_RESULT" != open ]]; then refreshed=true; PASS_EVENT=1; fi
+      if [[ "$CLOSE_RESULT" != open && "$CLOSE_RESULT" != deferred ]]; then refreshed=true; PASS_EVENT=1; fi
     else
       PASS_FAILED=1
     fi
@@ -1487,7 +1556,7 @@ long_drain() {
   [[ -n "$LONG_PID" ]] || return 0
   wait "$LONG_PID" || rc=$?
   LONG_PID=""
-  cat -- "$LONG_OUT"
+  cat -- "$LONG_OUT" || return 2
   cat -- "$LONG_ERR" >&2
   return "$rc"
 }
@@ -1650,13 +1719,14 @@ MERGED_SEARCH_PAGE=1000
 # One merged-PR reader owns lookup and lane_merged evaluation. Verification
 # uses its mergedAt for the publication floor and its merge commit for containment.
 MERGED_ITEM_ROWS=""
-merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC] [PASS_READ_DIR] [ITEM_SEARCH]
+MERGED_ITEM_HITS=""
+merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC] [PASS_READ_DIR] [ITEM_SEARCH] [ITEMS_JSON]
   local item="$1" repo="$2" pr="$3" since="${4:-null}" floor="${5:-}"
   local branch list named search rows errf="$WORK_DIR/merged.err"
   local fields=number,headRefName,headRepositoryOwner,mergedAt,mergeCommit,title,body
   branch="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"
   if [[ -n "${6:-}" ]]; then
-    local read_file="$6/${repo//\//%}.merged"
+    local read_file="$6/${repo//\//%}.merged" key value
     if [[ ! -f "$read_file" ]]; then
       local -a searches=()
       IFS=$'\t' read -ra searches <<<"${7:-${floor:+merged:>=$floor}}"
@@ -1664,14 +1734,24 @@ merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC] [PASS_READ_DIR] [I
         gh pr list --repo "$repo" --search "$search" --limit "$MERGED_SEARCH_PAGE" --state merged --json "$fields" >>"$read_file" 2>"$errf" \
           || die pr-list-failed "$(cat "$errf")" "repo=$repo" "state=merged" "branch=$branch"
       done
-      if ! named="$(jq -cs --argjson cap "$MERGED_SEARCH_PAGE" 'if any(.[]; length >= $cap) then null else add // [] end' "$read_file" 2>"$errf")"; then
+      # Bodies are ownership evidence. Retain only the merge fields after
+      # lane_merged has judged each item, once per repository and pass.
+      if ! named="$(jq -rs --argjson cap "$MERGED_SEARCH_PAGE" --argjson items "$8" --arg owner "${repo%%/*}" \
+        "$LANE_MERGED_JQ"' if any(.[]; length >= $cap) then "null" else
+          (reduce (add // [])[] as $row ([]; if any(.[]; .number == $row.number) then . else . + [$row] end)) as $rows
+          | $items[] as $item
+          | "\($item)\t\($rows | lane_merged($item; $owner; null; null) | map({at, mergeCommit}) | tojson)"
+        end' "$read_file" 2>"$errf")"; then
         die pr-list-invalid "$(cat "$errf")" "repo=$repo" "search=$item"
       fi
       [[ "$named" != null ]] || die merged-search-truncated "" "repo=$repo" "item=$item" "limit=$MERGED_SEARCH_PAGE"
-      printf '%s\n' "$named" >"$read_file" || die state-write-failed "" "path=$read_file"
+      while IFS=$'\t' read -r key value; do
+        printf '%s\n' "$value" >"$read_file.$key" || die state-write-failed "" "path=$read_file.$key"
+      done <<<"$named"
+      : >"$read_file" || die state-write-failed "" "path=$read_file"
     fi
-    named="$(cat "$read_file")" || die pr-list-invalid "$(cat "$errf")" "repo=$repo" "search=$item"
-    list='[]'
+    MERGED_ITEM_ROWS="$(cat "$read_file.$item")" || die pr-list-invalid "" "repo=$repo" "search=$item"
+    return 0
   else
   list="$(gh pr list --repo "$repo" --head "$branch" --state merged --limit 10 --json "$fields" 2>"$errf")" \
     || die pr-list-failed "$(cat "$errf")" "repo=$repo" "state=merged" "branch=$branch"
@@ -1683,25 +1763,41 @@ merged_item_read() { # ITEM REPO PR [SINCE_EPOCH] [SINCE_UTC] [PASS_READ_DIR] [I
   named="$(gh pr list --repo "$repo" --search "$search" --state merged --limit "$MERGED_SEARCH_PAGE" --json "$fields" 2>"$errf")" \
     || die pr-list-failed "$(cat "$errf")" "repo=$repo" "state=merged" "search=$item"
   fi
-  rows="$(jq length <<<"$named" 2>"$errf")" || die pr-list-invalid "$(cat "$errf")" "repo=$repo" "search=$item"
-  [[ -n "${6:-}" || "$rows" -lt "$MERGED_SEARCH_PAGE" ]] || die merged-search-truncated "" "repo=$repo" "item=$item" "limit=$MERGED_SEARCH_PAGE"
-  if ! MERGED_ITEM_ROWS="$(jq -cs --arg item "$item" --arg owner "${repo%%/*}" --argjson pr "$pr" --argjson since "$since" \
-    "$LANE_MERGED_JQ"' add // [] | reduce .[] as $row ([]; if any(.[]; .number == $row.number) then . else . + [$row] end)
-    | lane_merged($item; $owner; $pr; $since)' \
+  if ! rows="$(jq -rs --arg item "$item" --arg repo "$repo" --arg owner "${repo%%/*}" --argjson pr "$pr" --argjson since "$since" \
+    --argjson cap "$MERGED_SEARCH_PAGE" "$LANE_MERGED_JQ"'
+    if (.[1] | length) >= $cap then "null" else
+      (add // [] | reduce .[] as $row ([]; if any(.[]; .number == $row.number) then . else . + [$row] end)
+       | lane_merged($item; $owner; $pr; $since)) as $rows
+      | ($rows | tojson), ($rows[] | "\(.number) \($item | ascii_downcase) \($repo)")
+    end' \
     <<<"$list$named" 2>"$errf")"; then
     die pr-list-invalid "$(cat "$errf")" "repo=$repo" "branch=$branch"
   fi
+  [[ "$rows" != null ]] || die merged-search-truncated "" "repo=$repo" "item=$item" "limit=$MERGED_SEARCH_PAGE"
+  MERGED_ITEM_ROWS="${rows%%$'\n'*}"
+  MERGED_ITEM_HITS=""; [[ "$rows" != *$'\n'* ]] || MERGED_ITEM_HITS="${rows#*$'\n'}"
 }
 
 check_merged() {
   [[ -n "$ITEM_BRANCHES" ]] || return 0
   local errf="$WORK_DIR/merged.err" item branch repo pr hit hits prior keys fresh key line until view dependency_state dependency_record own_pr own_repo state="${PW_SEEN[0]}"
+  local field recorded value
   for item in "${MERGED_ITEMS[@]}"; do
+    PARKED_MERGE_DEFERRED=0
     branch="$(printf '%s' "$item" | tr '[:upper:]' '[:lower:]')"
     PARKED_KEY=""
     item_parked "$item" || true
-    until="$(jq -r --arg item "$item" '(.lanes // [])[] | select(.item == $item and .status == "parked") | .parked.until_pr // empty' <<<"${FLEET_STATE:-"{}"}")" \
-      || die state-invalid "" "path=$STATE_FILE" "field=parked"
+    until="" dependency_record="" own_pr="" own_repo=""
+    while IFS=$'\x1f' read -r field recorded value; do
+      [[ "$recorded" == "$item" ]] || continue
+      case "$field" in
+        until) until+="${until:+$'\n'}$value" ;;
+        dependency) dependency_record=1 ;;
+        pr) own_pr+="${own_pr:+$'\n'}$value" ;;
+        repo) own_repo+="${own_repo:+$'\n'}$value" ;;
+        invalid) die state-invalid "" "path=$STATE_FILE" "field=$value" ;;
+      esac
+    done <<<"$MERGED_FIELDS"
     if [[ -n "$until" ]]; then
       repo="${PARKED_KEY%#*}"
       view="$(gh pr view "$until" --repo "$repo" --json state 2>"$errf")" \
@@ -1713,24 +1809,15 @@ check_merged() {
         || die state-read-failed "" "item=$item" "row=parked-until"
       if [[ "$key" != "$prior" ]]; then
         case "$dependency_state" in
-          MERGED) parked_merged_line "$item" "$PARKED_KEY"; PASS_EVENT=1 ;;
+          MERGED) parked_merged_line "$item" "$PARKED_KEY"; [[ "$PARKED_MERGE_DEFERRED" == 1 ]] || PASS_EVENT=1 ;;
           CLOSED) echo "EVENT parked-closed $item pr=$until repo=$repo"; PASS_EVENT=1 ;;
         esac
       fi
-      state="$(lane_row_set parked-until "$state" "$item" "$key")"
+      if [[ "$PARKED_MERGE_DEFERRED" == 0 ]]; then state="$(lane_row_set parked-until "$state" "$item" "$key")"; fi
       # The dependency is not this item's merge and earns no item cycle.
     fi
     # Its own delivery still needs a merged row before terminal close can
     # remove the lane. Recovery keeps that identity in pending_pr as well.
-    dependency_record="$(jq -c --arg item "$item" '(.lanes // [])[] | select(.item == $item) | (.parked // .pending_pr) | select(.until_pr != null)' <<<"${FLEET_STATE:-"{}"}")" \
-      || die state-invalid "" "path=$STATE_FILE" "field=parked"
-    own_pr="" own_repo=""
-    if [[ -n "$dependency_record" ]]; then
-      own_pr="$(jq -r '.pr // empty' <<<"$dependency_record")" \
-        || die state-invalid "" "path=$STATE_FILE" "field=parked"
-      own_repo="$(jq -r '.repo | ascii_downcase' <<<"$dependency_record")" \
-        || die state-invalid "" "path=$STATE_FILE" "field=parked"
-    fi
     hits=""
     for repo in "${REPOS[@]}"; do
       pr=null
@@ -1746,11 +1833,12 @@ check_merged() {
           "$LANE_MERGED_JQ"' [.] | lane_merged($item; $owner; $pr; $since)' <<<"$view" 2>"$errf")"; then
           die pr-list-invalid "$(cat "$errf")" "repo=$repo" "pr=$pr"
         fi
+        if ! hit="$(jq -r --arg item "$item" --arg repo "$repo" '.[] | "\(.number) \($item | ascii_downcase) \($repo)"' <<<"$MERGED_ITEM_ROWS" 2>"$errf")"; then
+          die pr-list-invalid "$(cat "$errf")" "repo=$repo" "branch=$branch"
+        fi
       else
         merged_item_read "$item" "$repo" "$pr" "$SINCE_EPOCH" "$SINCE"
-      fi
-      if ! hit="$(jq -r --arg item "$item" --arg repo "$repo" '.[] | "\(.number) \($item | ascii_downcase) \($repo)"' <<<"$MERGED_ITEM_ROWS" 2>"$errf")"; then
-        die pr-list-invalid "$(cat "$errf")" "repo=$repo" "branch=$branch"
+        hit="$MERGED_ITEM_HITS"
       fi
       [[ -z "$hit" ]] || hits+="$hit"$'\n'
     done
@@ -1791,12 +1879,15 @@ check_merged() {
 # the heartbeat's repeat.
 parked_merged_line() { # ITEM KEY
   local terminal rc=0
-  terminal="$("$LANE_CLOSE" --state-dir "$FLEET_STATE_DIR" --terminal-state "$1" 2>"$WORK_DIR/terminal.err")" || rc=$?
+  PARKED_MERGE_DEFERRED=0
+  lane_terminal_read "$1" || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     cat -- "$WORK_DIR/terminal.err" >&2
     die lane-close-failed "" "item=$1" "exit=$rc"
   fi
+  terminal="$LANE_TERMINAL"
   case "$terminal" in
+    unknown) PARKED_MERGE_DEFERRED=1; return 0 ;;
     completed|canceled) return 0 ;;
     open) echo "EVENT parked-merged $1 pr=${2##*#} repo=${2%#*}" ;;
     *) die state-invalid "$terminal" "item=$1" "field=terminal-state" ;;
@@ -1805,7 +1896,8 @@ parked_merged_line() { # ITEM KEY
 
 # The hand is level-triggered from the record: every record still reading
 # parked whose recorded `<repo>#<number>` is in its item's merged row of STATE,
-# the committed baseline the merged check writes, is handed on again. Nothing
+# the committed baseline the merged check writes, is handed on again when its
+# tracker can be read. A quota hold defers that hand without consuming it. Nothing
 # here ends the repeat; the relaunch rewriting the record stopped does, so a
 # relaunch refused, or an overseer that compacted or handed off after the
 # first hand, still has the merge named at the next heartbeat. Errexit is off
@@ -1826,10 +1918,25 @@ parked_merged_owed() { # STATE
 
 check_triage() {
   [[ "$TRIAGE_ENABLED" -eq 1 ]] || return 0
-  local errf="$WORK_DIR/triage.err" now age days out ids verdicts pr_keys triage_keys="" seen id new_ids="" next rc=0
+  local errf="$WORK_DIR/triage.err" floor out ids verdicts pr_keys triage_keys="" id new_ids next rc=0
   verdicts="$("$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} get oversee '.triaged // [] | map(select(.verdict == "kept" or .verdict == "canceled") | .issue) | .[]' 2>"$errf")" || rc=$?
-  [[ "$rc" -eq 0 ]] \
-    || die triage-state-failed "$(cat "$errf")" "exit=$rc"
+  if [[ "$rc" -ne 0 ]]; then
+    local count rows
+    count="$(lane_row_get watch-step-failed "${PW_SEEN[0]}" triage)" || die state-read-failed "" "row=watch-step-failed"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    count=$((count + 1))
+    # The overseer reads stdout. Repeat on every MARK_REPEAT failed read,
+    # keeping the count across the watch restarts that this refusal causes.
+    if (( count == 1 || count % MARK_REPEAT == 0 )); then
+      printf 'EVENT watch-step-failed step=triage count=%s\n' "$count"
+    fi
+    rows="$(lane_row_set watch-step-failed "${PW_SEEN[0]}" triage "$count")" || die state-read-failed "" "row=watch-step-failed"
+    lane_row_commit "$rows"
+    die triage-state-failed "$(cat "$errf")" "exit=$rc"
+  fi
+  local rows
+  rows="$(lane_row_clear watch-step-failed "${PW_SEEN[0]}" triage)" || die state-read-failed "" "row=watch-step-failed"
+  lane_row_commit "$rows"
   verdicts="$(awk 'NF && !seen[$0]++' <<<"$verdicts")"
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
@@ -1849,15 +1956,13 @@ check_triage() {
     pw_commit_state "$(pw_state_file "${REPOS[0]}")"
     PW_SEEN[0]="$next"
   fi
-  now="$(date -u +%s)" || die time-failed "" "clock=UTC"
-  age=$((now - SINCE_EPOCH))
-  [[ "$age" -ge 0 ]] || age=0
-  # Linear's live list accepts whole-day windows. Round up, then apply the
-  # exact ISO floor below so the wider server query cannot mint an old event.
-  days=$((age / 86400 + 1))
-  out="$("$TRACKER" issues list --team "$LINEAR_TEAM" --created-since "${days}d" --max --format=safe 2>"$errf")" || rc=$?
-  [[ "$rc" -eq 0 ]] \
-    || die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "exit=$rc"
+  floor="$(lane_row_get triage-scan "${PW_SEEN[0]}" "$LINEAR_TEAM")" || die state-read-failed "" "row=triage-scan"
+  [[ -n "$floor" ]] || floor="$SINCE"
+  out="$("$TRACKER" issues list --team "$LINEAR_TEAM" --created-since "$floor" --select triage --max --format=safe 2>"$errf")" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    tracker_quota_refusal "$errf" && return 0
+    die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "exit=$rc"
+  fi
   ids="$(jq -r --argjson since "$SINCE_EPOCH" '
     def created_epoch: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
     if type != "array" then error("tracker-type expected=array actual=\(type)") else . end
@@ -1870,17 +1975,39 @@ check_triage() {
     | unique[]
   ' <<<"$out" 2>"$errf")" \
     || die tracker-list-invalid "$(cat "$errf")" "team=$LINEAR_TEAM"
-  seen="$(awk -F'\t' '$1 == "triage" && NF == 2 { print $2 }' <<<"${PW_SEEN[0]}")"
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    grep -qxF -- "$id" <<<"$seen" || new_ids+="$id"$'\n'
-  done <<<"$ids"
-  [[ -n "$new_ids" ]] || return 0
-  new_ids="${new_ids%$'\n'}"
-  while IFS= read -r id; do
-    echo "EVENT triage $id"
-  done <<<"$new_ids"
-  PASS_EVENT=1
+  # Settled verdicts and unresolved discoveries share this owner. One bulk
+  # membership pass keeps old unresolved issues after discovery advances.
+  new_ids="$(awk -F'\t' 'NR == FNR {
+      if ($1 == "triage" && NF == 2) settled[$2] = 1
+      if ($1 == "triage-pending" && NF == 2) pending[$2] = 1
+      next
+    }
+    NF { pending[$0] = 1 }
+    END { for (id in pending) if (!(id in settled)) print id }
+    ' <(printf '%s\n' "${PW_SEEN[0]}") <(printf '%s\n' "$ids") | LC_ALL=C sort)" \
+    || die tracker-list-invalid "" "team=$LINEAR_TEAM"
+  TRIAGE_PROGRESS="$(awk -v start="$LONG_STARTED" -v team="$LINEAR_TEAM" '
+    BEGIN { print "triage-scan\t" team "\t" start }
+    NF { print "triage-pending\t" $0 }
+    ' <<<"$new_ids")" || die state-write-failed "" "row=triage-scan"
+  if [[ -n "$new_ids" ]]; then
+    while IFS= read -r id; do
+      printf 'EVENT triage %s\n' "$id" || die event-write-failed "" "item=$id"
+    done <<<"$new_ids"
+    PASS_EVENT=1
+  fi
+}
+
+# The parent commits discovery only after draining the complete event spool.
+# Failure leaves both the scan floor and unresolved discoveries for a retry.
+triage_progress_commit() {
+  [[ -n "$TRIAGE_PROGRESS" ]] || return 0
+  local state_file next=""
+  state_file="$(pw_state_file "${REPOS[0]}")"
+  [[ ! -f "$state_file" ]] || next="$(awk -F'\t' '$1 != "triage-scan" && $1 != "triage-pending" { print }' "$state_file")" \
+    || die state-read-failed "" "path=$state_file"
+  [[ -z "$next" ]] || next+=$'\n'
+  lane_row_commit "$next$TRIAGE_PROGRESS"
 }
 
 # A lane told to hand off records `.handoff` in its item's state and exits.
@@ -1996,46 +2123,155 @@ workflow_absent() { # REPO WORKFLOW ERROR_FILE
     && ! grep -qxF ".github/workflows/$2" <<<"$workflows"
 }
 
+# The default-branch runs a red main is read from: kendex's skill-tests.yml,
+# and the harness-ci template's ci.yml, whose nightly schedule run is its
+# only run on main; a push run counts only where a repository adds the
+# trigger. Each repository also reads every workflow ORCH_MAIN_WORKFLOWS
+# names for it (MAIN_DECLARED), since a consumer's nightly platform run can
+# live in a file of its own. Each workflow's push and nightly schedule keep
+# their own incident row: the push compiles, the nightly run tests the
+# platform roster, so a green push must not clear a red night. A read that
+# finds no completed run of an event leaves its row as it stands.
+#
+# The pass's cost is held to the watch's process ceilings: every run list is
+# read first, so one jq start parses them all, and the rows are read and
+# written in this shell, never in a command substitution's fork. gh rewrites
+# an access failure to the same 404 as a workflow the default branch lacks,
+# so that 404 alone proves no absence. A run list this pass read from the
+# same repository proves access, and there the 404 proves the workflow
+# absent; with no such read, workflow_absent reads the workflow list. A
+# default workflow proven absent clears its rows silently, since most
+# repositories lack one of the two. A declared one is a setting that names a
+# file the repository does not hold, and would leave its nightly unread, so
+# it raises main-workflow-absent once until a read of it succeeds. An entry
+# for a repository the watch does not read, a misspelled one among them,
+# would leave its nightly unread the same way, so it raises the event too.
+MAIN_WORKFLOWS='skill-tests.yml ci.yml'
+# main_workflow_absent REPO WORKFLOW CAUSE — reports a declared workflow
+# no run list reads, once per cause: CAUSE is branch (the default branch
+# lacks it) or unwatched (REPO is not a repository this watch reads). Reads
+# and updates check_main_push's rows.
+main_workflow_absent() {
+  lane_row_get main-workflow-absent "$rows" "$1:$2" >/dev/null
+  [[ "$LANE_ROW" != "$3" ]] || return 0
+  printf 'EVENT main-workflow-absent %s workflow=%s cause=%s\n' "$1" "$2" "$3"
+  PASS_EVENT=1
+  lane_row_set main-workflow-absent "$rows" "$1:$2" "$3" >/dev/null \
+    || die state-read-failed "" "repo=$1" "row=main-workflow-absent"
+  rows="$LANE_ROW"
+}
 check_main_push() {
-  local repo runs run conclusion jobs log cause failures key prior changed rc
-  local rows="${PW_SEEN[0]}" errf="$WORK_DIR/main-push.err"
+  local repo workflow workflows entry row_key event row failing runs run conclusion jobs log cause failures key prior changed rc i line
+  local -a slots lists reads parsed
+  local rows="${PW_SEEN[0]}" errf="$WORK_DIR/main-push.err" read_repos=" " watched=" ${REPOS[*]} "
+  slots=() lists=() reads=() parsed=()
+  # A record for an entry the setting no longer names would hold back the
+  # report when the entry comes back with the same fault.
+  [[ "$rows" != *main-workflow-absent* ]] || while IFS=$'\t' read -r row row_key prior; do
+    [[ "$row" == main-workflow-absent && "$MAIN_DECLARED" != *" $row_key "* ]] || continue
+    lane_row_clear main-workflow-absent "$rows" "$row_key" >/dev/null \
+      || die state-read-failed "" "row=main-workflow-absent"
+    rows="$LANE_ROW"
+  done <<<"$rows"
+  for entry in $MAIN_DECLARED; do
+    [[ "$watched" == *" ${entry%%:*} "* ]] || main_workflow_absent "${entry%%:*}" "${entry#*:}" unwatched
+  done
   for repo in "${REPOS[@]}"; do
-    rc=0
-    runs="$(gh run list --repo "$repo" --workflow skill-tests.yml --branch main --event push \
-      --status completed --limit 1 --json databaseId,conclusion 2>"$errf")" || rc=$?
-    if (( rc == 0 )); then
-      runs="$(jq -er '
-        if type == "array" and length <= 1 and all(.[];
-          (.databaseId | type) == "number" and (.conclusion | type) == "string") then
-          if length == 0 then "none|" else "\(.[0].databaseId)|\(.[0].conclusion)" end
-        else error("invalid completed main-push runs") end' <<<"$runs" 2>"$errf")" || rc=$?
-    fi
+    # A row keyed <repo> alone is skill-tests.yml's, from before the
+    # workflow key.
+    for row in main-push-failing main-schedule-failing; do
+      lane_row_get "$row" "$rows" "$repo" >/dev/null
+      [[ -n "$LANE_ROW" ]] || continue
+      prior="$LANE_ROW"
+      lane_row_clear "$row" "$rows" "$repo" >/dev/null \
+        && lane_row_set "$row" "$LANE_ROW" "$repo:skill-tests.yml" "$prior" >/dev/null \
+        || die state-read-failed "" "repo=$repo" "row=$row"
+      rows="$LANE_ROW"
+    done
+    workflows="$MAIN_WORKFLOWS"
+    for entry in $MAIN_DECLARED; do
+      [[ "${entry%%:*}" == "$repo" && " $workflows " != *" ${entry#*:} "* ]] || continue
+      workflows+=" ${entry#*:}"
+    done
+    for workflow in $workflows; do
+      for event in push schedule; do
+        i="${#slots[@]}" rc=0
+        runs="$(gh run list --repo "$repo" --workflow "$workflow" --branch main --event "$event" \
+          --status completed --limit 1 --json databaseId,conclusion 2>"$WORK_DIR/main-runs-$i.err")" || rc=$?
+        slots+=("$repo $workflow $event") lists+=("$runs") reads+=("$rc")
+        (( rc != 0 )) || read_repos+="$repo "
+      done
+    done
+  done
+  # One line per list, in read order; a list that is not a valid page
+  # prints invalid. A failed read's line goes unused.
+  rc=0
+  runs="$(jq -nr '$ARGS.positional[] | try (fromjson |
+      if type == "array" and length <= 1 and all(.[];
+        (.databaseId | type) == "number" and (.conclusion | type) == "string") then
+        if length == 0 then "none|" else "\(.[0].databaseId)|\(.[0].conclusion)" end
+      else error("invalid completed main-push runs") end) catch "invalid|"' \
+    --args "${lists[@]}" 2>"$errf")" || rc=$?
+  if (( rc == 0 )); then
+    IFS=$'\n' read -ra parsed -d '' <<<"$runs" || true
+  else
+    for i in "${!reads[@]}"; do (( reads[i] != 0 )) || reads[i]=$rc; done
+  fi
+  for i in "${!slots[@]}"; do
+    read -r repo workflow event <<<"${slots[i]}"
+    row_key="$repo:$workflow"
+    # The conclusions and job conclusions that mark the run red. Nothing
+    # else runs the nightly platform roster, so a scheduled run cut short
+    # by a job's timeout-minutes (GitHub reports it cancelled) or one that
+    # never started reports too.
+    row=main-push-failing failing='failure timed_out'
+    [[ "$event" == push ]] ||
+      row=main-schedule-failing failing='failure timed_out cancelled startup_failure'
+    rc="${reads[i]}" runs="${parsed[i]:-}"
+    # 5 is the status jq gives the invalid page it parsed alone.
+    if (( rc == 0 )) && [[ "$runs" == 'invalid|' ]]; then rc=5; fi
     if (( rc != 0 )); then
-      if workflow_absent "$repo" skill-tests.yml "$errf"; then
-        rows="$(lane_row_clear main-push-failing "$rows" "$repo")" \
-          || die state-read-failed "" "repo=$repo" "row=main-push-failing"
+      line=""
+      IFS= read -r line <"$WORK_DIR/main-runs-$i.err" || true
+      if { [[ "$read_repos" == *" $repo "* ]] &&
+          [[ "$line" == "HTTP 404: workflow $workflow not found on the default branch ("* ]]; } ||
+        workflow_absent "$repo" "$workflow" "$WORK_DIR/main-runs-$i.err"; then
+        lane_row_clear "$row" "$rows" "$row_key" >/dev/null \
+          || die state-read-failed "" "repo=$repo" "row=$row"
+        rows="$LANE_ROW"
+        [[ "$MAIN_DECLARED" == *" $row_key "* ]] || continue
+        # The push and the schedule read both prove it absent; the row
+        # keeps it to one event.
+        main_workflow_absent "$repo" "$workflow" branch
         continue
       fi
-      ow_message main-push-unread "repo=$repo" "read=runs" "exit=$rc" >&2
+      ow_message main-push-unread "repo=$repo" "workflow=$workflow" "read=runs" "exit=$rc" >&2
       continue
     fi
+    if [[ "$MAIN_DECLARED" == *" $row_key "* ]]; then
+      lane_row_clear main-workflow-absent "$rows" "$row_key" >/dev/null \
+        || die state-read-failed "" "repo=$repo" "row=main-workflow-absent"
+      rows="$LANE_ROW"
+    fi
     IFS='|' read -r run conclusion <<<"$runs"
-    if [[ "$conclusion" != failure && "$conclusion" != timed_out ]]; then
-      rows="$(lane_row_clear main-push-failing "$rows" "$repo")" \
-        || die state-read-failed "" "repo=$repo" "row=main-push-failing"
+    [[ "$run" != none ]] || continue
+    if [[ " $failing " != *" $conclusion "* ]]; then
+      lane_row_clear "$row" "$rows" "$row_key" >/dev/null \
+        || die state-read-failed "" "repo=$repo" "row=$row"
+      rows="$LANE_ROW"
       continue
     fi
     rc=0
     jobs="$(gh run view "$run" --repo "$repo" --json jobs 2>"$errf")" || rc=$?
     if (( rc == 0 )); then
-      jobs="$(jq -ec '
+      jobs="$(jq -ec --arg failing "$failing" '
         if (.jobs | type) == "array" and all(.jobs[];
           (.name | type) == "string" and (.conclusion | type) == "string") then
-          [.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .name] | unique
+          [.jobs[] | select(.conclusion as $c | $failing | split(" ") | any(. == $c)) | .name] | unique
         else error("invalid main-push jobs") end' <<<"$jobs" 2>"$errf")" || rc=$?
     fi
     if (( rc != 0 )); then
-      ow_message main-push-unread "repo=$repo" "read=jobs" "run=$run" "exit=$rc" >&2
+      ow_message main-push-unread "repo=$repo" "workflow=$workflow" "read=jobs" "run=$run" "exit=$rc" >&2
       continue
     fi
     rc=0
@@ -2057,24 +2293,25 @@ check_main_push() {
       fi
     fi
     if (( rc != 0 )); then
-      ow_message main-push-unread "repo=$repo" "read=log" "run=$run" "exit=$rc" >&2
+      ow_message main-push-unread "repo=$repo" "workflow=$workflow" "read=log" "run=$run" "exit=$rc" >&2
     fi
-    prior="$(lane_row_get main-push-failing "$rows" "$repo")" \
-      || die state-read-failed "" "repo=$repo" "row=main-push-failing"
+    lane_row_get "$row" "$rows" "$row_key" >/dev/null
+    prior="$LANE_ROW"
     # Missing logs cannot change known failures. Recovery fills missing
     # evidence quietly; later reads still compare it, including rerun attempts.
     key="$(jq -cn --argjson jobs "$jobs" --argjson failures "$failures" --argjson prior "${prior:-null}" '
       [$jobs, (if $failures == null and $prior[0] == $jobs then $prior[1] else $failures end)]')" \
-      || die state-read-failed "" "repo=$repo" "row=main-push-failing"
+      || die state-read-failed "" "repo=$repo" "row=$row"
     changed="$(jq -nr --argjson key "$key" --argjson prior "${prior:-null}" '
       $prior == null or $key[0] != $prior[0] or ($prior[1] != null and $key[1] != $prior[1])')" \
-      || die state-read-failed "" "repo=$repo" "row=main-push-failing"
+      || die state-read-failed "" "repo=$repo" "row=$row"
     if [[ "$changed" == true ]]; then
-      printf 'EVENT main-push-failing %s workflow=skill-tests.yml run=%s jobs=%s cause=%s\n' "$repo" "$run" "$jobs" "$cause"
+      printf 'EVENT main-push-failing %s workflow=%s event=%s run=%s jobs=%s cause=%s\n' "$repo" "$workflow" "$event" "$run" "$jobs" "$cause"
       PASS_EVENT=1
     fi
-    rows="$(lane_row_set main-push-failing "$rows" "$repo" "$key")" \
-      || die state-read-failed "" "repo=$repo" "row=main-push-failing"
+    lane_row_set "$row" "$rows" "$row_key" "$key" >/dev/null \
+      || die state-read-failed "" "repo=$repo" "row=$row"
+    rows="$LANE_ROW"
   done
   lane_row_commit "$rows"
 }
@@ -2321,6 +2558,7 @@ read_owner_tracker_answers() {
   : >"$WORK_DIR/tracker-item-lists"
   while IFS= read -r label; do
     if ! items="$("$TRACKER" issues list --assignee "$OWNER_TRACKER_EMAIL" --label "$label" --max --format=safe 2>"$WORK_DIR/tracker.err")"; then
+      tracker_quota_refusal "$WORK_DIR/tracker.err" && return 0
       echo 'KEN-3624-unread cause=issues' >&2; return 0
     fi
     if ! jq -ce arrays <<<"$items" >>"$WORK_DIR/tracker-item-lists" 2>"$WORK_DIR/tracker.err"; then
@@ -2342,8 +2580,10 @@ read_owner_tracker_answers() {
     issue="$(jq -r '.id' <<<"$repair")" || return 1
     description="$(jq -r '.description + "."' <<<"$repair")" || return 1
     description="${description%.}"
-    "$TRACKER" issues update "$issue" --description "$description" >"$WORK_DIR/tracker.out" 2>"$WORK_DIR/tracker.err" ||
+    if ! "$TRACKER" issues update "$issue" --description "$description" >"$WORK_DIR/tracker.out" 2>"$WORK_DIR/tracker.err"; then
+      tracker_quota_refusal "$WORK_DIR/tracker.err" && return 0
       owner_tracker_unwritten "$issue" description
+    fi
   done <"$WORK_DIR/tracker-repairs"
   if ! items="$(jq -r '.[].id' <<<"$items" 2>"$WORK_DIR/tracker.err")"; then
     echo 'KEN-3624-unread cause=issues-format' >&2; return 0
@@ -2351,13 +2591,16 @@ read_owner_tracker_answers() {
   while IFS= read -r issue; do [[ -z "$issue" ]] || ids+=("$issue"); done <<<"$items"
   [[ ${#ids[@]} -gt 0 ]] || { OWNER_TRACKER_READ=read; return 0; }
   if ! "$TRACKER" comments bulk-list "${ids[@]}" --format=safe >"$WORK_DIR/tracker-comments" 2>"$WORK_DIR/tracker.err"; then
+    tracker_quota_refusal "$WORK_DIR/tracker.err" && return 0
     echo 'KEN-3624-unread cause=comments' >&2; return 0
   fi
   if ! jq -cn --slurpfile comments "$WORK_DIR/tracker-comments" --arg email "$OWNER_TRACKER_EMAIL" \
     --slurpfile asks "$WORK_DIR/tracker-asks" '
       $asks[] | select(.tracker_posted == true) | . as $ask
       | ($comments[0][$ask.issue] // []) as $rows
-      | ([$rows[] | select((.body | split("\n") | index("ask=" + $ask.id)) != null)]
+      # A legacy record carries no comment id; its comment carries an ask= line.
+      | ([$rows[] | select(if $ask.tracker_comment != null then .id == $ask.tracker_comment
+          else (.body | split("\n") | index("ask=" + $ask.id)) != null end)]
         | sort_by(.created_at) | first) as $posted
       | select($posted != null)
       | ($rows | sort_by(.created_at))[] | select((.user_email | ascii_downcase) == ($email | ascii_downcase)
@@ -2908,8 +3151,6 @@ wall_pause() { # LANE SEEN_AT
     >/dev/null 2>"$errf" || { ow_message wall-unrecorded "lane=$1" >&2; cat -- "$errf" >&2; }
 }
 
-lane_field() { awk -F'\t' -v i="$2" -v field="$3" '$1 == i { print $field }' <<<"$1"; }
-lane_obs_state() { lane_field "$1" "$2" 2; }
 lane_pane_file() { printf '%s/pane.%s' "$WORK_DIR" "$1"; }
 
 # A Pi lane's rows (lib/session-rows.sh § session_rows_lane_verdict), read
@@ -2971,6 +3212,8 @@ observe_lanes() {
   # still end their walls and are pruned below.
   local lane kind target pane below key prefix prior obs pid cmd capture errf i=0 state="${PW_SEEN[0]}"
   local pane_mode capture_rc pane_host pane_item
+  # One window listing per session answers membership for the whole snapshot.
+  local LANE_WINDOW_CACHE=1 LANE_WINDOW_SESSIONS=() LANE_WINDOW_LISTINGS=()
   local banner banner_rc reset_key seen_at seen_pane seen_reported seen_key
   for lane in ${LANES[@]+"${LANES[@]}"}; do
     i=$((i + 1))
@@ -2978,15 +3221,16 @@ observe_lanes() {
     rm -f "$capture" "$capture.$$.tmp"
     if ! lane_window_listed "$lane"; then
       LANE_OBS+="$i"$'\t'"gone"$'\t\t\t\n'
-      state="$(lane_row_clear lane-asking "$state" "$lane")"
-      if ! prior="$(lane_row_get usage-limit "$state" "$lane")"; then
+      lane_row_clear lane-asking "$state" "$lane" >/dev/null; state="$LANE_ROW"
+      if ! lane_row_get usage-limit "$state" "$lane" >/dev/null; then
         die state-read-failed "" "lane=$lane" "row=usage-limit"
       fi
+      prior="$LANE_ROW"
       [[ -z "$prior" ]] || wall_pause "$lane" "${prior%%|*}"
-      state="$(lane_row_clear usage-limit "$state" "$lane")"
-      state="$(lane_row_clear model-capacity "$state" "$lane")"
-      state="$(lane_row_clear lane-exited "$state" "$lane")"
-      state="$(lane_row_clear lane-idle "$state" "$lane")"
+      lane_row_clear usage-limit "$state" "$lane" >/dev/null; state="$LANE_ROW"
+      lane_row_clear model-capacity "$state" "$lane" >/dev/null; state="$LANE_ROW"
+      lane_row_clear lane-exited "$state" "$lane" >/dev/null; state="$LANE_ROW"
+      lane_row_clear lane-idle "$state" "$lane" >/dev/null; state="$LANE_ROW"
       continue
     fi
     errf="$WORK_DIR/lane-probe.$i.err"
@@ -3031,12 +3275,12 @@ observe_lanes() {
     lane_rows_read "$i" "$lane"
     pane="$(cat -- "$capture")"
     below="$(pane_below_last_turn "$pane")"
-    prior="$(lane_row_get lane-asking "$state" "$lane")"
+    lane_row_get lane-asking "$state" "$lane" >/dev/null; prior="$LANE_ROW"
     prefix="${key}|$(pane_turn_identity "$pane")|"
     LANE_TURNS[$i]="${prefix}model-capacity"
     if ! grep -Eq -- "$LANE_ASKING_RE" <<<"$below" \
        || [[ -n "$prior" && "$prior" != "$prefix"* ]]; then
-      state="$(lane_row_clear lane-asking "$state" "$lane")"
+      lane_row_clear lane-asking "$state" "$lane" >/dev/null; state="$LANE_ROW"
     fi
     # When this pass first sees a wall, stamp it: the row is what later lets a
     # dayless clause name a day. Stamped HERE, on every lane, rather than
@@ -3051,22 +3295,23 @@ observe_lanes() {
     # too, with an empty reset key: the row is also where check_lanes records
     # that the wall was reported, and a wall with no row is one reported on
     # every run.
-    lane_banner_text "$i" "$lane" "$pane"
+    if [[ -n "${LANE_ROWS[$i]:-}" ]]; then lane_banner_text "$i" "$lane" "$pane"
+    else LANE_BANNER_TEXT="$below"; fi
     banner_rc=0
     banner="$(lane_limit_banner "$LANE_BANNER_TEXT")" || banner_rc=$?
     [[ "$banner_rc" -ne 2 ]] || die limit-scan-failed "" "lane=$lane"
     reset_key="$(usage_reset_key "$banner")"
-    prior="$(lane_row_get usage-limit "$state" "$lane")"
+    lane_row_get usage-limit "$state" "$lane" >/dev/null; prior="$LANE_ROW"
     if [[ -n "$banner" ]]; then
       seen_at=""; seen_pane=""; seen_key=""
       [[ -z "$prior" ]] || IFS='|' read -r seen_at seen_pane seen_reported seen_key <<<"$prior"
       if [[ "$seen_pane" != "$key" || "$seen_key" != "$reset_key" ]]; then
         [[ -z "$prior" ]] || wall_pause "$lane" "$seen_at"
-        state="$(lane_row_set usage-limit "$state" "$lane" "$PASS_NOW|$key||$reset_key")"
+        lane_row_set usage-limit "$state" "$lane" "$PASS_NOW|$key||$reset_key" >/dev/null; state="$LANE_ROW"
       fi
     else
       [[ -z "$prior" ]] || wall_pause "$lane" "${prior%%|*}"
-      state="$(lane_row_clear usage-limit "$state" "$lane")"
+      lane_row_clear usage-limit "$state" "$lane" >/dev/null; state="$LANE_ROW"
     fi
   done
   # A wall on a window that left the fleet ends with it.
@@ -3078,6 +3323,7 @@ observe_lanes() {
   state="$(lane_row_prune model-capacity "$state" ${LANES[@]+"${LANES[@]}"})"
   state="$(lane_row_prune lane-exited "$state" ${LANES[@]+"${LANES[@]}"})"
   state="$(lane_row_prune lane-idle "$state" ${LANES[@]+"${LANES[@]}"})"
+  state="$(lane_row_prune close-pending "$state" ${LANES[@]+"${LANES[@]}"})"
   lane_row_commit "$state"
 }
 
@@ -3096,17 +3342,17 @@ observe_lanes() {
 # ---------------------------------------------------------------------------
 
 # Set once a successor holds the window of the overseer this pass recovered,
-# dead or walled: the pass then ends at exit 3 without running the checks
-# below it, so the mail the successor is meant to drain is not drained here
-# first.
+# dead, walled or at its launch reserve: the pass then ends at exit 3 without
+# running the checks below it, so the mail the successor is meant to drain is
+# not drained here first.
 OVERSEER_SUCCEEDED=0
 # Initial launch plus one later retry. This internal ceiling prevents a pane
-# read dead or walled from launching successors forever when the host cannot
+# recovery from launching successors forever when the host cannot
 # start one.
 OVERSEER_RELAUNCH_ATTEMPTS=2
-# Repeat mode stops on notice-only recovery, an exhausted retry, or a
-# recovery the fleet has no account for. A direct single pass keeps its
-# documented status 0 for those outcomes.
+# Repeat mode stops on notice-only, exhausted or blocked recovery after a
+# death or wall. Reserve recovery keeps repeat mode live. A direct single
+# pass keeps its documented status 0 for those outcomes.
 OVERSEER_STOP=0
 # The launch line for this pass, as the fleet state holds it or as this pass
 # recorded it.
@@ -3135,20 +3381,18 @@ overseer_publish() { # NOTICE RECORD ERR_FILE
 # reads it as the text of its record and the overseer mailbox as the body of an
 # owner note, so the two cannot describe the case differently.
 #
-# KIND is `dead` or `walled`, the two cases check_overseer recovers from, and
-# it decides three words and nothing else: the notice's own key, the reading
-# that was taken, and how a relaunch describes where the successor's account
-# came from. Every other plan reads the same for both, because the reason no
-# successor opens is the same reason. RECORD is the fleet state's overseer
+# KIND selects the reading and plan wording. RECORD is the fleet state's overseer
 # record key, `<server> <pane>` or empty for none, and MINE 1 where that
 # record names this session (overseer_record_read), which the key alone does
 # not say: an earlier server handed the same pid and pane id left the same
 # one. The no-line plan names which of the three shapes left it with no line.
 overseer_deliver() { # KIND PANE WINDOW SUCCESSION PLAN RECORD MINE
   local kind="$1" notice="$WORK_DIR/overseer-$1.txt" record="$WORK_DIR/overseer-$1.json"
-  local errf="$WORK_DIR/overseer-deliver.err" now plan_text reading relaunch_text
+  local errf="$WORK_DIR/overseer-deliver.err" now plan_text reading relaunch_text headline
   now="$(from_epoch "$PASS_NOW" '%Y-%m-%dT%H:%M:%SZ')" || now=""
-  if [[ "$kind" == walled ]]; then
+  if [[ "$kind" == reserve ]]; then
+    relaunch_text='A successor is being selected. The current coordinator can still spend credits and its watch continues if no successor opens.'
+  elif [[ "$kind" == walled ]]; then
     reading=walled
     relaunch_text='A successor is being launched into that window on an account the lane pick judged, never on the spent one.'
   else
@@ -3174,8 +3418,14 @@ overseer_deliver() { # KIND PANE WINDOW SUCCESSION PLAN RECORD MINE
     # one.
     *) plan_text="No successor is launched; the watch reported plan $5, which it has no wording for. Start one by hand." ;;
   esac
-  printf 'overseer-%s: the overseer session in tmux window %s (pane %s) read %s on %s consecutive watch passes at %s, source=%s. %s\n' \
-    "$kind" "$3" "$2" "$reading" "$DEAD_PASSES" "${now:-an unreadable clock}" "$OV_SOURCE" "$plan_text" > "$notice" \
+  if [[ "$kind" == reserve ]]; then
+    printf -v headline 'overseer-reserve: pane=%s window=%s account=%s. Spendable credits remain below the launch reserve. The coordinator stays live and its watch continues. %s' \
+      "$2" "$3" "${OVERSEER_MARK_ACCOUNT:-unknown}" "$plan_text"
+  else
+    printf -v headline 'overseer-%s: the overseer session in tmux window %s (pane %s) read %s on %s consecutive watch passes at %s, source=%s. %s' \
+      "$kind" "$3" "$2" "$reading" "$DEAD_PASSES" "${now:-an unreadable clock}" "$OV_SOURCE" "$plan_text"
+  fi
+  printf '%s\n' "$headline" > "$notice" \
     || { overseer_note overseer-notice-failed "channel=file"; return 0; }
   overseer_publish "$notice" "$record" "$errf"
 }
@@ -3183,20 +3433,30 @@ overseer_deliver() { # KIND PANE WINDOW SUCCESSION PLAN RECORD MINE
 # Exit 3 from the launcher is `lanes pick`'s own "no lane clears the bound",
 # relayed by oversee-succeed: no account in the fleet has room for a
 # successor. One notice on the two channels the recovery already uses, the row
-# marked reported, and the repeat stops — the same ending notice-only recovery
-# takes, because the bounded retry would walk the same accounts and refuse
-# again.
+# marked reported, because a retry would walk the same accounts and refuse
+# again. A reserve refusal leaves the current session live; real failures stop
+# repeat mode.
 #
-# The account and the time it frees up are the account judgement's own fields,
-# read off the one `--check-marks` line this pass already took and that
-# confirmed the wall. Not derived from the banner: `lanes context` measured
-# the headroom that confirmed it and names the bucket's own reset, so the
-# figure the fleet waits on and the figure that established the wall are one
-# reading. Either can be absent where that judgement named neither.
-overseer_recovery_blocked() { # ROW ROWS IDENTITY PANE WINDOW
+# The account fields come from this pass's existing `--check-marks` result,
+# never from the banner or from the requested recovery mode. Reserve refusal
+# reports the measured account without a reset promise. Actual wall recovery
+# reports a measured binding bucket reset where available. Authentication
+# failure has no usage reset. See ../references/overseer-session-events.md,
+# Recovery requests.
+overseer_recovery_blocked() { # ROW ROWS IDENTITY PANE WINDOW KIND
   local row="$1" rows="$2" identity="$3" pane="$4" window="$5"
+  local kind="$6"
   local notice="$WORK_DIR/overseer-blocked.txt" record="$WORK_DIR/overseer-blocked.json"
   local errf="$WORK_DIR/overseer-blocked.err"
+  if [[ "$kind" == reserve ]]; then
+    lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" reserve:reported)"
+    printf 'overseer-capacity-blocked: pane=%s account=%s. No account qualifies for a successor. The current coordinator can still spend credits. Its watch continues.\n' \
+      "$pane" "${OVERSEER_MARK_ACCOUNT:-unknown}" > "$notice" \
+      || { overseer_note overseer-notice-failed "channel=file"; return 0; }
+    overseer_publish "$notice" "$record" "$errf"
+    ow_message overseer-capacity-blocked "pane=$pane" "account=${OVERSEER_MARK_ACCOUNT:-unknown}" >&2
+    return 0
+  fi
   lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" reported)"
   OVERSEER_STOP=1
   local account="" resets=""
@@ -3216,23 +3476,25 @@ overseer_recovery_blocked() { # ROW ROWS IDENTITY PANE WINDOW
     "account=${account:-unknown}" "resets=${resets:-none}" >&2
 }
 
-overseer_relaunch_failed() { # ROW ROWS IDENTITY PANE WINDOW ATTEMPT STEP
+overseer_relaunch_failed() { # ROW ROWS IDENTITY PANE WINDOW ATTEMPT STEP KIND
   local row="$1" rows="$2" identity="$3" pane="$4" window="$5" attempt="$6" step="$7"
+  local kind="$8" prefix="" key=overseer-relaunch-failed
+  [[ "$kind" != reserve ]] || { prefix=reserve:; key=overseer-capacity-failed; }
   local retry=exhausted notice="$WORK_DIR/overseer-relaunch-failed.txt"
   local record="$WORK_DIR/overseer-relaunch-failed.json" errf="$WORK_DIR/overseer-relaunch-failed.err"
   if (( attempt < OVERSEER_RELAUNCH_ATTEMPTS )); then
     retry=pending
-    rows="$(lane_row_set "$row" "$rows" "$identity" "pending:$attempt")"
+    rows="$(lane_row_set "$row" "$rows" "$identity" "${prefix}pending:$attempt")"
   else
-    rows="$(lane_row_set "$row" "$rows" "$identity" reported)"
-    OVERSEER_STOP=1
+    rows="$(lane_row_set "$row" "$rows" "$identity" "${prefix}reported")"
+    [[ "$kind" == reserve ]] || OVERSEER_STOP=1
   fi
   lane_row_commit "$rows"
-  printf 'overseer-relaunch-failed: successor launch for tmux window %s (pane %s) failed on attempt %s; retry=%s; step=%s.\n' \
-    "$window" "$pane" "$attempt" "$retry" "$step" > "$notice" \
+  printf '%s: successor launch for tmux window %s (pane %s) failed on attempt %s; retry=%s; step=%s.\n' \
+    "$key" "$window" "$pane" "$attempt" "$retry" "$step" > "$notice" \
     || { overseer_note overseer-notice-failed "channel=file"; return 0; }
   overseer_publish "$notice" "$record" "$errf"
-  ow_message overseer-relaunch-failed "pane=$pane" "attempt=$attempt" "retry=$retry" "step=$step" >&2
+  ow_message "$key" "pane=$pane" "attempt=$attempt" "retry=$retry" "step=$step" >&2
 }
 
 # The overseer's own marks, judged by `oversee-succeed --check-marks`. ONE
@@ -3264,6 +3526,7 @@ OVERSEER_MARK_MARK=""
 OVERSEER_MARK_SUCCESSION=on
 OVERSEER_MARK_ACCOUNT=""
 OVERSEER_MARK_RESETS=""
+OVERSEER_MARK_RESERVE_ONLY=false
 OVERSEER_MARK_READ=0
 OVERSEER_MARK_RC=1
 overseer_marks_reset() {
@@ -3317,6 +3580,7 @@ overseer_marks_judge() {
   OVERSEER_MARK_SUCCESSION=on
   OVERSEER_MARK_ACCOUNT=""
   OVERSEER_MARK_RESETS=""
+  OVERSEER_MARK_RESERVE_ONLY=false
   if [[ ! -x "$SUCCEED" ]]; then
     overseer_note overseer-mark-unjudged "path=$SUCCEED" "setting=OVERSEE_WATCH_SUCCEED"
     return 1
@@ -3348,6 +3612,7 @@ overseer_marks_judge() {
       succession=*) OVERSEER_MARK_SUCCESSION="${field#succession=}" ;;
       account=*) OVERSEER_MARK_ACCOUNT="${field#account=}" ;;
       resets=*) OVERSEER_MARK_RESETS="${field#resets=}" ;;
+      reserve_only=true) OVERSEER_MARK_RESERVE_ONLY=true ;;
     esac
   done
   OVERSEER_MARK_RC=0
@@ -3364,13 +3629,14 @@ overseer_marks_judge() {
 # alive.
 #
 # So the screen never decides alone: the wall is confirmed only by the
-# judge's own `mark-reached kind=headroom`, by the account mark
+# judge's own non-reserve `mark-reached kind=headroom`, by the account mark
 # `oversee-succeed --help` owns, so no figure is compared here. Every other
 # answer, a failed judgement included, leaves the pane read as the working
 # overseer it looks like.
 overseer_wall_confirmed() { # PANE
   overseer_marks_judge || { overseer_note overseer-wall-unjudged "pane=$1"; return 1; }
-  [[ "$OVERSEER_MARK_KEY" == mark-reached && "$OVERSEER_MARK_KIND" == headroom ]] && return 0
+  [[ "$OVERSEER_MARK_KEY" == mark-reached && "$OVERSEER_MARK_KIND" == headroom \
+     && "$OVERSEER_MARK_RESERVE_ONLY" != true ]] && return 0
   overseer_note overseer-wall-unconfirmed "pane=$1" "answer=$OVERSEER_MARK_KEY" \
     "kind=${OVERSEER_MARK_KIND:-none}"
   return 1
@@ -3762,7 +4028,7 @@ overseer_judge() { # PANE
 check_overseer() {
   local pane="${TMUX_PANE:-}" window screen prior count succession plan
   local record record_mine record_field identity rows attempt completed passes=""
-  local ov_case row other succeed_rc below banner banner_rc
+  local ov_case row other succeed_rc below banner banner_rc prefix=""
   local errf="$WORK_DIR/overseer.err"
   # Off tmux there is no overseer pane to read, and with no workflow-state
   # there is nowhere to record one: either way an overseer that dies is
@@ -3799,14 +4065,13 @@ check_overseer() {
   record_mine="$OVERSEER_RECORD_MINE"
 
   overseer_judge "$pane"
-  # An account mark reached at value 0 is a wall whether or
-  # not the harness has met it yet: its next turn fails, and a walled session
-  # hands nothing over, so the succession runs from here, `source=account`.
+  # A launch reserve alone does not stop the current session spending credits.
+  # Other zero-headroom results retain the account-wall recovery.
   # The judgement is the pass's one memoised reading, which the live arm's
   # mark check reads too.
   if [[ "$OV_VERDICT" == live ]] && overseer_marks_judge \
      && [[ "$OVERSEER_MARK_KEY" == mark-reached && "$OVERSEER_MARK_KIND" == headroom \
-           && "$OVERSEER_MARK_VALUE" == 0 ]]; then
+           && "$OVERSEER_MARK_VALUE" == 0 && "$OVERSEER_MARK_RESERVE_ONLY" != true ]]; then
     OV_VERDICT=walled OV_SOURCE=account
   fi
   # A harness whose recorded context fills its window takes no turn again, and
@@ -3820,7 +4085,12 @@ check_overseer() {
   case "$OV_VERDICT" in
     exited) ov_case=dead ;;
     walled) ov_case=walled ;;
-    live) ;;
+    live)
+      if [[ "$OVERSEER_MARK_RC" == 0 && "$OVERSEER_MARK_KEY" == mark-reached \
+         && "$OVERSEER_MARK_KIND" == headroom && "$OVERSEER_MARK_VALUE" == 0 \
+         && "$OVERSEER_MARK_RESERVE_ONLY" == true ]]; then
+        ov_case=reserve prefix=reserve:
+      fi ;;
   esac
   # One row per case, keyed by server plus pane: `<count>` while readings
   # accumulate, `pending:N` after a failed launch, and `reported` after
@@ -3828,16 +4098,30 @@ check_overseer() {
   rows="$(lane_row_prune overseer-dead "${PW_SEEN[0]}" "$identity")"
   rows="$(lane_row_prune overseer-walled "$rows" "$identity")"
   rows="$(lane_row_prune overseer-context-gap "$rows" "$identity")"
-  if [[ -z "$ov_case" ]]; then
+  if [[ -z "$ov_case" || "$ov_case" == reserve ]]; then
     rows="$(lane_row_clear overseer-dead "$rows" "$identity")"
-    rows="$(lane_row_clear overseer-walled "$rows" "$identity")"
+    prior="$(lane_row_get overseer-walled "$rows" "$identity")" \
+      || die state-read-failed "" "pane=$pane" "row=overseer-walled"
+    # An unread account does not prove that a reserve episode lifted.
+    if [[ "$prior" != reserve:* || ( "$OVERSEER_MARK_RC" == 0 && "$OVERSEER_MARK_KEY" == below-mark ) ]]; then
+      rows="$(lane_row_clear overseer-walled "$rows" "$identity")"
+    fi
     # A working overseer is the only one with marks to judge: neither a dead
     # nor a walled one runs a turn, so its context and its account settle
     # nothing and its case is the event the branch below carries.
-    overseer_mark_check "$rows" "$identity" "$pane"
+    if [[ "$ov_case" == reserve ]]; then
+      # Automatic reserve recovery owns succession, including its retry.
+      # This covers this watch's attempt and mark output only. Other callers,
+      # including the turn-end hook, keep their own succession policy.
+      rows="$(lane_row_clear overseer-mark "$rows" "$identity")"
+      OVERSEER_MARK_ROWS="$rows"
+    else
+      overseer_mark_check "$rows" "$identity" "$pane"
+    fi
     overseer_context_check "$pane" "$identity"
     lane_row_commit "$OVERSEER_MARK_ROWS"
-    return 0
+    [[ "$ov_case" == reserve ]] || return 0
+    rows="$OVERSEER_MARK_ROWS"
   fi
   case "$ov_case" in
     dead) row=overseer-dead; other=overseer-walled ;;
@@ -3847,27 +4131,36 @@ check_overseer() {
   # is one session recovered from one case, and a count carried across the two
   # would fire a death on a threshold a wall ran up.
   rows="$(lane_row_clear "$other" "$rows" "$identity")"
-  # A standing mark belongs to the session that reached it, and that session is
-  # the one just read dead or walled. `overseer_mark_check` is the only place a
-  # mark row is cleared and this path never runs it, so without this the row is
-  # committed back on every such pass: a replacement in this same pane would
-  # then read the old session's repeat count and wait out its remainder before
-  # its own first crossing is reported.
-  rows="$(lane_row_clear overseer-mark "$rows" "$identity")"
-  rows="$(lane_row_clear overseer-context-gap "$rows" "$identity")"
+  # Recovery retires the prior session's mark, so a replacement in this pane
+  # receives its own first crossing without waiting on the prior repeat count.
+  if [[ "$ov_case" != reserve ]]; then
+    rows="$(lane_row_clear overseer-mark "$rows" "$identity")"
+    rows="$(lane_row_clear overseer-context-gap "$rows" "$identity")"
+  fi
   if ! prior="$(lane_row_get "$row" "$rows" "$identity")"; then
     die state-read-failed "" "pane=$pane" "row=$row"
   fi
+  # Reserve attempts must not consume or suppress recovery from a real failure.
+  if [[ "$ov_case" != reserve && "$prior" == reserve:* ]]; then
+    rows="$(lane_row_clear "$row" "$rows" "$identity")"
+    prior=""
+  elif [[ "$ov_case" == reserve ]]; then
+    prior="${prior#reserve:}"
+  fi
   if [[ "$prior" == reported ]]; then
-    OVERSEER_STOP=1
+    [[ "$ov_case" == reserve ]] || OVERSEER_STOP=1
     lane_row_commit "$rows"
+    [[ "$ov_case" != reserve ]] || return 0
     return 1
   fi
   if [[ "$prior" =~ ^pending:([0-9]+)$ ]]; then
     completed="${BASH_REMATCH[1]}"
     attempt=$((completed + 1))
-    (( attempt <= OVERSEER_RELAUNCH_ATTEMPTS )) \
-      || { lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" reported)"; return 1; }
+    if (( attempt > OVERSEER_RELAUNCH_ATTEMPTS )); then
+      lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" "${prefix}reported")"
+      [[ "$ov_case" != reserve ]] || return 0
+      return 1
+    fi
   else
     [[ -z "$prior" || "$prior" =~ ^[0-9]+$ ]] \
       || die state-read-failed "" "pane=$pane" "row=$row" "value=$prior"
@@ -3877,6 +4170,7 @@ check_overseer() {
     # second reading: it is not a screen caught between frames, and each pass
     # it waits is a pass the fleet runs unattended.
     passes="$DEAD_PASSES"
+    [[ "$ov_case" != reserve ]] || passes=1
     [[ "$ov_case" != walled || "$OV_SOURCE" == pane ]] || passes=1
     if (( count < passes )); then
       lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" "$count")"
@@ -3907,11 +4201,11 @@ check_overseer() {
   fi
   if [[ "$prior" != pending:* ]]; then
     if [[ "$plan" == relaunch ]]; then
-      lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" pending:0)"
+      lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" "${prefix}pending:0")"
     else
-      lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" reported)"
+      lane_row_commit "$(lane_row_set "$row" "$rows" "$identity" "${prefix}reported")"
     fi
-    echo "EVENT $row $pane window=$window passes=${passes:-$DEAD_PASSES} succession=$succession source=$OV_SOURCE$record_field"
+    echo "EVENT overseer-$ov_case $pane window=$window passes=${passes:-$DEAD_PASSES} succession=$succession source=$OV_SOURCE$record_field"
     # The wall's own words under the line, as every lane usage-limit event
     # carries them. A rows wall carries the harness's own message, the limit
     # and its reset, or `message=unrecorded` where its row holds none. A screen wall carries the banner with the screen on both
@@ -3934,9 +4228,10 @@ check_overseer() {
     overseer_deliver "$ov_case" "$pane" "$window" "$succession" "$plan" "$record" "$record_mine"
   fi
   if [[ "$plan" != relaunch ]]; then
-    OVERSEER_STOP=1
+    [[ "$ov_case" == reserve ]] || OVERSEER_STOP=1
     [[ "$prior" != pending:* ]] \
-      || overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" "plan-$plan"
+      || overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" "plan-$plan" "$ov_case"
+    [[ "$ov_case" != reserve ]] || return 0
     return 1
   fi
 
@@ -3944,13 +4239,16 @@ check_overseer() {
   # oversee-succeed's own keyed lines are the detail under the event, not
   # records of their own. The walled recovery's stdout carries the command it
   # built as well, so the pass output says which line it sent.
+  # The walled succession walks ORCH_OVERSEER_PREFERENCE, a walk no other
+  # process prints, so it runs without this watch's model-line hold
+  # (lib/overseer-launch.sh § OL_LINES_HELD); the dead one replays a line.
   succeed_rc=0
-  if [[ "$ov_case" == walled ]]; then
+  if [[ "$ov_case" == walled || "$ov_case" == reserve ]]; then
     overseer_launch_args
-    "$SUCCEED" --walled-pane "$pane" "${OVERSEER_LAUNCH_ARGS[@]}" >&2 || succeed_rc=$?
+    env -u ORCH_MODEL_LINES_HELD "$SUCCEED" --walled-pane "$pane" "${OVERSEER_LAUNCH_ARGS[@]}" >&2 || succeed_rc=$?
   else
     printf '%s\n' "$OVERSEER_LINE" > "$WORK_DIR/overseer-line" \
-      || { overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" line-file; return 1; }
+      || { overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" line-file "$ov_case"; return 1; }
     "$SUCCEED" --dead-pane "$pane" --handoff "$HANDOFF" --line-file "$WORK_DIR/overseer-line" >&2 || succeed_rc=$?
   fi
   # Exit 3 is that script's own "no account qualifies", which a retry cannot
@@ -3958,9 +4256,10 @@ check_overseer() {
   # the bounded retry. The dead path picks no lane, so it never answers 3.
   case "$succeed_rc" in
     0) OVERSEER_SUCCEEDED=1 ;;
-    3) overseer_recovery_blocked "$row" "$rows" "$identity" "$pane" "$window" ;;
-    *) overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" launcher ;;
+    3) overseer_recovery_blocked "$row" "$rows" "$identity" "$pane" "$window" "$ov_case" ;;
+    *) overseer_relaunch_failed "$row" "$rows" "$identity" "$pane" "$window" "$attempt" launcher "$ov_case" ;;
   esac
+  [[ "$ov_case" != reserve || "$OVERSEER_SUCCEEDED" == 1 ]] || return 0
   return 1
 }
 
@@ -4026,7 +4325,7 @@ wall_relaunch_outcomes() {
 }
 wall_route() { # LANE OBS_STATE SPENT PANE_KEY
   local lane="$1" spent="$3" errf="$WORK_DIR/wall-pick.err" rc=0
-  local record fields item harness model host account to out log marker
+  local record fields item harness model host account to out log marker pane
   WALL_PICK=""
   # The judge's walled reading alone is a wall: a working lane quoting a limit
   # is never pre-empted.
@@ -4060,9 +4359,10 @@ wall_route() { # LANE OBS_STATE SPENT PANE_KEY
     ow_message wall-relaunch-refused "lane=$lane" reason=context-unavailable "cause=$LANE_RECOVERY_CAUSE" >&2
     return 1
   fi
-  if [[ "$host" != local ]]; then
+  lane_capability pane pane
+  if [[ "$host" != local && "$pane" == local ]]; then
     out="$(ORCH_LANE_HOST="$host" "$SCRIPT_DIR/lane-host" stop --item "$item" --harness "$harness" 2>"$errf")" || rc=$?
-    if [[ "$rc" -ne 0 ]] || ! grep -qE "^stopped item=$item processes=[0-9]+$" <<<"$out"; then
+    if [[ "$rc" -ne 0 ]] || ! lane_recovery_stop_confirmed "$out" "$item"; then
       ow_message wall-relaunch-refused "lane=$lane" reason=stop-failed "exit=$rc" >&2
       cat -- "$errf" >&2
       return 1
@@ -4087,10 +4387,17 @@ wall_route() { # LANE OBS_STATE SPENT PANE_KEY
 check_lanes() {
   # No lane to watch still leaves the items: a handoff is read from state.
   [[ ${#LANES[@]} -gt 0 ]] || { check_handoff; return 0; }
-  local lane pane below cmd pid state window i states="" claims="" claimed pane_key
+  local lane pane below cmd pid state window i claims="" claimed pane_key
   local seen seen_at seen_pane seen_reported seen_key reset_at reset_utc reset_note event reported_event quiet
   local asking_state fingerprint prior turn_identity capacity capacity_key screen_key close_failed=0
+  local pending_closes="${PW_SEEN[0]}" pending_close pending_row pending_key
   local banner banner_rc turn hosted_item hosted_harness wall_kind
+  local obs_kind=() obs_pid=() obs_cmd=() obs_key=() states=() exit_sources=() wall_kinds=()
+  # Read each snapshot row once. Every event loop consumes these same values.
+  while IFS=$'\t' read -r i window pid cmd pane_key; do
+    [[ -n "$i" ]] || continue
+    obs_kind[$i]="$window"; obs_pid[$i]="$pid"; obs_cmd[$i]="$cmd"; obs_key[$i]="$pane_key"
+  done <<<"$LANE_OBS"
   # One liveness read and one pane capture per lane per pass: a lane's kind is
   # decided from a single observation, never from two screens taken apart. The
   # pid leads the format so a command carrying a space cannot shift the split.
@@ -4105,11 +4412,11 @@ check_lanes() {
   for lane in "${LANES[@]}"; do
     i=$((i + 1))
     window=gone; pid=""; cmd=""; pane=""
-    if [[ "$(lane_obs_state "$LANE_OBS" "$i")" == unreadable ]]; then window=listed; fi
-    if [[ "$(lane_obs_state "$LANE_OBS" "$i")" == ready ]]; then
+    if [[ "${obs_kind[$i]}" == unreadable ]]; then window=listed; fi
+    if [[ "${obs_kind[$i]}" == ready ]]; then
       window=listed
-      pid="$(lane_field "$LANE_OBS" "$i" 3)"
-      cmd="$(lane_field "$LANE_OBS" "$i" 4)"
+      pid="${obs_pid[$i]}"
+      cmd="${obs_cmd[$i]}"
       pane="$(cat -- "$(lane_pane_file "$i")")"
     fi
     # The judge exits 2 on exactly one condition, a banner scan that failed,
@@ -4130,7 +4437,7 @@ check_lanes() {
       || die limit-scan-failed "" "lane=$lane"
     # Provider failures stay unjudged; local probe failures still permit pane judgment.
     [[ -n "$hosted_item" || "$LANE_PROBE_RC" -le 1 ]] || note_probe_unusable "$lane"
-    states+="$i"$'\t'"$state"$'\t'"$LANE_EXIT_SOURCE"$'\t'"$LANE_WALL_KIND"$'\n'
+    states[$i]="$state"; exit_sources[$i]="$LANE_EXIT_SOURCE"; wall_kinds[$i]="$LANE_WALL_KIND"
     if [[ "$state" == gone ]] && ! wall_relaunch_pending "$lane"; then
       echo "EVENT window-gone $lane"
       PASS_EVENT=1
@@ -4152,19 +4459,18 @@ check_lanes() {
   i=0
   for lane in "${LANES[@]}"; do
     i=$((i + 1))
-    if [[ "$(lane_obs_state "$states" "$i")" != exited ]]; then
-      asking_state="$(lane_row_clear lane-exited "$asking_state" "$lane")"
+    if [[ "${states[$i]}" != exited ]]; then
+      lane_row_clear lane-exited "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
       continue
     fi
-    if ! pane_key="$(lane_field "$LANE_OBS" "$i" 5)"; then
-      die state-read-failed "" "lane=$lane" "field=pane-key"
-    fi
-    if ! prior="$(lane_row_get lane-exited "$asking_state" "$lane")"; then
+    pane_key="${obs_key[$i]}"
+    if ! lane_row_get lane-exited "$asking_state" "$lane" >/dev/null; then
       die state-read-failed "" "lane=$lane" "row=lane-exited"
     fi
+    prior="$LANE_ROW"
     if [[ "$prior" == "$pane_key|reported" ]]; then continue; fi
-    if [[ "$prior" == "$pane_key" || "$(lane_field "$states" "$i" 3)" == provider ]]; then
-      asking_state="$(lane_row_set lane-exited "$asking_state" "$lane" "$pane_key|reported")"
+    if [[ "$prior" == "$pane_key" || "${exit_sources[$i]}" == provider ]]; then
+      lane_row_set lane-exited "$asking_state" "$lane" "$pane_key|reported" >/dev/null; asking_state="$LANE_ROW"
       echo "EVENT lane-exited $lane"
       pane="$(cat -- "$(lane_pane_file "$i")")"
       # What the lane said before it stopped, which is the whole handling of
@@ -4176,10 +4482,10 @@ check_lanes() {
       below="$(pane_below_last_turn "$pane")"
       report_tail "$below"
       PASS_EVENT=1
-      asking_state="$(lane_row_clear lane-asking "$asking_state" "$lane")"
+      lane_row_clear lane-asking "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
       close_finished_hosted_lane "$lane" lane-exited "$pane_key"
     else
-      asking_state="$(lane_row_set lane-exited "$asking_state" "$lane" "$pane_key")"
+      lane_row_set lane-exited "$asking_state" "$lane" "$pane_key" >/dev/null; asking_state="$LANE_ROW"
     fi
   done
   lane_row_commit "$asking_state"
@@ -4198,9 +4504,9 @@ check_lanes() {
   i=0
   for lane in "${LANES[@]}"; do
     i=$((i + 1))
-    if [[ "$(lane_obs_state "$states" "$i")" != walled ]]; then continue; fi
+    if [[ "${states[$i]}" != walled ]]; then continue; fi
     pane="$(cat -- "$(lane_pane_file "$i")")"
-    pane_key="$(lane_field "$LANE_OBS" "$i" 5)"
+    pane_key="${obs_key[$i]}"
     # The banner states when the wall lifts, and that decides which event
     # this is. A reset already behind us means the lane is parked against a
     # window that has since reopened — the harness will not notice on its
@@ -4209,12 +4515,13 @@ check_lanes() {
     # a reset `date` would not resolve, the plain event goes out with no
     # time on it and the lane is parked. `resets=` is keyed rather than
     # positional because the config dir before it is optional.
-    if ! seen="$(lane_row_get usage-limit "$asking_state" "$lane")"; then
+    if ! lane_row_get usage-limit "$asking_state" "$lane" >/dev/null; then
       die state-read-failed "" "lane=$lane" "row=usage-limit"
     fi
+    seen="$LANE_ROW"
     seen_at=""; seen_pane=""; seen_reported=""; seen_key=""
     [[ -z "$seen" ]] || IFS='|' read -r seen_at seen_pane seen_reported seen_key <<<"$seen"
-    wall_kind="$(lane_field "$states" "$i" 4)" || die state-read-failed "" "lane=$lane" "field=wall-kind"
+    wall_kind="${wall_kinds[$i]}"
     reset_at=""
     [[ -z "$seen_key" ]] || reset_at="$(usage_reset_epoch "$seen_key" "$seen_at")"
     [[ "$wall_kind" != auth ]] || reset_at=""
@@ -4273,9 +4580,9 @@ check_lanes() {
     account_wall_record "$PROJECT_ROOT" "$claimed" "$reset_at" "$PASS_NOW" "$banner" "${LANE_ROWS[$i]:+row}" || true
     [[ -z "$quiet" ]] || continue
     WALL_PICK=""
-    if [[ "$event" == usage-limit ]] && wall_route "$lane" "$(lane_obs_state "$states" "$i")" "$claimed" "$pane_key"; then
+    if [[ "$event" == usage-limit ]] && wall_route "$lane" "${states[$i]}" "$claimed" "$pane_key"; then
       PASS_EVENT=1
-      asking_state="$(lane_row_set usage-limit "$asking_state" "$lane" "${seen_at:-$PASS_NOW}|${seen_pane:-$pane_key}|lane-relaunched|$seen_key")"
+      lane_row_set usage-limit "$asking_state" "$lane" "${seen_at:-$PASS_NOW}|${seen_pane:-$pane_key}|lane-relaunched|$seen_key" >/dev/null; asking_state="$LANE_ROW"
       continue
     fi
     [[ "$wall_kind" == auth ]] || wall_kind=""
@@ -4283,7 +4590,7 @@ check_lanes() {
     [[ -z "$WALL_PICK" ]] || printf '%s\n' "$WALL_PICK"
     banner_payload "$below" "$banner" || die limit-banner-missing "" "lane=$lane"
     PASS_EVENT=1
-    asking_state="$(lane_row_set usage-limit "$asking_state" "$lane" "${seen_at:-$PASS_NOW}|${seen_pane:-$pane_key}|$reported_event|$seen_key")"
+    lane_row_set usage-limit "$asking_state" "$lane" "${seen_at:-$PASS_NOW}|${seen_pane:-$pane_key}|$reported_event|$seen_key" >/dev/null; asking_state="$LANE_ROW"
   done
   # A pane keeps its last screen, so neither a stale prompt under a bare shell
   # nor a dialog answered passes ago is a live question. A current prompt is
@@ -4297,25 +4604,25 @@ check_lanes() {
     # exited or unjudged keeps it. A wall can sit above a standing question,
     # and the row is what stops the question being re-reported once the wall
     # lifts; gone and exited clear it on their own paths.
-    case "$(lane_obs_state "$states" "$i")" in
-      asking) ;;
-      working|idle)
-        asking_state="$(lane_row_clear lane-asking "$asking_state" "$lane")"
-        continue ;;
-      *) continue ;;
-    esac
+    if ! lane_state_is "${states[$i]}" dialog; then
+      if lane_state_is "${states[$i]}" live && [[ "${states[$i]}" != walled ]]; then
+        lane_row_clear lane-asking "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
+      fi
+      continue
+    fi
     pane="$(cat -- "$(lane_pane_file "$i")")"
     below="$(pane_below_last_turn "$pane")"
-    pane_key="$(lane_field "$LANE_OBS" "$i" 5)"
+    pane_key="${obs_key[$i]}"
     turn_identity="$(pane_turn_identity "$pane")"
     # The note is keyed: a Copilot record that turns to a stop cause under an
     # unchanged prompt is news.
     lane_note "$lane"
     fingerprint="${pane_key}|${turn_identity}|${COPILOT_SESSION_NOTE}|$(printf '%s' "$below" | cksum)"
-    if ! prior="$(lane_row_get lane-asking "$asking_state" "$lane")"; then
+    if ! lane_row_get lane-asking "$asking_state" "$lane" >/dev/null; then
       die state-read-failed "" "lane=$lane" "row=lane-asking"
     fi
-    asking_state="$(lane_row_set lane-asking "$asking_state" "$lane" "$fingerprint")"
+    prior="$LANE_ROW"
+    lane_row_set lane-asking "$asking_state" "$lane" "$fingerprint" >/dev/null; asking_state="$LANE_ROW"
     if [[ "$fingerprint" == "$prior" ]]; then continue; fi
     echo "EVENT lane-asking $lane${COPILOT_SESSION_NOTE:+ $COPILOT_SESSION_NOTE}"
     # The dialog to answer, the bottom of the slice the question was found
@@ -4336,7 +4643,7 @@ check_lanes() {
   for lane in "${LANES[@]}"; do
     i=$((i + 1))
     capacity=0
-    if [[ "$(lane_obs_state "$states" "$i")" == idle ]]; then
+    if [[ "${states[$i]}" == idle ]]; then
       pane="$(cat -- "$(lane_pane_file "$i")")"
       below="$(pane_below_last_turn "$pane")"
       # Which idle this is, not whether it is idle: the judge already settled
@@ -4352,36 +4659,37 @@ check_lanes() {
     else
       # Removed Pi rows cannot judge idle. Hold the merged-and-gone evidence
       # for two long passes so close-out can send its final clone notice.
-      if [[ "${LANE_ROWS[$i]:-}" == none && "$(lane_obs_state "$states" "$i")" == unjudged ]] \
+      if [[ "${LANE_ROWS[$i]:-}" == none && "${states[$i]}" == unjudged ]] \
          && finished_hosted_lane_eligible "$lane"; then
-        if ! prior="$(lane_row_get lane-idle "$asking_state" "$lane")"; then
+        if ! lane_row_get lane-idle "$asking_state" "$lane" >/dev/null; then
           die state-read-failed "" "lane=$lane" "row=lane-idle"
         fi
+        prior="$LANE_ROW"
         [[ "$prior" != pi-merged-gone'|reported' ]] || continue
         if [[ "$prior" == pi-merged-gone ]]; then
-          asking_state="$(lane_row_set lane-idle "$asking_state" "$lane" 'pi-merged-gone|reported')"
-          PASS_EVENT=1
+          lane_row_set lane-idle "$asking_state" "$lane" 'pi-merged-gone|reported' >/dev/null; asking_state="$LANE_ROW"
           close_finished_hosted_lane "$lane" lane-idle pi-merged-gone
         else
-          asking_state="$(lane_row_set lane-idle "$asking_state" "$lane" pi-merged-gone)"
+          lane_row_set lane-idle "$asking_state" "$lane" pi-merged-gone >/dev/null; asking_state="$LANE_ROW"
         fi
         continue
       fi
-      asking_state="$(lane_row_clear lane-idle "$asking_state" "$lane")"
-      asking_state="$(lane_row_clear model-capacity "$asking_state" "$lane")"
+      lane_row_clear lane-idle "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
+      lane_row_clear model-capacity "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
       continue
     fi
-    pane_key="$(lane_field "$LANE_OBS" "$i" 5)"
+    pane_key="${obs_key[$i]}"
     if [[ "$capacity" -eq 1 ]]; then
       # Capacity uses a turn-bound row. An earlier idle report cannot consume
       # the first stop after a continuation.
       capacity_key="${LANE_TURNS[$i]}"
-      if ! prior="$(lane_row_get model-capacity "$asking_state" "$lane")"; then
+      if ! lane_row_get model-capacity "$asking_state" "$lane" >/dev/null; then
         die state-read-failed "" "lane=$lane" "row=model-capacity"
       fi
-      asking_state="$(lane_row_clear lane-idle "$asking_state" "$lane")"
+      prior="$LANE_ROW"
+      lane_row_clear lane-idle "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
       if [[ "$prior" == "$capacity_key" ]]; then continue; fi
-      asking_state="$(lane_row_set model-capacity "$asking_state" "$lane" "$capacity_key")"
+      lane_row_set model-capacity "$asking_state" "$lane" "$capacity_key" >/dev/null; asking_state="$LANE_ROW"
       # No payload: the handling is one continuation line pasted back into the
       # pane, and the key says everything it needs. The refusal line itself is
       # what the judge already matched.
@@ -4389,7 +4697,7 @@ check_lanes() {
       PASS_EVENT=1
       continue
     fi
-    asking_state="$(lane_row_clear model-capacity "$asking_state" "$lane")"
+    lane_row_clear model-capacity "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
     # The whole slice below the last turn is the key: any change to what the
     # lane shows is a different idle screen and news again. A repaint of an
     # older frame does not reach here, since a scrolled view carries `Jump to
@@ -4397,13 +4705,14 @@ check_lanes() {
     # its last row, so each turn end it writes is news once.
     lane_note "$lane"
     screen_key="${pane_key}|${COPILOT_SESSION_NOTE}|$(printf '%s' "$turn" | cksum)"
-    if ! prior="$(lane_row_get lane-idle "$asking_state" "$lane")"; then
+    if ! lane_row_get lane-idle "$asking_state" "$lane" >/dev/null; then
       die state-read-failed "" "lane=$lane" "row=lane-idle"
     fi
+    prior="$LANE_ROW"
     if [[ "$prior" == "$screen_key|reported" ]]; then continue; fi
     hosted_lane_item "$lane"
     if [[ "$prior" == "$screen_key" ]] || { [[ -z "$HOSTED_ROOT" ]] && grep -Eq -- "$CODEX_MARKER_RE" <<<"$below" && [[ -n "$(pane_turn_slice "$pane" before)" ]]; }; then
-      asking_state="$(lane_row_set lane-idle "$asking_state" "$lane" "$screen_key|reported")"
+      lane_row_set lane-idle "$asking_state" "$lane" "$screen_key|reported" >/dev/null; asking_state="$LANE_ROW"
       # The lane's closing report, which decides whether it is free for
       # another launch. Below the last turn is the round that just ended,
       # and the cap keeps its last lines. Unfiltered: the dead-worktree
@@ -4414,7 +4723,23 @@ check_lanes() {
       PASS_EVENT=1
       close_finished_hosted_lane "$lane" lane-idle "$screen_key"
     else
-      asking_state="$(lane_row_set lane-idle "$asking_state" "$lane" "$screen_key")"
+      lane_row_set lane-idle "$asking_state" "$lane" "$screen_key" >/dev/null; asking_state="$LANE_ROW"
+    fi
+  done
+  # Retry only closes already pending at entry. Notification rows stay latched,
+  # and a new pane or state invalidates the old pending close.
+  for lane in "${LANES[@]}"; do
+    if ! lane_row_get close-pending "$pending_closes" "$lane" >/dev/null; then
+      die state-read-failed "" "lane=$lane" "row=close-pending"
+    fi
+    pending_close="$LANE_ROW"
+    [[ -n "$pending_close" ]] || continue
+    [[ "$(lane_row_get close-pending "$asking_state" "$lane")" == "$pending_close" ]] || continue
+    pending_row="${pending_close%%|*}" pending_key="${pending_close#*|}"
+    if [[ "$(lane_row_get "$pending_row" "$asking_state" "$lane")" == "$pending_key|reported" ]]; then
+      close_finished_hosted_lane "$lane" "$pending_row" "$pending_key"
+    else
+      lane_row_clear close-pending "$asking_state" "$lane" >/dev/null; asking_state="$LANE_ROW"
     fi
   done
   # Committed after every asking and idle line is out: a row written ahead of
@@ -4593,6 +4918,60 @@ OWED_ACCOUNTS=""
 OWED_ANSWERS=""
 OWED_LISTING=""
 OWED_VERDICT=""
+TRACKER_QUOTA=""
+TRACKER_STOP=0
+# This validates the transport receipt, never headers or a credential. Linear
+# owns reset selection. The watch only compares its whole-second deadline.
+TRACKER_QUOTA_JQ='select(type == "object") |
+  select(.status == "future" or .status == "elapsed" or .status == "missing" or .status == "invalid") |
+  select(.limit == "requests" or .limit == "complexity" or .limit == "endpoint" or .limit == "unknown") |
+  select(.reset | type == "string") |
+  select(if .status == "future" or .status == "elapsed" then
+    (.reset_epoch | type == "number" and . >= 0 and . == floor) and .reset == (.reset_epoch | todateiso8601)
+    else .reset_epoch == null and .reset == "unavailable" end)'
+
+tracker_quota_line() {
+  local now
+  now="$(date -u +%s)" || return 1
+  jq -r --argjson now "$now" '
+    if .status == "future" and .reset_epoch <= $now then .status="elapsed" else . end |
+    "tracker-quota status=\(.status) reset=\(.reset) limit=\(.limit)"' <<<"$1"
+}
+
+tracker_begin() {
+  local receipt now epoch next
+  TRACKER_STOP=0 TRACKER_QUOTA=""
+  OWNER_TRACKER_READ=unread
+  OWED_LINES="" VERIFYING_LINES="" VERIFYING_EVENT_LINES=""
+  receipt="$(lane_row_get tracker-quota "${PW_SEEN[0]}" fleet)" || die state-read-failed "" "row=tracker-quota"
+  [[ -n "$receipt" ]] || return 0
+  receipt="$(jq -ce "$TRACKER_QUOTA_JQ" <<<"$receipt")" || die state-read-failed "" "row=tracker-quota"
+  now="$(date -u +%s)" || die time-failed "" "clock=UTC"
+  epoch="$(jq -r '.reset_epoch // 0' <<<"$receipt")" || die state-read-failed "" "row=tracker-quota"
+  if [[ "$now" -lt "$epoch" ]]; then
+    TRACKER_STOP=1 TRACKER_QUOTA="$receipt"
+  else
+    next="$(lane_row_clear tracker-quota "${PW_SEEN[0]}" fleet)" || die state-read-failed "" "row=tracker-quota"
+    lane_row_commit "$next"
+  fi
+}
+
+tracker_quota_refusal() { # STDERR_FILE
+  local receipt next line
+  receipt="$(jq -Rrnc '[inputs | fromjson? | objects | select(.code == "RATELIMITED") | .quota | objects] | last // empty' <"$1")" || return 1
+  [[ -n "$receipt" ]] || return 1
+  receipt="$(jq -ce "$TRACKER_QUOTA_JQ" <<<"$receipt")" || return 1
+  TRACKER_STOP=1 TRACKER_QUOTA="$receipt"
+  OWNER_TRACKER_READ=unread
+  OWED_LINES="" VERIFYING_LINES="" VERIFYING_EVENT_LINES=""
+  next="$(lane_row_set tracker-quota "${PW_SEEN[0]}" fleet "$receipt")" || die state-read-failed "" "row=tracker-quota"
+  lane_row_commit "$next"
+  line="$(tracker_quota_line "$receipt")" || die state-read-failed "" "row=tracker-quota"
+  cat -- "$1" >&2
+  printf 'EVENT %s\n' "$line"
+  PASS_EVENT=1
+}
+
 owed_read() {
   OWED_LINES=""
   VERIFYING_LINES=""
@@ -4603,8 +4982,10 @@ owed_read() {
   OWED_ACCOUNTS=""
   OWED_ANSWERS=""
   if [[ -n "${LINEAR_TEAM:-}" ]]; then
-    statuses="$("$TRACKER" statuses list --team "$LINEAR_TEAM" --format=safe 2>"$errf")" \
-      || die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "read=statuses"
+    if ! statuses="$("$TRACKER" statuses list --team "$LINEAR_TEAM" --format=safe 2>"$errf")"; then
+      tracker_quota_refusal "$errf" && return 0
+      die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "read=statuses"
+    fi
     if ! open_states="$(jq -er 'if type == "array" and length > 0 and all(.[]; (.name | type) == "string" and (.type | type) == "string")
       then map(select(.type != "completed" and .type != "canceled") | .name) | join(",")
       else error("tracker-statuses-invalid") end' <<<"$statuses" 2>"$errf")"; then
@@ -4612,10 +4993,12 @@ owed_read() {
     fi
     out='[]'
     if [[ -n "$open_states" ]]; then
-      out="$("$TRACKER" issues list --team "$LINEAR_TEAM" --state "$open_states" --max --format=safe 2>"$errf")" || rc=$?
+      out="$("$TRACKER" issues list --team "$LINEAR_TEAM" --state "$open_states" --select owed --max --format=safe 2>"$errf")" || rc=$?
     fi
-    [[ "$rc" -eq 0 ]] \
-      || die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "exit=$rc"
+    if [[ "$rc" -ne 0 ]]; then
+      tracker_quota_refusal "$errf" && return 0
+      die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "exit=$rc"
+    fi
     # Linear's priority 0 is No priority, which ranks after Low: it prints `-`.
     items="$(jq -c '
       if type != "array" then error("tracker-type expected=array actual=\(type)") else . end
@@ -4644,13 +5027,14 @@ owed_read() {
     candidates="$(jq -r '.[] | select((.title // "") | test("\\(one PR\\)"; "i") | not) | .id' <<<"$out")" \
       || die tracker-list-invalid "" "team=$LINEAR_TEAM"
     printf '%s\n' "$out" >"$WORK_DIR/container-facts.jsonl"
-    while IFS= read -r id; do
-      [[ -n "$id" ]] || continue
-      children="$("$TRACKER" issues children "$id" --format=raw 2>"$errf")" \
-        || die tracker-list-failed "$(cat "$errf")" "issue=$id" "read=children"
+    if [[ -n "$candidates" ]]; then
+      if ! children="$("$TRACKER" issues bulk-get --stdin --format=raw <<<"$candidates" 2>"$errf")"; then
+        tracker_quota_refusal "$errf" && return 0
+        die tracker-list-failed "$(cat "$errf")" "team=$LINEAR_TEAM" "read=children"
+      fi
       printf '%s\n' "$children" >>"$WORK_DIR/container-facts.jsonl"
-    done <<<"$candidates"
-    out="$(jq -sc '[.[0][], (.[1:][] | .issue.identifier as $parent | .issue.children.nodes
+    fi
+    out="$(jq -sc '[.[0][], (.[1:][] | .issues.nodes[] | .identifier as $parent | .children.nodes
       | if ($parent | type) == "string" and type == "array" and all(.[]; (.identifier | type) == "string" and (.state.type | type) == "string")
         then .[] | {id: .identifier, parent_id: $parent, state_type: .state.type}
         else error("tracker-children-invalid") end)] | unique_by(.id)' "$WORK_DIR/container-facts.jsonl")" \
@@ -4747,7 +5131,7 @@ owed_accounts() { # HOST
 # lane filtering. Deadlines remain per box in the issue description.
 verifying_read() { # SAFE_ITEMS
   local lib="$SKILLS_DIR/linear/scripts/lib/issue-validation.sh"
-  local rows row id boxes merged merged_repos merged_rows repo out lines due line prior key rc floor read_dir search
+  local rows row id boxes merged merged_repos merged_rows repo out lines due line prior key rc floor read_dir search items
   local state="${PW_SEEN[0]}" errf="$WORK_DIR/verifying.err"
   # One record per issue, its ID then the row: owed_read admits no unit
   # separator in an ID, and tojson keeps the row on one line.
@@ -4764,11 +5148,14 @@ verifying_read() { # SAFE_ITEMS
         | if (.[-1] | length) >= 3 or (.[-1] + [$term] | query | length) > 256
           then . + [[$term]] else .[-1] += [$term] end)
        | map(select(length > 0) | query) | join("\t")),
+      ($items | map(.id) | tojson),
       ($items[] | "\(.id)\u001f\(tojson)")' <<<"$1")" \
     || die tracker-list-invalid "" "team=$LINEAR_TEAM"
   floor="${rows%%$'\n'*}"
   if [[ "$rows" == *$'\n'* ]]; then rows="${rows#*$'\n'}"; else rows=""; fi
   search="${rows%%$'\n'*}"
+  if [[ "$rows" == *$'\n'* ]]; then rows="${rows#*$'\n'}"; else rows=""; fi
+  items="${rows%%$'\n'*}"
   if [[ "$rows" == *$'\n'* ]]; then rows="${rows#*$'\n'}"; else rows=""; fi
   # Rebuild the due set after the complete inventory, including valid items
   # after a checklist that Linear accepted but the box parser cannot read.
@@ -4791,11 +5178,11 @@ verifying_read() { # SAFE_ITEMS
     merged=null
     merged_repos='{}'
     # verifying_parse prints compact JSON, where this text can only be a
-    # box's own trigger field: a quote inside a value is escaped.
-    if [[ "$boxes" == *'"trigger_kind":"release"'* ]]; then
+    # box's own field: a quote inside a value is escaped.
+    if [[ "$boxes" == *'"needs_merge":true'* ]]; then
       merged_rows=""
       for repo in "${REPOS[@]}"; do
-        merged_item_read "$id" "$repo" null null "$floor" "$read_dir" "$search"
+        merged_item_read "$id" "$repo" null null "$floor" "$read_dir" "$search" "$items"
         merged_rows+="${merged_rows:+,}$MERGED_ITEM_ROWS"
       done
       # The latest merge across repositories, then each repository's own.
@@ -4806,11 +5193,21 @@ verifying_read() { # SAFE_ITEMS
       merged="${out%%$'\n'*}"
       merged_repos="${out#*$'\n'}"
     fi
+    # Both helpers leave their answer in LANE_ROW; read here, they fork
+    # nothing per issue.
+    lane_row_get verifying-deadline "${PW_SEEN[0]}" "$id" >/dev/null \
+      || die state-read-failed "" "row=verifying-deadline" "issue=$id"
+    prior="$LANE_ROW"
     rc=0
     boxes="$(verifying_judge "$row" "$merged" "$merged_repos" "$PASS_NOW" "$boxes" "$WORK_DIR/verifying-release.err" "$MERGED_SEARCH_PAGE" gh "$read_dir" 2>"$errf")" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
       read -r key _ <"$errf" || key=verifying-invalid
-      [[ "$rc" -eq 1 ]] || die "$key" "$(cat "$errf")" "issue=$id"
+      [[ "$rc" -eq 1 || "$rc" -eq 2 ]] || die "$key" "$(cat "$errf")" "issue=$id"
+      # An unread item cannot clear a previously reported deadline.
+      if [[ "$rc" -eq 2 && -n "$prior" ]]; then
+        lane_row_set verifying-deadline "$state" "$id" "$prior" >/dev/null
+        state="$LANE_ROW"
+      fi
       ow_message verifying-invalid "issue=$id" >&2
       cat -- "$errf" >&2
       continue
@@ -4831,11 +5228,6 @@ verifying_read() { # SAFE_ITEMS
     key="${due//$'\n'/|}"
     [[ -n "$key" ]] || key=-
     [[ "$lines" != "verifying $id boxes=0" ]] || key=boxes=0
-    # Both helpers leave their answer in LANE_ROW; read here, they fork
-    # nothing per issue.
-    lane_row_get verifying-deadline "${PW_SEEN[0]}" "$id" >/dev/null \
-      || die state-read-failed "" "row=verifying-deadline" "issue=$id"
-    prior="$LANE_ROW"
     lane_row_set verifying-deadline "$state" "$id" "$key" >/dev/null
     state="$LANE_ROW"
     [[ "$prior" != "$key" ]] || continue
@@ -4924,7 +5316,13 @@ heartbeat() {
     open="$(security_mark_open "$baseline" "$repo" "$open")" || die state-read-failed "" "path=$file" "row=bot-fix"
     open_all+="$(pw_prefix "$repo" "$open")"$'\n'
   done
-  hands="$(parked_merged_owed "$baseline")" || die state-read-failed "" "path=$file" "row=merged"
+  PW_SEEN[0]="$baseline"
+  if [[ "$TRACKER_STOP" == 0 && -n "$(lane_row_get tracker-quota "$baseline" fleet)" ]]; then
+    tracker_begin
+  fi
+  parked_merged_owed "${PW_SEEN[0]}" >"$WORK_DIR/parked-hands.out" || die state-read-failed "" "path=$file" "row=merged"
+  hands="$(cat -- "$WORK_DIR/parked-hands.out")" || die state-read-failed "" "path=$WORK_DIR/parked-hands.out"
+  baseline="${PW_SEEN[0]}"
   # The current fleet's alone: a row clears on the item's next good read,
   # and an item that left the fleet is read no more.
   if ! failing="$(ow_items="$(printf '%s\n' overseer ${ITEMS[@]+"${ITEMS[@]}"})" awk -F'\t' '
@@ -4945,6 +5343,13 @@ heartbeat() {
   fi
   [[ -z "$VERIFYING_LINES" ]] || printf '%s\n' "$VERIFYING_LINES"
   [[ -z "$OWED_LINES" ]] || printf '%s\n' "$OWED_LINES"
+  if [[ -z "$TRACKER_QUOTA" ]]; then
+    TRACKER_QUOTA="$(lane_row_get tracker-quota "$baseline" fleet)" || die state-read-failed "" "row=tracker-quota"
+  fi
+  if [[ -n "$TRACKER_QUOTA" ]]; then
+    TRACKER_QUOTA="$(jq -ce "$TRACKER_QUOTA_JQ" <<<"$TRACKER_QUOTA")" || die state-read-failed "" "row=tracker-quota"
+    tracker_quota_line "$TRACKER_QUOTA" || die state-read-failed "" "row=tracker-quota"
+  fi
   pr_watch_context
   exit 0
 }
@@ -4960,12 +5365,15 @@ heartbeat() {
 # sets for this process belongs there. The baselines it committed are what the
 # next long pass reads, never this process's copy of them.
 LONG_PASSES=0
+TRIAGE_PROGRESS=""
+LONG_STARTED=""
 LONG_RETURNS=(LONG_EVENT LONG_FAILED OWNER_TRACKER_DELIVERED OVERSEER_SUCCEEDED OVERSEER_STOP PW_PASSES PW_RC
-  PW_OUT PW_ERR LANE_PROBE_NOTED OVERSEER_NOTED ACCOUNT_ROSTER ACCOUNT_ROSTER_RC OWED_LINES VERIFYING_LINES VERIFYING_EVENT_LINES)
+  PW_OUT PW_ERR LANE_PROBE_NOTED OVERSEER_NOTED ACCOUNT_ROSTER ACCOUNT_ROSTER_RC OWED_LINES VERIFYING_LINES VERIFYING_EVENT_LINES TRACKER_QUOTA TRACKER_STOP TRIAGE_PROGRESS)
 long_pass() {
   local i state_file
   PASS_EVENT=0
   PASS_FAILED=0
+  TRIAGE_PROGRESS=""
   OWNER_TRACKER_DELIVERED=0
   for i in "${!REPOS[@]}"; do
     state_file="$(pw_state_file "${REPOS[$i]}")"
@@ -4978,7 +5386,8 @@ long_pass() {
   # overseer exited or walled. A later live pass or the successor receives
   # that work.
   if check_overseer; then
-    read_owner_tracker_answers
+    tracker_begin
+    [[ "$TRACKER_STOP" != 0 ]] || read_owner_tracker_answers
     # Read tracker replies before their deadline closes. An unread tracker
     # cannot establish that the person left the recommendation unanswered.
     [[ "$OWNER_TRACKER_READ" != read ]] || resolve_due_owner_asks tracker
@@ -4986,7 +5395,7 @@ long_pass() {
     check_terminal_lanes
     observe_lanes
     check_pr_watch
-    check_triage
+    [[ "$TRACKER_STOP" != 0 ]] || check_triage
     check_outside_contribution
     check_refresh
     check_main_push
@@ -4998,7 +5407,7 @@ long_pass() {
     check_lane_long
     check_lanes
     check_accounts
-    owed_read
+    if [[ "$TRACKER_STOP" == 0 || -z "${LINEAR_TEAM:-}" ]]; then owed_read; fi
     check_report
   fi
   # Under names of their own, so sourcing them cannot overwrite the news this
@@ -5019,6 +5428,7 @@ long_start() {
   mkdir -p -- "$WORK_DIR/long" || die state-directory-create-failed "" "path=$WORK_DIR/long"
   local started MAIL_ROW_MODE=1
   started="$(date -u +%s)" || die time-failed "" "clock=UTC"
+  LONG_STARTED="$(from_epoch "$started" '%Y-%m-%dT%H:%M:%SZ')" || die time-failed "" "clock=UTC"
   lane_row_set long-pass "" fleet "$started" >/dev/null
   mail_row_commit ""
   MAIL_ROW_MODE=0
@@ -5037,6 +5447,7 @@ long_collect() { # [wait]
   long_drain || rc=$?
   [[ "$rc" -eq 0 ]] || exit "$rc"
   long_status_load || die long-pass-unfinished "" "path=$LONG_STATUS"
+  triage_progress_commit
   LONG_PASSES=$((LONG_PASSES + 1))
   [[ "$LONG_EVENT" -eq 0 ]] || PASS_EVENT=1
   [[ "$LONG_FAILED" -eq 0 ]] || PASS_FAILED=1

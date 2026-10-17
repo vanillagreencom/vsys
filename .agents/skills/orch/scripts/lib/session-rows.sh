@@ -24,6 +24,7 @@
 # StopFailure row and dates the turn end oversee-watch holds the overseer's
 # context record against. The readers are oversee-watch's
 # overseer judgement, `oversee register` and oversee-succeed's caller identity.
+# The same hook writes the Jarvis runtime record below, never this file.
 #
 # A last row session_rows_verdict cannot judge reads `unsupported`, and its
 # reader takes the pane, the named fallback, reported as fallback.
@@ -46,11 +47,17 @@
 #
 # A session the Jarvis runtime launched writes no file here of its own: its
 # SessionStart fills the launch's pending row in the runtime record its
-# environment names, with no fleet and no mailbox (session_rows_jarvis_write).
+# environment names, with no fleet and no mailbox (session_rows_jarvis_write),
+# and the lane-mail-check hook's own run at its first tool call, or on Claude
+# Code its turn end, after the Start brief stamps that row once as the brief
+# taken, and on Codex and Copilot CLI its turn end before the brief stamps it
+# once as the kickoff turn ended (session_rows_jarvis_taken): the facts the
+# Jarvis launch worker reads.
 #
 # The overseer writer requires lib/file-lock.sh, lib/mailbox-append.sh,
-# lib/lane-context.sh and lib/lane-state.sh sourced by its caller, and the lane
-# writer the first two; the overseer readers need jq and tail alone, and the
+# lib/lane-context.sh and lib/lane-state.sh sourced by its caller, the lane
+# writer the first two, and the Jarvis stamp lib/file-lock.sh and
+# lib/lane-context.sh; the overseer readers need jq and tail alone, and the
 # overseer and lane verdicts lib/lane-state.sh besides. Sourced, never run. Bash 3.2-safe,
 # like its callers.
 
@@ -224,11 +231,34 @@ session_rows_start() { # FILE [SINCE]
   IFS="$sep" read -r SR_HARNESS SR_ACCOUNT SR_MODEL SR_CWD <<<"$fields"
 }
 
-# session_rows_top_level PANE_PID — 0 where exactly one process that is not a
-# shell stands between this process and PANE_PID, the pane's own shell: the
+# A Node parent counts with its native Codex child only when its script is
+# the installed @openai/codex launcher. SessionStart supplies identity, but
+# only process ancestry can tell whether that session leads this pane.
+session_rows_codex_launcher() { # PID
+  local args executable script link hops=0
+  args="$(ps -o args= -p "$1" 2>/dev/null)" || return 1
+  read -r executable script _ <<<"$args"
+  # Node can rename comm to node-MainThread; argv still names its executable.
+  [ "${executable##*/}" = node ] || return 1
+  case "$script" in /*) ;; *) return 1 ;; esac
+  while [ -L "$script" ]; do
+    hops=$((hops + 1))
+    [ "$hops" -le 40 ] && link="$(readlink -- "$script")" || return 1
+    case "$link" in /*) script="$link" ;; *) script="${script%/*}/$link" ;; esac
+  done
+  [ -f "$script" ] || return 1
+  script="$(cd -P -- "${script%/*}" && printf '%s/%s\n' "$PWD" "${script##*/}")" || return 1
+  case "$script" in */@openai/codex/bin/codex.js) return 0 ;; *) return 1 ;; esac
+}
+
+# session_rows_top_level PANE_PID: 0 where exactly one harness stands
+# between this process and PANE_PID, the pane's own shell: the
 # harness that ran this hook, directly under that shell or under the shells
 # and exec'd wrappers a launch puts there (overseer-run, env). A harness
-# nested under another, which the other one's tool shell started, has two;
+# nested under another, which the other one's tool shell started, has two.
+# Codex's installed Node launcher and its direct native child count as one;
+# any other non-shell process counts separately. The walk continues above
+# the launcher, so another harness still excludes a nested session;
 # a process under no such pane never reaches it. Exit 1 for either, and for a
 # process table `ps` could not read, which is no evidence of a top-level
 # session. A harness that is the pane's process itself (`tmux new-window
@@ -237,13 +267,21 @@ session_rows_start() { # FILE [SINCE]
 # the pane fallback; a launched overseer is typed into the pane's shell and is
 # not that shape. The shell set is lib/lane-state.sh's is_bare_shell.
 session_rows_top_level() { # PANE_PID
-  local pid="$$" line ppid comm harnesses=0 steps=0
+  local pid="$$" line ppid comm child="" harnesses=0 steps=0
   while [ "$pid" != "$1" ]; do
     [ "$steps" -lt 64 ] && [ "$pid" -gt 1 ] || return 1
     line="$(ps -o ppid= -o comm= -p "$pid" 2>/dev/null)" || return 1
     read -r ppid comm <<<"$line"
     [ -n "$ppid" ] || return 1
-    is_bare_shell "${comm##*/}" || harnesses=$((harnesses + 1))
+    comm="${comm##*/}"
+    if is_bare_shell "$comm"; then
+      :
+    elif [ "$child" = codex ] && session_rows_codex_launcher "$pid"; then
+      :
+    else
+      harnesses=$((harnesses + 1))
+    fi
+    child="$comm"
     pid="$ppid"
     steps=$((steps + 1))
   done
@@ -317,6 +355,16 @@ session_rows_write() { # DIR HARNESS [EVENT]
   return "$jarvis_rc"
 }
 
+# Whether a record's pending row is the launch of the session a hook runs in:
+# the record's harness, and the row's generation, tmux server pid and lead
+# pane, against the hook's install, JARVIS_GENERATION and its own key. One
+# def, which the identity write and the brief stamp both read.
+SESSION_ROWS_JARVIS_BOUND='def bound($generation; $server; $pane; $harness):
+  .harness == $harness and (.pending | type) == "object" and $generation != ""
+  and (.pending.generation | tostring) == $generation
+  and (.pending.server | tostring) == $server
+  and .pending.pane == $pane;'
+
 # session_rows_jarvis_write RECORD GENERATION KEY HARNESS: the SessionStart payload on
 # stdin written as its session's native identity into the `pending` row of the
 # Jarvis runtime record RECORD: the harness's own session id as
@@ -346,10 +394,9 @@ session_rows_jarvis_write() { # RECORD GENERATION KEY HARNESS
     exec 200>>"$1.lock" || exit 2
     orch_take_lock 200 "$1.lock" "$SESSION_ROWS_WAIT" || exit 3
     verdict="$(jq -r --arg generation "$2" --arg server "${3%% *}" --arg pane "${3#* }" \
-      --argjson identity "$identity" --arg harness "$4" '
+      --argjson identity "$identity" --arg harness "$4" "$SESSION_ROWS_JARVIS_BOUND"'
       .pending as $p
-      | if .harness != $harness or ($p | type) != "object" or $generation == "" or ($p.generation | tostring) != $generation
-          or ($p.server | tostring) != $server or $p.pane != $pane or $p.started_at != null then "other"
+      | if (bound($generation; $server; $pane; $harness) | not) or $p.started_at != null then "other"
         elif ($p.native_session_id // $identity.native_session_id) != $identity.native_session_id then "mismatch"
         elif ($identity | length) == 0 then "unnamed"
         else "own" end' -- "$1")" || exit 1
@@ -366,6 +413,82 @@ session_rows_jarvis_write() { # RECORD GENERATION KEY HARNESS
       '.pending += $identity + {started_at: $at, observed_account: $account}' -- "$1" >"$1.$$" || { rm -f -- "$1.$$"; exit 2; }
     mv -f -- "$1.$$" "$1" || { rm -f -- "$1.$$"; exit 2; }
   )
+}
+
+# session_rows_jarvis_taken RECORD GENERATION KEY HARNESS EVENT: the hook payload
+# on stdin, of the session's tool call (EVENT PreToolUse) or turn end (Stop),
+# stamped once into the pending row of the Jarvis runtime record RECORD, which
+# the Jarvis launch worker reads. Either stamp lands only where that row is
+# this session's launch (the bound def above), its identity started under the
+# payload's own session id, the launch is still `starting`, and no
+# `brief_taken` stands.
+#
+# `brief_taken`, the Start brief taken: where the record says the brief was
+# delivered. The worker writes `brief_delivered` under the same lock in the
+# hold that pastes the brief, so this stamp is ordered after the delivery
+# with no clock; a hook that met the lock held retries at the session's next
+# call that stamps. A turn end writes it on Claude Code alone, which fires
+# StopFailure in place of Stop on a turn that ended on an error
+# (docs/adapters/pi.md). Pi's carrier dispatches Stop on an errored run as
+# well, and Codex and Copilot have no turn-failure event to tell one apart
+# (hooks/stop-failure-row.sh), so there only a tool call says the session
+# took the brief.
+#
+# `kickoff_ended`, the kickoff turn ended: a Codex or Copilot turn end where
+# the brief is not yet delivered. Those harnesses fire SessionStart only at
+# their first prompt, so their launch submits a fixed kickoff
+# (lib/lane-launch.sh § lane_session_command), and the worker pastes the brief
+# only once this stamp says that turn ended: the pane cannot tell a turn's
+# first frames, or Copilot's composer during a turn, from its end. An errored
+# kickoff turn also ends the turn the brief must wait out. Copilot fires
+# agentStop for a subagent under the subagent's own session id, which never
+# matches the launch's.
+#
+# Every other record is left as it stands, with exit 0. The verdict is read
+# first without the lock, since every writer renames a whole record into
+# place, so a running session's later calls take no lock and write nothing.
+# Only a launch a stamp is due on, or would be once the worker's hold records
+# the delivery, takes the lock and reads it again.
+#
+# Exit 1 where the payload or RECORD could not be read, 2 where RECORD could
+# not be written, 3 where its lock was not taken. The cause is on stderr.
+session_rows_jarvis_taken() { # RECORD GENERATION KEY HARNESS EVENT
+  local session verdict due stamp
+  case "$5:$4" in
+    PreToolUse:* | Stop:claude) due=own stamp=brief_taken ;;
+    Stop:codex | Stop:copilot) due=undelivered stamp=kickoff_ended ;;
+    *) return 0 ;;
+  esac
+  session="$(jq -r '(.session_id // .sessionId) | strings')" || return 1
+  [ -n "$session" ] || return 0
+  verdict="$(session_rows_jarvis_due "$1" "$2" "$3" "$4" "$session")" || return 1
+  case "$due:$verdict" in
+    own:own | own:undelivered | own:ended | undelivered:undelivered) ;;
+    *) return 0 ;;
+  esac
+  (
+    exec 200>>"$1.lock" || exit 2
+    orch_take_lock 200 "$1.lock" "$SESSION_ROWS_WAIT" || exit 3
+    verdict="$(session_rows_jarvis_due "$1" "$2" "$3" "$4" "$session")" || exit 1
+    [ "$verdict" = "$due" ] || exit 0
+    jq -c --arg stamp "$stamp" '.pending[$stamp] = true' -- "$1" >"$1.$$" || { rm -f -- "$1.$$"; exit 2; }
+    mv -f -- "$1.$$" "$1" || { rm -f -- "$1.$$"; exit 2; }
+  )
+}
+
+# session_rows_jarvis_due RECORD GENERATION KEY HARNESS SESSION: `own` where
+# RECORD's launch takes session_rows_jarvis_taken's `brief_taken` stamp,
+# `undelivered` where it would but for the brief's delivery and its
+# `kickoff_ended` is still due, `ended` where that stamp stands, `other`
+# where the launch takes neither.
+session_rows_jarvis_due() { # RECORD GENERATION KEY HARNESS SESSION
+  jq -r --arg generation "$2" --arg server "${3%% *}" --arg pane "${3#* }" \
+    --arg harness "$4" --arg session "$5" "$SESSION_ROWS_JARVIS_BOUND"'
+    if (bound($generation; $server; $pane; $harness) and .pending.started_at != null
+      and .pending.native_session_id == $session and .state == "starting"
+      and .pending.brief_taken == null) | not then "other"
+    elif .brief_delivered == true then "own"
+    elif .pending.kickoff_ended != null then "ended" else "undelivered" end' -- "$1"
 }
 
 # ---------------------------------------------------------------------------

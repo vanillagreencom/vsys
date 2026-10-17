@@ -1,7 +1,20 @@
 [env]
+# The Apple proof workflow must exist on the base branch to activate the gate.
+ORCH_APPLE_WORKFLOW = ".github/workflows/mac-run.yml"
+
+# Space-separated issue labels that require Apple proof when the gate is active.
+ORCH_APPLE_LABELS = "ios macos"
+
 # Publication order, resolved by pr-order: review-first, open-first or push-first.
 # Leave unset to keep the defaults described by pr-order --help.
 # ORCH_PR_ORDER = "review-first"
+
+# Publication destination. pr also applies when unset. push-base keeps the
+# tier's local validation and internal review, then fast-forward pushes the
+# resolved base branch without a pull request. The overseer records the
+# pushed commit through the existing direct-push cycle route. An item with an
+# open post-merge box stops for the PR route: workflows/submit-pr.md § 2.1.
+# ORCH_DELIVERY = "push-base"
 
 # How a pull request is reviewed, merged and handed on, and how much of
 # that runs without asking you.
@@ -293,7 +306,8 @@ ORCH_LANE_HOST_BUSY_WAIT_SECS = "30"
 # Earlier context handoff percentage. Shared rule and boundary behavior:
 # references/oversee-events.md, Judgement rules.
 # ORCH_HANDOFF_CONTEXT_PCT = "90"
-# Attached agent result reserve before the earlier context mark. Nonnegative
+# Attached agent result reserve before the earlier context mark, applied to an
+# attached launch only while an attached agent may still be out. Nonnegative
 # whole tokens; equality refuses a launch. Missing context refuses the launch.
 # ORCH_HANDOFF_AGENT_RESERVE_TOKENS = "150000"
 
@@ -347,27 +361,44 @@ ORCH_EXTERNAL_TRIAGE = "on"
 
 # The models a new or replacement overseer tries, in order. Each entry is
 # harness:model:effort, separated by commas. The harness is claude, codex,
-# copilot or pi. The model is the name that harness's --model takes, in
-# lowercase letters, digits, dots and hyphens, starting with a letter. On pi
+# copilot or pi. On claude, codex or copilot the model is a model class, such
+# as standard or top, or the name that harness's --model takes, in lowercase
+# letters, digits, dots and hyphens, starting with a letter; `kendex
+# tier-model` classifies it at launch, and the class of the entry the launch
+# picks prints its warning once. On claude a class runs its family alias,
+# standard as opus, and `model-classes` overrides do not apply yet. On codex
+# and copilot a class runs the harness default: codex until its model list
+# reaches the launch. On pi
 # it is provider/model, for example pi:github-copilot/claude-opus-5.5:high:
 # the provider in those same characters, the model in lowercase letters,
 # digits, dots, underscores, hyphens and slashes, starting with a letter or
 # digit. The effort is lowercase letters, the level as that harness spells
-# it; on pi it is the thinking level. In this grammar, an entry that names no
-# model stops the launch. The deprecated positive account number first uses
+# it; on pi it is the thinking level. An empty model selects the harness
+# default on claude, codex or copilot. Pi requires provider/model.
+# A claude exact id, such as claude-opus-5-5, still launches as written and
+# warns once per run until the next major release; replace it with its
+# class. A codex or copilot exact id, such as gpt-6.1-sol, is a supported
+# form and launches as written with no warning: a class there runs the
+# harness default, which a lane launch refuses.
+# The deprecated positive account number first uses
 # the caller's model. With no caller model, the overseer uses the same-harness
-# model from lib/overseer-launch.sh's OL_DEFAULT_PREFERENCE. With neither, it
+# class from lib/overseer-launch.sh's OL_DEFAULT_PREFERENCE. With neither, it
 # uses the harness's native model default. It warns once per run until the
-# next major release and names the conversion.
+# next major release and names the conversion: with a caller model, that
+# model's class, or the model itself where it names no class; for a claude
+# old exact id, the model with no replacement; with no caller model, the
+# same-harness default class, or the harness default where that class runs
+# no model, as on codex; with neither, the harness default.
 # Numeric succession entries can cross harnesses only when the model comes
 # from the target harness's default preference. The permission rules in
 # oversee-succeed --help still apply.
-# Replace it with a model name, such as claude:claude-opus-5-5:high. The name is not checked
+# Replace it with a class, such as claude:standard:high, or the harness default.
+# A model name is not checked
 # before launch, so a misspelled codex, copilot or pi model opens the new
 # overseer on that name. Which entries a first launch and a succession skip is in
-# oversee --help and oversee-succeed --help. Change the order here when
-# models change; no code holds another order. Empty names no entries.
-# ORCH_OVERSEER_PREFERENCE = "claude:claude-opus-5-5:high,codex:gpt-6.1-sol:high"
+# oversee --help and oversee-succeed --help. Classes and harness defaults
+# need no edit when model versions change. An empty setting names no entries.
+# ORCH_OVERSEER_PREFERENCE = "claude:standard:high,codex:standard:high"
 
 # Lane defaults use harness[@host]:model:effort. @host names a host kind or
 # provider executable path for that entry; without it, the caller's --host or
@@ -376,7 +407,10 @@ ORCH_EXTERNAL_TRIAGE = "on"
 # The first eligible entry with room supplies the harness, host, model and effort.
 # Eligibility follows references/lane-directive.md § Lane preference. Explicit
 # models keep the caller's route. Unset or empty leaves that route unchanged.
-# ORCH_LANE_PREFERENCE = "claude@claude-cloud:claude-opus-5-5:high,codex:gpt-6.1-sol:high"
+# A lane launch names its model, so a lane entry names an exact id or a claude
+# class: a codex or copilot class runs no model and refuses as
+# launch-model-missing until codex list evidence reaches the launch.
+# ORCH_LANE_PREFERENCE = "claude@claude-cloud:standard:high,codex:gpt-6.1-sol:high"
 
 # Minutes before the projected account wall that starts overseer succession.
 # Zero disables the rate trigger.

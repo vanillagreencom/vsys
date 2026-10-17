@@ -31,8 +31,7 @@ source "${BASH_SOURCE[0]%/*}/toml.sh"
 # which account a session is spending.
 # shellcheck source=lane-home.sh
 source "${BASH_SOURCE[0]%/*}/lane-home.sh"
-# The claude adapter names the window a claude model runs, which decides
-# whether a claude command may turn its compaction off (launch_choice_compaction).
+# The Claude adapter supplies the family or default budget for context handoff.
 # shellcheck source=adapters/claude.sh
 source "${BASH_SOURCE[0]%/*}/adapters/claude.sh"
 
@@ -66,11 +65,20 @@ lane_env_prefix() { # HARNESS DIR [MODEL]
   printf '%s=%s\n' "$var" "$2"
 }
 
-# Jarvis starts without a prompt so SessionStart can confirm the native id
-# before the Start procedure reaches the model. The explicit Pi account is
-# its agent directory, rather than a Claude seat selected for pi-claude.
+# Jarvis confirms the native id at SessionStart before the Start procedure
+# reaches the model. Claude Code and Pi fire SessionStart at launch and start
+# without a prompt. Copilot CLI and Codex fire it only when the first prompt is
+# submitted (Copilot's sessionStart payload carries `initialPrompt`; Codex runs
+# its pending SessionStart hooks from its first turn), so their launch submits
+# this fixed kickoff, which holds no brief, and LANE_SESSION_PROMPTED tells
+# the caller that a kickoff turn runs before the brief. The explicit Pi account
+# is its agent directory, rather than a Claude seat selected for pi-claude.
+LANE_SESSION_KICKOFF='Jarvis Start: your Start brief is the next message. Reply only Waiting, and take no action until it arrives.'
 lane_session_command() { # HARNESS NATIVE_ID RESUME_FILE
-  local harness="$1" id="$2" file="$3"
+  local harness="$1" id="$2" file="$3" kickoff=""
+  case "$harness" in codex | copilot) kickoff="$(lane_single_quote "$LANE_SESSION_KICKOFF")" ;; esac
+  LANE_SESSION_PROMPTED=false
+  [[ -z "$kickoff" ]] || LANE_SESSION_PROMPTED=true
   LANE_SESSION_ACCOUNT_VAR="$(lane_env_prefix "$harness" -)"
   LANE_SESSION_ACCOUNT_VAR="${LANE_SESSION_ACCOUNT_VAR%%=*}"
   [[ "$harness" != pi ]] || LANE_SESSION_ACCOUNT_VAR=PI_CODING_AGENT_DIR
@@ -83,10 +91,12 @@ lane_session_command() { # HARNESS NATIVE_ID RESUME_FILE
       launch_choice_lead_settings codex || return 1
       printf 'codex'
       printf ' %q' "${LAUNCH_CHOICE_KEPT[@]}"
-      [[ -z "$file" ]] || printf ' resume %q' "$id" ;;
+      [[ -z "$file" ]] || printf ' resume %q' "$id"
+      printf ' %s' "$kickoff" ;;
     (copilot)
       if [[ -n "$file" ]]; then printf 'copilot --resume=%q' "$id"
-      else printf 'copilot --session-id=%q' "$id"; fi ;;
+      else printf 'copilot --session-id=%q' "$id"; fi
+      printf ' -i %s' "$kickoff" ;;
     (pi)
       if [[ -n "$file" ]]; then printf 'pi --session %q' "$file"
       else printf 'pi --session-id %q' "$id"; fi ;;
@@ -293,7 +303,7 @@ lane_copilot_pool_fix() { # HOST READ [DIR [STATUS [DETAIL]]]
 #             clarifying question the CLI otherwise asks at the pane.
 LAUNCH_CHOICE_FLAGS=(
   'claude|--model|--effort|-|-|--dangerously-skip-permissions --permission-mode=bypassPermissions --permission-mode=dontAsk|--dangerously-skip-permissions --permission-mode=bypassPermissions|-|--disallowedTools=AskUserQuestion,EnterPlanMode|--settings={"env":{"DISABLE_AUTO_COMPACT":"1"}}'
-  'codex|-m --model|model_reasoning_effort=|-|-c|--dangerously-bypass-approvals-and-sandbox --approve-for-me --ask-for-approval=never -a=never|--dangerously-bypass-approvals-and-sandbox|-c check_for_update_on_startup=false;-c features.daemon_auto_start=false;--dangerously-bypass-hook-trust|-c features.default_mode_request_user_input=false|-c model_auto_compact_token_limit=9223372036854775807 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0'
+  'codex|-m --model|model_reasoning_effort=|-|-c|--dangerously-bypass-approvals-and-sandbox --approve-for-me --ask-for-approval=never -a=never|--dangerously-bypass-approvals-and-sandbox|-c check_for_update_on_startup=false;-c features.daemon_auto_start=false;-c notice.hide_rate_limit_model_nudge=true;--dangerously-bypass-hook-trust|-c features.default_mode_request_user_input=false|-c model_auto_compact_token_limit=9223372036854775807 -c model_auto_compact_token_limit_scope=body_after_prefix -c model_post_turn_compact_threshold_percent=0'
   'opencode|-m --model|-|-|-|-|-|-|-|-'
   'pi|--model|--thinking|:|-|no-word|-|-|--exclude-tools question|-'
   'copilot|--model|--reasoning-effort|-|-|--allow-all --yolo --allow-all-tools|--allow-all --yolo|--autopilot --max-autopilot-continues 3;--context long_context;--no-auto-update|--no-ask-user|-'
@@ -463,8 +473,8 @@ launch_choice_permission_transferable() { # HARNESS TEXT...
 # open-terminal refuses the two together for that reason, as
 # launch-flags-unreachable, so its readings have one text to give.
 #
-# read -a, not `for tok in $2`, for the reason start_cmd states: a bare
-# expansion globs the very brackets a model id can carry.
+# Shell quoting belongs to launch_choice_shell_words, including the backslashes
+# printf %q adds around context selectors.
 launch_choice_value() { # SPELLINGS TEXT...
   local spellings="$1"
   shift
@@ -473,8 +483,8 @@ launch_choice_value() { # SPELLINGS TEXT...
   read -r -a words <<<"$spellings"
   for text in "$@"; do
     [[ -n "$text" ]] || continue
-    tokens=()
-    read -r -a tokens <<<"$text"
+    launch_choice_shell_words "$text" || return 1
+    tokens=(${LAUNCH_CHOICE_ARGV[@]+"${LAUNCH_CHOICE_ARGV[@]}"})
     i=0
     while (( i < ${#tokens[@]} )); do
       tok="${tokens[i]}"
@@ -564,15 +574,14 @@ launch_choice_effort() { # HARNESS TEXT [TEXT]
 # preference on a first launch names effort alone and leaves the model to
 # the harness default. Status 1 where either value is named and the table
 # holds no row for that harness. A row with no effort spelling omits effort.
-# The model a launch of HARNESS writes for MODEL: a claude alias the adapter
-# maps is written as its id, so no ANTHROPIC_DEFAULT_*_MODEL pin moves the
-# model its window was judged on; every other model as named.
-launch_choice_model_id() { # HARNESS MODEL
-  if [[ "$1" == claude ]]; then lane_adapter_claude_model_id "${2:-}"; else printf '%s\n' "${2:-}"; fi
+# Claude applies its own family overrides. Shell callers keep the native
+# selector so a model release needs no launcher edit.
+launch_choice_model_id() { # HARNESS MODEL [launch|resolved|recorded] [RECORDED_SELECTOR]
+  if [[ "$1" == claude ]]; then lane_adapter_claude_model_id "${2:-}" "${3:-}" "${4:-}"; else printf '%s\n' "${2:-}"; fi
 }
 
 launch_choice_write() { # HARNESS MODEL EFFORT
-  local row model_spellings effort_spellings attach word out
+  local row model_spellings effort_spellings attach word out model
   [[ -n "$2" || -n "$3" ]] || return 0
   row="$(launch_choice_row "$1")"
   [[ -n "$row" ]] || return 1
@@ -580,7 +589,8 @@ launch_choice_write() { # HARNESS MODEL EFFORT
   out=""
   if [[ -n "$2" ]]; then
     read -r word _ <<<"$model_spellings"
-    out="$word $(printf %q "$(launch_choice_model_id "$1" "$2")")"
+    model="$(launch_choice_model_id "$1" "$2")" || return 1
+    out="$word $(printf %q "$model")"
   fi
   if [[ "$effort_spellings" != - && -n "$3" ]]; then
     read -r word _ <<<"$effort_spellings"
@@ -629,8 +639,8 @@ launch_choice_permission_write() { # HARNESS
 # alias after that is judged as the alias. open-terminal's fleet gate asks
 # this same judge.
 # LAUNCH_CHOICE_COMPACTION says what became of the compaction words: `on`,
-# `none` for a row that has none, `no-model` where no model is named and
-# `no-window` where its window is unnamed, the last two leaving compaction on. A caller's flags handed
+# `none` for a row that has none. An adapter failure gives `no-window`, or
+# `no-model` when the launch uses the native default. A caller's flags handed
 # on keep none of their own: the same harness would carry them twice, another
 # harness would be handed a word its launch form refuses, and whether a launch
 # keeps its question tool is the flag's answer, never the caller's words.
@@ -663,6 +673,10 @@ launch_choice_lead_settings() { # [--question-off] [--model MODEL] HARNESS WORD.
     # A spelling still naming the alias runs it as named, and is judged so.
     [[ "$(launch_choice_value "$(launch_choice_model_spellings "$harness")" "${words//$nl/ }")" != "$model" ]] \
       || model_id="$model"
+  fi
+  # Keep notice state in the launcher shell across its gate and command build.
+  if [[ "$harness" == claude ]]; then
+    lane_adapter_claude_window "$model_id" notice >/dev/null || return 1
   fi
   own_compaction="$(launch_choice_compaction "$harness" "$model_id")" || compaction_rc=$?
   case "$compaction_rc:$own_compaction" in
@@ -774,19 +788,16 @@ launch_overseer_question_words() { # HARNESS
 }
 
 # launch_choice_compaction HARNESS MODEL: the compaction policy settings for
-# a session on MODEL, empty where the row names none. Exit 1,
-# printing nothing, where the row names words and no adapter can name MODEL's
-# window: disabling Claude compaction would leave its capacity unknown.
-# The one owner of that rule: every command a
-# launcher builds takes its words from here, and a fleet launch refuses on the
-# same answer. A claude window is the claude adapter's by model; a codex
-# rollout names its own window whatever the model.
+# a session on MODEL, empty where the row names none. Claude uses its adapter's
+# family or default budget, so an unfamiliar model keeps compaction disabled.
 launch_choice_compaction() { # HARNESS MODEL
-  local words
+  local words window
   words="$(launch_choice_compaction_off "$1")"
   [[ -n "$words" ]] || return 0
   case "$1" in
-    claude) [[ -n "$(lane_adapter_claude_window "${2:-}")" ]] || return 1 ;;
+    claude)
+      window="$(lane_adapter_claude_window "${2:-}" notice)" || return 1
+      [[ -n "$window" ]] || return 1 ;;
   esac
   printf '%s\n' "$words"
 }
@@ -1415,14 +1426,18 @@ lane_launch_rm_prompt_env() { # CMD HARNESS
   esac
 }
 
-# The variables that name the session a launch is made from, cleared from every
-# child a launcher starts so the child never writes that session's records or
-# answers as it: lane_launch_line opens each `env` line it renders with them,
-# open-terminal's run_detached clears them from the detached terminal or wake,
-# and its hosted command, POSIX shell text, clears them with `unset`. A tmux
-# window takes the server's environment rather than the launcher's, so the
-# scrub rides in the command and not in the caller's process. Account and home
-# variables are not listed: a launch sets the child's own after this scrub, and
+# The variables that name the session a launch is made from, and the display
+# names of the owner's desktop session (LANE_LAUNCH_LIVE_SESSION), cleared
+# from every child a launcher starts so the child never writes that session's
+# records or answers as it, and finds no display through those names:
+# lane_launch_line opens each `env` line it renders with them,
+# open-terminal's run_detached clears them from a wake, and from a GUI terminal
+# all but the live-session names, which the terminal keeps to open its window
+# and the lane's shell inside it clears with `unset` (open_gui), and its hosted
+# command, POSIX shell text, clears them with `unset`. A tmux window takes the
+# server's environment rather than the launcher's, so the scrub rides in the
+# command and not in the caller's process. Account and home variables are not
+# listed: a launch sets the child's own after this scrub, and
 # KENDEX_LANE_ORIGIN, exported ahead of the command, stays.
 #   Claude Code  CLAUDECODE, the nested-session marker; CLAUDE_CODE_SESSION_ID,
 #                the session id it exports to its tools (2.1.42), and
@@ -1432,19 +1447,54 @@ lane_launch_rm_prompt_env() { # CMD HARNESS
 #   Codex        CODEX_THREAD_ID, the session it exports to its tools;
 #                CODEX_SANDBOX and CODEX_SANDBOX_NETWORK_DISABLED, which
 #                second-opinion reads as running inside Codex.
-#   Pi           PI_SUBAGENT_PARENT_SESSION_ID and PI_BRIDGE_PARENT_SESSION_ID,
+#   Pi           PI_SUBAGENT_CHILD_AGENT, the delegated child role;
+#                PI_SUBAGENT_PARENT_SESSION_ID and PI_BRIDGE_PARENT_SESSION_ID,
 #                pi-agents-tmux's parent session for a subagent.
 #   Jarvis       JARVIS_RECORD and JARVIS_GENERATION, the runtime record a
 #                SessionStart writes its native identity into
 #                (lib/session-rows.sh session_rows_jarvis_write).
+#   Orch         ORCH_MODEL_LINES_HELD, the model-line hold a launcher
+#                exports to its own children (lib/overseer-launch.sh §
+#                OL_LINES_HELD); a lane prints its own launches' lines.
 # Copilot is not listed: kendex reads a Copilot session's id from its hook
 # payload alone.
+#   Live session WAYLAND_DISPLAY, DISPLAY and HYPRLAND_INSTANCE_SIGNATURE: a
+#                tmux server started inside the desktop session holds them, and
+#                a key, pointer or capture tool finds the owner's screen
+#                through them. Clearing them stops only a tool that finds the
+#                screen that way; other sites point here for what it covers.
+#                It does not cover a Wayland client that falls back to
+#                $XDG_RUNTIME_DIR/wayland-0 where a compositor serves that
+#                socket, a lane that sets a display name itself, a tool with
+#                its own route such as ydotool through ydotoold's socket, or a
+#                pane the lane opens on the tmux server it runs on, such as a
+#                Pi subagent pane or a Claude Code agent-team teammate in tmux
+#                mode, which takes the server's environment and holds the
+#                names again. A lane that needs a screen runs its own nested
+#                display; one that needs the owner's declares it at launch,
+#                and lane_launch_keep_live_session keeps them, as it does for
+#                a Jarvis session and the overseer, which are not lanes.
+LANE_LAUNCH_LIVE_SESSION=(WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE)
 LANE_LAUNCH_SCRUB=(
   CLAUDECODE CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID CLAUDE_PROJECT_DIR
   CODEX_THREAD_ID CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED
-  PI_SUBAGENT_PARENT_SESSION_ID PI_BRIDGE_PARENT_SESSION_ID
+  PI_SUBAGENT_CHILD_AGENT PI_SUBAGENT_PARENT_SESSION_ID PI_BRIDGE_PARENT_SESSION_ID
   JARVIS_RECORD JARVIS_GENERATION
+  "${LANE_LAUNCH_LIVE_SESSION[@]}"
+  ORCH_MODEL_LINES_HELD
 )
+
+# Drop the live-session names from LANE_LAUNCH_SCRUB for every launch this
+# process makes after the call: open-terminal --live-display or a wake of a
+# lane recorded with it, a Jarvis session, which acts on the owner's desktop,
+# and the overseer's own line (lib/overseer-launch.sh ol_command_line).
+lane_launch_keep_live_session() {
+  local name kept=()
+  for name in "${LANE_LAUNCH_SCRUB[@]}"; do
+    [[ " ${LANE_LAUNCH_LIVE_SESSION[*]} " == *" $name "* ]] || kept+=("$name")
+  done
+  LANE_LAUNCH_SCRUB=("${kept[@]}")
+}
 
 # Start the pane's configured shell with no parent session identity. Scrubbing
 # before shell initialization preserves functions and the shell language of a
@@ -1790,22 +1840,28 @@ lane_account_equivalent() { # OBSERVED PICKED
      == "$(lane_claims_canon "$(lane_launch_home_account "$2")")" ]]
 }
 
-# lane_run_detached OUT ERR COMMAND... — COMMAND started so it outlives this
-# script and its terminal, stdin from /dev/null, stdout appended to OUT and
-# stderr to ERR (one path may be both). setsid puts the child in a session of
-# its own, clear of this script's terminal and of a kill of its process group.
-# macOS ships none — it is util-linux — and with stderr redirected the shell's
-# `setsid: command not found` would be swallowed, the launch never made and the
-# caller still saying it had; nohup is what every platform has, and it clears
-# the child of the hangup this script's exit would deliver, though not of a
-# process-group kill. The environment is the caller's own: what a child must
-# not inherit, the caller strips at the head of COMMAND.
+# Recovery must survive a stop of its predecessor's process group. On macOS,
+# the shared GitHub prefix makes a separate group without Bash job control's
+# parent-side setpgid race. It execs COMMAND, preserving the PID in $! for
+# open-terminal's wake record. The caller selects COMMAND's environment.
 lane_run_detached() { # OUT ERR COMMAND...
-  local out="$1" err="$2"
+  local out="$1" err="$2" self="${BASH_SOURCE[0]}" lib
   shift 2
   if command -v setsid >/dev/null 2>&1; then
     setsid "$@" </dev/null >>"$out" 2>>"$err" &
   else
-    nohup "$@" </dev/null >>"$out" 2>>"$err" &
+    case "$self" in */*) ;; *) self="./$self" ;; esac
+    lib="${self%/*}/../../../github/scripts/lib/group-leader.sh"
+    # Bash 3.2 can exit on a missing source even in a checked branch.
+    # shellcheck source=../../../github/scripts/lib/group-leader.sh
+    { [[ -f "$lib" && -r "$lib" ]] && source "$lib"; } || {
+      printf 'lane-launch: detached=group-leader-missing path=%s\n' "$lib" >&2
+      return 2
+    }
+    command -v perl >/dev/null 2>&1 || {
+      printf 'lane-launch: detached=missing-command commands=perl\n' >&2
+      return 2
+    }
+    nohup "${KENDEX_GROUP_LEADER[@]}" "$@" </dev/null >>"$out" 2>>"$err" &
   fi
 }

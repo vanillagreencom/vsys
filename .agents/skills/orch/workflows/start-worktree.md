@@ -19,7 +19,9 @@ The full session from inside a worktree: implement → publication and review in
 
    Resolve `TRACKER` per [SKILL.md § Tracker Resolution](../SKILL.md#tracker-resolution). Set `WORKTREE_PATH` to `git-context repo-root .`.
 
-3. **Refuse containers** — Linear only, before any state exists. Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)) to:
+3. **Resume from a handoff.** Run [start.md](start.md) § 0 for `[ISSUE_ID]`: its `handoff-standing` read, its stop-and-report rule, and its `handoff-resume` stamp. A `none` verdict → step 4. A stamped record replaces the rest of this file: take step 6's existing-state branch and its tier write, then continue from the first entry of the record's `remaining` list. A workflow that runs this § 1, [small.md](small.md) § 1, names its own continuation.
+
+4. **Refuse containers** — Linear only, before any state exists. Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)) to:
 
    ```bash
    .agents/skills/linear/scripts/linear.sh issues get [ISSUE_ID] --with-bundle
@@ -27,7 +29,7 @@ The full session from inside a worktree: implement → publication and review in
 
    A Verifying item stops development preparation here. Its live readings belong to the overseer. A container, a blocked item, or a `(one PR)` promotion all STOP here without leasing or initializing anything. A promotion: point the operator at `/orch start [PARENT_ID]`. A container: list its unblocked children and say this worktree should not exist for it. A blocked item: name the live blockers.
 
-4. **Claim the worktree.** **Skip if** `WORKTREE_PATH` is the main checkout — the guard refuses it.
+5. **Claim the worktree.** **Skip if** `WORKTREE_PATH` is the main checkout — the guard refuses it.
 
    ```bash
    .agents/skills/worktree/scripts/worktree-session-guard claim [WORKTREE_PATH] --owner [ISSUE_ID] --adopt
@@ -35,7 +37,7 @@ The full session from inside a worktree: implement → publication and review in
 
    `--adopt` takes over the lease the session-start hook took under this session's environment owner. Do **not** pass `--repo` (`claim` and `refresh` reject it). Exit 75 means another session holds the lease — coordinate with that owner instead of proceeding. A flock-less host still serializes through the guard's mkdir mutex; exit 1 means the guard itself failed — stop and read its message, never continue unguarded.
 
-5. **Initialize state unless it exists.** `init` overwrites, and a restarted item's state file carries its round history (`cycles`, `fixed_items`, `patched_causes`), so read existence and the branch first:
+6. **Initialize state unless it exists.** `init` overwrites, and a restarted item's state file carries its round history (`cycles`, `fixed_items`, `patched_causes`), so read existence and the branch first:
 
    ```bash
    .agents/skills/orch/scripts/workflow-state exists --json [ISSUE_ID]
@@ -63,7 +65,7 @@ The full session from inside a worktree: implement → publication and review in
    .agents/skills/orch/scripts/workflow-state set [ISSUE_ID] tier standard
    ```
 
-6. **Gate on base freshness.** Every route into a worktree lands here — fresh or reused:
+7. **Gate on base freshness.** Every route into a worktree lands here, fresh or reused, except a handoff resume (step 3):
 
    ```bash
    .agents/skills/orch/scripts/base-freshness [WORKTREE_PATH]
@@ -87,6 +89,8 @@ The full session from inside a worktree: implement → publication and review in
 
 ### 2.1 Open Early
 
+With `ORCH_DELIVERY=push-base`, `pr-order` returns `review-first`. Continue through internal review before publication.
+
 Read the consumer's publication order through `pr-order --help`:
 
 ```bash
@@ -102,7 +106,22 @@ Record the order its `pr-order=` field names, `review-first` on a non-zero exit:
 All orders end at the caller's review step: § 3 here, or [small.md](small.md) § 3 when small.md runs this section.
 
 - `review-first` → the review step. A non-zero exit takes this row and reports its `pr-order-error:` line once.
-- `push-first` → the same early submit and existence check as `open-first` below. Submit creates a draft and leaves auto-merge unarmed. Its `ci` record accepts completed local edits with required CI pending. Keep the draft through internal fix rounds. The passing review and submit own the ready transition and combined fix push.
+- `push-first` → the same early submit and existence check as `open-first` below. Submit creates a draft and leaves auto-merge unarmed. Its `ci` record accepts completed local edits with required CI pending. After the successful existence check, read `.agents/skills/orch/scripts/pr-view-json [WORKTREE_PATH] --json number,state,headRefOid` and bind the open PR's head as `[HEAD_SHA]`; a failed read stops this pass. Bind `[REVIEW_BASE_CHECKOUT]` per [Gate-mode routing](../references/gates.md#gate-mode-routing).
+
+  **Push-first first head.** Request Copilot before entering the review step:
+
+  ```bash
+  env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/approval-wait [PR_NUMBER] --request-review --mark-ready --item [ISSUE_ID] --base-checkout [REVIEW_BASE_CHECKOUT]
+  ```
+
+  Route the answer per [Copilot requests](../references/gates.md#copilot-requests) before recording the head. A nonzero return stops this pass with no request record. Then record the head:
+
+  ```bash
+  .agents/skills/orch/scripts/workflow-state update [ISSUE_ID] '.pr_approval.copilot_rerequest_head = "[HEAD_SHA]"'
+  ```
+
+  Continue to the review step. Keep `pr_order` at `push-first` and the lane's `Review: pending` line through internal fix rounds: it holds overseer approval, and submit § 2 step 5 arms nothing. The passing review and submit publish the combined fixes and request each unrecorded head.
+
 - `open-first` → `⤵ workflows/submit-pr.md § 1-2` with context `worktree`, `lifecycle: "managed"`, `issue_id`. It pushes the commit § 2 validated and opens a pull request, not a draft, so Copilot reviews it while the review step runs; the `open-first` recorded above keeps its § 2 step 5 from arming it. Then confirm the pull request exists:
 
   ```bash
@@ -123,7 +142,7 @@ All orders end at the caller's review step: § 3 here, or [small.md](small.md) �
 
 ## 4. Submit
 
-Before submit-pr can arm the PR, move a Linear development item to In Review. Read the item live first. A Done or Verifying item skips this mutation and continues through the existing merged-PR route in merge-pr. This state write belongs before arming because an armed PR can merge while submit-pr runs.
+Before submit-pr can arm the PR, move a Linear development item to In Review. Read the item live first. A Done or Verifying item skips this mutation. With `pr` delivery it continues through the existing merged-PR route in merge-pr. This state write belongs before arming because an armed PR can merge while submit-pr runs.
 
 ```bash
 .agents/skills/linear/scripts/linear.sh issues get [ISSUE_ID]
@@ -135,6 +154,8 @@ Before submit-pr can arm the PR, move a Linear development item to In Review. Re
 **Run Workflow**: `⤵ workflows/submit-pr.md § 1-7 → § 5` with context `worktree`, `lifecycle: "managed"`, `issue_id`. After an `open-first` § 2.1 this pass updates the open pull request: its § 2 step 1 pushes § 3's fix round with the fixes for Copilot's threads in one push, then writes § 3's verdict line and routes the pushed head, and its step 5 arms the head once § 3 has returned.
 
 ## 5. Finalize
+
+After successful `push-base` delivery, submit-pr § 2.1 already completed the tracker and sent the pushed-commit notice. Run § 5.4, then end. Skip this section's PR stop, summaries and merge steps.
 
 Before either summary, `MERGE_READY = false` preserves submit-pr's stop or creates `merge-gates-unmet`:
 

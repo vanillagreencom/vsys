@@ -55,6 +55,9 @@ WORKING_RE='to interrupt|to run in background|↓ [0-9][0-9.]*[kKmM]? tokens|Jum
 # A dialog waiting on an answer: the selected numbered row, drawn with each
 # harness's marker, and Claude Code's question and key hints.
 LANE_ASKING_RE='(❯|›) [0-9]+\. |Do you want to|Enter to select|Esc to cancel'
+# Codex's optional model-switch reminder blocks input without asking about
+# the work. Its account/config APIs cannot report a running terminal's dialog.
+RATE_LIMIT_SWITCH_RE='^[[:space:]]*Switch to .+ for lower credit usage[?][[:space:]]*$'
 # The account is spent. Claude Code opens the banner with "You've hit your
 # <bucket> limit" / "You've reached your…" and points at /usage-credits; Codex
 # prints "Usage limit reached" and its out-of-credits wording. `.` stands in
@@ -196,13 +199,37 @@ HARNESS_UP_RE="$CLAUDE_COMPOSER_RE|$CODEX_MARKER_RE|$CLAUDE_FOOTER_RE"
 # the hook rows used by lane_state carry turn state, not editor readiness.
 # Keep this proof out of pane_working: the startup interrupt hint stays at idle.
 PI_COMPACT_HEADER_RE='^ █▀ █ escape interrupt · ctrl\+c/ctrl\+d clear/exit · / commands · ! bash · ctrl\+o more[[:space:]]*$'
-PI_COMPACT_EDITOR_RE='^── [^[:space:]]+ Working ─+[[:space:]]*$'
+PI_COMPACT_EDITOR_RE='^── [^[:space:]]+ Working (─)+[[:space:]]*$'
+
+# Pi's current title, footer and π prompt prove readiness, not turn activity
+# (fixtures/oversee-watch/pi-current.txt). The Agents dashboard is optional:
+# pi-agents-tmux omits its frame when disabled, hidden or empty; pi-qol's compact
+# editor still draws the prompt. Title, account and model text remain variable.
+# Group repeated glyphs so byte-oriented C locale repeats the whole character.
+PI_CURRENT_TITLE_RE=$'^──[[:space:]\xc2\xa0]+π - .+[[:space:]\xc2\xa0]+(─)+[[:space:]]*$'
+# pi-qol joins variable metadata with " / " and draws a percent display token.
+# Activity prefixes, bar fill, context values and child badges vary independently
+# of editor readiness; do not interpret them here.
+PI_CURRENT_FOOTER_RE='^.+ / .+ [^[:space:]]+%([[:space:]].*)?$'
+PI_CURRENT_PROMPT_RE='^π[[:space:]]*$'
+
+# Check the base editor layout: native selectors replace the final prompt
+# with a border. A historical prompt elsewhere in the capture cannot qualify.
+pane_pi_editor_ready() {
+  awk -v footer="$PI_CURRENT_FOOTER_RE" -v prompt="$PI_CURRENT_PROMPT_RE" '
+    $0 ~ footer { footer_seen = 1 }
+    /[^[:space:]]/ { final = $0 }
+    END { exit !(footer_seen && final ~ prompt) }
+  ' <<<"$1"
+}
 
 # pane_harness_up SCREEN — the predicate over one captured pane.
 pane_harness_up() {
   pane_working "$1" || grep -Eq -- "$HARNESS_UP_RE" <<<"$1" \
     || [[ "$(pane_turn_slice "$1" framed)" == framed ]] \
-    || { grep -Eq -- "$PI_COMPACT_HEADER_RE" <<<"$1" && grep -Eq -- "$PI_COMPACT_EDITOR_RE" <<<"$1"; }
+    || { grep -Eq -- "$PI_COMPACT_HEADER_RE" <<<"$1" && grep -Eq -- "$PI_COMPACT_EDITOR_RE" <<<"$1"; } \
+    || { grep -Eq -- "$PI_CURRENT_TITLE_RE" <<<"$1" && grep -Eq -- "$PI_CURRENT_FOOTER_RE" <<<"$1" \
+      && grep -Eq -- "$PI_CURRENT_PROMPT_RE" <<<"$1"; }
 }
 
 # The pane lines strictly below the last user turn — the whole pane when the
@@ -649,6 +676,25 @@ lane_stop_signal() { # PIDS [ROOT]
   LANE_STOP_COUNT="$count"
 }
 
+# Read the saved PID and start without signalling. Status 3 means the saved
+# process has ended. Status 1 leaves the failed read in LANE_IDENTITY_CAUSE.
+LANE_IDENTITY_CAUSE=""
+lane_identity_status() { # PID START: 0 live, 3 ended, 1 unreadable
+  local state start=""
+  LANE_IDENTITY_CAUSE=""
+  [[ "$1" =~ ^[1-9][0-9]*$ && -n "$2" ]] || { LANE_IDENTITY_CAUSE=identity-invalid; return 1; }
+  state="$(lane_process_state "$1")" || { LANE_IDENTITY_CAUSE=state-read-failed; return 1; }
+  if [[ -n "$state" && "$state" != Z ]]; then
+    start="$(lane_process_start "$1")" || { LANE_IDENTITY_CAUSE=start-read-failed; return 1; }
+    # ps answering no process for a pid the state read found live is either
+    # that process exiting between the two reads, or no answer at all.
+    if [[ -z "$start" ]]; then
+      state="$(lane_process_state "$1")" || { LANE_IDENTITY_CAUSE=state-read-failed; return 1; }
+      [[ -z "$state" || "$state" == Z ]] || { LANE_IDENTITY_CAUSE=start-read-failed; return 1; }
+    fi
+  fi
+  [[ -n "$start" && "$start" == "$2" ]] || { LANE_IDENTITY_CAUSE=identity-stale; return 3; }
+}
 # End a lane's harness by its launch identity: every process named for HARNESS
 # at or below PID, where PID still runs and started at START. No directory is
 # read, since a lane's own close-out removes its worktree before its harness
@@ -663,21 +709,15 @@ lane_stop_signal() { # PIDS [ROOT]
 #   start-read-failed     the start of a live PID could not be read
 #   process-read-failed   the process table could not be read
 lane_stop_identity() { # PID START HARNESS
-  local state start="" table name_re found
+  local table name_re found rc=0
   lane_stop_reset
-  [[ "$1" =~ ^[1-9][0-9]*$ && -n "$2" ]] || { LANE_STOP_CAUSE=identity-invalid; return 1; }
   LANE_STOP_PID="$1"
-  state="$(lane_process_state "$1")" || { LANE_STOP_CAUSE=state-read-failed; return 1; }
-  if [[ -n "$state" && "$state" != Z ]]; then
-    start="$(lane_process_start "$1")" || { LANE_STOP_CAUSE=start-read-failed; return 1; }
-    # ps answering no process for a pid the state read found live is either
-    # that process exiting between the two reads, or no answer at all.
-    if [[ -z "$start" ]]; then
-      state="$(lane_process_state "$1")" || { LANE_STOP_CAUSE=state-read-failed; return 1; }
-      [[ -z "$state" || "$state" == Z ]] || { LANE_STOP_CAUSE=start-read-failed; return 1; }
-    fi
+  lane_identity_status "$1" "$2" || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    LANE_STOP_CAUSE="$LANE_IDENTITY_CAUSE"
+    [[ "$LANE_STOP_CAUSE" != identity-invalid ]] || LANE_STOP_PID=""
+    return "$rc"
   fi
-  [[ -n "$start" && "$start" == "$2" ]] || { LANE_STOP_CAUSE=identity-stale; return 3; }
   LANE_STOP_PID=""
   table="$(lane_process_table)" || { LANE_STOP_CAUSE=process-read-failed; return 1; }
   name_re="$(lane_harness_process_re "$3")" || { LANE_STOP_CAUSE=process-read-failed; return 1; }
@@ -952,6 +992,16 @@ lane_pane_capture() { # OUT_VAR MODE HOST ITEM PANE [history]
 # The judge.
 # ---------------------------------------------------------------------------
 
+# Consumers ask for a property instead of copying the judge's state list.
+# Unknown or unreadable observations grant neither live nor dialog permission.
+lane_state_is() { # STATE live|dialog
+  case "$1" in
+    asking|rate-limit-switch) [[ "$2" == live || "$2" == dialog ]] ;;
+    working|idle|walled) [[ "$2" == live ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 # lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] [HOSTED_ITEM] [HARNESS] [SOURCE]
 # SOURCE carries LANE_PANE_SOURCE from the shared capture owner. A failed
 # provider observation cannot establish exit, even when the process confirms it.
@@ -963,6 +1013,7 @@ lane_pane_capture() { # OUT_VAR MODE HOST ITEM PANE [history]
 #             shells
 #   walled    the current turn reports a failed login, or a usage wall
 #             that no ACCOUNT reading says has lifted
+#   rate-limit-switch  Codex's optional lower-credit model reminder is up
 #   asking    a dialog is up and waiting on an answer
 #   idle      the harness is at its input prompt with nothing in flight
 #   working   a turn is in flight
@@ -981,7 +1032,11 @@ lane_pane_capture() { # OUT_VAR MODE HOST ITEM PANE [history]
 #            the wall its banner reports lifted, `walled` where it found the
 #            wall standing, and "" where it measured nothing
 #   ROWS     for a Pi lane, lib/session-rows.sh § session_rows_lane_verdict's
-#            word, `unreadable` where that read failed; "" for any other lane
+#            word, `unreadable` where that read failed; for a Pi session the
+#            Jarvis launch worker started, `idle` while its runtime record
+#            holds the native start and no delivered brief, a session that has
+#            run no turn (the jarvis skill's session-backend.sh); "" for any
+#            other lane
 #   HOSTED_ITEM and HARNESS name the remote process read through lane-host.
 #            One call per invocation; a failure returns unjudged without
 #            falling back to the local ssh child or the screen.
@@ -1112,7 +1167,16 @@ lane_state() {
       *) printf -v "$_ls_out" unjudged; return 0 ;;
     esac
   fi
-  if grep -Eq -- "$LANE_ASKING_RE" <<<"$_ls_slice"; then printf -v "$_ls_out" asking; return 0; fi
+  if grep -Eq -- "$LANE_ASKING_RE" <<<"$_ls_slice"; then
+    # A selected row also matches LANE_ASKING_RE, so the reminder is read only
+    # on a pane already asking; every other lane pays no process for it.
+    if grep -Eq -- "$RATE_LIMIT_SWITCH_RE" <<<"$_ls_slice" && grep -Eq -- "$DIALOG_ROW_RE" <<<"$_ls_slice"; then
+      printf -v "$_ls_out" rate-limit-switch
+    else
+      printf -v "$_ls_out" asking
+    fi
+    return 0
+  fi
   if pane_working "$_ls_slice"; then printf -v "$_ls_out" working; return 0; fi
   # The supplied process read, whole, before any rung that could answer `idle`.
   # Anything but `idle` here answers by itself: `busy` is a turn the screen has
@@ -1133,6 +1197,35 @@ lane_state() {
     idle) printf -v "$_ls_out" idle ;;
     *) printf -v "$_ls_out" unjudged ;;
   esac
+}
+
+# lane_input_ready takes lane_state's arguments, with HARNESS required even
+# when HOSTED_ITEM is empty. OUT_VAR retains the state for provider diagnostics.
+# Exit 0 permits input, 1 refuses, and lane_state's scan errors retain status 2.
+# Pi's pulse and hidden indicators cannot establish activity from a capture.
+# Its provider must supply an idle ROWS verdict, session_rows_lane_verdict's
+# or the Jarvis runtime record's; lane_state alone can also reach idle through
+# SESSION or a lifted wall.
+# Native selectors can open without an activity row. The capture lane_state
+# actually read must also show the base editor's final empty prompt.
+lane_input_ready() {
+  local _lir_out="$1" _lir_rows="${8:-}" _lir_harness="${10:-}" _lir_state=unjudged _lir_rc=0 _lir_editor=0
+  shift
+  lane_state _lir_state "$@" || _lir_rc=$?
+  if [[ -z "$_lir_harness" || ( "$_lir_harness" == pi && "$_lir_rows" != idle ) ]]; then
+    [[ "$_lir_state" != idle ]] || _lir_state=unjudged
+  fi
+  if [[ "$_lir_state" == idle && "$_lir_harness" == pi ]]; then
+    pane_pi_editor_ready "$LANE_PANE_SCREEN" || _lir_editor=$?
+    case "$_lir_editor" in
+      0) ;;
+      1) _lir_state=unjudged ;;
+      *) _lir_state=unjudged; _lir_rc=2 ;;
+    esac
+  fi
+  printf -v "$_lir_out" '%s' "$_lir_state"
+  [[ "$_lir_rc" -eq 0 ]] || return "$_lir_rc"
+  [[ "$_lir_state" == idle ]]
 }
 
 # ---------------------------------------------------------------------------

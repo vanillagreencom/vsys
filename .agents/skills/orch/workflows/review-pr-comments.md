@@ -66,7 +66,7 @@ Then gather decisions:
 .agents/skills/decider/scripts/decisions search "[KEYWORDS_OF_THE_CHANGED_AREA]"
 ```
 
-The `path` fields in that JSON are the ONLY authorized source for decision file paths — never compose or recall one from memory. A decision binds only after its full record and status are read: one marked superseded binds only what its status leaves active, and a retired one binds nothing. Verify each before injecting it, one command per path:
+The `path` fields in that JSON are the ONLY authorized source for decision file paths — never compose or recall one from memory. Read each full record and apply [decider’s status meanings](../../decider/SKILL.md#decider) before using it as policy. Verify each before injecting it, one command per path:
 
 ```bash
 test -f [DECISION_FILE_PATH]
@@ -261,7 +261,7 @@ When the list is non-empty, pass those exact repository-relative paths to the wr
 .agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json --source pr-comments --pr-open [PR_OPEN] [--adds "[REPO_RELATIVE_PATHS]"]
 ```
 
-A chosen cut follows [`dev-fix.md` § 2](dev-fix.md) step 4 with `[SOURCE]` bound to `pr-comments`. A `repeat-location` exit takes [finding-disposition.md § Recurrence](../references/finding-disposition.md#recurrence). Add its answer to the items file and retry the same round id: the refusal wrote no round record. Every other nonzero exit names a usage or environment failure. Report it and stop.
+A chosen cut follows [`dev-fix.md` § 2](dev-fix.md) step 4 with `[SOURCE]` bound to `pr-comments`. A nonzero exit names a usage or environment failure. Report it and stop.
 
 ⚠ Fill placeholders only ([Format Tags Are Literal](../references/skill-rules.md#format-tags-are-literal)). `Recommendation:` is the technical fix; the agent owns its own process.
 
