@@ -442,7 +442,12 @@ The long pass's events, checked and reported in this order:
                              a record whose file once stood is never reported.
                              A record whose host kind declares files=none, a
                              cloud session, writes no file: its open pull
-                             request on the item branch stands in for it
+                             request on the item branch, or a push to that
+                             branch since launch, stands in for it. A push is
+                             a branch head committed at or after the record's
+                             session_since, or a head the watch saw move
+                             between two of its reads; a pushed lane with no
+                             pull request is bounded as lane-stalled says
   EVENT lane-stalled <item> age=<secs> [state=finished|out-of-credit]
                              state=finished: the pull request left draft.
                              Launch the item's landing lane in this pass,
@@ -467,11 +472,17 @@ The long pass's events, checked and reported in this order:
                              with the start-stall check, where a fork's pull
                              request on the branch name never counts, the
                              watch state keeping the last head and a body
-                             digest. Reported once
+                             digest. With no pull request yet, a lane whose
+                             push started it, as start-stalled says, is
+                             reported the same way once its item branch head
+                             has not moved for ORCH_WATCH_LANE_STALL_SECS, a
+                             line the start-stall check writes. Reported once
                              and again every ORCH_OVERSEER_MARK_REPEAT passes
                              while it stands; a change starts a fresh window
   EVENT cloud-stall-closed <item> directive_age=<secs>
-                             in place of a start-stalled or lane-stalled line:
+                             in place of a start-stalled or lane-stalled line,
+                             or for a lane started by a push that has no
+                             pull request:
                              the lane's record carries the directive_send
                              lane-mail wrote, sent at or after the lane last
                              moved, ORCH_CLOUD_STALL_MINUTES ago, and nothing
