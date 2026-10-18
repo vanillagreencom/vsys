@@ -416,6 +416,9 @@ ORCH_EXTERNAL_TRIAGE = "on"
 # A lane launch names its model, so a lane entry names an exact id or a claude
 # class: a codex or copilot class runs no model and refuses as
 # launch-model-missing until codex list evidence reaches the launch.
+# The final entry alone may end in :last, a last choice the walk holds back
+# under the rule in references/lane-directive.md § Lane preference.
+# Example: claude:standard:high,pi:github-copilot/gpt-6.1-sol:high:last
 # ORCH_LANE_PREFERENCE = "claude@claude-cloud:standard:high,codex:gpt-6.1-sol:high"
 
 # Minutes before the projected account wall that starts overseer succession.
