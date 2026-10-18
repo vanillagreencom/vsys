@@ -82,7 +82,9 @@ def parser():
         help="read the index rather than the working tree, for every render input as "
              "well as the outputs, so a pre-commit lane judges one coherent state",
     )
-    p.add_argument("--dry-run", action="store_true", help="render: validate and write nothing")
+    p.add_argument("--output", choices=("full", "local"), default="full",
+                   help="render, check, adopt: full bot files (default), or only the local AGENTS.md region")
+    p.add_argument("--dry-run", action="store_true", help="render, adopt: preview and write nothing")
     p.add_argument("--json", action="store_true", help="check: report verified whole-file paths as JSON")
     p.add_argument("--input", default=None, help=argparse.SUPPRESS)
     return p
@@ -92,6 +94,22 @@ def running_copy():
     """The package root: this file is `<root>/scripts/lib/cli.py`."""
     here = os.path.realpath(__file__)
     return os.path.dirname(os.path.dirname(os.path.dirname(here)))
+
+
+def _installed_spec(repo, named, spec_root):
+    """Keep the selected checkout installation, including a package-store symlink.
+
+    The launcher can select that installation when an explicit canonical
+    --spec names the same package. Source reads still use spec_root.
+    """
+    invoked = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for candidate in (os.path.abspath(named) if named else invoked, invoked):
+        # Resolve checkout aliases while retaining the installation's own link.
+        candidate = os.path.join(os.path.realpath(os.path.dirname(candidate)), os.path.basename(candidate))
+        relative = os.path.relpath(candidate, repo)
+        if relative.split(os.sep)[0] != os.pardir and os.path.realpath(candidate) == spec_root:
+            return candidate
+    return None
 
 
 def _region_bounds(path):
@@ -147,11 +165,9 @@ def main(argv=None):
         print("--staged is a check mode; render and adopt write the working tree",
               file=sys.stderr)
         return 2
-    if args.dry_run and args.verb != "render":
-        # `adopt` is the one-time verb that writes, so a flag it accepted and
-        # ignored would take the files over on a run meant to preview.
+    if args.dry_run and args.verb not in ("render", "adopt"):
         print("bot-instructions: usage=--dry-run", file=sys.stderr)
-        print(f"--dry-run is a render mode; {args.verb} does not write a set to preview",
+        print(f"--dry-run belongs to render and adopt; {args.verb} does not write a set to preview",
               file=sys.stderr)
         return 2
     if args.verb == "retire":
@@ -169,10 +185,14 @@ def main(argv=None):
     try:
         work = tree.open_tree(repo, args.staged)
         spec_tree, spec_paths = _spec_source(repo, spec_root, work, args.staged)
+        installed_spec = _installed_spec(repo, args.spec, spec_root)
         launcher = os.path.join(package_root, "scripts", "bot-instructions")
+        if args.output == "local" and installed_spec is not None:
+            launcher = os.path.join(installed_spec, "scripts", "bot-instructions")
         ctx = run.Context(repo, work, spec_tree, spec_paths,
                           "render" if args.verb == "render" else "check",
-                          spec_names=SPEC_FILES, launcher=launcher)
+                          spec_names=SPEC_FILES, launcher=launcher, output_mode=args.output,
+                          installed_spec=installed_spec)
         if isinstance(ctx.config, Unconfigured):
             if args.verb == "adopt":
                 raise ctx.config
@@ -183,7 +203,7 @@ def main(argv=None):
         elif args.verb == "check":
             lines = verbs.check_verb(ctx)
         else:
-            lines = verbs.adopt_verb(ctx, repo)
+            lines = verbs.adopt_verb(ctx, repo, dry_run=args.dry_run)
     except ValidationFailed as exc:
         for line in exc.report:
             print(line)
