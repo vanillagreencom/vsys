@@ -57,6 +57,22 @@ A failed check omits the path and carries `- decision index lookup failed for [D
 
 ## 2. Prepare Reviewers
 
+**Pre-panel context check.** Before sizing or starting any attached reviewer, a lane refreshes its current context through the same reader `lane-mail-check` calls. Take `[HARNESS]`, `[SESSION_ID]` and `[TRANSCRIPT_PATH]` from this session's native inputs, not from `context.json`. `[PAYLOAD_WINDOW]` is the capacity the harness supplies, or empty when it supplies none. Keep the session's launch home in its harness environment. Run from `[WORKTREE_PATH]`:
+
+```bash
+bash .agents/skills/orch/scripts/lib/lane-context.sh "[HARNESS]" "[SESSION_ID]" "[TRANSCRIPT_PATH]" "[WORKTREE_PATH]/tmp/lane-mail/[ISSUE_ID]" "[WORKTREE_PATH]" "[PAYLOAD_WINDOW]"
+```
+
+The shared reader refreshes Claude, Codex and Pi through their existing adapters. Copilot uses its extension reading, pending-marker check and status-line fallback. No prior `context.json` is required. The command reads `ORCH_HANDOFF_CONTEXT_PCT` and `ORCH_HANDOFF_AGENT_RESERVE_TOKENS`, then calls the hook's existing threshold judge. Only a successful `room` result permits attached panel sizing below. A failed read or judge starts no attached panel; report the cause and repair it before re-entering § 2.
+
+A `due` result means the reading is at or above the handoff mark minus `ORCH_HANDOFF_AGENT_RESERVE_TOKENS`, or the reader found automatic compaction. Set `REVIEWER_SLOTS=0`. Before handoff, bind `git -C [WORKTREE_PATH] rev-parse --verify HEAD` as `[BOUND_HEAD]`, then checkpoint the committed head through the branch-publication owner:
+
+```bash
+.agents/skills/orch/scripts/worktree-push --checkpoint --worktree "[WORKTREE_PATH]" --issue [ISSUE_ID] --set-upstream
+```
+
+The checkpoint uses the existing guarded branch transport and SHA reconciliation under either `ORCH_DELIVERY` mode. It enters no base-delivery phase. Route its exit and reconciliation by `worktree-push --help`. After the call, compare HEAD with `[BOUND_HEAD]`. If it moved, apply [The Cycle, Rules reload after a rebase](../SKILL.md#the-cycle) at once, including after a failed transport. A failed checkpoint starts no panel and records no successful publication. Once the branch checkpoint succeeds, record the resulting published head in the handoff under [oversee-events.md § Judgement rules, Hand off a lane before it runs out](../references/oversee-events.md#judgement-rules). Keep unfinished-work and running-job details in the record. The fresh session re-enters § 2 and runs this check before starting the whole panel. Base delivery stays behind that session's completed review. This route uses the existing handoff and branch checkpoint without a panel runner.
+
 `[AGENTS]` is the caller's `agents` context when provided. Otherwise it is the first-cycle panel: the reviewers this harness exposes whose domains the whole diff, `origin/[BASE_BRANCH]...HEAD`, or the issue's Done-when touches, by [§ 4's scoped-panel rule](#bounded-re-review). Read the Done-when first: `linear.sh issues get [ISSUE_ID]` `.description` for Linear, `gh issue view [N] --repo [OWNER/REPO] --json body --jq .body` for GitHub. A failed read, or a `pr-N` key, selects from the diff alone, and `[PANEL_REASON]` says so. On a § 1 entry, record the panel before any spawn, `[PANEL_REASON]` naming the domains touched, or `caller panel` for a caller's `agents`:
 
 ```bash
