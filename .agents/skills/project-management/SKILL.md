@@ -21,6 +21,22 @@ tags: [planning]
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear for planning, audits, cycles, roadmaps and research completion. (PM-038)
 - The team estimate scale is 1 for hours, 2 for half a day, 3 for a day, 4 for two to three days, and 5 for a week or more. Planned and review-created issues use this scale. (ORCH-M22)
 - Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
+
+### Project map
+
+Every vsys issue lives in one project below; the project-management skill's `references/project-map.md` states what each kind holds and the routing order. A create names one of these projects, or holds the item as `project_needed`.
+
+```json
+{
+  "projects": [
+    {"name": "Dashboard", "kind": "standing", "role": "area", "admits": "The dashboard application under src/ other than src/warden.ts, the shared agent-tool data under data/, the scrub and SMART reporters under scripts/, and the TypeScript build, benchmark and Bun toolchain files that build it."},
+    {"name": "Warden", "kind": "standing", "role": "area", "admits": "The warden and agent-confine under warden/, and the vsys warden install command in src/warden.ts."},
+    {"name": "Review Gate & CI", "kind": "standing", "role": "area", "admits": "CI workflows and settings under .github/, scripts/ci.py and its tests, tools/, and the kendex manifest, settings and rendered harness files that run the review gate, lane validation and the merge rail."},
+    {"name": "Packaging & Install Channels", "kind": "standing", "role": "area", "admits": "The packages under packaging/, install.sh, the package file-list check and cutting a release; a workflow file under .github/ goes to Review Gate & CI."},
+    {"name": "Docs", "kind": "standing", "role": "area", "admits": "Documentation-only changes to docs/ and the root README.md, DEVELOPMENT.md, AGENTS.md, CHANGELOG.md and LICENSE; a doc change that rides with a code change goes with that code's area."}
+  ]
+}
+```
 <!-- kendex:project-instructions:end -->
 
 # Project Management
