@@ -26,15 +26,14 @@ NEITHER = "lane_application=false\nlane_package=false"
 # acceptance.
 # Expected results are independent of the expressions under test.
 ROWS = (
-    ("render refresh", "render", "false", NEITHER, ".codex/config.toml", "success", False, False, "false", True),
+    ("claimed render refresh", "render", "true", BOTH, ".codex/config.toml", "success", True, True, "false", True),
     ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, "false", True),
     ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, "false", True),
     ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, True, "true", True),
     ("docs-only docs/README.md", "small", "false", NEITHER, "docs/README.md", "success", False, False, "false", True),
     ("other docs-only", "trivial", "false", NEITHER, "docs/architecture/ui.md", "success", False, False, "false", True),
-    # A merge group on a passing pull request's tree: application is
-    # event-uniform and stands down on its proof; package is not.
-    ("merge-group proof reuse", "small", "true", "lane_application=false\nlane_package=true", "src/main.ts", "success", False, True, "false", True),
+    # A declaration-only change selects the lane whose claims changed.
+    ("package declaration change", "standard", "true", "lane_application=false\nlane_package=true", ".github/ci-lanes.conf", "success", False, True, "false", True),
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
     ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, "false", True),
@@ -272,15 +271,13 @@ class CiWorkflow(unittest.TestCase):
         self.assertEqual(scalar(self.step(changes, "id: mirror"), "timeout-minutes"), "5")
         classify = self.step(changes, "id: classify")
         self.assertEqual(scalar(classify, "uses"), ACTION)
-        # The lane declaration comes from the default branch's checkout, and
-        # no covers-all-lanes input: the package lane is not event-uniform.
+        # The lane declaration comes from the default branch's checkout.
         inputs = dict(re.findall(r"^ {10}([a-z-]+): (.+)$", block(classify, "        with:", 8), re.M))
         self.assertEqual(inputs, {"repo": "subject", "lanes-from": "classifier", "event": "${{ env.EVENT }}", "base": "${{ env.BASE }}", "head": "${{ env.HEAD }}"})
 
     def test_classifier_and_render_prerequisites_use_the_trusted_checkout(self):
         self.check_wiring(self.text)
         controls = (
-            ("covers-all-lanes", "          lanes-from: classifier\n", "          lanes-from: classifier\n          covers-all-lanes: true\n"),
             ("lanes-from-subject", "lanes-from: classifier", "lanes-from: subject"),
             ("render-reach-subject", "classifier/.agents/skills/harness-ci/scripts/harness-only", "subject/.agents/skills/harness-ci/scripts/harness-only"),
             ("kendex-timeout", "        timeout-minutes: 3\n", "        timeout-minutes: 30\n"),
