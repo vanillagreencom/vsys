@@ -354,6 +354,19 @@ The long pass's events, checked and reported in this order:
                              jobs are unchanged. A first unread log reports
                              cause=unread. Recovered logs update the recorded
                              failures without repeating the event
+  EVENT main-push-budget <repo> workflow=skill-tests.yml run=<run-id> warnings=<JSON array>
+                             a completed Skill Tests run carries run-all-budget
+                             warning annotations. Selected runs are main pushes,
+                             merge groups for main, and scheduled or manually
+                             dispatched runs on main. Queue runs use the
+                             gh-readonly-queue/main/ head-branch prefix.
+                             warnings= holds each distinct suite and final-job
+                             warning message.
+                             Reported once per run after all job annotations
+                             are read. Failed reads remain pending for retry.
+                             History stops at the saved creation watermark;
+                             active runs remain pending after it advances.
+                             The first pass reads one history page.
   EVENT main-workflow-absent <repo> workflow=<file> cause=<branch|unwatched>
                              a workflow ORCH_MAIN_WORKFLOWS names is read by
                              nothing: cause=branch, the repository's
@@ -503,6 +516,10 @@ The long pass's events, checked and reported in this order:
                              relaunch; a late pass reports the current interval
                              The counts are review_rounds, fix_receipts,
                              validation_runs, restacks, repeated_class_rounds.
+                             validation_runs counts each dev-validate-run start,
+                             including finished, bounded and running runs,
+                             before round acceptance. Restack runs count too.
+                             A missing or invalid run inventory reads unread.
                              A later distinct patch commit repeats an equal
                              cause or a shared location/owner key, once per
                              commit. Owner comes from the item's Owner: line.
@@ -1167,7 +1184,7 @@ Environment:
   OVERSEE_WATCH_STATE_DIR     one baseline file per repository — reducer,
                               triage, lane-asking, usage-limit, handoff,
                               account, outside-contribution, refresh-failing,
-                              main-push-failing, main-schedule-failing,
+                              main-push-failing, main-schedule-failing, main-push-budget,
                               main-workflow-absent,
                               security-alert, bot-fix and
                               security-alerts-unread rows; the mail pass's
@@ -1237,7 +1254,7 @@ ow_message() { # REASON FIELD=VALUE...
     start-stall-secs-invalid) text='ORCH_WATCH_START_STALL_SECS takes a positive whole number of seconds, with no leading zero.' ;;
     start-stall-unread) text='The lane start could not be read from its status file or GitHub. This pass cannot establish whether it started. No start-stalled event goes out and the row stands. The exit names the failed read.' ;;
     refresh-unread) text='The refresh run list or failed-step log could not be read. A failed run-list read leaves the baseline intact; a failed log read reports cause=unread. The watch continues.' ;;
-    main-push-unread) text='The main-push run list, jobs or failed-step log could not be read. An unread run list or jobs leaves the incident intact; an unread log reports cause=unread. The watch continues.' ;;
+    main-push-unread) text='The main-push run list, jobs, annotations or failed-step log could not be read. An unread run list or jobs leaves the incident intact; an unread log reports cause=unread. Unread budget evidence stays pending for retry. The watch continues.' ;;
     main-workflows-invalid) text='ORCH_MAIN_WORKFLOWS takes blank-separated OWNER/REPO:FILE entries, FILE a .yml or .yaml workflow file name. entry is the first one of another shape.' ;;
     refresh-stale) text='GitHub answered the refresh run list with a page that judges nothing: newest= is the run it was checked against, the one the watch last read or, for a pair opening an incident or with none read, the newest completed run in the unfiltered list, none when it has none, and read= the newest run the page holds, none for an empty page. No pair is reported and none is cleared. The watch continues.' ;;
     refresh-order-unknown) text='The refresh run-list judgement named an order other than newer, same, older or unrecorded, so the run list cannot be judged.' ;;
