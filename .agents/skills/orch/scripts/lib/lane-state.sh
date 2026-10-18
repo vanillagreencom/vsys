@@ -966,7 +966,7 @@ lane_pane_mode() { # OUT_VAR HOST
 # The output variable and tagged read result remain in the caller's shell.
 # A command substitution would discard the result and make the judge repeat it.
 lane_pane_capture() { # OUT_VAR MODE HOST ITEM PANE [history]
-  local _lpc_screen="" _lpc_rc=0 _lpc_args=()
+  local _lpc_screen="" _lpc_rc=0 _lpc_args=() _lpc_dead=""
   LANE_PANE_SOURCE=unreadable
   printf -v "$1" '%s' ''
   case "$2" in
@@ -979,12 +979,30 @@ lane_pane_capture() { # OUT_VAR MODE HOST ITEM PANE [history]
       # pane read fails. The provider's mandatory unreadable rule is separate.
       LANE_PANE_SOURCE=local-unreadable
       [[ "${6:-}" != history ]] || _lpc_args+=(-S -)
-      _lpc_screen="$(tmux capture-pane -pJ ${_lpc_args[@]+"${_lpc_args[@]}"} -t "$5")" || _lpc_rc=$? ;;
+      # One client reads both values. A printable final record survives tmux
+      # clients without a UTF-8 locale, which replace control bytes with `_`.
+      _lpc_args+=(-t "$5" \; display-message -p -t "$5" 'kendex-pane-dead=#{pane_dead}')
+      _lpc_screen="$(tmux capture-pane -pJ ${_lpc_args[@]+"${_lpc_args[@]}"})" || _lpc_rc=$?
+      _lpc_dead="${_lpc_screen##*$'\n'}"
+      case "$_lpc_dead" in
+        kendex-pane-dead=*)
+          _lpc_screen="${_lpc_screen%"$_lpc_dead"}"
+          _lpc_screen="${_lpc_screen%"${_lpc_screen##*[!$'\n']}"}"
+          _lpc_dead="${_lpc_dead#kendex-pane-dead=}" ;;
+        *) _lpc_dead="" ;;
+      esac ;;
     *) return 1 ;;
   esac
   [[ "$_lpc_rc" == 0 ]] || return "$_lpc_rc"
   LANE_PANE_SOURCE="$2"
   [[ "$2" != verb ]] || LANE_PANE_SOURCE=provider
+  # remain-on-exit keeps the last command and screen after the process ends.
+  # A dead SSH viewer cannot prove that its remote harness ended.
+  # Only an affirmative dead flag adds exit proof; otherwise the captured
+  # screen and the process checks still decide the state.
+  if [[ "$2" == local && "${3:-local}" == local && "$_lpc_dead" == 1 ]]; then
+    LANE_PANE_SOURCE=local-dead
+  fi
   printf -v "$1" '%s' "$_lpc_screen"
 }
 
@@ -1003,14 +1021,15 @@ lane_state_is() { # STATE live|dialog
 }
 
 # lane_state OUT_VAR WINDOW CMD PID SCREEN [SESSION] [ACCOUNT] [ROWS] [HOSTED_ITEM] [HARNESS] [SOURCE]
-# SOURCE carries LANE_PANE_SOURCE from the shared capture owner. A failed
+# SOURCE carries LANE_PANE_SOURCE from the shared capture owner, including
+# `local-dead` when tmux confirms a dead local pane. A failed
 # provider observation cannot establish exit, even when the process confirms it.
 # assigns OUT_VAR exactly one of:
 #
 #   gone      no window: there is no lane here to ask about
 #   exited    the window outlived its harness: the provider confirms the
 #             remote harness has ended, or a local shell runs nothing but
-#             shells
+#             shells, or tmux confirms that the local pane is dead
 #   walled    the current turn reports a failed login, or a usage wall
 #             that no ACCOUNT reading says has lifted
 #   rate-limit-switch  Codex's optional lower-credit model reminder is up
@@ -1046,8 +1065,8 @@ lane_state_is() { # STATE live|dialog
 #   LANE_WALL_KIND is `auth` for a failed login, `usage` for a usage wall,
 #            and empty for every other verdict.
 #   LANE_EXIT_SOURCE is `provider` for a confirmed remote exit, `pane` for
-#            a local shell running nothing but shells, and empty for every
-#            other verdict.
+#            a local shell running nothing but shells or a dead local pane,
+#            and empty for every other verdict.
 #
 # A PI LANE IS JUDGED FROM WHAT PI EMITS, NEVER FROM ITS PANE, by every caller
 # that passes ROWS: the Stop and PreToolUse rows the lane-mail-check hook
@@ -1107,6 +1126,7 @@ lane_state() {
   LANE_PANE_SOURCE="$_ls_source"
   if [[ "$_ls_window" != listed ]]; then printf -v "$_ls_out" gone; return 0; fi
   if [[ -z "$_ls_item" && "$_ls_source" == unreadable ]]; then printf -v "$_ls_out" unjudged; return 0; fi
+  if [[ -z "$_ls_item" && "$_ls_source" == local-dead ]]; then LANE_EXIT_SOURCE=pane; printf -v "$_ls_out" exited; return 0; fi
   if [[ -n "$_ls_item" ]]; then
     pane_has_remote_harness "$SCRIPT_DIR/lane-host" "$_ls_item" "$_ls_harness" || _ls_rc=$?
     # An actual failed capture cannot be replaced by another observation,
