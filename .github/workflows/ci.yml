@@ -147,8 +147,9 @@ jobs:
     timeout-minutes: 20
     container: archlinux:base-devel
     steps:
+      # A sync without an upgrade breaks when the container image and the repository carry different library versions.
       - name: Install the packaging tools
-        run: pacman -Sy --noconfirm --needed git bun python systemd-libs
+        run: pacman -Syu --noconfirm --needed git bun python systemd-libs
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
