@@ -135,6 +135,12 @@ source = "kendex"
 [hooks.block-worktree-refresh]
 source = "kendex"
 
+[hooks.worktree-session-claim]
+source = "kendex"
+
+[hooks.worktree-prompt-claim]
+source = "kendex"
+
 [hooks.command-safety]
 source = "kendex"
 
@@ -145,6 +151,9 @@ source = "kendex"
 source = "kendex"
 
 [hooks.reviewer-stop-check]
+source = "kendex"
+
+[hooks.dev-stop-check]
 source = "kendex"
 
 [hooks.session-drift-check]
