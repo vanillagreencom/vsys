@@ -250,10 +250,9 @@
 #         the provider reports with a reading is judged even where discovery
 #         does not reach it. The overseer's own picks (oversee launch, the
 #         succession walk and capacity count, oversee-succeed's headroom
-#         mark) run under ORCH_LANE_HOST=local, since its session runs on
-#         this machine's copy. So a folder whose local login a provider-side
-#         retire removed reads `no_credentials` there and cannot seat an
-#         overseer.
+#         mark) use the configured provider for Claude accounts too: its
+#         stored token can back a local session with no local credentials file.
+#         Other overseer accounts use this machine's reading.
 #
 #         With --lane <config-dir> it judges that ONE account instead of
 #         choosing among the fleet, measuring only that directory. A launcher
@@ -3282,7 +3281,7 @@ host_accounts_answer() { # HOST [RECORD] — rows or their cache record, status 
 		rows="$record"
 	fi
 	printf '%s\n' "$rows"
-}
+} 2>&"$HOST_ACCOUNTS_ERR_FD"
 
 # The recorded reading of the session one `lanes context` row names, the
 # lane_context_collect fetch contract: the record on stdout and exit 0, exit 1
@@ -3917,6 +3916,9 @@ parse_argv() {
 	PROJECTED=false
 	LOCAL_ONLY=false
 	CACHE_ONLY=false
+	# ol_lanes supplies descriptor 3 to keep provider notices separate from
+	# pick/check refusal details. Ordinary invocations retain stderr.
+	HOST_ACCOUNTS_ERR_FD=2
 
 	SUB="${1:-}"
 	# A bare invocation names the commands and does nothing else, so it is one
@@ -3939,6 +3941,7 @@ parse_argv() {
 			--model=*) MODEL="${1#--model=}"; need_val --model "$MODEL"; shift ;;
 			--binding-floor) BINDING_FLOOR=true; shift ;;
 			--for-overseer) FOR_OVERSEER=true; shift ;;
+			--provider-notices-fd3) HOST_ACCOUNTS_ERR_FD=3; shift ;;
 			--projected) PROJECTED=true; shift ;;
 			--local) LOCAL_ONLY=true; shift ;;
 			--cache-only) [[ "$SUB" == list ]] || die unknown-option "$@"; CACHE_ONLY=true; LOCAL_ONLY=true; shift ;;
