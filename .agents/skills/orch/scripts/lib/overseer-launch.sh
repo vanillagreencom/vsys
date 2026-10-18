@@ -21,7 +21,7 @@
 #   ol_pi_model            a pi session's model, out of the sources naming it
 #   ol_entry_model         one entry's harness, model, class and effort, a
 #                          class resolved to its model
-#   ol_lanes               `lanes` on this machine's copy of each account
+#   ol_lanes               `lanes` through the overseer's account reader
 #   ol_pick_record         one `lanes pick --json` record, for a caller's
 #                          own counts
 #   ol_pick_lane           one `lanes pick` for one entry, with the counts a
@@ -71,8 +71,8 @@
 # kendex's model-resolution warning (ol_model_line), because
 # the caller owns its own refusal prefix and words: ol_checkout_notice and
 # ol_fleet_log_notice print theirs through the caller's `message`. Every
-# dependency writes its stderr to DEP_ERR, which the caller relays under its
-# keyed line.
+# failed dependency leaves its stderr in DEP_ERR for the caller's keyed
+# refusal. Account reads relay notices before record parsing replaces DEP_ERR.
 #
 # Requires, of a caller that runs its functions: SCRIPT_DIR (the orch scripts
 # directory), DEP_ERR (a file), lib/lane-launch.sh sourced by the caller,
@@ -445,14 +445,28 @@ ol_class_unread() { # ENTRY
   printf '%s\n' "$OL_CLASS_ERR" >"$DEP_ERR"
 }
 
-# ol_lanes ARGS... — `lanes` as every overseer read of an account asks it,
-# under ORCH_LANE_HOST=local: an overseer opens through overseer-host on this
-# machine, under this machine's copy of the account, so a provider's reading
-# of that account is not the one its session spends. The successor walk and
-# the caller's own headroom mark both read through here, so the two never
-# judge one account on two copies.
-ol_lanes() { # ARGS...
-  ORCH_LANE_HOST=local "$SCRIPT_DIR/lanes" "$@"
+# SSH providers can measure Claude tokens without a local credentials file.
+# Their plan pool also applies to the local overseer. Cloud-session policy
+# instead governs remote launches, so it cannot judge this local seat.
+ol_lanes() { # ACCOUNT_HARNESS ARGS...
+  local harness="$1" host=local launch pool rc=0
+  shift
+  if [[ "$harness" == claude ]]; then
+    # shellcheck source=lane-capabilities.sh
+    source "$SCRIPT_DIR/lib/lane-capabilities.sh" || return 1
+    lane_capabilities_read "$SCRIPT_DIR/lane-host" "${ORCH_LANE_HOST:-local}" || return 1
+    lane_capability launch launch
+    lane_capability pool pool
+    [[ "$launch:$pool" != ssh:plan ]] || host="${ORCH_LANE_HOST:-local}"
+  fi
+  # The child owns descriptor 3 for this invocation. Provider notices go to
+  # the caller before record parsing can replace DEP_ERR; ordinary refusal
+  # details stay there for the caller's keyed refusal.
+  ORCH_LANE_HOST="$host" "$SCRIPT_DIR/lanes" "$@" --provider-notices-fd3 3>&2 2>"$DEP_ERR" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    [[ ! -s "$DEP_ERR" ]] || cat -- "$DEP_ERR" >&2; : > "$DEP_ERR"
+  fi
+  return "$rc"
 }
 
 # ol_pick_record HARNESS MODEL TRIGGER [EXCLUDE_DIR] [LANE]: the one `lanes pick
@@ -476,8 +490,8 @@ ol_pick_record() { # HARNESS MODEL TRIGGER [EXCLUDE_DIR] [LANE]
   [[ -n "$(lane_context_mark_model "$harness" "$model")" ]] || floor=(--binding-floor)
   [[ -z "${4:-}" ]] || exclude=(--exclude-lane "$4")
   [[ -z "${5:-}" ]] || scope=(--lane "$5")
-  OL_PICK_RECORD="$(ol_lanes pick --harness "$harness" --min-headroom-pct "$3" "${scope[@]}" \
-    ${floor[@]+"${floor[@]}"} ${exclude[@]+"${exclude[@]}"} ${model:+--model "$model"} --json 2>"$DEP_ERR")" || rc=$?
+  OL_PICK_RECORD="$(ol_lanes "$harness" pick --harness "$harness" --min-headroom-pct "$3" "${scope[@]}" \
+    ${floor[@]+"${floor[@]}"} ${exclude[@]+"${exclude[@]}"} ${model:+--model "$model"} --json)" || rc=$?
   return "$rc"
 }
 
@@ -653,7 +667,7 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
         # must still be unmeasured, and a retired account's unmeasured record
         # is not admission: the account policy owns that separate question.
         rc=0
-        ol_lanes check "$OL_WALK_CALLER_LANE" >/dev/null 2>"$DEP_ERR" || rc=$?
+        ol_lanes "$OL_ACCOUNT_HARNESS" check "$OL_WALK_CALLER_LANE" >/dev/null || rc=$?
         case "$rc" in
           0) ;;
           4) continue ;;
