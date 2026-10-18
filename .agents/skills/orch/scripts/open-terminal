@@ -818,7 +818,17 @@ if [[ "$FLEET" == true && "$WAKE" != true ]]; then
         ot_message launch-window-unknown "harness=$LAUNCH_HARNESS" "model=${LAUNCH_MODEL:-none}" >&2
         return 1
       fi
-      if [[ -n "$CMD_TEMPLATE" ]] && ! launch_choice_words_present "$LAUNCH_COMPACTION_OFF" "$CMD_TEMPLATE"; then
+      compaction_present=true
+      if [[ -n "$CMD_TEMPLATE" ]]; then
+        if [[ "$LAUNCH_HARNESS" == codex ]]; then
+          compaction_actual=$(lane_launch_compaction_env "$CMD_TEMPLATE" codex) || return 1
+          compaction_expected=$(lane_launch_compaction_env "codex $LAUNCH_COMPACTION_OFF" codex) || return 1
+          [[ "$compaction_actual" == "$compaction_expected" ]] || compaction_present=false
+        else
+          launch_choice_words_present "$LAUNCH_COMPACTION_OFF" "$CMD_TEMPLATE" || compaction_present=false
+        fi
+      fi
+      if [[ "$compaction_present" != true ]]; then
         compaction_fields=()
         read -r -a compaction_words <<<"$LAUNCH_COMPACTION_OFF"
         for compaction_word in "${compaction_words[@]}"; do compaction_fields+=("word=$compaction_word"); done
@@ -3041,6 +3051,13 @@ launch_finish() {
       || { ot_message brief-prompt-failed "item=$item" >&2; return 1; }
   fi
   cmd="$(LAUNCH_FLAGS="$gui_flags" start_cmd "$item" "$wt_id" "$repo" "$record_session" "${wake_args[0]-}" "$brief_prompt_file")" || return 1
+  local compaction_cmd="$cmd" compaction_env=""
+  if [[ "$HARNESS" == codex && -n "$brief_prompt_file" ]]; then
+    # Parse the small template before adding its literal brief. The reader
+    # keeps a brief used as a config argument in the same argument position.
+    compaction_cmd="$(cmd_template_text "$item" "$repo")" || return 1
+    compaction_env=$(lane_launch_compaction_env "$compaction_cmd" "$HARNESS" "$BRIEF_TEXT") || return 1
+  fi
   [[ -z "$gui_session" ]] || record_session="$gui_session"
   # The lane record's `allow_all`: whether this copilot command grants the full
   # allow-all mode, the one posture a policy block can take away
@@ -3062,13 +3079,11 @@ launch_finish() {
   # records the config dir.
   if [[ "$LANE_HOST" != local ]]; then
     if [[ "$HARNESS" == codex ]]; then
-      local compaction_env compaction_verified=true compaction_cmd="$cmd"
-      [[ -z "$CMD_TEMPLATE" ]] || compaction_verified=false
       # Both selection arms share the fresh form's verified Codex flags.
       if [[ "$RELAUNCH_ROUTE" == resume-or-fresh ]]; then
         compaction_cmd="$(RELAUNCH_ROUTE=fresh start_cmd "$item" "$wt_id" "$repo")" || return 1
       fi
-      compaction_env=$(lane_launch_compaction_env "$compaction_cmd" "$HARNESS" "$compaction_verified") || return 1
+      compaction_env=$(lane_launch_compaction_env "$compaction_cmd" "$HARNESS") || return 1
       cmd="env $compaction_env $cmd"
     fi
     # The Copilot launch policy rides in the command, as codex's compaction
@@ -3147,7 +3162,7 @@ launch_finish() {
     # A launch with none has no account to check and keeps the `unchecked` the
     # check reads as skip, whatever prefix the line below carries.
     [[ -z "$LANE_ENV" ]] || LANE_FORM="$launch_form"
-    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form" "$CMD_TEMPLATE")" || return 1
+    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form" "$CMD_TEMPLATE" "" "$compaction_env")" || return 1
   else
     launch_form="$(lane_launch_form "$cmd" "$HARNESS" "" "$CMD_TEMPLATE")" || return 1
     cmd="$(lane_launch_line "$cmd" "$HARNESS" "" "" "$launch_form" "$CMD_TEMPLATE")" || return 1
