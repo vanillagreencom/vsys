@@ -140,6 +140,7 @@ ORCH_OVERSEER_HEADROOM_PCT = "5"
 ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 ORCH_LANE_MAX_PCT = "95"
+ORCH_LANE_CODEX_CREDIT_FLOOR = "0"
 
 # Accounts whose cloud sessions can reach this repository: each pair records
 # an approved repository card. The operator adds a pair after approving the
