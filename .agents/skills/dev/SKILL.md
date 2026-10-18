@@ -5,7 +5,7 @@ summary: "Dev-agent workflows for implementing an issue and applying review fixe
 license: MIT
 user-invocable: true
 dependencies:
-  required: [orch, github, decider, code-quality]
+  required: [orch, github, decider, code-quality, reviewer]
   optional: [linear, commit-guards]
 metadata:
   author: vanillagreen
@@ -52,7 +52,7 @@ For an item spanning domains, split the delegation by domain. If the selected ag
 
 - Scope is the issue's Done-when. A behavioral surface that does not trace to it stays out of this change, and a committed render of a source file you changed traces to whatever its source traces to. Two exceptions:
   - the mechanical enablers of landing it ride without tracing to it: locks, changelog, baselines, dismissal renewals, that list and nothing else, never code that runs at runtime;
-  - a defect the change introduces or arms is in scope by definition, unless Step 0 of [`../orch/references/finding-disposition.md`](../orch/references/finding-disposition.md) excludes it.
+  - a defect the change introduces or arms is in scope by definition, unless Step 0 of [`../reviewer/references/finding-disposition.md`](../reviewer/references/finding-disposition.md) excludes it.
 - A behavior change ships with the test code-quality admits; the pull request body names an omitted test and the judgement. A workflow sentence ships no test. A test that drives a second implementation or stubs the function under test does not count. Message assertions follow [code-quality § Tests](../code-quality/SKILL.md#tests).
 - A review finding adds a case only when it names a behaviour no existing case reaches. Otherwise it tightens the existing case's assertion, and the item reasoning names that case.
 - A second fix round on the same function's guard is recurrence: redesign the rule under test so the class is unrepresentable, and fold the family of cases into one table. Fix an item with an `Owner:` line at that owner, with one table whose rows cover every state the owner can be in.
@@ -73,7 +73,7 @@ Code standards are [`../code-quality/SKILL.md`](../code-quality/SKILL.md): corre
 
 ## Round Contract
 
-Execute workflow sections in order; a "**Skip if**" condition is the workflow's decision, never your own scope assessment. Never push and never open a PR. The orchestrator owns publication order through orch's `pr-order` resolver. A finding on a mechanism this diff introduces or arms is a fix whatever the round, unless Step 0 of the disposition flow excludes it; a `Declined:` there takes one of the reason forms [`../orch/references/finding-disposition.md`](../orch/references/finding-disposition.md) § Decision flow sets out, never a label or a test count.
+Execute workflow sections in order; a "**Skip if**" condition is the workflow's decision, never your own scope assessment. Never push and never open a PR. The orchestrator owns publication order through orch's `pr-order` resolver. A finding on a mechanism this diff introduces or arms is a fix whatever the round, unless Step 0 of the disposition flow excludes it; a `Declined:` there takes one of the reason forms [`../reviewer/references/finding-disposition.md`](../reviewer/references/finding-disposition.md) § Decision flow sets out, never a label or a test count.
 
 A session keeps the rule text it loaded, and a push, `worktree create --reuse` or a restack can rebase the branch onto a base that changed that text. A session that already ran a round on this branch runs this diff before the round's first step, `[PREVIOUS_ROUND_COMMIT]` being the commit its last round reported: `git diff --no-renames --name-only [PREVIOUS_ROUND_COMMIT] HEAD -- <each loaded file's repo path>`. Before that first step, it reads again each listed file. A listed path it loaded that no longer exists voids the text loaded from it; it reads again the skill's current `SKILL.md`, or the file that replaced it, in its place.
 
@@ -101,6 +101,8 @@ A test or sandbox run outside that gate, such as a nested-session smoke run or o
 ### Long-Running Validation
 
 **Invariant, every harness:** the completion tail (commit → QA labels → summary → artifact → return) is never dropped, and an interrupted run is never success. Re-check its real outcome and resume the tail.
+
+On a host whose agent warden reaps orphan scopes, a foreground project entry-point run or an `--attached` run does not survive its agent's scope. A context handoff with either run in flight holds the stop until the verdict. If the session must stop first, its handoff `traps` record the interruption, the runner identity, the log and exit-receipt paths, and one recovery route. The successor confirms the old run has stopped, preserves its log and any exit receipt, and reruns only those interrupted checks once. Use the orch job runner or `dev-validate-run` according to this section's command routes, with a runner that survives the successor's agent scope. Never wait on an orphan queued run whose parent is gone.
 
 A command that can outlast the harness's tool-call limit never runs as one blocking foreground tool call, with two exceptions: the `dev-validate-run` start below, whose detached run and on-disk verdict survive a cut-off call and whose `--wait --run-dir` poll resumes it, and a project validation entry point on the foreground route [dev-implement.md § 5. Validate](workflows/dev-implement.md#5-validate) gives a project whose own policy forbids `dev-validate-run`, run under the harness's maximum command timeout. Run only `DEV_VALIDATE_CMD` and `DEV_VALIDATE_RANGE_CMD` through `dev-validate-run`, outside that route; never override these settings per run. Run every other long command, including standalone preflight, doc-limits, mutation-control sweeps and scoped suites, through the orch job runner per [waiter-launch.md](../orch/references/waiter-launch.md). Read each completion file, preserve nonzero exit codes, and report an interruption without a verdict as failure.
 

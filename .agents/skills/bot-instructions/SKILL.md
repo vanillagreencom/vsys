@@ -4,6 +4,8 @@ description: "Load to render, check, or adopt a repo's GitHub review-bot instruc
 summary: "Renders every GitHub review bot's native instruction file from one doctrine source plus the [bot-instructions] manifest table, with validators for the surfaces that fail silently."
 license: MIT
 user-invocable: true
+dependencies:
+  required: [reviewer]
 metadata:
   author: vanillagreen
   source: kendex
@@ -125,7 +127,7 @@ Read the PR's decline replies and the repo's instruction files before reporting 
 
 ### reply-contract
 
-Author replies are `Fixed in <sha>`, `Declined: <reason>`, or `Tracked: <issue>`. A decline names the passing state or the false premise it disproves. A label alone is not a reason.
+Render author replies as `Fixed in <sha>`, `Declined: <reason>`, or `Tracked: <issue>`. Classify findings and supply decline reasons under `.agents/skills/reviewer/references/finding-disposition.md` § Decision flow.
 
 ### render-out-of-scope
 
