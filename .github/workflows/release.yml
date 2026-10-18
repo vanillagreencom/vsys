@@ -182,7 +182,7 @@ jobs:
       # Before the checkout: without git in the container, actions/checkout
       # falls back to a source tarball with no .git.
       - name: Install the packaging tools
-        run: pacman -Sy --noconfirm --needed git openssh curl pacman-contrib
+        run: pacman -Syu --noconfirm --needed git openssh curl pacman-contrib
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TAG }}
