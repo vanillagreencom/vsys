@@ -1,7 +1,6 @@
 import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { Reader } from "../collect/io";
-import { scratchFiles } from "../collect/procs";
+import type { OpenFiles } from "../collect/procs";
 import { agentScratchDirs, scratchRoots } from "../collect/scratch";
 import { switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
@@ -248,6 +247,7 @@ export function Agent({
   onError,
   onCapture,
   onSwitch,
+  onOpenFiles,
 }: {
   lane: Lane;
   snapshot: Snapshot;
@@ -273,10 +273,18 @@ export function Agent({
    * command as text instead. Moving a view touches no process either way.
    */
   onSwitch?: (paneId: string) => Promise<void>;
+  /**
+   * Reads the scratch files the lane's processes hold open. The read runs on
+   * the process thread, so this view reads no process file itself.
+   */
+  onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
 }) {
-  // Null until the section is open on a live sample: a list never read has
-  // no count.
-  const [files, setFiles] = useState<string[] | null>(null);
+  // Null until the process thread answers for a section open on a live
+  // sample: a list never read, or one still being read, has no count, and
+  // neither has a thread that could not answer.
+  const [files, setFiles] = useState<
+    { rows: string[] } | { error: string } | null
+  >(null);
   const [loaded, setLoaded] = useState<{
     id: string;
     samples: LaneSample[];
@@ -293,21 +301,34 @@ export function Agent({
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   const filesOpen = open.has("Open files");
   useEffect(() => {
-    if (!live || !filesOpen) {
+    if (!live || !filesOpen || !onOpenFiles) {
       setFiles(null);
       return;
     }
-    const reader = new Reader();
     const dirs = scratchRoots(
       c.scratchDirs,
       agentScratchDirs(snapshot.procs),
     ).map((root) => root.path);
-    const opened = scratchFiles(reader, c, dirs, lane.pids);
-    setFiles([
-      ...opened.map((f) => `${f.pid}: ${f.path}`),
-      ...reader.errors.map((e) => `${e.source}: ${e.message}`),
-    ]);
-  }, [lane.pids, snapshot.procs, c, live, filesOpen]);
+    let current = true;
+    onOpenFiles(lane.pids, dirs)
+      .then((opened) => {
+        if (current)
+          setFiles({
+            rows: [
+              ...opened.files.map((f) => `${f.pid}: ${f.path}`),
+              ...opened.errors.map((e) => `${e.source}: ${e.message}`),
+            ],
+          });
+      })
+      .catch((error: unknown) => {
+        // A thread that could not answer says why, never an empty list that
+        // reads as no file open.
+        if (current) setFiles({ error: errorText(error) });
+      });
+    return () => {
+      current = false;
+    };
+  }, [lane.pids, snapshot.procs, c.scratchDirs, live, filesOpen, onOpenFiles]);
   const terminalOpen = open.has("Terminal");
   // A pane vsys could read: the lane has one, it belongs to the server vsys
   // talks to, and vsys settled it is not the pane it draws in, which is read
@@ -533,7 +554,8 @@ export function Agent({
       : Object.entries(lane.builds)
           .map(([kind, n]) => `${n} ${kind}`)
           .join(", ");
-  const unique = files === null ? null : [...new Set(files)];
+  const unique =
+    files !== null && "rows" in files ? [...new Set(files.rows)] : null;
   const tree = processTree(members);
   const count = (name: SectionName) =>
     name === "Processes"
@@ -780,7 +802,13 @@ export function Agent({
                         )}
                         {row.name === "Open files" &&
                           (live ? (
-                            unique === null ? null : unique.length ? (
+                            files !== null && "error" in files ? (
+                              <Empty
+                                text={`Open files could not be read: ${safe(files.error)}`}
+                              />
+                            ) : unique === null ? (
+                              <Empty text="Reading open files…" />
+                            ) : unique.length ? (
                               unique.map((file) => (
                                 <Line key={file} height={1} truncate>
                                   {safe(file)}

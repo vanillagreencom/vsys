@@ -161,6 +161,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     // is an action. The switch is offered only from inside a tmux client,
     // because outside one there is no view to move.
     onCapture: capturePane,
+    // Read on the process thread, which a keystroke never waits behind.
+    onOpenFiles: (pids, dirs) => session.openFiles(pids, dirs),
     ...(insideTmux(process.env) ? { onSwitch: switchToPane } : {}),
     output: process.stdout,
   });

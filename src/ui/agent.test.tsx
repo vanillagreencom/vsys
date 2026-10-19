@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
 import { Reader } from "../collect/io";
+import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
@@ -1231,6 +1232,106 @@ test("Open files lists a file the agent holds in the temporary directory it name
     await onOpenFiles(t);
     await t.press("enter");
     expect(t.frame().includes(held)).toBe(true);
+  } finally {
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Open files draws the rows and read errors the process thread answers, and reads no descriptor itself", async () => {
+  const { dir, procRoot, held, s, c } = heldInAgentTmp();
+  const asked: { pids: number[]; dirs: string[] }[] = [];
+  const failed = { source: join(procRoot, "40/fd/4"), message: "EACCES" };
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 60 },
+    {
+      onOpenFiles: async (pids, dirs) => {
+        asked.push({ pids, dirs });
+        return { files: [{ pid: 40, path: held }], errors: [failed] };
+      },
+    },
+  );
+  const linked = spyOn(Reader.prototype, "link");
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    await t.settle();
+    const frame = t.frame();
+    expect({
+      file: frame.includes(`40: ${held}`),
+      error: frame.includes(`${failed.source}: ${failed.message}`),
+      reads: linked.mock.calls.length,
+    }).toEqual({ file: true, error: true, reads: 0 });
+    // The lane's members, and the agent's own temporary directory among the
+    // roots, as Storage measures it.
+    expect(asked.at(-1)?.pids).toEqual([40]);
+    expect(asked.at(-1)?.dirs.some((root) => held.startsWith(`${root}/`))).toBe(
+      true,
+    );
+  } finally {
+    linked.mockRestore();
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Open files shows why the process thread could not answer", async () => {
+  const { dir, s, c } = heldInAgentTmp();
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 60 },
+    {
+      onOpenFiles: async () => {
+        throw new Error("Process thread has closed");
+      },
+    },
+  );
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    await t.settle();
+    const frame = t.frame();
+    // The reason is a sentence of its own, and the header counts no file:
+    // a refusal is not one open file.
+    expect({
+      reason: frame.includes(
+        "Open files could not be read: Process thread has closed",
+      ),
+      counted: /Open files {2}\d/.test(frame),
+    }).toEqual({ reason: true, counted: false });
+  } finally {
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Open files says it is reading until the process thread answers", async () => {
+  // The thread answers after any sample read queued ahead of the request, so
+  // an open section waits on it.
+  const { dir, held, s, c } = heldInAgentTmp();
+  const answer = Promise.withResolvers<OpenFiles>();
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 60 },
+    { onOpenFiles: () => answer.promise },
+  );
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    await t.settle();
+    const pending = t.frame();
+    answer.resolve({ files: [{ pid: 40, path: held }], errors: [] });
+    await t.settle();
+    const answered = t.frame();
+    expect({
+      pending: pending.includes("Reading open files…"),
+      answeredReading: answered.includes("Reading open files…"),
+      listed: answered.includes(`40: ${held}`),
+    }).toEqual({ pending: true, answeredReading: false, listed: true });
   } finally {
     await t.close();
     rmSync(dir, { recursive: true, force: true });

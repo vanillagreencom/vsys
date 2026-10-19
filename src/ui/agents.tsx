@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
+import type { OpenFiles } from "../collect/procs";
 import { type Config, columns, validate } from "../config/config";
 import type { LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
@@ -436,6 +437,7 @@ export function Agents({
   onAct,
   onCapture,
   onSwitch,
+  onOpenFiles,
 }: {
   snapshot: Snapshot;
   history: History;
@@ -454,6 +456,8 @@ export function Agents({
   onCapture?: (paneId: string) => Promise<string[]>;
   /** Moves the reader's tmux view; absent when vsys is outside that server. */
   onSwitch?: (paneId: string) => Promise<void>;
+  /** Reads a lane's open scratch files; the agent detail alone uses it. */
+  onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
 }) {
   /**
    * What the reader chose, followed by lane. This screen reads the selection
@@ -786,6 +790,7 @@ export function Agents({
         onError={onError}
         onCapture={onCapture}
         onSwitch={onSwitch}
+        onOpenFiles={onOpenFiles}
       />
     ) : (
       <box paddingX={screenPad}>

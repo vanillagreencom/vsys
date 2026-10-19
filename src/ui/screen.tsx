@@ -17,6 +17,7 @@ export function mountScreen(
     | "onExport"
     | "onAction"
     | "onCapture"
+    | "onOpenFiles"
     | "onSwitch"
     | "output"
   >,

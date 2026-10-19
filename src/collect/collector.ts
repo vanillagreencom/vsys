@@ -26,6 +26,7 @@ import {
 } from "./mounts";
 import { ProcessThread } from "./process-thread";
 import {
+  type OpenFiles,
   ProcessCollector,
   type ProcessReading,
   type ProcessRequest,
@@ -241,7 +242,7 @@ export class Collector {
     if (this.lateRead) {
       r.error(
         this.config.procRoot,
-        "the process read an earlier sample started has not finished",
+        "A process read from an earlier sample has not finished",
       );
       return unknown;
     }
@@ -262,9 +263,21 @@ export class Collector {
     this.lateRead = read.then(forget, forget);
     r.error(
       this.config.procRoot,
-      `the process read did not finish within ${processDeadlineMs} ms`,
+      `The process read did not finish within ${processDeadlineMs} ms`,
     );
     return unknown;
+  }
+  /**
+   * The scratch files these processes hold open, read where this collector
+   * reads processes. A late process read still holds that thread, so the
+   * request is refused rather than queued behind a read that may never end.
+   */
+  openFiles(pids: number[], dirs: string[]): Promise<OpenFiles> {
+    if (this.lateRead)
+      return Promise.reject(
+        new Error("A process read from an earlier sample has not finished"),
+      );
+    return this.processes.openFiles(pids, dirs, this.controller.signal);
   }
   close(): void {
     this.controller.abort();

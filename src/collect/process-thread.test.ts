@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { shippedAgentTools } from "../config/agent-tools";
 import { claudeLink, fixture } from "../test/fixture";
@@ -66,7 +66,8 @@ class FakePort implements ProcessPort {
   /** The id of the last request this thread was sent. */
   lastId(): number {
     const last = this.sent.at(-1);
-    if (last?.kind !== "collect") throw new Error("No request was sent");
+    if (last === undefined || last.kind === "setup")
+      throw new Error("No request was sent");
     return last.id;
   }
 }
@@ -367,4 +368,57 @@ test("each thread is set up with its collector's settings and answers in JSON te
   ]);
   port.reply({ kind: "answer", id: port.lastId(), value: reading });
   expect(await answer).toEqual(reading);
+});
+
+test("the thread reads the open files the same collector reads in its caller's thread", async () => {
+  const f = setup();
+  const scratch = join(f.root, "scratch");
+  f.proc(40, "agents.slice/a.scope");
+  f.proc(41, "agents.slice/a.scope", { parent: 40 });
+  const fd = join(f.config.procRoot, "40/fd");
+  mkdirSync(fd, { recursive: true });
+  // One file under a scratch root, the root itself, one elsewhere, and an
+  // entry that is no link, whose read fails.
+  symlinkSync(join(scratch, "held"), join(fd, "3"));
+  symlinkSync(scratch, join(fd, "4"));
+  symlinkSync(join(f.root, "elsewhere"), join(fd, "5"));
+  f.write(join(fd, "6"), "");
+  // A descriptor table that cannot be listed, and a process that has gone.
+  f.write(join(f.config.procRoot, "41/fd"), "");
+  const pids = [40, 41, 99];
+  const dirs = [scratch];
+  const expected = new ProcessCollector(f.config, 100, 4096).files(pids, dirs);
+  const thread = owned(
+    new ProcessThread(f.config, 100, 4096, shippedAgentTools),
+  );
+  expect(await thread.openFiles(pids, dirs, live())).toEqual(expected);
+  // The fixture must reach each outcome, or the equality proves nothing.
+  expect(expected.files.map((file) => file.path).sort()).toEqual([
+    scratch,
+    join(scratch, "held"),
+  ]);
+  expect(expected.errors.map((e) => e.source)).toEqual([
+    join(fd, "6"),
+    join(f.config.procRoot, "41/fd"),
+  ]);
+});
+
+test("a request made while another is unanswered is sent once that one settles", async () => {
+  const { ports, thread } = fakes();
+  const sample = thread.collect(request(1000), live());
+  const files = thread.openFiles([40], ["/scratch"], live());
+  const port = present(ports[0], "started thread");
+  // A second request on the wire would be refused as an overlap.
+  expect(port.sent.map((m) => m.kind)).toEqual(["setup", "collect"]);
+  port.reply({ kind: "answer", id: port.lastId(), value: reading });
+  expect(await sample).toEqual(reading);
+  expect(port.sent.at(-1)).toEqual({
+    kind: "files",
+    id: 2,
+    pids: [40],
+    dirs: ["/scratch"],
+  });
+  const opened = { files: [{ pid: 40, path: "/scratch/a" }], errors: [] };
+  port.reply({ kind: "answer", id: port.lastId(), value: opened });
+  expect(await files).toEqual(opened);
 });

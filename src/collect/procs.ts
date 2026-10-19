@@ -165,17 +165,28 @@ export interface ProcessReading {
   /** Unknown when the read did not finish in time and nothing was read. */
   processRead: ProcessRead;
 }
+/** The scratch files a lane's processes hold open, and the reads that failed. */
+export interface OpenFiles {
+  files: { pid: number; path: string }[];
+  errors: SourceError[];
+}
 /**
  * Where process collection runs. The program runs it on a thread of its own;
  * a collector given none reads in its caller's thread. Either way one request
- * is in flight at a time, because the collector sends no request while one
- * is unanswered.
+ * is in flight at a time: the thread queues a request that arrives while
+ * another is unanswered.
  */
 export interface ProcessSource {
   collect(
     request: ProcessRequest,
     signal: AbortSignal,
   ): Promise<ProcessReading>;
+  /** `dirs` are the scratch roots Storage measures, as `scratchFiles` takes. */
+  openFiles(
+    pids: number[],
+    dirs: string[],
+    signal: AbortSignal,
+  ): Promise<OpenFiles>;
   close(): void;
 }
 
@@ -215,7 +226,20 @@ export class ProcessCollector implements ProcessSource {
     signal.throwIfAborted();
     return this.read(request);
   }
+  async openFiles(
+    pids: number[],
+    dirs: string[],
+    signal: AbortSignal,
+  ): Promise<OpenFiles> {
+    signal.throwIfAborted();
+    return this.files(pids, dirs);
+  }
   close(): void {}
+  /** One read of the descriptors these processes hold, on the caller's thread. */
+  files(pids: number[], dirs: string[]): OpenFiles {
+    const r = new Reader();
+    return { files: scratchFiles(r, this.c, dirs, pids), errors: r.errors };
+  }
   // REVISIT(D008): asynchronous reads would return if they cost less processor time.
   /**
    * One pass over the process table. Each file is read synchronously, one
@@ -472,7 +496,7 @@ function scriptPath(
  * Open descriptors are read only on demand for the selected lane. `dirs` are
  * the roots Storage measures, agents' own temporary directories included.
  */
-export function scratchFiles(
+function scratchFiles(
   r: Reader,
   c: CollectionConfig,
   dirs: string[],

@@ -10,6 +10,7 @@ import { fixture } from "../test/fixture";
 import { Collector } from "./collector";
 import { ProcessThread } from "./process-thread";
 import {
+  type OpenFiles,
   ProcessCollector,
   type ProcessReading,
   type ProcessRequest,
@@ -106,15 +107,20 @@ test("A6-2: a blocked process-file read does not silently stop sampling", async 
 /** A process source whose one read finishes only when the test says so. */
 class Stalled implements ProcessSource {
   requests = 0;
+  fileRequests = 0;
   answer = Promise.withResolvers<ProcessReading>();
   collect(): Promise<ProcessReading> {
     this.requests++;
     return this.answer.promise;
   }
+  async openFiles(): Promise<OpenFiles> {
+    this.fileRequests++;
+    return { files: [], errors: [] };
+  }
   close(): void {}
 }
 
-test("a late process read is left to finish, and no sample asks again until it has", async () => {
+test("a late process read is left to finish, and no sample or open-files read asks again until it has", async () => {
   const f = setup();
   f.proc(40, "agents.slice");
   const source = new Stalled();
@@ -138,10 +144,15 @@ test("a late process read is left to finish, and no sample asks again until it h
     expect(waiting.processRead).toBe("unknown");
     expect(waiting.durationMs).toBeLessThan(1000);
     expect(waiting.errors.map((e) => e.source)).toEqual([f.config.procRoot]);
+    // Open files would queue behind the same read on the same thread.
+    await expect(collector.openFiles([40], [])).rejects.toThrow();
+    expect(source.fileRequests).toBe(0);
     source.answer.resolve({ procs: [], errors: [], processRead: "complete" });
     await Bun.sleep(0);
     const again = await collector.sample(3000);
     expect(source.requests).toBe(2);
+    await collector.openFiles([40], []);
+    expect(source.fileRequests).toBe(1);
     expect(again.processRead).toBe("complete");
   } finally {
     collector.close();
@@ -157,6 +168,9 @@ class Stallable implements ProcessSource {
   }
   collect(request: ProcessRequest, signal: AbortSignal) {
     return this.stall?.promise ?? this.reader.collect(request, signal);
+  }
+  openFiles(pids: number[], dirs: string[], signal: AbortSignal) {
+    return this.reader.openFiles(pids, dirs, signal);
   }
   close(): void {}
 }

@@ -5,7 +5,7 @@ declare const self: Worker;
 
 /**
  * One collector for the life of this thread, set up by the host's first
- * message, and one reading per request after it. The host sends a request
+ * message, and one answer per request after it. The host sends a request
  * only after the last one settled, and stops this thread by ending it.
  */
 let collector: ProcessCollector | undefined;
@@ -20,7 +20,8 @@ self.onmessage = (event: MessageEvent<ProcessMessage>) => {
         message.tools,
       );
       return;
-    case "collect": {
+    case "collect":
+    case "files": {
       let reply: ProcessReply;
       try {
         if (!collector)
@@ -28,7 +29,10 @@ self.onmessage = (event: MessageEvent<ProcessMessage>) => {
         reply = {
           kind: "answer",
           id: message.id,
-          value: collector.read(message.request),
+          value:
+            message.kind === "collect"
+              ? collector.read(message.request)
+              : collector.files(message.pids, message.dirs),
         };
       } catch (error) {
         reply = {

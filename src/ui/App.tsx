@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
 import {
@@ -91,6 +92,11 @@ export interface AppProps {
    */
   onCapture?: (paneId: string) => Promise<string[]>;
   onSwitch?: (paneId: string) => Promise<void>;
+  /**
+   * Reads the scratch files a lane's processes hold open, off the thread
+   * that draws. The agent detail asks only on a live sample.
+   */
+  onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
   /** Where the clipboard escape goes: the process output stream. */
   output: Output;
 }
@@ -190,6 +196,7 @@ export function App({
   onAction,
   onCapture,
   onSwitch,
+  onOpenFiles,
   output,
 }: AppProps) {
   const renderer = useRenderer();
@@ -463,6 +470,7 @@ export function App({
         onAct={act}
         onCapture={pinned ? undefined : onCapture}
         onSwitch={pinned ? undefined : onSwitch}
+        onOpenFiles={pinned ? undefined : onOpenFiles}
       />
     );
   else if (view === "Resources")

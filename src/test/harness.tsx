@@ -8,6 +8,7 @@ import {
 import type { TestRendererOptions } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
+import { type OpenFiles, ProcessCollector } from "../collect/procs";
 import type { Config } from "../config/config";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
@@ -36,6 +37,7 @@ export async function mount(
     onAction: (command: LaneCommand) => Promise<void>;
     onCapture: (paneId: string) => Promise<string[]>;
     onSwitch: (paneId: string) => Promise<void>;
+    onOpenFiles: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
     onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
     history: History;
     settingsPath: string;
@@ -73,6 +75,13 @@ export async function mount(
         onAction={hooks.onAction ?? (async () => {})}
         onCapture={hooks.onCapture}
         onSwitch={hooks.onSwitch}
+        onOpenFiles={
+          // The program reads on the process thread; a test reads the same
+          // way in its own thread unless it supplies the answer.
+          hooks.onOpenFiles ??
+          (async (pids, dirs) =>
+            new ProcessCollector(config, 100, 4096).files(pids, dirs))
+        }
         output={{ write: (chunk: string) => written.push(chunk) }}
       />
     );
