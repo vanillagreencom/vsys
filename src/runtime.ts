@@ -2,6 +2,7 @@ import { readFile, rm } from "node:fs/promises";
 import type { FinishedScrubMemory } from "./collect/btrfs";
 import { createCollector } from "./collect/collector";
 import type { KernelLog } from "./collect/kernel-log";
+import type { OpenFiles } from "./collect/procs";
 import type { SccacheCollector } from "./collect/sccache";
 import { packagedScrubUnits } from "./collect/scrub-timers";
 import type { ServiceCpu } from "./collect/services";
@@ -30,6 +31,8 @@ import type { History } from "./store/history";
 
 interface Source {
   sample(): Promise<Snapshot>;
+  /** Absent from a source that reads no processes, as a test's own is. */
+  openFiles?(pids: number[], dirs: string[]): Promise<OpenFiles>;
   close?(): void;
   /** Readings measured since vsys started, handed to the replacement source. */
   sccache?: SccacheCollector;
@@ -183,6 +186,15 @@ export class Session {
     } finally {
       this.source.close?.();
     }
+  }
+  /**
+   * The scratch files these processes hold open, read by the source now
+   * sampling, so a settings change that replaced it is followed.
+   */
+  openFiles(pids: number[], dirs: string[]): Promise<OpenFiles> {
+    if (!this.source.openFiles)
+      return Promise.reject(new Error("This source reads no processes"));
+    return this.source.openFiles(pids, dirs);
   }
   private schedule(delay: number): void {
     if (this.stopped || this.applying || this.busy) return;

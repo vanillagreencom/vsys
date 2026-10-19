@@ -1237,6 +1237,68 @@ test("Open files lists a file the agent holds in the temporary directory it name
   }
 });
 
+test("Open files draws the rows and read errors the process thread answers, and reads no descriptor itself", async () => {
+  const { dir, procRoot, held, s, c } = heldInAgentTmp();
+  const asked: { pids: number[]; dirs: string[] }[] = [];
+  const failed = { source: join(procRoot, "40/fd/4"), message: "EACCES" };
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 60 },
+    {
+      onOpenFiles: async (pids, dirs) => {
+        asked.push({ pids, dirs });
+        return { files: [{ pid: 40, path: held }], errors: [failed] };
+      },
+    },
+  );
+  const linked = spyOn(Reader.prototype, "link");
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    await t.settle();
+    const frame = t.frame();
+    expect({
+      file: frame.includes(`40: ${held}`),
+      error: frame.includes(`${failed.source}: ${failed.message}`),
+      reads: linked.mock.calls.length,
+    }).toEqual({ file: true, error: true, reads: 0 });
+    // The lane's members, and the agent's own temporary directory among the
+    // roots, as Storage measures it.
+    expect(asked.at(-1)?.pids).toEqual([40]);
+    expect(asked.at(-1)?.dirs.some((root) => held.startsWith(`${root}/`))).toBe(
+      true,
+    );
+  } finally {
+    linked.mockRestore();
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Open files shows why the process thread could not answer", async () => {
+  const { dir, s, c } = heldInAgentTmp();
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 60 },
+    {
+      onOpenFiles: async () => {
+        throw new Error("Process thread has closed");
+      },
+    },
+  );
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    await t.settle();
+    expect(t.frame()).toContain("Process thread has closed");
+  } finally {
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Open files reads no descriptor while the section is closed", async () => {
   const { dir, procRoot, held, s, c } = heldInAgentTmp();
   const t = await mount(s, c, { width: 160, height: 60 });
