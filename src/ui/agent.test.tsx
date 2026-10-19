@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ManualClock } from "@opentui/core/testing";
 import { act } from "react";
 import { Reader } from "../collect/io";
+import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
@@ -1293,6 +1294,36 @@ test("Open files shows why the process thread could not answer", async () => {
     await t.press("enter");
     await t.settle();
     expect(t.frame()).toContain("Process thread has closed");
+  } finally {
+    await t.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Open files says it is reading until the process thread answers", async () => {
+  // The thread answers after any sample read queued ahead of the request, so
+  // an open section waits on it.
+  const { dir, held, s, c } = heldInAgentTmp();
+  const answer = Promise.withResolvers<OpenFiles>();
+  const t = await mount(
+    s,
+    c,
+    { width: 160, height: 60 },
+    { onOpenFiles: () => answer.promise },
+  );
+  try {
+    await onOpenFiles(t);
+    await t.press("enter");
+    await t.settle();
+    const pending = t.frame();
+    answer.resolve({ files: [{ pid: 40, path: held }], errors: [] });
+    await t.settle();
+    const answered = t.frame();
+    expect({
+      pending: pending.includes("Reading open files…"),
+      answeredReading: answered.includes("Reading open files…"),
+      listed: answered.includes(`40: ${held}`),
+    }).toEqual({ pending: true, answeredReading: false, listed: true });
   } finally {
     await t.close();
     rmSync(dir, { recursive: true, force: true });

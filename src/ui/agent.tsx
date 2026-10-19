@@ -279,8 +279,8 @@ export function Agent({
    */
   onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
 }) {
-  // Null until the section is open on a live sample: a list never read has
-  // no count.
+  // Null until the process thread answers for a section open on a live
+  // sample: a list never read, or one still being read, has no count.
   const [files, setFiles] = useState<string[] | null>(null);
   const [loaded, setLoaded] = useState<{
     id: string;
@@ -796,7 +796,9 @@ export function Agent({
                         )}
                         {row.name === "Open files" &&
                           (live ? (
-                            unique === null ? null : unique.length ? (
+                            unique === null ? (
+                              <Empty text="Reading open files…" />
+                            ) : unique.length ? (
                               unique.map((file) => (
                                 <Line key={file} height={1} truncate>
                                   {safe(file)}
