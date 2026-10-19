@@ -13,7 +13,7 @@ Run `pwd -P` before the first repo-relative command; it must print the delegatio
 | Single | `Issue: [ISSUE_ID]`, `GitHub Issue: OWNER/REPO#N`, or ad-hoc | § 1 → § 2 → § 4-10 → return |
 | Bundled | `Parent: [ISSUE_ID]` + `Sub-Issues: [...]` | § 1 → § 2 → [§ 4-10]×N → § 11 |
 
-**A bundle needs an explicit single-PR marker.** A parent with children is a CONTAINER unless one of exactly three markers is present: `(one PR)` in its title, `Audit Bundle: yes` in the delegation, or a leaf issue carrying an internal checklist. The title marker outranks an `agent:multi` label. With none present, stop and report the mis-delegation. Check the marker against the delegation's `Parent Title:` line; when a bundled delegation omits that line, read the title first — never classify from labels and children alone:
+**A bundle needs `in_pr_bundle`.** A parent with children is a CONTAINER, whatever its title, unless its safe read reports `in_pr_bundle`, the review audit's in-PR bundle root. A leaf issue carrying an internal checklist is one work item, delegated single. Read the parent before the first sub-issue; with `in_pr_bundle` false, stop and report the mis-delegation:
 
 ```bash
 .agents/skills/linear/scripts/linear.sh issues get [PARENT_ID]

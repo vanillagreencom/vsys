@@ -54,7 +54,7 @@ Mode `team` uses this same shape with `project: null` — its input set is the w
 | `duplicates[]` | `keep`, `remove`, `reason` |
 | `obsolete[]` | `issue`, `reason`, `confidence`, `evidence` = `{completed_by[], files_verified[], deliverables_checked[]}` or `{decision_eliminated: true, decision_ref, eliminated_pattern}` or `{below_bar: true, test, who_hits_it}` |
 | `wrong_project[]` | `issue`, `title`, `from`, `to`, `to_id`, `reason` |
-| `hierarchy[]` | `action` (`make_parent`\|`make_child`\|`bundle`\|`update_parent_desc`), `issue`\|`issues[]`, `parent`\|`children[]`\|`new_parent_title`, optional `retitle`, `reason` |
+| `hierarchy[]` | `action` (`make_parent`\|`make_child`\|`bundle`\|`update_parent_desc`\|`close_parent`), `issue`\|`issues[]`, `parent`\|`children[]`\|`new_parent_title`, `reason`. `close_parent` names a non-terminal parent whose children are all Done or Canceled; a parent with an open child never takes it |
 | `combine[]` | `target`, `absorb[]`, `reason` |
 | `ready_to_schedule[]` | `id`, `title`, `cleared_blockers[]`, `reason` |
 | `declined[]` | `title`, `reason` — one line naming the creation-bar test it failed |
@@ -172,7 +172,7 @@ A `Post-merge:` box in `create_fields.description` follows [SKILL.md](../SKILL.m
 | `make_child` | `#N` | Sub-issue of issue #N in this batch |
 | `make_child` | null | Sub-issue of the input's `parent_issue` |
 
-A parent created or promoted this way is a container by default. `(one PR)` marks the opt-in single-PR exception — in the title at creation for a new parent, and in `hierarchy.retitle: "[current title] (one PR)"` for an existing issue promoted via `make_parent`, applied alongside the reparenting.
+A parent created or promoted this way is a container: no requirements, no pull request, and the one Done-when box of [parent-issue-template.md](../templates/parent-issue-template.md). A run that proposes more than one create files its rework parent first, a `create` with `create_fields.is_bundle_parent: true`; where it attaches, which creates are its children and the two exceptions are [tpm-audit § 7.1](../workflows/tpm-audit.md#71-identify-candidates).
 
 ## PROJECT-ORDER Mode
 
