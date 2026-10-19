@@ -78,6 +78,7 @@ refuse() { # KEY VALUE [CAUSE]
 usage() {
   cat <<'EOF'
 Usage: oversee-report due    --state PATH --repo OWNER/REPO [--repo ...]
+       oversee-report due    --session-start EPOCH [--state PATH] [--repo ...]
        oversee-report render --state PATH --repo OWNER/REPO [--repo ...]
        oversee-report write  --state PATH --repo OWNER/REPO [--repo ...]
                              --summary-file PATH [--succession]
@@ -114,15 +115,21 @@ due      prints `report-due reason=minutes since=<UTC>` once the last report
          Quiet hours do not silence due. Outside quiet hours, a quiet report
          newer than the last sent report makes the morning brief due even
          before the next cadence interval, unless both triggers are off.
+         --session-start supplies a Jarvis session's original start in epoch
+         seconds, retained across succession. It needs no lane or repository.
+         In this mode only a report with an owner notice receipt advances
+         cadence; an unsent file leaves it due. Quiet hours defer the event
+         until their end. Without --state only the minutes trigger applies;
+         ORCH_REPORT_EVERY_ISSUES performs no GitHub reads. --state and --repo
+         retain the fleet landing trigger when supplied.
 render   prints the rows.
 write    prints the rows and writes the same bytes to the path
          `workflow-state progress-report-path` prints, with --succession
          passed on to it, then sends the owner the report notice,
          `lane-mail notice --item overseer --to owner --attach <that file>`
          with the summary file's text as its text, so a relay carries the
-         file to the owner. Open the summary with the repository's outcome
-         readings, each with its date and source, reused from existing
-         evidence comments and rulings. Use no Landed-count opening.
+         file to the owner. Follow the Summary template cited below
+         for the summary's opening and section order.
          The summary is the notice's text alone, never
          in the file or the print: the relay posts it as the file's Slack
          comment, in Slack's mrkdwn markup, which Markdown does not read
@@ -141,13 +148,13 @@ write    prints the rows and writes the same bytes to the path
          Before rendering, writing or sending, write checks the summary in
          its posted mrkdwn form. Each finding prints one stderr line:
          oversee-report: summary-shape=RULE, with RULE bare-id, github-link,
-         waiting-on-you or layout. A matched line adds line=N. Each item
-         over 20 words adds words=W. An item count above
+         waiting-on-you or layout. A matched line adds line=N. Each bullet
+         over 20 words adds words=W. A top-level bullet count above
          ORCH_REPORT_SUMMARY_LINES adds item-lines=N cap=CAP.
          These findings are advisory: write sends on the writer's word.
          Argument, setting and notice failures still refuse.
          Owner wording and the template live in
-         ../communication/references/reports.md § Owner summary template.
+         ../communication/references/reports.md § Summary template.
 
 Rows:
   Landed          each fleet item, a lanes[] record of any status, with a
@@ -256,9 +263,9 @@ Settings, read through the kendex settings ladder:
   ORCH_REPORT_UPCOMING       Next rows, default 5
   ORCH_REPORT_COLUMNS        comma-separated column names, default
                              `issue,what it is,why it matters`
-  ORCH_REPORT_SUMMARY_LINES  positive item-line cap for write's summary,
-                             default 20; excludes blank lines, labels and
-                             the opening line
+  ORCH_REPORT_SUMMARY_LINES  positive top-level bullet cap for write's summary,
+                             default 20; excludes prose, labels, separators,
+                             indented bullets and the Next report line
   ORCH_CONNECTED_REPOS       blank-separated OWNER/REPO list, read through
                              orch-env in this checkout as oversee-watch reads
                              it: each entry, lowercased, is read after the
@@ -292,12 +299,14 @@ case "$1" in
   *) refuse args "$1" ;;
 esac
 STATE=""
+SESSION_START=""
 SUMMARY=""
 SUCCESSION=0
 REPOS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --state) [[ $# -ge 2 && -n "$2" ]] || refuse args "$1"; STATE="$2"; shift 2 ;;
+    --session-start) [[ $# -ge 2 && "$2" =~ ^[1-9][0-9]*$ ]] || refuse args "$1"; SESSION_START="$2"; shift 2 ;;
     --repo) [[ $# -ge 2 && -n "$2" ]] || refuse args "$1"; REPOS+=("$2"); shift 2 ;;
     --summary-file) [[ $# -ge 2 && -n "$2" ]] || refuse args "$1"; SUMMARY="$2"; shift 2 ;;
     --succession) SUCCESSION=1; shift ;;
@@ -305,8 +314,12 @@ while [[ $# -gt 0 ]]; do
     *) refuse args "$1" ;;
   esac
 done
-[[ -n "$STATE" ]] || refuse args missing-state
-[[ ${#REPOS[@]} -gt 0 ]] || refuse args missing-repo
+if [[ -n "$SESSION_START" ]]; then
+  [[ "$VERB" == due ]] || refuse args due-only-option
+else
+  [[ -n "$STATE" ]] || refuse args missing-state
+  [[ ${#REPOS[@]} -gt 0 ]] || refuse args missing-repo
+fi
 if [[ "$VERB" == write ]]; then
   [[ -n "$SUMMARY" ]] || refuse args missing-summary-file
 elif [[ -n "$SUMMARY" || "$SUCCESSION" -eq 1 ]]; then
@@ -377,7 +390,7 @@ case "$REPORT" in on | off) ;; *) refuse setting "ORCH_REPORT:$REPORT" ;; esac
 # The repositories ORCH_CONNECTED_REPOS lists, after the --repo values, as the
 # watch whose report-due event runs this reads them: a merge there can make a
 # report due, so the report lists it.
-CONNECTED="$(orch_connected_repos "${REPOS[@]}")" || refuse setting-read ORCH_CONNECTED_REPOS
+CONNECTED="$(orch_connected_repos ${REPOS[@]+"${REPOS[@]}"})" || refuse setting-read ORCH_CONNECTED_REPOS
 IFS=$'\n' read -ra CONNECTED_REPOS -d '' <<<"$CONNECTED" || true
 REPOS+=(${CONNECTED_REPOS[@]+"${CONNECTED_REPOS[@]}"})
 EVERY_MINUTES="${ORCH_REPORT_EVERY_MINUTES-120}"
@@ -452,9 +465,10 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
     label = $0
     gsub(/\*/, "", label)
     sub(/^[[:space:]]+/, "", label)
+    sub(/^:[[:alnum:]_+-]+:[[:space:]]*/, "", label)
     if (label ~ /^Waiting on you(:|[[:space:]]*$)/) waiting = 1
-    if (NR > 1 && NF && label !~ /^(Landed|Running|Blocked|Waiting on you):?[[:space:]]*$/) {
-      items++
+    if ($0 ~ /^[[:space:]]*[-*][[:space:]]+/) {
+      if ($0 ~ /^[-*][[:space:]]+/) items++
       words = $0
       gsub(/<https?:\/\/[^<>|[:space:]]+\|/, "", words)
       gsub(/>/, "", words)
@@ -475,7 +489,8 @@ fi
 
 # --- fleet state and the last report -----------------------------------------
 
-if ! STATE_JSON="$(jq -c 'select(type == "object" and ((.lanes // []) | type) == "array") | .lanes //= []' -- "$STATE" 2>/dev/null)"; then
+STATE_JSON='{"lanes":[]}'
+if [[ -n "$STATE" ]] && ! STATE_JSON="$(jq -c 'select(type == "object" and ((.lanes // []) | type) == "array") | .lanes //= []' -- "$STATE" 2>/dev/null)"; then
   refuse state "$STATE"
 fi
 [[ -n "$STATE_JSON" ]] || refuse state "$STATE"
@@ -506,7 +521,8 @@ report_path() {
 report_path --succession
 SUCCESSION_GLOB="$REPORT_GLOB"
 report_path
-REPORT_DIR="${REPORT_PATH%/*}"
+# lane-mail records attachments with their physically resolved parent.
+REPORT_DIR="$(cd -- "${REPORT_PATH%/*}" && pwd -P)" || refuse report-path plain
 MARKER=""
 # lane-mail events is the existing record of notices actually sent. Match
 # report attachments, not other owner notices, and use the file's list-read
@@ -538,12 +554,19 @@ for file in "$REPORT_DIR"/*; do
   fi
 done
 if [[ -z "$MARKER" || -z "$OWNER_MARKER" ]]; then
-  start="$(jq -r '[.lanes[] | .launched_at // empty] | sort | first // ""' <<<"$STATE_JSON")" || refuse state "$STATE"
+  start="$SESSION_START"
+  if [[ -z "$start" ]]; then
+    start="$(jq -r '[.lanes[] | .launched_at // empty] | sort | first // ""' <<<"$STATE_JSON")" || refuse state "$STATE"
+    [[ -z "$start" ]] || start="$(to_epoch "$start")" || refuse state "$STATE"
+  fi
   if [[ -n "$start" ]]; then
-    start="$(to_epoch "$start")" || refuse state "$STATE"
     [[ -n "$MARKER" ]] || MARKER="$start"
     [[ -n "$OWNER_MARKER" ]] || OWNER_MARKER="$start"
   fi
+fi
+if [[ -n "$SESSION_START" ]]; then
+  MARKER="$OWNER_MARKER"
+  [[ "$NOTICE_MODE" != quiet ]] || exit 0
 fi
 # Cadence counts from every written report. The report itself counts from
 # the last sent one. If retention removed that file, the fleet start is a
@@ -581,7 +604,7 @@ landed_read() {
     refuse state "$STATE"
   fi
   since="$(from_epoch "$LANDED_SINCE" %Y-%m-%dT%H:%M:%SZ)" || refuse clock "$LANDED_SINCE"
-  for repo in "${REPOS[@]}"; do
+  for repo in ${REPOS[@]+"${REPOS[@]}"}; do
     if ! list="$(gh pr list --repo "$repo" --state merged --search "merged:>=$since" --limit "$MERGED_PAGE" \
       --json number,headRefName,headRepositoryOwner,mergedAt,mergeCommit,title,body 2>"$WORK_DIR/gh.err")"; then
       refuse pr-list "$repo" "$(cat "$WORK_DIR/gh.err")"
@@ -634,7 +657,8 @@ if [[ "$VERB" == due ]]; then
     echo "report-due reason=minutes since=$since"
     exit 0
   fi
-  [[ "$EVERY_ISSUES" -gt 0 ]] || exit 0
+  # Jarvis supplies a session start without fleet state, so no item can match.
+  [[ -n "$STATE" && "$EVERY_ISSUES" -gt 0 ]] || exit 0
   github_auth
   landed_read
   # Items, not pull requests: one item's second PR, in a consumer repository

@@ -298,22 +298,28 @@ if [[ -n "$CMD_TEMPLATE" && -n "$LAUNCH_FLAGS" ]]; then
   exit 1
 fi
 
-# Exits unless lanes clears the lane $1 names. lanes owns the name, alias and
+# Returns 4 where lanes refuses the lane $1 names, its keyed lanes: line left
+# on stderr, and exits on any other failure. lanes owns the name, alias and
 # retirement matching: its exit 4 is a lane a setting excludes or retires, and
-# any other failure is lanes failing, never reported as a covered lane.
-lane_check() {
+# any other failure is lanes failing, never reported as a covered lane. The
+# launch's harness and model, each empty where the launch names none, tell it
+# which allowance is spent: retirement refuses a plan launch and leaves an API
+# grant launch to the judge. The refusal is scoped to that harness and model,
+# so the caller decides what it ends: a single launch, or one walk entry.
+lane_check() { # DIR HARNESS MODEL
   [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
   local rc=0
-  "$LANES_CLI" check "$1" >/dev/null || rc=$?
+  "$LANES_CLI" check "$1" ${2:+--harness "$2"} ${3:+--native-model "$3"} >/dev/null || rc=$?
   case "$rc" in
     0) ;;
-    4) ot_message lane-refused "lane=$LANE" "exit=$rc" >&2; exit 1 ;;
+    4) return 4 ;;
     *) ot_message lane-resolution-failed "exit=$rc" >&2; exit 1 ;;
   esac
 }
-# Resolves and checks a caller-named lane once, before its model is judged.
-named_lane_resolve() {
-  local alias_rc=0
+# Resolves and checks a caller-named lane for the launch's harness and model,
+# before its usage is judged. Returns 4 where lane_check would.
+named_lane_resolve() { # HARNESS MODEL
+  local harness="$1" model="$2" alias_rc=0
   lane_dir="$LANE"
   # A value carrying a `/` is meant as a path, so a miss there is a typo,
   # not an alias. A bare word is resolved as a lane alias — the discovered
@@ -331,10 +337,10 @@ named_lane_resolve() {
     # failed would otherwise end the run here with no line naming why, and
     # an empty result is the alias-not-found answer the branch below reads.
     alias_rc=0
-    lane_dir="$("$LANES_CLI" check "$LANE")" || alias_rc=$?
+    lane_dir="$("$LANES_CLI" check "$LANE" ${harness:+--harness "$harness"} ${model:+--native-model "$model"})" || alias_rc=$?
     case "$alias_rc" in
       0) ;;
-      4) ot_message lane-refused "lane=$LANE" "exit=$alias_rc" >&2; exit 1 ;;
+      4) return 4 ;;
       *) ot_message lane-resolution-failed "exit=$alias_rc" >&2; exit 1 ;;
     esac
     if [[ -z "$lane_dir" ]]; then
@@ -344,7 +350,7 @@ named_lane_resolve() {
   fi
   # Whether a setting excludes or retires the lane is lanes' decision, asked
   # of the resolved directory so an alias and a path answer alike.
-  lane_check "$lane_dir"
+  lane_check "$lane_dir" "$harness" "$model"
 }
 
 # Keep the caller's input for every preference walk, including a batch's
@@ -367,10 +373,11 @@ if [[ "$WAKE" != true && -n "${ORCH_LANE_PREFERENCE:-}" \
     ot_message invalid-preference "entry=$OL_BAD_ENTRY" >&2; exit 1;
   }
   [[ -x "$LANES_CLI" ]] || { ot_message helper-missing "path=$LANES_CLI" >&2; exit 1; }
-  preference_pick_args=()
+  # A named lane is resolved and checked for each entry, whose harness and
+  # model name the allowance the lane settings judge (preference_select).
+  preference_named=true
   case "$LANE" in
-    ''|auto|auto:*) ;;
-    *) named_lane_resolve; preference_pick_args=(--lane "$lane_dir" --projected) ;;
+    ''|auto|auto:*) preference_named=false ;;
   esac
   preference_input=()
   if [[ -n "$CMD_INPUT" ]]; then
@@ -402,8 +409,13 @@ export ORCH_MODEL_LINES_HELD=1
 # before the marked entry. An entry skipped before any pick is not asked. The
 # entry with room stays walled for this launch; only the marked entry's spend
 # changes.
+# On a named lane, a lanes check refusal judged that entry's harness and model
+# alone, so it skips the entry as a pick exit 3 does: a retired plan leaves a
+# later Pi anthropic/ entry its grant. An exclusion refuses every entry, and a
+# walk that admits none after a refusal ends lane-refused.
 preference_select() {
   local preference_entry preference_rc preference_word preference_record preference_mode="$TERMINAL_MODE"
+  local preference_lane_dir preference_pick_args preference_refused=""
   local preference_index=0 preference_room="" preference_err
   if [[ -z "$preference_mode" ]]; then
     if tmux_server_named; then preference_mode=tmux; else preference_mode=gui; fi
@@ -418,6 +430,20 @@ preference_select() {
     ol_entry_model "$preference_entry" || {
       ot_message preference-class-unread "entry=$preference_entry" >&2; printf '%s\n' "$OL_CLASS_ERR" >&2; return 1;
     }
+    # The lane is checked before any skip below, so an exclusion refuses every
+    # entry whatever else drops it; lanes check reads only local settings.
+    preference_pick_args=()
+    if [[ "$preference_named" == true ]]; then
+      # A subshell, so a resolution failure returns from a batch rejudge as well.
+      preference_rc=0
+      preference_lane_dir="$(named_lane_resolve "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" && printf '%s' "$lane_dir")" || preference_rc=$?
+      case "$preference_rc" in
+        0) ;;
+        4) preference_refused=true; continue ;;
+        *) return 1 ;;
+      esac
+      preference_pick_args=(--lane "$preference_lane_dir" --projected)
+    fi
     OL_HARNESS="$OL_ENTRY_HARNESS" OL_WALK_SKIPS=()
     if ! ol_entry_permitted "$preference_entry"; then
       ot_message entry-permission-untransferable "entry=$preference_entry" \
@@ -462,6 +488,9 @@ preference_select() {
         ot_message lane-resolution-failed "entry=$preference_entry" "exit=$preference_rc" "step=last-choice" >&2; return 1 ;;
     esac
   done
+  if [[ -z "$PREFERENCE_ENTRY" && -n "$preference_refused" ]]; then
+    ot_message lane-refused "lane=$LANE" "walk=$ORCH_LANE_PREFERENCE" >&2; return 1
+  fi
   [[ -n "$PREFERENCE_ENTRY" ]] || { ot_message lane-unavailable "walk=$ORCH_LANE_PREFERENCE" >&2; return 1; }
   ol_model_line "$OL_ENTRY_WARNING"
   ol_launch_flags --question-off "$OL_ENTRY_HARNESS" "$OL_ENTRY_MODEL" "$OL_ENTRY_EFFORT" \
@@ -1310,7 +1339,9 @@ if [[ -n "$LANE" ]]; then
     *)
       if [[ -n "$PREFERENCE_ENTRY" ]]; then LANE_ENV="$PREFERENCE_LANE_ENV"
       else
-        named_lane_resolve
+        named_lane_resolve "$LAUNCH_HARNESS" "$LAUNCH_MODEL" || {
+          ot_message lane-refused "lane=$LANE" "exit=4" >&2; exit 1;
+        }
         # The harness-to-variable mapping is lib/lane-launch.sh's, the same one
         # `lanes` hands a picked lane back through, so a harness added there is
         # not left prefixing its launches with the other harness's variable.
@@ -2993,6 +3024,20 @@ relaunch_route() { # ITEM STATE_ID WORKTREE
   return 1
 }
 
+# The assignment that declares a Pi lane's model to the second-opinion skill,
+# `SECOND_OPINION_CURRENT_MODEL='MODEL'`, empty for any other launch or a Pi
+# launch naming no model. Pi fronts a selectable model that second-opinion
+# cannot detect, so its cross-model check refuses a Pi session that declares
+# none (second-opinion --help). The launch line carries it as
+# lane_launch_line's CHILD_ENV, after the scrub that clears a parent's
+# declaration (lib/lane-launch.sh LANE_LAUNCH_SCRUB). Pane agents start from
+# the tmux session's environment and do not inherit it; background subagents
+# Pi spawns from its own environment do.
+lane_model_env() {
+  [[ "$LAUNCH_HARNESS" == pi && -n "$LAUNCH_MODEL" ]] || return 0
+  printf 'SECOND_OPINION_CURRENT_MODEL=%s' "$(lane_single_quote "$LAUNCH_MODEL")"
+}
+
 # The launch from the lane marker to the lane record, for the item the loop
 # below has resolved: its worktree, command and host fields are the loop's own
 # variables. Returns 1 on any failure, its keyed line already printed. Every
@@ -3107,6 +3152,8 @@ launch_finish() {
   if [[ -z "$CMD_TEMPLATE" && "$HARNESS" == "claude" && -z "$session_file" && "$RELAUNCH_ROUTE" != resume-or-fresh ]]; then
     if [[ "$TRACKER" == "linear" ]]; then brief="/orch start $item"; else brief="/orch start github $repo#$item"; fi
   fi
+  local model_env
+  model_env="$(lane_model_env)"
   # A quote-bearing lane dir was refused at lane resolution, before any
   # worktree. A hosted lane's credential is already on its host; the claim alone
   # records the config dir.
@@ -3132,7 +3179,7 @@ launch_finish() {
     # An exported empty email wins over private files in the project loader.
     # A lane has no person to assign when it activates its work item.
     run="export KENDEX_USER_EMAIL='' && $run"
-    run="$(lane_launch_line "$run" "$HARNESS" "" "" custom)" || return 1
+    run="$(lane_launch_line "$run" "$HARNESS" "" "" custom "" "$model_env")" || return 1
     # A Pi lane on the Copilot pool hands its pane agents the key and proxy
     # settings its login shell holds (lib/lane-launch.sh lane_pi_session_env).
     [[ "$HARNESS" != pi || "$(lane_pick_pool pi "$LAUNCH_MODEL")" != copilot ]] || run="$(lane_pi_session_env) && $run"
@@ -3195,10 +3242,10 @@ launch_finish() {
     # A launch with none has no account to check and keeps the `unchecked` the
     # check reads as skip, whatever prefix the line below carries.
     [[ -z "$LANE_ENV" ]] || LANE_FORM="$launch_form"
-    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form" "$CMD_TEMPLATE" "" "$compaction_env")" || return 1
+    cmd="$(lane_launch_line "$cmd" "$LAUNCH_HARNESS" "$launch_var" "$launch_home" "$launch_form" "$CMD_TEMPLATE" "$model_env" "$compaction_env")" || return 1
   else
     launch_form="$(lane_launch_form "$cmd" "$HARNESS" "" "$CMD_TEMPLATE")" || return 1
-    cmd="$(lane_launch_line "$cmd" "$HARNESS" "" "" "$launch_form" "$CMD_TEMPLATE")" || return 1
+    cmd="$(lane_launch_line "$cmd" "$HARNESS" "" "" "$launch_form" "$CMD_TEMPLATE" "$model_env")" || return 1
   fi
   if [[ "$LANE_HOST" == local ]]; then
     cmd="export KENDEX_USER_EMAIL='' && $cmd"

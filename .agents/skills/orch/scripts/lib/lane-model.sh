@@ -81,6 +81,13 @@ def lane_norm: ascii_downcase | gsub("[^a-z0-9]"; "");
 # in max_binding, which must stay.
 def lane_measured: (.status == "ok" or .status == "rate_limited");
 
+# Whether a provider harness=pi row is an Anthropic API grant
+# (schemas/lane-host.md, accounts): it carries the grant in credit fields, or
+# it is an unread grant whose detail names an api-credit- cause. A raw row and
+# a record state these two inputs apart, so each caller passes its own.
+def api_grant_row($has_credits; $detail):
+  $has_credits or (($detail // "") | startswith("api-credit-"));
+
 def wall_rank:
   if .bucket == "monthly" then 3
   elif .bucket == "weekly" then 2
@@ -387,7 +394,10 @@ def with_lane_verdict($wall; $max; $credit_floor):
 # that is. It adds the fields of the key, which lane_public drops as they order
 # the pick and are no record of it: _tier, _expires (E, 0 outside tier 0) and
 # _score (S); and _credit_unread, a credit account whose reading supplies
-# no grant to judge. API grants keep unread provider rows unmeasured.
+# no grant to judge. API grants keep unread provider rows unmeasured. A read
+# API grant also states headroom_pct and binding_bucket, since the plan
+# windows beside it are not what it spends; its binding_resets_at is null,
+# since a grant that ends returns nothing.
 def with_lane_tier($pool; $cloud_floor; $retire; $now):
   (.credits // {}) as $c
   | ([($c.resets_at | utc_stamp | reset_epoch),
@@ -395,6 +405,10 @@ def with_lane_tier($pool; $cloud_floor; $retire; $now):
      | map(select(. != null)) | min) as $e
   | ($c.unit == "usd" and ($c.remaining_dollars | type) == "number" and ($c.limit_dollars | type) == "number"
      and $e != null) as $read
+  | (if $pool == "api-credit" and $read and lane_measured and $c.limit_dollars > 0
+     then . + {headroom_pct: (if $e > $now then (100 * $c.remaining_dollars / $c.limit_dollars | floor) else 0 end),
+               binding_bucket: "credits", binding_resets_at: null}
+     else . end)
   | ($pool == "cloud-credit" or $pool == "api-credit") as $credit_pool
   | . + {pool: $pool,
        _credit_unread: (($read | not) and

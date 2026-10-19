@@ -283,21 +283,24 @@ lane_context_mark_model() { # HARNESS MODEL
   esac
 }
 
-# lane_context_reading HARNESS [WINDOW] — one reading of the transcript on
-# stdin, or for copilot of the session record copilot_session_read accepted,
-# through HARNESS's adapter: `<tokens>\t<window>\t<model>`, the word
-# LANE_CONTEXT_UNREAD for a usage object the adapter does not read, or nothing
-# for a transcript holding no usage yet. WINDOW is a window the harness named
-# outside its transcript, which only Pi's hook payloads do, at a turn end and
-# after a tool call. Exit 3 names a harness no adapter reads; any other failure
-# is the adapter's own. DIR is the
-# session project for Pi settings. The reading's window field holds the verified
-# compaction point, empty when the effective configuration is unresolved.
-lane_context_reading() { # HARNESS [WINDOW] [DIR]
+# lane_context_reading HARNESS [WINDOW] [DIR] [SESSION] [BOX] — one reading of
+# the transcript on stdin, or for copilot of the session record
+# copilot_session_read accepted, through HARNESS's adapter:
+# `<tokens>\t<window>\t<model>`, the word LANE_CONTEXT_UNREAD for a usage
+# object the adapter does not read, or nothing for a transcript holding no
+# usage yet. WINDOW is a window the harness named outside its transcript,
+# which only Pi's hook payloads do, at a turn end and after a tool call. Exit 3
+# names a harness no adapter reads; any other failure is the adapter's own.
+# DIR is the session project for Pi settings, and SESSION and BOX the session
+# id and mailbox directory whose record a Pi reading with no WINDOW takes its
+# window from (lane_adapter_pi_reading). The reading's window field holds the
+# verified compaction point, empty when the effective configuration is
+# unresolved.
+lane_context_reading() { # HARNESS [WINDOW] [DIR] [SESSION] [BOX]
   case "${1:-}" in
     claude) lane_adapter_claude_reading "$LANE_CONTEXT_UNREAD" ;;
     codex) lane_adapter_codex_reading "$LANE_CONTEXT_UNREAD" ;;
-    pi) lane_adapter_pi_reading "$LANE_CONTEXT_UNREAD" "${2:-}" "${3:-$PWD}" ;;
+    pi) lane_adapter_pi_reading "$LANE_CONTEXT_UNREAD" "${2:-}" "${3:-$PWD}" "${4:-}" "${5:-}" ;;
     copilot) lane_adapter_copilot_reading "$LANE_CONTEXT_UNREAD" ;;
     *) return 3 ;;
   esac
@@ -772,11 +775,11 @@ lane_context_columns() {
 # The HEADROOM cell both lane tables print, as a jq def over one record: the
 # credit balance of a Codex account room on its credits, binding_bucket
 # `credits`, whose window headroom is spent and says nothing of its room;
-# otherwise headroom_pct.
+# otherwise headroom_pct, which for a dollar API grant is its share left.
 # shellcheck disable=SC2016  # jq source, never expanded by the shell.
 LANE_HEADROOM_CELL_JQ='
 def headroom_cell:
-  if .binding_bucket == "credits"
+  if .binding_bucket == "credits" and .credits.unit != "usd"
   then (.credits.balance | if . >= 1000 then (((. / 100) | floor) / 10 | tostring) + "k cr"
                            else (floor | tostring) + " cr" end)
   elif .headroom_pct == null then "-" else (.headroom_pct | tostring) + "%" end;
@@ -793,7 +796,7 @@ lane_context_message() {
       printf 'lane-context: tokens kind=recorded absent=-\n'
       printf 'CONTEXT_TOKENS: the tokens the last response left in the context, read from the transcript by the harness adapter at the session'"'"'s last turn end; a dash where no reading is recorded.\n'
       printf 'lane-context: headroom kind=account-binding handoff=threshold\n'
-      printf 'HEADROOM: percent remaining in the account binding bucket; HANDOFF is required at or below ORCH_HANDOFF_HEADROOM_PCT. A Codex account room on its credits shows its balance in cr, and headroom never marks it (lanes --help, context).\n'
+      printf 'HEADROOM: percent remaining in the account binding bucket; HANDOFF is required at or below ORCH_HANDOFF_HEADROOM_PCT. Headroom never marks a Codex account room on its credits, which shows its balance in cr, or a Pi lane on an anthropic/ API grant, which shows the grant share left and is marked only when the grant is walled (lanes --help, context).\n'
       printf 'lane-context: handoff kind=lane-threshold context=ORCH_HANDOFF_CONTEXT_PCT overseer-trigger=ORCH_OVERSEER_HEADROOM_PCT\n'
       printf 'HANDOFF: required by the shared context rule, or at the LANE headroom threshold. It never reports the overseer'"'"'s own ORCH_OVERSEER_HEADROOM_PCT, wall or qualifying-accounts triggers: by default the overseer succeeds itself at 5 percent headroom against the lane'"'"'s 3, so its own row can read - at a headroom that already fires its succession.\n'
       printf 'lane-context: caller kind=lane-marker marker=*\n'
@@ -915,10 +918,10 @@ context_read_and_record() { # BOX PANE_KEY
     [ -n "$TRANSCRIPT" ] || return 0
     { [ -f "$TRANSCRIPT" ] && [ -r "$TRANSCRIPT" ]; } || refuse_handoff transcript unreadable
     if ! READING=$(tail -c "$TRANSCRIPT_WINDOW" -- "$TRANSCRIPT" 2>"$WORK_DIR/tail.err" |
-      lane_context_reading "$HARNESS" "$PAYLOAD_WINDOW" "$LANE_DIR" 2>"$WORK_DIR/transcript.err"); then
+      lane_context_reading "$HARNESS" "$PAYLOAD_WINDOW" "$LANE_DIR" "$SESSION" "$1" 2>"$WORK_DIR/transcript.err"); then
       refuse_handoff transcript unread "$(cat -- "$WORK_DIR/transcript.err" "$WORK_DIR/tail.err")"
     fi
-    if [ -z "$READING" ] && ! READING=$(lane_context_reading "$HARNESS" "$PAYLOAD_WINDOW" "$LANE_DIR" <"$TRANSCRIPT" 2>"$WORK_DIR/transcript.err"); then
+    if [ -z "$READING" ] && ! READING=$(lane_context_reading "$HARNESS" "$PAYLOAD_WINDOW" "$LANE_DIR" "$SESSION" "$1" <"$TRANSCRIPT" 2>"$WORK_DIR/transcript.err"); then
       refuse_handoff transcript unread "$(cat -- "$WORK_DIR/transcript.err")"
     fi
   fi
@@ -1021,23 +1024,35 @@ copilot_reading_pending() {
   return 1
 }
 
-# review-pr invokes this library with the same native session inputs a hook
-# payload supplies: HARNESS SESSION TRANSCRIPT BOX PROJECT WINDOW. WINDOW is
-# the harness payload's capacity where it carries one, empty otherwise. The
-# caller's launch home stays in the harness environment. The only stdout
-# result is the existing reserve judge's room/due answer; an unavailable read
-# exits nonzero. The hook keeps its own callbacks and never enters this arm.
+# review-pr invokes this library with the native session inputs a hook
+# payload supplies, but for its window: HARNESS SESSION TRANSCRIPT BOX
+# PROJECT. A session runs it from its own shell tool, where no payload exists,
+# so a window there could only be a number the caller typed, and the adapter
+# finds a Pi window itself (lane_adapter_pi_reading). A sixth argument, empty
+# or not, is the window the earlier review-pr text passed, which a lane that
+# loaded that text still sends: it reads, unused, with one warning naming this
+# form, until the next kendex major release. The caller's launch home stays in the harness
+# environment. The only stdout result is the existing reserve judge's
+# room/due answer; an unavailable read exits nonzero. The hook keeps its own
+# callbacks and never enters this arm.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   if [ "${1:-}" = --help ]; then
-    printf '%s\n' 'Usage: bash lib/lane-context.sh HARNESS SESSION TRANSCRIPT BOX PROJECT WINDOW' \
+    printf '%s\n' 'Usage: bash lib/lane-context.sh HARNESS SESSION TRANSCRIPT BOX PROJECT' \
       'Read current session context through the hook reader, then print room or due for attached review.'
     exit 0
   fi
-  if [ "$#" -ne 6 ]; then
-    printf '%s\n' 'lane-context: arguments=unavailable' >&2
-    exit 2
-  fi
-  HARNESS=$1 SESSION=$2 TRANSCRIPT=$3 BOX=$4 LANE_DIR=$5 PAYLOAD_WINDOW=$6
+  case "$#" in
+    5) ;;
+    6)
+      printf '%s\n' "lane-context: window-argument=$6" \
+        'The window argument is no longer read: run lane-context.sh HARNESS SESSION TRANSCRIPT BOX PROJECT.' >&2
+      ;;
+    *)
+      printf '%s\n' 'lane-context: arguments=unavailable' >&2
+      exit 2
+      ;;
+  esac
+  HARNESS=$1 SESSION=$2 TRANSCRIPT=$3 BOX=$4 LANE_DIR=$5 PAYLOAD_WINDOW=""
   HOOK_DIR="${BASH_SOURCE[0]%/*}"
   TAB=$(printf '\t')
   COPILOT_USAGE=$(lane_context_copilot_pending_dir)
