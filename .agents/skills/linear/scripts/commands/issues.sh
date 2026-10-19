@@ -292,21 +292,28 @@ Validate-Completion:
   abandoned work can never be "Done" and is not a pending gap. Each validated
   issue must also have a comment containing "Completion Summary" or
   "Bundle Complete", without regard to letter case.
-  --container marks the positional target as a CONTAINER parent — a bundle
+  --container marks the positional target as a CONTAINER parent — a parent
   whose children are each worked as their own PR unit, with the container
-  closing after its holder proves the shared outcome. The container's state passes for any live state (canceled
+  closing when its last child is Done or Canceled. The container's state passes for any live state (canceled
   fails closed) and needs no pre-posted summary: `issues complete --summary`
-  posts it at completion time. Its expanded children must all be Done, so
-  all_ok answers "may this container complete now?". The container checklist
-  must have every box checked with its Evidence line. No merge time is needed.
+  posts it at completion time. Its expanded children must each be Done with
+  a summary. all_ok answers "every row validated"; whether the container may
+  close, and the remedy for each refusal, is container-close's decision. The
+  container's row reports the facts that decision reads:
+  `child_box`, the number of its "Every child Done or cancelled" box or null,
+  which the closer ticks; `container_open_boxes`, every other box still open
+  or missing its Evidence line; `errors`; and `has_summary`. They do not gate
+  its `ok`.
+  No merge time is needed.
   The flag fails closed:
   it requires exactly one issue ID plus --include-children-of naming that
-  same issue, and errors (exit 1) when the bundle has no non-canceled
-  children — a leaf cannot validate as a container. A child of a container
+  same issue, and errors (exit 1) when the bundle has no children — a leaf
+  cannot validate as a container. With every child canceled the result
+  carries the container's row alone. A child of a container
   validates alone as its own session root. Use it only for containers;
-  explicit single-PR bundles use the default bundle-child contract above.
-  A container without a branch outcome box refuses. Its holder adds the box
-  when reading its source. Ordinary items without a checklist can complete.
+  the review audit's in-PR bundle uses the default bundle-child contract above,
+  and --container refuses its root, whose safe read reports `in_pr_bundle`
+  true. A container with no Done-when checklist can complete.
 
 Examples:
   # Basic operations
@@ -353,8 +360,8 @@ Examples:
   issues.sh complete PROJ-42 --summary-file tmp/completion-summary-PROJ-42.md  # Summary comment, then done
   issues.sh complete PROJ-42 --done-when-met all --evidence-file proof.txt
   issues.sh complete PROJ-42 --done-when-met 1,3 --evidence-file proof.txt
-  issues.sh validate-completion PROJ-42 --include-children-of PROJ-42  # Single-PR bundle validation
-  issues.sh validate-completion PROJ-42 --include-children-of PROJ-42 --container  # May the container close?
+  issues.sh validate-completion PROJ-42 --include-children-of PROJ-42  # In-PR bundle validation
+  issues.sh validate-completion PROJ-42 --include-children-of PROJ-42 --container  # Container close facts (container-close decides)
 
   # Bundle operations (single API call)
   issues.sh get PROJ-42 --with-bundle            # Issue + recursive children + pending_count
@@ -567,7 +574,7 @@ list_issues() {
         return
     elif [[ "$selection" == owed ]]; then
         jq "$ISSUE_RELATION_JQ"'[.issues.nodes[] | {id: .identifier, title, description,
-          priority, state: .state.name, state_type: .state.type, parent_id: (.parent.identifier // ""),
+          in_pr_bundle: issue_in_pr_bundle(.description), priority, state: .state.name, state_type: .state.type, parent_id: (.parent.identifier // ""),
           created_at: .createdAt, blocked_by_open: issue_blocked_by_open_ids(.inverseRelations.nodes)}]' <<<"$result"
         return
     fi
@@ -3469,9 +3476,7 @@ complete_issue() {
     issue_result=$(get_issue "$issue_id" --format=raw) || return 1
     # The sentinel keeps a trailing newline the substitution would strip.
     description=$(jq -r '(.issue.description // "") + "."' <<<"$issue_result") || return 1
-    local checklist_role
-    checklist_role=$(jq -r 'if (.issue.children.nodes | length) > 0 and (.issue.title | test("\\(one PR\\)"; "i") | not) then "container" else "issue" end' <<<"$issue_result") || return 1
-    tick=$(done_when_parse "${description%.}" "${met_json:-[]}" "$post_merge_at" "$evidence_json" "$checklist_role") || return 1
+    tick=$(done_when_parse "${description%.}" "${met_json:-[]}" "$post_merge_at" "$evidence_json") || return 1
     missing_count=$(jq '.missing | length' <<<"$tick") || return 1
     if [ "$missing_count" -ne 0 ]; then
         jq -c --arg id "$issue_id" \
@@ -3480,7 +3485,7 @@ complete_issue() {
     fi
     completion_state=$(jq -r '.completion_state // ""' <<<"$tick") || return 1
     if [ -z "$completion_state" ]; then
-        jq -c '{error: "post-merge-checklist", errors, unmet_branch_boxes, missing_evidence_boxes, missing_outcome_box, remedy: .outcome_remedy}' <<<"$tick" >&2
+        jq -c '{error: "post-merge-checklist", errors, unmet_branch_boxes, missing_evidence_boxes}' <<<"$tick" >&2
         return 1
     fi
     # Checklist proof does not establish a merge. Keep the development phase
@@ -3664,11 +3669,11 @@ validate_completion() {
         return 1
     fi
 
-    # --container asserts "this bundle may complete now", so it fails CLOSED
-    # on any invocation that cannot prove it: exactly one positional target,
+    # --container reports the facts a container's close reads, so it fails
+    # CLOSED on any invocation that cannot read them: exactly one positional target,
     # a paired --include-children-of naming that same target, and (checked
-    # after expansion below) at least one non-canceled child. The flag may
-    # appear after the positionals, so the role is assigned post-parse.
+    # after expansion below) at least one child. The flag may appear after
+    # the positionals, so the role is assigned post-parse.
     if [ "$container_mode" = "true" ]; then
         if [ ${#issue_ids[@]} -ne 1 ]; then
             echo '{"error": "--container requires exactly one issue ID"}' >&2
@@ -3682,8 +3687,8 @@ validate_completion() {
     fi
 
     # If --include-children-of specified, fetch the bundle and expand its
-    # Completed children must remain in the validation set. A single-PR child
-    # can also carry verified branch work into post-merge verification.
+    # Completed children must remain in the validation set. An in-PR bundle
+    # child can also carry verified branch work into post-merge verification.
     # Only CANCELED children are excluded: abandoned work can never be "Done",
     # is not a pending gap, and including it would permanently fail any bundle
     # that legitimately canceled a sub-issue. This mirrors the `children
@@ -3699,18 +3704,23 @@ validate_completion() {
             echo "{\"error\": \"Failed to fetch bundle for: $include_children_of\"}" >&2
             return 1
         fi
-        # Container fail-closed, part 1b: an explicit single-PR bundle is
-        # the OPPOSITE contract — its (one PR) marker always wins, and
-        # validating it under the permissive container role would skip the
-        # session root's pre-merge state and summary checks. Reject the
-        # marker instead of silently reclassifying.
-        if [ "$container_mode" = "true" ]; then
-            local bundle_title
-            bundle_title=$(echo "$bundle" | jq -r '.title // ""')
-            if printf '%s' "$bundle_title" | grep -qi '(one PR)'; then
-                echo "{\"error\": \"--container fail-closed: $include_children_of carries the (one PR) marker — an explicit single-PR bundle validates with plain validate-completion, never as a container\"}" >&2
-                return 1
-            fi
+        # Container fail-closed, part 1b: the review audit's in-PR bundle
+        # root is one work item, the OPPOSITE contract — validating it under
+        # the permissive container role would skip the session root's
+        # pre-merge state and summary checks. Reject it instead of silently
+        # reclassifying.
+        if [ "$container_mode" = "true" ] && [ "$(jq -r '.in_pr_bundle == true' <<<"$bundle")" = true ]; then
+            echo "{\"error\": \"--container fail-closed: $include_children_of is an in-PR bundle root (in_pr_bundle) — it validates with plain validate-completion, never as a container\"}" >&2
+            return 1
+        fi
+        # Container fail-closed, part 2: a bundle with no child at all proves
+        # nothing about its children — a leaf mistakenly validated as a
+        # container must error, not pass. Every child canceled leaves the
+        # parent's row alone, so container-close reads its open boxes before
+        # it sets the parent Canceled.
+        if [ "$container_mode" = "true" ] && [ "$(jq -r '.children | length' <<<"$bundle")" = 0 ]; then
+            echo "{\"error\": \"--container fail-closed: no children found under $include_children_of\"}" >&2
+            return 1
         fi
         local child_ids
         child_ids=$(echo "$bundle" | jq -r '[.children[] | select(.state_type != "canceled") | .id] | .[]' 2>/dev/null)
@@ -3722,14 +3732,6 @@ validate_completion() {
                 roles+=("bundle-child")
             fi
         done
-    fi
-
-    # Container fail-closed, part 2: a bundle that expanded to zero
-    # non-canceled children proves nothing about "children all Done" — a
-    # leaf mistakenly validated as a container must error, not pass.
-    if [ "$container_mode" = "true" ] && [ ${#issue_ids[@]} -le 1 ]; then
-        echo "{\"error\": \"--container fail-closed: no non-canceled children found under $include_children_of\"}" >&2
-        return 1
     fi
 
     local results="[]"
@@ -3759,15 +3761,6 @@ validate_completion() {
         local result description
         description=$(jq -r '(.description // "") + "."' <<<"$issue") || return 1
         result=$(build_completion_validation_result "$issue_id" "$state" "$parent_id" "$has_summary" "$role" "$state_type" "${description%.}") || return 1
-
-        if [ "$role" = "container" ]; then
-            local checklist
-            checklist=$(done_when_parse "${description%.}" '[]' '' '{}' container) || return 1
-            result=$(jq -cn --argjson result "$result" --argjson checklist "$checklist" '
-                $result + ($checklist | {errors, unmet_branch_boxes, missing_evidence_boxes, missing_outcome_box})
-                + (if $checklist.missing_outcome_box then {remedy: $checklist.outcome_remedy} else {} end)
-                | .ok = (.ok and $checklist.completion_state == "Done")') || return 1
-        fi
 
         if [ "$(echo "$result" | jq -r '.ok')" != "true" ]; then
             all_ok="false"

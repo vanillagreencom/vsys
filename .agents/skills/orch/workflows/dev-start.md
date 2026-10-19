@@ -8,7 +8,7 @@ Delegate implementation to specialist agent(s). Handles a single issue and a bun
 | `dev-start [ISSUE_ID]` | Implement a specific issue |
 | (from start-worktree / review-pr) | Managed lifecycle with caller context |
 
-**Caller context** (via `⤵`): `worktree`; `lifecycle` — `"managed"` (return at § 4) or `"self"` (default); `issue_id` — the workflow-state key, whose forms `workflow-state --help` § Keys enumerates, never the bare GitHub issue number; `audit_bundle` — `true` only from review-pr's post-audit path.
+**Caller context** (via `⤵`): `worktree`; `lifecycle` — `"managed"` (return at § 4) or `"self"` (default); `issue_id` — the workflow-state key, whose forms `workflow-state --help` § Keys enumerates, never the bare GitHub issue number.
 
 **Standalone init** (`lifecycle: "self"`). Use the argument as `ISSUE_ID`, else:
 
@@ -24,7 +24,7 @@ Resolve `TRACKER` first. `github` skips the Linear-only launch preflight.
 .agents/skills/linear/scripts/linear.sh issues get [ISSUE_ID] --with-bundle
 ```
 
-Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)). A container is refused before anything is initialized, with its unblocked children surfaced as the startable items. A `(one PR)` ancestor promotion is TERMINAL for this invocation: stop and route to `/orch start [PARENT_ID]` rather than continuing with the child's id. A blocked item stops with its live blockers named. Caller context `audit_bundle: true` selects the gate's audit bundle rule: permit that parent as a bundle and carry `Audit Bundle: yes` in the delegation. This opt-in does not bypass the blocker check.
+Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)). A container is refused before anything is initialized, with its unblocked children surfaced as the startable items. A blocked item stops with its live blockers named. A parent whose read reports `in_pr_bundle` takes the gate's in-PR bundle rule and the § 2 Bundled issue delegation. That rule does not bypass the blocker check.
 
 Apply [Worktree Scope](../SKILL.md#workflow-execution) and resolve `WT_PATH` as `git-context repo-root "[DIR]"`. Inside a worktree `[DIR]` is `.`; from the main repo it is `worktree path [ISSUE_ID]` when that exists, and ask the user before creating one when it does not.
 
@@ -65,7 +65,7 @@ Before EVERY implementation delegation, including managed entry at § 1 and each
 .agents/skills/linear/scripts/linear.sh issues get [ISSUE_ID] --with-bundle
 ```
 
-Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)), with its audit bundle rule when caller context has `audit_bundle: true`. Complete any further reads the gate requires. Stop on refusal before stamping or delegating. Use this read for the bundle's pending work and parent title. An earlier caller preflight does not replace this read. GitHub skips this Linear-only step.
+Apply the Ancestor gate ([references/skill-rules.md § Coordination](../references/skill-rules.md#coordination)), with its in-PR bundle rule when this read reports `in_pr_bundle`. Complete any further reads the gate requires. Stop on refusal before stamping or delegating. Use this read for the bundle's pending work and parent title. An earlier caller preflight does not replace this read. GitHub skips this Linear-only step.
 
 Then stamp the round and apply the cleanup condition in [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure). Run each selected command as a separate tool call:
 
@@ -140,7 +140,6 @@ Round ID: [DEV_ROUND_ID]
 Artifact Key: [ISSUE_ID]
 Labels: [the parent's labels and every sub-issue's labels, each once, comma-separated, or none]
 [For each near_ceiling line read from workflow state: "Near-ceiling: [LINE]"]
-Audit Bundle: [yes — only when caller context `audit_bundle: true`; omit otherwise]
 Parent Title: [PARENT_TITLE — the `.title` from the preflight bundle read, verbatim]
 
 **Work pending issues only** (completed ones are listed for context). Complete blockers before blocked issues.
@@ -180,7 +179,7 @@ git -C "[WORKTREE_PATH]" status --porcelain
 .agents/skills/linear/scripts/linear.sh issues validate-completion [ISSUE_ID] --include-children-of [ISSUE_ID]
 ```
 
-`HEAD` must differ from `pre_delegate_sha`, `status --porcelain` must be empty, and the Linear validation (Linear only) must report `.all_ok`. `--include-children-of` expands explicit single-PR bundles and audit-created sub-issues worked in this session. Bundle-expanded children follow the linear skill's `validate-completion` contract. Dev-implement § Issue state records verified branch-box ticks and Evidence through a description-only update while each child stays In Progress. Validation reads that persisted checklist, whether or not it has post-merge boxes. The session root stays In Progress or In Review before merge. Carry qualified started children into submit-pr's child `Closes` lines and merge-pr's post-merge completion step. GitHub and ad-hoc rounds skip tracker validation: B is the new commit plus the clean worktree.
+`HEAD` must differ from `pre_delegate_sha`, `status --porcelain` must be empty, and the Linear validation (Linear only) must report `.all_ok`. `--include-children-of` expands the audit-created sub-issues worked in this session. Bundle-expanded children follow the linear skill's `validate-completion` contract. Dev-implement § Issue state records verified branch-box ticks and Evidence through a description-only update while each child stays In Progress. Validation reads that persisted checklist, whether or not it has post-merge boxes. The session root stays In Progress or In Review before merge. Carry qualified started children into submit-pr's child `Closes` lines and merge-pr's post-merge completion step. GitHub and ad-hoc rounds skip tracker validation: B is the new commit plus the clean worktree.
 
 A round that meets the Stalled round conditions of [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure) goes to `round-recover` whatever B reads, and its agent is never nudged or re-messaged; the table below covers every other round.
 
