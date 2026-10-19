@@ -242,7 +242,7 @@ export class Collector {
     if (this.lateRead) {
       r.error(
         this.config.procRoot,
-        "the process read an earlier sample started has not finished",
+        "A process read from an earlier sample has not finished",
       );
       return unknown;
     }
@@ -263,7 +263,7 @@ export class Collector {
     this.lateRead = read.then(forget, forget);
     r.error(
       this.config.procRoot,
-      `the process read did not finish within ${processDeadlineMs} ms`,
+      `The process read did not finish within ${processDeadlineMs} ms`,
     );
     return unknown;
   }
@@ -275,9 +275,7 @@ export class Collector {
   openFiles(pids: number[], dirs: string[]): Promise<OpenFiles> {
     if (this.lateRead)
       return Promise.reject(
-        new Error(
-          "the process read an earlier sample started has not finished",
-        ),
+        new Error("A process read from an earlier sample has not finished"),
       );
     return this.processes.openFiles(pids, dirs, this.controller.signal);
   }

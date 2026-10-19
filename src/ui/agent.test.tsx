@@ -1293,7 +1293,15 @@ test("Open files shows why the process thread could not answer", async () => {
     await onOpenFiles(t);
     await t.press("enter");
     await t.settle();
-    expect(t.frame()).toContain("Process thread has closed");
+    const frame = t.frame();
+    // The reason is a sentence of its own, and the header counts no file:
+    // a refusal is not one open file.
+    expect({
+      reason: frame.includes(
+        "Open files could not be read: Process thread has closed",
+      ),
+      counted: /Open files {2}\d/.test(frame),
+    }).toEqual({ reason: true, counted: false });
   } finally {
     await t.close();
     rmSync(dir, { recursive: true, force: true });

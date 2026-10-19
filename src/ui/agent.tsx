@@ -280,8 +280,11 @@ export function Agent({
   onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
 }) {
   // Null until the process thread answers for a section open on a live
-  // sample: a list never read, or one still being read, has no count.
-  const [files, setFiles] = useState<string[] | null>(null);
+  // sample: a list never read, or one still being read, has no count, and
+  // neither has a thread that could not answer.
+  const [files, setFiles] = useState<
+    { rows: string[] } | { error: string } | null
+  >(null);
   const [loaded, setLoaded] = useState<{
     id: string;
     samples: LaneSample[];
@@ -310,15 +313,17 @@ export function Agent({
     onOpenFiles(lane.pids, dirs)
       .then((opened) => {
         if (current)
-          setFiles([
-            ...opened.files.map((f) => `${f.pid}: ${f.path}`),
-            ...opened.errors.map((e) => `${e.source}: ${e.message}`),
-          ]);
+          setFiles({
+            rows: [
+              ...opened.files.map((f) => `${f.pid}: ${f.path}`),
+              ...opened.errors.map((e) => `${e.source}: ${e.message}`),
+            ],
+          });
       })
       .catch((error: unknown) => {
-        // A thread that could not answer leaves its reason as the one row,
-        // never an empty list that reads as no file open.
-        if (current) setFiles([errorText(error)]);
+        // A thread that could not answer says why, never an empty list that
+        // reads as no file open.
+        if (current) setFiles({ error: errorText(error) });
       });
     return () => {
       current = false;
@@ -549,7 +554,8 @@ export function Agent({
       : Object.entries(lane.builds)
           .map(([kind, n]) => `${n} ${kind}`)
           .join(", ");
-  const unique = files === null ? null : [...new Set(files)];
+  const unique =
+    files !== null && "rows" in files ? [...new Set(files.rows)] : null;
   const tree = processTree(members);
   const count = (name: SectionName) =>
     name === "Processes"
@@ -796,7 +802,11 @@ export function Agent({
                         )}
                         {row.name === "Open files" &&
                           (live ? (
-                            unique === null ? (
+                            files !== null && "error" in files ? (
+                              <Empty
+                                text={`Open files could not be read: ${safe(files.error)}`}
+                              />
+                            ) : unique === null ? (
                               <Empty text="Reading open files…" />
                             ) : unique.length ? (
                               unique.map((file) => (
