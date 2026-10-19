@@ -228,6 +228,12 @@ Activate Options:
                         changing state when the label does not exist.
 
 Complete Options:
+  On Done, exact at-completion entries under **Supersedes**: are commented
+  and canceled. Malformed entries are reported and skipped; related links
+  and Related prose grant no cancellation authority.
+  Pending children require disposition before cancellation. Failed required
+  effects exit nonzero even after Done, preserving the transition result and
+  structured supersession-incomplete retry options without summary flags.
   --format <fmt>        Output format: ids (identifier only); default is JSON.
   --summary <text>       Post a summary comment, then apply the checklist state
   --summary-file <path>  Read the summary from a file (preferred for markdown)
@@ -3226,6 +3232,61 @@ unblock_issue() {
     echo "{\"success\": true, \"identifier\": \"$identifier\", \"action\": \"unblocked\"}"
 }
 
+# Required effects after Done stay retryable through the same completion verb.
+# The filing cannot decide the disposition of children added before completion.
+complete_superseded_issues() {
+    local replacement="$1"
+    shift
+    local superseded_id superseded_result superseded_terminal disposition_result pending_children
+    local frontier next_frontier child_parent children descendants seen
+    for superseded_id in "$@"; do
+        if ! superseded_result=$(get_issue "$superseded_id" --format=raw); then
+            jq -cn --arg issue "$superseded_id" '{error: "supersession-read", issue: $issue}' >&2
+            return 1
+        fi
+        superseded_terminal=$(jq -er '.issue.state.type | strings' <<<"$superseded_result") || return 1
+        case "$superseded_terminal" in completed|canceled) continue ;; esac
+        linear_guard_issue_team complete "$superseded_id" || return 1
+        # Terminal ancestors can still contain open work. Keep every unfiltered
+        # frontier until the whole subtree is read, as dependencies.md requires.
+        frontier="$superseded_id"
+        descendants='[]'
+        seen=$(jq -c '[.issue.identifier]' <<<"$superseded_result") || return 1
+        while [ -n "$frontier" ]; do
+            next_frontier=""
+            while IFS= read -r child_parent; do
+                children=$(list_children "$child_parent" --format=raw) || return 1
+                children=$(jq -c --argjson seen "$seen" \
+                    '.issue.children.nodes | map({id: .identifier, state_type: .state.type})
+                    | unique_by(.id) | map(select(.id as $id | $seen | index($id) | not))' <<<"$children") || return 1
+                descendants=$(jq -c --argjson children "$children" '. + $children' <<<"$descendants") || return 1
+                seen=$(jq -c --argjson children "$children" '. + ($children | map(.id))' <<<"$seen") || return 1
+                children=$(jq -r '.[].id' <<<"$children") || return 1
+                if [ -n "$children" ]; then
+                    next_frontier="${next_frontier:+$next_frontier$'\n'}$children"
+                fi
+            done <<<"$frontier"
+            frontier="$next_frontier"
+        done
+        pending_children=$(jq -r '.[] | select(.state_type != "completed" and .state_type != "canceled") | .id' <<<"$descendants") || return 1
+        if [ -n "$pending_children" ]; then
+            jq -cn --arg issue "$superseded_id" --arg children "$pending_children" \
+                '{error: "supersession-children", issue: $issue, children: ($children | split("\n")), remedy: "Disposition the open children before retrying completion."}' >&2
+            return 1
+        fi
+        disposition_result=$("$SCRIPT_DIR/comments.sh" create "$superseded_id" --body "Superseded by $replacement.") || return 1
+        if ! jq -e '.success == true' <<<"$disposition_result" >/dev/null; then
+            jq -cn --arg issue "$superseded_id" '{error: "supersession-comment", issue: $issue}' >&2
+            return 1
+        fi
+        disposition_result=$(update_issue "$superseded_id" --state Canceled) || return 1
+        if ! jq -e '.success == true' <<<"$disposition_result" >/dev/null; then
+            jq -cn --arg issue "$superseded_id" '{error: "supersession-cancel", issue: $issue}' >&2
+            return 1
+        fi
+    done
+}
+
 # Complete an issue from its checklist and recorded evidence.
 # Usage: complete_issue CC-XXX [--summary <text> | --summary-file <path>] [--done-when-met <all|N[,N...]>]
 # The summary comment is posted BEFORE the state transition so a failed post
@@ -3421,6 +3482,28 @@ complete_issue() {
             return 1
         }
     fi
+    local superseded_ids=()
+    local supersedes_block=0 supersedes_line
+    local supersedes_entry='^- ([A-Z][A-Z0-9]*-[1-9][0-9]*) \(at-completion\):[[:blank:]]+[^[:blank:]].*$'
+    while IFS= read -r supersedes_line || [ -n "$supersedes_line" ]; do
+        supersedes_line=${supersedes_line%$'\r'}
+        if [ "$supersedes_line" = '**Supersedes**:' ]; then
+            supersedes_block=1
+        elif [ "$supersedes_block" -gt 0 ]; then
+            if [ -z "$supersedes_line" ]; then
+                [ "$supersedes_block" -ne 2 ] || supersedes_block=0
+            elif [[ "$supersedes_line" =~ ^# || "$supersedes_line" =~ ^\*\* ]]; then
+                supersedes_block=0
+            elif [[ "$supersedes_line" =~ $supersedes_entry ]]; then
+                superseded_ids+=("${BASH_REMATCH[1]}")
+                supersedes_block=2
+            else
+                jq -cn --arg issue "$issue_id" --arg line "$supersedes_line" \
+                    '{warning: "supersedes-malformed", issue: $issue, line: $line}' >&2
+                supersedes_block=2
+            fi
+        fi
+    done <<<"${description%.}"
     if [ -n "$met_json" ]; then
         done_when_checked=$(jq '.ticked' <<<"$tick") || return 1
     fi
@@ -3454,12 +3537,16 @@ complete_issue() {
 
     local update_result
     local update_rc=0
-    set +e
-    # Ticks and evidence preserve the filed body's headers: an issue filed
-    # before the header-shape bar still completes.
-    update_result=$(LINEAR_REQUIRE_REACH='' update_issue "$issue_id" "${update_args[@]}")
-    update_rc=$?
-    set -e
+    if [ "$completion_state" = Done ] && jq -e '.issue.state.type == "completed"' <<<"$issue_result" >/dev/null && ! jq -e '.changed' <<<"$tick" >/dev/null; then
+        update_result=$(jq -c '{success: true, identifier: .issue.identifier, already_done: true}' <<<"$issue_result") || return 1
+    else
+        set +e
+        # Ticks and evidence preserve the filed body's headers: an issue filed
+        # before the header-shape bar still completes.
+        update_result=$(LINEAR_REQUIRE_REACH='' update_issue "$issue_id" "${update_args[@]}")
+        update_rc=$?
+        set -e
+    fi
 
     local update_success
     update_success=$(echo "$update_result" | jq -r '.success // false')
@@ -3485,6 +3572,30 @@ complete_issue() {
             echo "$update_result"
         fi
         return 1
+    fi
+
+    # Only the filing's explicit block grants cancellation authority. Related
+    # links are informational, and a Verifying item has not completed yet.
+    if [ "$completion_state" = Done ]; then
+        local replacement
+        replacement=$(jq -er '.issue.identifier' <<<"$issue_result") || return 1
+        if ! complete_superseded_issues "$replacement" ${superseded_ids[@]+"${superseded_ids[@]}"}; then
+            local retry_options='[]'
+            if [ -n "$done_when_met" ]; then
+                retry_options=$(jq -c --arg value "$done_when_met" '. + ["--done-when-met", $value]' <<<"$retry_options") || return 1
+            fi
+            if [ -n "$evidence_file" ]; then
+                retry_options=$(jq -c --arg value "$evidence_file" '. + ["--evidence-file", $value]' <<<"$retry_options") || return 1
+            fi
+            if [ -n "$post_merge_at" ]; then
+                retry_options=$(jq -c --arg value "$post_merge_at" '. + ["--post-merge-at", $value]' <<<"$retry_options") || return 1
+            fi
+            printf '%s\n' "$update_result"
+            jq -cn --arg issue "$replacement" --argjson options "$retry_options" \
+                '{error: "supersession-incomplete", issue: $issue, state: "Done", already_done: true,
+                  retry: {resource: "issues", action: "complete", issue: $issue, options: $options}}' >&2
+            return 1
+        fi
     fi
 
     if [ "$output_format" = "ids" ]; then

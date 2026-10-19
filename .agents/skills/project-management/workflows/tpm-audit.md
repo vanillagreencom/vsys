@@ -235,7 +235,7 @@ This is the cancellation sweep. No mode that reaches this section skips it.
 
 Compare each input issue against the § 1.5 active set and its own closed search results. Same problem plus same approach is a duplicate (`duplicates[]`) whatever project it lives in; same problem with a genuinely different approach keeps both with a `related` link. When title and keyword matching finds nothing, extract the module or component name from the location field and search on that. Keep closed-row conclusions within that item's returned evidence and report any truncation; a truncated search is not proof of no match. Closed rows take no disposition (§ 1.1).
 
-When an input item's scope **fully covers** an existing issue, that is `supersedes[]` on the input item, not `duplicates[]`. Signals: the item's `decision_ref` supersedes the existing issue's governing decision, the item's `creates[]` is a superset of the existing deliverables, or the existing issue references a superseded decision.
+When an input item's scope **fully covers** an existing issue, that is `supersedes[]` on the input item, not `duplicates[]`, subject to § 7.0's contract-parent scope transfer. Signals: the item's `decision_ref` supersedes the existing issue's governing decision, the item's `creates[]` is a superset of the existing deliverables, or the existing issue references a superseded decision.
 
 ### 6.2 Obsolete
 
@@ -277,7 +277,7 @@ Compare each input issue against every project definition. A scope matching anot
 
 - Ordinary hierarchy inference (§§ 7.1-7.2) and the duplicate/overlap action downgrades of § 6.1 are BYPASSED for the item's action and placement. § 6.1 still runs for evidence — it populates `supersedes[]` and `related` — but never changes the action.
 - The output MUST be `action: "create"` with `hierarchy: {"action": "make_child", "parent": [HIERARCHY_CONTRACT.parent_issue]}` and `project.recommended` equal to the contract parent's project.
-- The item MUST NOT resolve to `skip`, `expand`, `update`, `combine`, or `cancel`. When an existing issue — the contract parent included — already carries scope belonging to the item, move that scope into the new domain child: record `supersedes[]` on the child for full coverage or a `related` relation for partial overlap, and note the move in `reason`. Never emit an update of the existing issue in place of the child create.
+- The item MUST NOT resolve to `skip`, `expand`, `update`, `combine`, or `cancel`. When the contract parent carries scope belonging to the item, move that scope into the new domain child with a `related` relation and note the transfer in `reason`, even for full coverage. Remove the contract parent from `supersedes[]`, including confirmed input entries: transferring its implementation scope never authorizes its cancellation. For another existing issue, record `supersedes[]` on the child for full coverage or a `related` relation for partial overlap. Never emit an update of the existing issue in place of the child create.
 - The contract parent becomes coordination-only (the caller converts it). It is never one domain's implementation leaf and never an `update`/`expand` target for covered scope.
 - Apply `HIERARCHY_CONTRACT.sequencing[]` as `blocks` relations between the created children, using `#N` batch references.
 
@@ -345,7 +345,7 @@ Recommend a new project in `project_recommendations[]` for architecture gaps onl
 
 ### 10.1 Apply the Creation Bar
 
-Each proposed item passes only if it clears all three tests in [SKILL.md](../SKILL.md) § Disposition and has clear scope, testable criteria, and defined deliverables. A reproducible anomaly with evidence attached passes as an investigation issue whose deliverable is the diagnosis. A failure is `skip` with a one-line reason naming the test it failed — `"no user-visible effect"`, `"covered by [ISSUE_ID]"`, `"no evidence to start from"`, `"too vague — [missing criterion]"`.
+For every source, including `oversee`, proposal-sweep, and audits, apply reviewer/references/finding-disposition.md § Decision flow Step 0 before the creation bar. Each proposed item then passes only if it clears all three tests in [SKILL.md](../SKILL.md) § Disposition and has clear scope, testable criteria, and defined deliverables. Preserve that section's security, data-loss, critical-harm and financial-loss exceptions. A reproducible anomaly with evidence attached passes as an investigation issue whose deliverable is the diagnosis. A failure is `skip` with a one-line reason naming the test it failed: `"refactor with no behaviour change or user-visible work unblocked"`, `"size or ceiling warning"`, `"hypothetical no run reached"`, `"no user-visible effect"`, `"covered by [ISSUE_ID]"`, `"no evidence to start from"`, or `"too vague — [missing criterion]"`. Carry that reason into the report; a no-behaviour-change refactor filed through `--single` returns `skip`, not `create`.
 
 Hierarchy-contract items (§ 7.0) are never `skip`: keep `action: "create"` and flag any actionability gap in `reason` for the caller.
 
@@ -367,7 +367,7 @@ Otherwise, first match wins: creation bar failed → `skip` for a proposed item,
 
 **Completed-issue guard**: `combine`, `expand`, and `update` never target a Done or Canceled issue; new scope goes in a new issue with a `related` relation to the completed one.
 
-For every `create`: populate `create_fields` per [audit-output.md](../schemas/audit-output.md) with the full `labels[]` from the input item or completed from § 1.2 taxonomy — an action that can only supply `agent`/`agent_label` is left blocked with a clear `reason`. `reach` is the producer the input item's `impact` names — the same line the filing bar reads, never re-derived from the finding. `review_born` is true when `SOURCE` is `review`, `pr-comments`, or `local-review`, false otherwise; a `review_born` create at priority 2 also carries `symptom` from the input item, and is left blocked with a `reason` when the item states none. `regressed_by` is the input item's, copied as written and omitted when the item has none. Verify `supersedes[]` entries carry `identifier`, `title`, and `reason`, and set `summary.superseded` to the total. When `SOURCE == "research-complete"` and `RESEARCH_ISSUE` is set, add it to `add_relations.related[]` on every `create`.
+For every `create`: populate `create_fields` per [audit-output.md](../schemas/audit-output.md) with the full `labels[]` from the input item or completed from § 1.2 taxonomy — an action that can only supply `agent`/`agent_label` is left blocked with a clear `reason`. `reach` is the producer the input item's `impact` names — the same line the filing bar reads, never re-derived from the finding. `review_born` is true when `SOURCE` is `review`, `pr-comments`, or `local-review`, false otherwise; a `review_born` create at priority 2 also carries `symptom` from the input item, and is left blocked with a `reason` when the item states none. `regressed_by` is the input item's, copied as written and omitted when the item has none. Preserve confirmed input `supersedes[]` entries and their `when`, subject to § 7.0's contract-parent scope transfer; verify entries carry `identifier`, `title`, and `reason`, and set `summary.superseded` to the total. When `SOURCE == "research-complete"` and `RESEARCH_ISSUE` is set, add it to `add_relations.related[]` on every `create`.
 
 ---
 
@@ -422,19 +422,19 @@ File: tmp/audit-[MODE]-YYYYMMDD-HHMMSS.json
 
 ## 14. Single-Item Mode
 
-One filing: the creation bar, a title-level duplicate check, the label set and the placement, then § 12 and § 13. No other section runs: no contracts, no relation or hierarchy analysis, no comparison-set bodies, and no § 6 cancellation sweep.
+One filing: the creation bar, a title-level duplicate check, explicit supersession confirmation, the label set and the placement, then § 12 and § 13. No other section runs: no contracts, no inferred relation or hierarchy analysis, no comparison-set bodies, and no § 6 cancellation sweep.
 
 1. **Input.** Read the file as § 1.1 reads `issues` mode. It holds exactly one `items[]` entry and no `hierarchy_contract`; any other shape halts naming the item count, and the caller runs `--issues`.
 2. **Scope and labels.** § 1.1.1, then § 1.2.
 3. **Placement.** Linear: the § 1.3 command, then the project whose name and description fit the item's `location`; in a map repository, the § 1.6 map read and [project-map.md § Routing](../references/project-map.md#routing), with `project_needed` when it routes to none. GitHub: § 1.3's degradation.
-4. **Duplicates by title.** One read of the open titles; keep only rows § 1.1.1 scopes in:
+4. **Duplicates by title and explicit supersession.** One read of the open titles; keep only rows § 1.1.1 scopes in:
 
    ```bash
    .agents/skills/linear/scripts/linear.sh issues list --team "[TEAM]" --all-projects --state "Backlog,Todo,In Progress,In Review" --max --format=compact   # TRACKER=linear
    gh issue list --repo [REPOSITORY] --state open --limit 200 --json number,title                                                                # TRACKER=github
    ```
 
-   Read `id` and `title` from each row, `number` and `title` on GitHub; neither read takes a pipe, under orch's one-simple-command rule ([orch SKILL.md § Harness-Safe Shell](../../orch/SKILL.md#harness-safe-shell)). A title naming the item's problem makes the item `skip` with that issue as `target` and reason `covered by [ISSUE_ID]`. Read a matched issue's body (`issues get [ISSUE_ID]`, or `gh issue view [N] --repo [REPOSITORY] --json body`) only when its title alone leaves the match open; read no other body.
+   Read `id` and `title` from each row, `number` and `title` on GitHub; neither read takes a pipe, under orch's one-simple-command rule ([orch SKILL.md § Harness-Safe Shell](../../orch/SKILL.md#harness-safe-shell)). Check every input `supersedes[].identifier` against this same read, with no second tracker list. Echo each confirmed identifier, its title, reason and `when` into the create row's `supersedes[]`. Report each absent identifier in the row's `reason` as not touched and omit it from `supersedes[]`. A confirmed explicit supersession is disposed by its `when`, not treated as a duplicate title. Another title naming the item's problem makes the item `skip` with that issue as `target` and reason `covered by [ISSUE_ID]`. Read a matched issue's body (`issues get [ISSUE_ID]`, or `gh issue view [N] --repo [REPOSITORY] --json body`) only when its title alone leaves the match open; read no other body.
 
 5. **Action.** § 10.1, then `create` or `skip`; no other action. A `create` fills `create_fields` per § 10.2, with `hierarchy: {"action": "none", "parent": null}`.
 

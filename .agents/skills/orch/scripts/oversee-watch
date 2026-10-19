@@ -892,6 +892,7 @@ MERGED_FIELDS_FILTER='
 FLEET_CARRIED=""
 # The state text the last read parsed, which the heartbeat's owed items judge.
 FLEET_STATE=""
+FLEET_WALLED=false
 fleet_merge() { # [quiet]
   local state rows dropped line item window host root harness running launched kept carried parked recorded merged tag
   # Check the open before substitution expansion; keep that inode for the read.
@@ -904,7 +905,8 @@ fleet_merge() { # [quiet]
     (('"$PREPARE_ROWS_FILTER"') | "prepare\u001e\(.)"),
     (('"$PARKED_ROWS_FILTER"') | "parked\u001e\(.)"),
     ((.lanes // [])[] | objects | .item | strings | "recorded\u001e\(.)"),
-    (('"$MERGED_FIELDS_FILTER"') | "merge\u001e\(.)")' <<<"$state" 2>&1)" \
+    (('"$MERGED_FIELDS_FILTER"') | "merge\u001e\(.)"),
+    "walled\u001e\(any(.lanes[]?; .walled != null))"' <<<"$state" 2>&1)" \
     || die state-invalid "$merged" "option=--state" "path=$STATE_FILE"
   rows=""; PREPARE_ROWS=""; parked=""; recorded=""; MERGED_FIELDS=""
   while IFS= read -r line; do
@@ -916,6 +918,7 @@ fleet_merge() { # [quiet]
       parked) parked+="$line"$'\n' ;;
       recorded) recorded+="$line"$'\n' ;;
       merge) MERGED_FIELDS+="$line"$'\n' ;;
+      walled) FLEET_WALLED="$line" ;;
     esac
   done <<<"$merged"
   rows="${rows%$'\n'}"; PREPARE_ROWS="${PREPARE_ROWS%$'\n'}"
@@ -3339,22 +3342,65 @@ lane_row_prune() {
 # names from sharing one snapshot and classifying each other's screens.
 LANE_OBS=""
 LANE_TURNS=()
-# wall_pause LANE SEEN_AT — the wall this watch first saw on LANE's pane at
-# SEEN_AT, epoch, and sees no longer this pass, kept as {from, to, cause} in
-# the `pauses` of the last lane record whose window LANE names, in the fleet
-# state lane-close is handed: oversee-cycle reads a lane's walled time from
-# there and nowhere else. The pass that sees the banner gone, replaced or its
-# window gone is the wall's end, so the pause runs to that pass. A window no
-# record names keeps nothing. A write that fails is said and the pass goes on,
-# since the wall's history is not what the overseer acts on.
-wall_pause() { # LANE SEEN_AT
-  local errf="$WORK_DIR/wall-pause.err"
-  [[ "$2" =~ ^[0-9]+$ && "$2" -lt "$PASS_NOW" ]] || return 0
-  "$WORKFLOW_STATE" --state-dir "$FLEET_STATE_DIR" update oversee \
-    --arg window "$1" --argjson from "$2" --argjson to "$PASS_NOW" \
-    '([(.lanes // []) | to_entries[] | select(.value.window == $window) | .key] | last) as $i
-     | if $i == null then . else .lanes[$i].pauses += [{from: ($from | todate), to: ($to | todate), cause: "walled"}] end' \
-    >/dev/null 2>"$errf" || { ow_message wall-unrecorded "lane=$1" >&2; cat -- "$errf" >&2; }
+# The cycle can be recorded before the watch sees a wall end. Keep its start
+# as `walled.at` until this owner replaces it with the completed pause.
+# The persisted item record owns the wall across every watch entry point.
+wall_pause() { # WINDOW<TAB>FIRST_SEEN|clear|unavailable observations
+  local observations="$1" errf="$WORK_DIR/wall-pause.err"
+  local prior_wall=0
+  [[ $'\n'"${PW_SEEN[0]}" != *$'\nusage-limit\t'* ]] || prior_wall=1
+  # Healthy passes reuse the fleet reader's wall presence. Direct lists need
+  # their optional accounting read only for a current or retained sighting.
+  [[ "$FLEET_WALLED" == true || "$prior_wall" -eq 1 || "$observations" == *$'\t'[0-9]* ]] || return 0
+  local transition="$LANE_RUNNING_JQ"'
+    ($observations | split("\n") | map(select(length > 0) | fromjson)
+      | map({key: .item, value: .}) | from_entries) as $seen
+    | if .lanes == null then . else .lanes |= map(
+        $seen[.item] as $observation
+        | if running and .window == $observation.window and $observation.reading == "unavailable" then .
+          else (if running and .window == $observation.window
+                and ($observation.reading // "" | test("^[0-9]+$"))
+                then ($observation.reading | tonumber) else null end) as $from
+          | if .walled != null and (.walled.at | fromdate) <= $now
+               and ($from == null or (.walled.at | fromdate) != $from) then
+              .pauses += [{from: .walled.at, to: ($now | todate), cause: "walled"}
+                | select((.from | fromdate) < $now)]
+              | del(.walled)
+            else . end
+          | if $from != null and $from <= $now then .walled = {at: ($from | todate)} else . end
+          end) end'
+  # Observations select current running records. Completion stays on each
+  # item's own standing start, even after its launch or status changes.
+  if (
+    if [[ -n "$STATE_FILE" ]]; then
+      records="$FLEET_STATE" standing="$FLEET_WALLED"
+    else
+      rc=0
+      "$WORKFLOW_STATE" --state-dir "$FLEET_STATE_DIR" exists oversee >/dev/null 2>"$errf" || rc=$?
+      [[ "$rc" -ne 1 ]] || exit 0
+      [[ "$rc" -eq 0 ]] || exit 1
+      records="$("$WORKFLOW_STATE" --state-dir "$FLEET_STATE_DIR" get oversee 2>"$errf")" || exit 1
+      standing="$(jq -r 'any(.lanes[]?; .walled != null)' <<<"$records" 2>"$errf")" || exit 1
+    fi
+    seen=""
+    while IFS=$'\t' read -r window reading; do
+      [[ -n "$window" ]] || continue
+      [[ "$window" == *:* ]] || window="$WATCH_SESSION:$window"
+      record="$(lane_running_record "$records" "$window" "" session)" || exit 1
+      [[ -n "$record" ]] || continue
+      row="$(jq -c --arg reading "$reading" '{item, window, reading: $reading}' <<<"$record" 2>"$errf")" || exit 1
+      seen+="$row"$'\n'
+    done <<<"$observations"
+    changed="$(jq -r --arg observations "$seen" --argjson now "$PASS_NOW" \
+      '. as $before | '"$transition"' | . != $before' <<<"$records" 2>"$errf")" || exit 1
+    # An input alias or a terminal action can leave the snapshot unchanged
+    # while the canonical record needs completion. Recheck in its transaction.
+    [[ "$changed" == true || ( -n "$STATE_FILE" && ( "$standing" == true || "$prior_wall" -eq 1 ) ) ]] || exit 0
+    "$WORKFLOW_STATE" --state-dir "$FLEET_STATE_DIR" update oversee \
+      --arg observations "$seen" --argjson now "$PASS_NOW" "$transition" >/dev/null 2>"$errf" || exit 1
+  ); then return 0; fi
+  ow_message wall-unrecorded lane=oversee >&2
+  cat -- "$errf" >&2
 }
 
 LANE_PANE_FILE=""
@@ -3416,12 +3462,18 @@ observe_lanes() {
   LANE_ROWS=()
   LANE_PANE_SOURCES=()
   # No early return for an empty fleet: the rows of the last lanes to leave
-  # still end their walls and are pruned below.
+  # still end their walls and are pruned before the snapshot.
   local lane kind target pane below key prefix prior obs pid cmd capture errf i=0 state="${PW_SEEN[0]}"
   local pane_mode capture_rc pane_host pane_item
+  local wall_observations=""
   # One window listing per session answers membership for the whole snapshot.
   local LANE_WINDOW_CACHE=1 LANE_WINDOW_SESSIONS=() LANE_WINDOW_LISTINGS=()
   local banner banner_rc reset_key seen_at seen_pane seen_reported seen_key
+  # Rows outside this watch no longer describe an observation.
+  while IFS=$'\t' read -r kind lane prior; do
+    [[ "$kind" == usage-limit ]] && ! window_listed "$lane" || continue
+    lane_row_clear usage-limit "$state" "$lane" >/dev/null; state="$LANE_ROW"
+  done <<<"$state"
   for lane in ${LANES[@]+"${LANES[@]}"}; do
     i=$((i + 1))
     lane_pane_file "$i" >/dev/null
@@ -3431,11 +3483,7 @@ observe_lanes() {
     if ! lane_window_listed "$lane"; then
       LANE_OBS+="$i"$'\t'"gone"$'\t\t\t\n'
       lane_row_clear lane-asking "$state" "$lane" >/dev/null; state="$LANE_ROW"
-      if ! lane_row_get usage-limit "$state" "$lane" >/dev/null; then
-        die state-read-failed "" "lane=$lane" "row=usage-limit"
-      fi
-      prior="$LANE_ROW"
-      [[ -z "$prior" ]] || wall_pause "$lane" "${prior%%|*}"
+      wall_observations+="$lane"$'\tclear\n'
       lane_row_clear usage-limit "$state" "$lane" >/dev/null; state="$LANE_ROW"
       lane_row_clear model-capacity "$state" "$lane" >/dev/null; state="$LANE_ROW"
       lane_row_clear lane-exited "$state" "$lane" >/dev/null; state="$LANE_ROW"
@@ -3461,6 +3509,7 @@ observe_lanes() {
       if ! lane_pane_mode pane_mode "$pane_host"; then
         LANE_PANE_SOURCES[$i]=unreadable
         LANE_OBS+="$i"$'\t'"unreadable"$'\t\t\t\n'
+        wall_observations+="$lane"$'\tunavailable\n'
         continue
       fi
     else pane_item=""; fi
@@ -3472,6 +3521,7 @@ observe_lanes() {
       if [[ "$pane_mode" == verb ]]; then
         cat "$errf" >&2
         LANE_OBS+="$i"$'\t'"unreadable"$'\t\t\t\n'
+        wall_observations+="$lane"$'\tunavailable\n'
         continue
       fi
       die pane-capture-failed "$(cat "$errf")" "lane=$lane"
@@ -3504,6 +3554,10 @@ observe_lanes() {
     # too, with an empty reset key: the row is also where check_lanes records
     # that the wall was reported, and a wall with no row is one reported on
     # every run.
+    if [[ "${LANE_ROWS[$i]:-}" == unreadable ]]; then
+      wall_observations+="$lane"$'\tunavailable\n'
+      continue
+    fi
     if [[ -n "${LANE_ROWS[$i]:-}" ]]; then lane_banner_text "$i" "$lane" "$pane"
     else LANE_BANNER_TEXT="$below"; fi
     banner_rc=0
@@ -3515,20 +3569,16 @@ observe_lanes() {
       seen_at=""; seen_pane=""; seen_key=""
       [[ -z "$prior" ]] || IFS='|' read -r seen_at seen_pane seen_reported seen_key <<<"$prior"
       if [[ "$seen_pane" != "$key" || "$seen_key" != "$reset_key" ]]; then
-        [[ -z "$prior" ]] || wall_pause "$lane" "$seen_at"
+        seen_at="$PASS_NOW"
         lane_row_set usage-limit "$state" "$lane" "$PASS_NOW|$key||$reset_key" >/dev/null; state="$LANE_ROW"
       fi
+      wall_observations+="$lane"$'\t'"$seen_at"$'\n'
     else
-      [[ -z "$prior" ]] || wall_pause "$lane" "${prior%%|*}"
+      wall_observations+="$lane"$'\tclear\n'
       lane_row_clear usage-limit "$state" "$lane" >/dev/null; state="$LANE_ROW"
     fi
   done
-  # A wall on a window that left the fleet ends with it.
-  while IFS=$'\t' read -r kind lane prior; do
-    [[ "$kind" == usage-limit ]] && ! window_listed "$lane" || continue
-    wall_pause "$lane" "${prior%%|*}"
-  done <<<"$state"
-  state="$(lane_row_prune usage-limit "$state" ${LANES[@]+"${LANES[@]}"})"
+  wall_pause "$wall_observations"
   state="$(lane_row_prune model-capacity "$state" ${LANES[@]+"${LANES[@]}"})"
   state="$(lane_row_prune lane-exited "$state" ${LANES[@]+"${LANES[@]}"})"
   state="$(lane_row_prune lane-idle "$state" ${LANES[@]+"${LANES[@]}"})"
