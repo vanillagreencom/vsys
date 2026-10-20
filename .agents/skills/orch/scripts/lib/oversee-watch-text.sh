@@ -106,11 +106,14 @@ The long pass's events, checked and reported in this order:
         source=<auth|rows|account|pane>
                              the session read `walled`:
                              from `auth`, a login failure in the current
-                             pane turn. From `rows`, Claude Code's
-                             authentication_failed StopFailure is also a
+                             pane turn. From `rows`, a Claude Code
+                             StopFailure whose error lib/lane-state.sh's
+                             AUTH_FAILURE_ERRORS lists, authentication_failed
+                             or oauth_org_not_allowed among them, is also a
                              login wall. Both recover on the first pass,
                              even with usage room or a previous successful
-                             row. No account mark confirmation is required.
+                             row. No account mark confirmation is required,
+                             and the notice also goes to the owner once.
                              For usage limits, from `rows`, a
                              StopFailure row whose error is `rate_limit`,
                              standing unless its account measures room, its
@@ -119,7 +122,9 @@ The long pass's events, checked and reported in this order:
                              mark-reached kind=headroom value=0 without
                              reserve_only=true, account
                              and reset under the line; both on the first pass that
-                             reads them. Or, from the `pane` fallback, on N
+                             reads them. An account the judgement reads
+                             status=plan_ended has no reset, and its notice
+                             also goes to the owner once. Or, from the `pane` fallback, on N
                              consecutive passes read by the same judge AND
                              that judgement reading mark-reached
                              kind=headroom without reserve_only=true: the harness is still running
@@ -144,11 +149,14 @@ The long pass's events, checked and reported in this order:
                              walled one; the line it built is on the watch's
                              stderr under the event. Where no account
                              qualifies, one `overseer-recovery-blocked` notice
-                             goes to both channels and the repeat stops.
+                             goes to both channels and the owner, and the
+                             repeat stops.
                              Measured account and reset values need an
                              account mark. Unmeasured fields read
-                             account=unknown and resets=none. Login recovery
-                             has no usage reset: sign in to an account, then
+                             account=unknown and resets=none. A login wall
+                             or a plan_ended account has no usage reset:
+                             sign the account in again, restore its plan or
+                             access or sign in to another account, then
                              start a fresh overseer by hand
   EVENT overseer-reserve <pane> window=<window> passes=1 succession=<on|off> source=<source>
                              Positive spendable credits remain below the
@@ -654,9 +662,11 @@ The long pass's events, checked and reported in this order:
                              its verdict against ORCH_LANE_MAX_PCT crossed in
                              either direction (a Codex account on its credits
                              reads room, binding_bucket=credits: `lanes
-                             --help`, pick), or the binding bucket reset the
-                             last reading named has passed and the reading has
-                             moved off it. `change=` names every one that
+                             --help`, pick; a grant, a harness=pi API grant
+                             or a Claude cloud credit, binding_bucket=credits,
+                             crosses at ORCH_LANE_CLOUD_CREDIT_FLOOR), or the
+                             binding bucket reset the last reading named has
+                             passed and the reading has moved off it. `change=` names every one that
                              applies and `was=` the status and verdict before
                              it. `config_dir` names the credentials, since
                              two accounts can share an alias. The first
@@ -725,7 +735,13 @@ The long pass's events, checked and reported in this order:
                              record's host, its `host` or `local`, as
                              ORCH_LANE_HOST: a `lanes list` there that fails
                              is `unjudged`, named as owed-accounts-unread; one
-                             listing no account of the harness is `queue`;
+                             listing no account the pick would judge is
+                             `queue`: those are the accounts of the harness
+                             the record's model bills on (lib/lane-launch.sh
+                             lane_pick_harness, so a pi-claude/ model bills
+                             claude), and a Pi API grant stands for an
+                             anthropic/ model alone, the one model whose pick
+                             spends the api-credit pool;
                              otherwise `lanes pick --harness <h> [--model <m>]`
                              with the record's harness and model decides:
                              room is `queue`, a wall `dated` until the
@@ -958,7 +974,11 @@ Options:
                       watch's claim, which the start refusals below and a
                       succession's handover read; how an overseer launches,
                       finds and stops its watch is
-                      references/watch-delivery.md's. However it is sent,
+                      references/watch-delivery.md's. The loop runs the
+                      GitHub auth ladder before it claims: a start no
+                      credential serves exits 2 as auth-failed, writing no
+                      record and stopping no watch it would replace.
+                      However it is sent,
                       TERM on the loop removes the record at once, ends
                       the pass it is running and exits once that pass has;
                       a lane-close part way through is run to its end and
@@ -1284,7 +1304,7 @@ ow_message() { # REASON FIELD=VALUE...
     overseer-unrecorded) text='This start could not record the overseer pane in the fleet state, so the record stays as it was. The pane is still watched. '"$OW_REPLAY_RULE"' The held field is that line, none where the record holds none for this pane, or unread where the record, or the pane key or server start that names it, could not be read. The step field names what failed.' ;;
     overseer-notice-failed) text='An overseer notice could not be delivered on the channel the field names. A notice from a pass still had its event line printed; a notice from the watch start has none.' ;;
     overseer-relaunch-failed) text='oversee-succeed refused or failed the relaunch; the overseer is not replaced and this watch keeps running. Its own keyed line says why.' ;;
-    overseer-recovery-blocked) text='No account in the fleet qualifies for a successor, so the recovery stops rather than retry the same accounts. The notice reaches the fleet log and the overseer mailbox. Measured account and reset values come from an account mark. Unmeasured fields read account=unknown and resets=none. Login recovery has no usage reset: sign in to an account, then start a fresh overseer by hand.' ;;
+    overseer-recovery-blocked) text='No account in the fleet qualifies for a successor, so the recovery stops rather than retry the same accounts. The notice reaches the fleet log, the overseer mailbox and the owner, once. Measured account and reset values come from an account mark. Unmeasured fields read account=unknown and resets=none. A login wall or a plan_ended account has no usage reset: sign the account in again, restore its plan or access or sign in to another account, then start a fresh overseer by hand.' ;;
     overseer-capacity-blocked) text='No account qualifies for a successor at the launch reserve. The current coordinator can still spend credits. Its watch continues without repeating the account sweep.' ;;
     overseer-capacity-failed) text='The successor launch failed at the launch reserve. The current coordinator stays live. Its watch continues through the bounded retry and after exhaustion.' ;;
     overseer-succeeded) text='A successor holds the overseer window and runs its own watch. This one stops rather than read the fleet twice.' ;;
@@ -1357,6 +1377,7 @@ ow_message() { # REASON FIELD=VALUE...
     session-unresolved) text='A bare lane window name is carried and tmux named no session for this watch, so the name could resolve through whichever session tmux picks. Start the watch from the overseer pane, or record the window as SESSION:WINDOW.' ;;
     watch-running) text='Another watch already runs on this fleet state, and this start could not show its pane gone: tmux lists it, this start has no tmux server to ask, the record names no pane, or the pane list could not be read. Two watches would read one overseer mailbox and each replay what the other drained. Handle its events, or stop it as references/watch-delivery.md states and start again; pid is the watch that read finds.' ;;
     watch-replay-failed) text='The output a restarted watch left beside the fleet state could not be printed or removed, so the start stops rather than lose it or print it twice. The path names the file.' ;;
+    start-unpublished) text='The watch could not add its pid to the job record its launcher named, so that launcher could not tell it running; it stopped before it claimed anything.' ;;
     watch-record-failed) text='The watch could not write its own record beside the fleet state, so a second watch could not be refused and a succession could not restart this one.' ;;
     watch-finishing) text='The watch taken over is finishing a lane-close. This start waits for it to exit, so the lane row is committed before this watch reads it and the output of a restarted watch is replayed whole. The close outcome is in the output of the old watch: for one references/waiter-launch.md started, the log in its run directory.' ;;
     watch-taken-over) text='A live watch on this fleet state was stopped and this one runs in its place. The reason field says why it could be: succession is the watch oversee-succeed restarted for this pane, pane-gone one whose pane tmux no longer lists, replace the one the launcher of this watch named, as oversee resume names the watch that claimed its closed server'"'"'s pane.' ;;

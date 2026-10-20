@@ -37,6 +37,19 @@ die() { # REASON TOOL_DETAIL FIELD=VALUE...
   exit 2
 }
 
+# shellcheck source=lib/watch-pid.sh
+source "$SCRIPT_DIR/lib/watch-pid.sh"
+# A launcher waiting on this start's claim named the job record it made for
+# it: the pid added there tells that launcher whether the start still runs,
+# so one that exits before its claim, whatever the cause, is reported at once
+# (lib/watch-handover.sh § watch_start). For this start alone: nothing it
+# runs inherits the name.
+if [[ -n "${OVERSEE_WATCH_JOB_RECORD:-}" ]]; then
+  watch_job_pid_write "$OVERSEE_WATCH_JOB_RECORD" \
+    || die start-unpublished "" "path=$OVERSEE_WATCH_JOB_RECORD"
+  unset OVERSEE_WATCH_JOB_RECORD
+fi
+
 # A provider or mailbox failure belongs to one lane. Keep its result outside
 # `die`, because ending the process here would drop every mailbox after it.
 # The caller reports the failure against the state snapshot it owns, then
@@ -220,8 +233,6 @@ source "$SCRIPT_DIR/lib/lane-gitfile.sh"
 source "$SCRIPT_DIR/lib/lane-capabilities.sh"
 # shellcheck source=lib/watch-host-kinds.sh
 source "$SCRIPT_DIR/lib/watch-host-kinds.sh"
-# shellcheck source=lib/watch-pid.sh
-source "$SCRIPT_DIR/lib/watch-pid.sh"
 # shellcheck source=lib/lane-launch.sh
 source "$SCRIPT_DIR/lib/lane-launch.sh"
 # shellcheck source=lib/lane-relaunch.sh
@@ -1141,6 +1152,28 @@ box_wait() { # PID SEEN
   done
 }
 
+# Auth ladder (../references/gates.md § Waiter auth ladder): a stale env token yields to the
+# keyring; when neither works, the env token is dropped so the project's
+# GH_BOT_TOKEN can be selected — the last candidate. Never proceed
+# unauthenticated: an unauthenticated `gh pr list` would report an empty
+# fleet, not a failure.
+#
+# Asked once per run, and only when GitHub is first needed: resolving a
+# repository no --repo names, a long pass, or the heartbeat's open-PR list. A
+# run that ends on mail news before a long pass comes due makes no GitHub call.
+# A repeat wrapper also asks it once before its claim (repeat_watch).
+GH_READY=0
+github_ready() {
+  [[ "$GH_READY" -eq 0 ]] || return 0
+  orch_sanitize_gh_env
+  if ! orch_github_auth_status; then
+    unset GH_TOKEN GITHUB_TOKEN
+    { orch_load_env_bot_token "$PROJECT_ROOT" && orch_github_auth_status; } \
+      || die auth-failed "" "service=github"
+  fi
+  GH_READY=1
+}
+
 # The pass is handed the state itself and only the entries argv gave this
 # wrapper, never the merged set: a lane whose record closed while the pass
 # loops has to leave that pass's fleet, which a hand-passed --item never does.
@@ -1159,6 +1192,12 @@ repeat_watch() { # ARGV...
     # watch wrote.
     if [[ -n "$REPEAT_FIRST" ]]; then
       REPEAT_FIRST=""
+      # Authenticated before the claim, so a watch that cannot read GitHub
+      # never stands as the fleet's watch, nor stops the one it would
+      # replace; its launcher's claim wait sees it exit. A subshell, so the
+      # wrapper's environment stays the launcher's and every pass runs the
+      # ladder itself, inheriting no token or validation from this one.
+      ( github_ready ) || exit "$?"
       watch_claim "$@"
       overseer_command_record
     fi
@@ -1652,27 +1691,6 @@ pass_stop() {
   exit 143
 }
 trap pass_stop TERM
-
-# Auth ladder (../references/gates.md § Waiter auth ladder): a stale env token yields to the
-# keyring; when neither works, the env token is dropped so the project's
-# GH_BOT_TOKEN can be selected — the last candidate. Never proceed
-# unauthenticated: an unauthenticated `gh pr list` would report an empty
-# fleet, not a failure.
-#
-# Asked once per run, and only when GitHub is first needed: resolving a
-# repository no --repo names, a long pass, or the heartbeat's open-PR list. A
-# run that ends on mail news before a long pass comes due makes no GitHub call.
-GH_READY=0
-github_ready() {
-  [[ "$GH_READY" -eq 0 ]] || return 0
-  orch_sanitize_gh_env
-  if ! orch_github_auth_status; then
-    unset GH_TOKEN GITHUB_TOKEN
-    { orch_load_env_bot_token "$PROJECT_ROOT" && orch_github_auth_status; } \
-      || die auth-failed "" "service=github"
-  fi
-  GH_READY=1
-}
 
 if [[ ${#REPOS[@]} -eq 0 ]]; then
   github_ready
@@ -3660,6 +3678,47 @@ overseer_publish() { # NOTICE RECORD ERR_FILE
     || overseer_note overseer-notice-failed "channel=lane-mail"
 }
 
+# The owner's channel: one `lane-mail notice --to owner` through the overseer
+# mailbox, which the owner relay carries out, for a case only the owner can
+# act on. A walled or dead overseer reads no mailbox directive, so a notice
+# its own channels carry reaches nobody until a successor opens. lane-mail
+# refusing the text as `owner-notice-repeated` is the owner already holding
+# those words, which counts as sent. Returns 1, noted, where it is not sent.
+overseer_owner_notice() { # NOTICE ERR_FILE
+  local refusal
+  "$LANE_MAIL" notice --item overseer --to owner --file "$1" >/dev/null 2>"$2" && return 0
+  IFS= read -r refusal <"$2" || refusal=""
+  case "$refusal" in
+    "lane-mail: owner-notice-repeated="*) return 0 ;;
+  esac
+  overseer_note overseer-notice-failed "channel=owner"
+  return 1
+}
+
+# Whether this pass's wall is on the account itself, a login or access the
+# harness reports refused (lib/lane-state.sh § lane_auth_failure), off
+# the pane or the session's rows: no usage reset lifts it.
+overseer_auth_wall() {
+  [[ "$OV_SOURCE" == auth || ( "$OV_SOURCE" == rows && "$SESSION_ROWS_WALL_KIND" == auth ) ]]
+}
+
+# The remedy for a wall no usage reset lifts, on stdout, or exit 1 for a wall
+# its reset lifts, whose successor is the whole remedy. Two walls reach it:
+# the account refused the login or its access (overseer_auth_wall), or this
+# pass's account mark reads the account `plan_ended`, a plan or organization
+# access that ended (lib/lane-model.sh § lane_ended). Only the owner can act
+# on either, so overseer_deliver and overseer_recovery_blocked both carry this
+# sentence and send it to the owner.
+overseer_unlifted_remedy() {
+  if overseer_auth_wall; then
+    echo 'Its account refused the login or its access, which no usage reset lifts: sign the account in again, restore its access or sign in to another account.'
+  elif [[ "$OVERSEER_MARK_READ" == 1 && "$OVERSEER_MARK_RC" == 0 && "$OVERSEER_MARK_STATUS" == plan_ended ]]; then
+    echo "Its account ${OVERSEER_MARK_ACCOUNT:-unknown} reads plan_ended: its plan or its organization's subscription access ended, which no usage reset lifts. Restore the plan or the access, or take the account out of the fleet."
+  else
+    return 1
+  fi
+}
+
 # The notice every channel carries, written once into WORK_DIR: the fleet log
 # reads it as the text of its record and the overseer mailbox as the body of an
 # owner note, so the two cannot describe the case differently.
@@ -3669,9 +3728,14 @@ overseer_publish() { # NOTICE RECORD ERR_FILE
 # record names this session (overseer_record_read), which the key alone does
 # not say: an earlier server handed the same pid and pane id left the same
 # one. The no-line plan names which of the three shapes left it with no line.
+#
+# A wall no usage reset lifts (overseer_unlifted_remedy) also reaches the
+# owner, once per episode since the caller delivers only on a case's first
+# reading: the successor moves the fleet off that account, and only the owner
+# can bring it back.
 overseer_deliver() { # KIND PANE WINDOW SUCCESSION PLAN RECORD MINE
   local kind="$1" notice="$WORK_DIR/overseer-$1.txt" record="$WORK_DIR/overseer-$1.json"
-  local errf="$WORK_DIR/overseer-deliver.err" now plan_text reading relaunch_text headline
+  local errf="$WORK_DIR/overseer-deliver.err" now plan_text reading relaunch_text headline remedy=""
   now="$(from_epoch "$PASS_NOW" '%Y-%m-%dT%H:%M:%SZ')" || now=""
   if [[ "$kind" == reserve ]]; then
     relaunch_text='A successor is being selected. The current coordinator can still spend credits and its watch continues if no successor opens.'
@@ -3708,9 +3772,12 @@ overseer_deliver() { # KIND PANE WINDOW SUCCESSION PLAN RECORD MINE
     printf -v headline 'overseer-%s: the overseer session in tmux window %s (pane %s) read %s on %s consecutive watch passes at %s, source=%s. %s' \
       "$kind" "$3" "$2" "$reading" "$DEAD_PASSES" "${now:-an unreadable clock}" "$OV_SOURCE" "$plan_text"
   fi
+  [[ "$kind" != walled ]] || remedy="$(overseer_unlifted_remedy)" || remedy=""
+  [[ -z "$remedy" ]] || headline+=" $remedy"
   printf '%s\n' "$headline" > "$notice" \
     || { overseer_note overseer-notice-failed "channel=file"; return 0; }
   overseer_publish "$notice" "$record" "$errf"
+  [[ -z "$remedy" ]] || overseer_owner_notice "$notice" "$errf" || true
 }
 
 # Exit 3 from the launcher is `lanes pick`'s own "no lane clears the bound",
@@ -3718,13 +3785,15 @@ overseer_deliver() { # KIND PANE WINDOW SUCCESSION PLAN RECORD MINE
 # successor. One notice on the two channels the recovery already uses, the row
 # marked reported, because a retry would walk the same accounts and refuse
 # again. A reserve refusal leaves the current session live; real failures stop
-# repeat mode.
+# repeat mode, and with the overseer down and no successor coming, the same
+# notice goes to the owner once (overseer_owner_notice): the reported row
+# keeps every later pass from sending it again.
 #
 # The account fields come from this pass's existing `--check-marks` result,
 # never from the banner or from the requested recovery mode. Reserve refusal
 # reports the measured account without a reset promise. Actual wall recovery
-# reports a measured binding bucket reset where available. Authentication
-# failure has no usage reset. See ../references/overseer-session-events.md,
+# reports a measured binding bucket reset where available. A wall no usage
+# reset lifts names its remedy instead (overseer_unlifted_remedy). See ../references/overseer-session-events.md,
 # Recovery requests.
 overseer_recovery_blocked() { # ROW ROWS IDENTITY PANE WINDOW KIND
   local row="$1" rows="$2" identity="$3" pane="$4" window="$5"
@@ -3744,10 +3813,11 @@ overseer_recovery_blocked() { # ROW ROWS IDENTITY PANE WINDOW KIND
   OVERSEER_STOP=1
   local account="" resets=""
   [[ "$OVERSEER_MARK_READ" -ne 1 ]] || { account="$OVERSEER_MARK_ACCOUNT"; resets="$OVERSEER_MARK_RESETS"; }
-  local remedy="Start a fresh overseer by hand once an account qualifies."
-  if [[ "$OV_SOURCE" == auth || ( "$OV_SOURCE" == rows && "$SESSION_ROWS_WALL_KIND" == auth ) ]]; then
-    account="" resets=""
-    remedy="The login failed and has no usage reset. Sign in to an account, then start a fresh overseer by hand."
+  local remedy="Start a fresh overseer by hand once an account qualifies." unlifted
+  if unlifted="$(overseer_unlifted_remedy)"; then
+    # Login recovery skips the usage read, so no account mark names them.
+    ! overseer_auth_wall || { account="" resets=""; }
+    remedy="$unlifted Then start a fresh overseer by hand."
   elif [[ -n "$account" && -n "$resets" ]]; then
     remedy="Account $account has a measured binding bucket reset at $resets. Start a fresh overseer by hand once an account has room."
   fi
@@ -3755,6 +3825,7 @@ overseer_recovery_blocked() { # ROW ROWS IDENTITY PANE WINDOW KIND
     "$window" "$pane" "$remedy" > "$notice" \
     || { overseer_note overseer-notice-failed "channel=file"; return 0; }
   overseer_publish "$notice" "$record" "$errf"
+  overseer_owner_notice "$notice" "$errf" || true
   ow_message overseer-recovery-blocked "pane=$pane" \
     "account=${account:-unknown}" "resets=${resets:-none}" >&2
 }
@@ -3799,7 +3870,7 @@ overseer_relaunch_failed() { # ROW ROWS IDENTITY PANE WINDOW ATTEMPT STEP KIND
 #
 # OVERSEER_MARK_KEY is the answer's own key, `mark-reached`, `mark-unmeasured`
 # or `below-mark` for the `account-below-mark` line; the KIND, VALUE,
-# MARK, ACCOUNT and RESETS globals are its fields, empty where the line
+# MARK, ACCOUNT, RESETS and STATUS globals are its fields, empty where the line
 # carries none. Exit 1 means no judgement was made at all, the note already
 # said once, and nothing may be concluded from any of them.
 OVERSEER_MARK_KEY=""
@@ -3809,6 +3880,7 @@ OVERSEER_MARK_MARK=""
 OVERSEER_MARK_SUCCESSION=on
 OVERSEER_MARK_ACCOUNT=""
 OVERSEER_MARK_RESETS=""
+OVERSEER_MARK_STATUS=""
 OVERSEER_MARK_RESERVE_ONLY=false
 OVERSEER_MARK_READ=0
 OVERSEER_MARK_RC=1
@@ -3863,6 +3935,7 @@ overseer_marks_judge() {
   OVERSEER_MARK_SUCCESSION=on
   OVERSEER_MARK_ACCOUNT=""
   OVERSEER_MARK_RESETS=""
+  OVERSEER_MARK_STATUS=""
   OVERSEER_MARK_RESERVE_ONLY=false
   if [[ ! -x "$SUCCEED" ]]; then
     overseer_note overseer-mark-unjudged "path=$SUCCEED" "setting=OVERSEE_WATCH_SUCCEED"
@@ -3895,6 +3968,7 @@ overseer_marks_judge() {
       succession=*) OVERSEER_MARK_SUCCESSION="${field#succession=}" ;;
       account=*) OVERSEER_MARK_ACCOUNT="${field#account=}" ;;
       resets=*) OVERSEER_MARK_RESETS="${field#resets=}" ;;
+      status=*) OVERSEER_MARK_STATUS="${field#status=}" ;;
       reserve_only=true) OVERSEER_MARK_RESERVE_ONLY=true ;;
     esac
   done
@@ -4113,16 +4187,10 @@ overseer_context_gap() { # PANE IDENTITY GAP
 # stands as sent.
 overseer_gap_alert() { # PANE GAP
   local notice="$WORK_DIR/overseer-context-gap.txt" record="$WORK_DIR/overseer-context-gap.json"
-  local errf="$WORK_DIR/overseer-context-gap.err" refusal
+  local errf="$WORK_DIR/overseer-context-gap.err"
   printf 'overseer-context-unmeasured: the overseer in pane %s has recorded no context reading on two consecutive watch passes, gap=%s, so nothing judges its context mark and it can run into its context window with no handoff. The remedy for this gap is under overseer-context-unmeasured in the orch skill'"'"'s references/overseer-session-events.md.\n' \
     "$1" "$2" > "$notice" || { overseer_note overseer-notice-failed "channel=file"; return 1; }
-  if ! "$LANE_MAIL" notice --item overseer --to owner --file "$notice" >/dev/null 2>"$errf"; then
-    IFS= read -r refusal <"$errf" || refusal=""
-    case "$refusal" in
-      "lane-mail: owner-notice-repeated="*) ;;
-      *) overseer_note overseer-notice-failed "channel=owner"; return 1 ;;
-    esac
-  fi
+  overseer_owner_notice "$notice" "$errf" || return 1
   ol_fleet_log "$notice" "$record" "$errf" "$WORKFLOW_STATE" ${WORKFLOW_STATE_ARGS[@]+"${WORKFLOW_STATE_ARGS[@]}"} \
     || overseer_note overseer-notice-failed "channel=fleet-log"
   ow_message overseer-context-alerted "pane=$1" "gap=$2" >&2
@@ -4298,7 +4366,7 @@ overseer_judge() { # PANE
   case "$OV_STATE" in
     exited) OV_VERDICT=exited ;;
     walled)
-      if [[ "$OV_SOURCE" == auth || ( "$OV_SOURCE" == rows && "$SESSION_ROWS_WALL_KIND" == auth ) ]]; then
+      if overseer_auth_wall; then
         OV_VERDICT=walled
       elif [[ "$OV_SOURCE" == rows ]]; then
         if ! overseer_marks_judge || [[ "$OVERSEER_MARK_KEY" != below-mark ]]; then OV_VERDICT=walled
@@ -5038,8 +5106,10 @@ check_lanes() {
 # differently. The overseer's own mark judgement is a separate read. Each row is `<row key> TAB <row
 # value> TAB <fields>`, the key and value laid out with the rows above and
 # <fields> the text both the event and the roster print. `verdict` is
-# `lanes`'s own wall judgement against ORCH_LANE_MAX_PCT, so the threshold and
-# its default are read in one place. A read that failed or overran its ceiling
+# `lanes`'s own wall judgement against ORCH_LANE_MAX_PCT, or a grant's against
+# ORCH_LANE_CLOUD_CREDIT_FLOOR, so each threshold and its default are read in
+# one place. A Pi API grant is its own `pi` record, keyed apart from its
+# account's plan row. A read that failed or overran its ceiling
 # leaves ACCOUNT_ROSTER_RC non-zero, which the heartbeat reports rather than
 # printing no accounts.
 ACCOUNT_ROSTER=""
@@ -5184,8 +5254,9 @@ check_report() {
 # picks one. Every other verdict reads the accounts of the record's own host,
 # its `host` or `local` where it names none, as ORCH_LANE_HOST, since a
 # relaunch stays on that host and open-terminal judges it there: `unjudged`
-# where that host's `lanes list` failed; `queue` where it lists no account of
-# the harness; otherwise `lanes pick` for the record's harness and model
+# where that host's `lanes list` failed; `queue` where it lists no account
+# the pick would judge (`--help`, owed); otherwise `lanes pick` for the
+# record's harness and model
 # decides, the launcher's own judge: room is `queue`, a wall is `dated` until
 # the earliest reset that judgement names for its walled accounts, and
 # anything else is `unjudged`. One
@@ -5541,14 +5612,20 @@ verifying_read() { # SAFE_ITEMS
 # reading the provider's copy runs under, names each walled account's deciding
 # window and its reset, `until=-` where none states one. Exit 3 with none
 # walled is every account unmeasured, and any other exit a judgement that
-# failed, named on stderr: both are `unjudged`.
+# failed, named on stderr: both are `unjudged`. A listing holding no account
+# the pick would judge queues the item unasked; which accounts those are is
+# stated once, in `--help` under owed.
 owed_wall() { # HOST HARNESS MODEL
-  local host="$1" harness="$2" model="$3" errf="$WORK_DIR/owed-pick.err" rc=0 walled until
+  local host="$1" harness="$2" model="$3" errf="$WORK_DIR/owed-pick.err" rc=0 walled until billed pool
   local args=(pick --harness "$harness" --json)
   OWED_VERDICT="verdict=unjudged harness=$harness"
   owed_accounts "$host"
   [[ "$OWED_LISTING" != - ]] || return 0
-  if ! jq -e --arg h "$harness" 'any(.[]; .harness == $h)' <<<"$OWED_LISTING" >/dev/null 2>"$errf"; then
+  billed="$(lane_pick_harness "$harness" "$model")"
+  pool="$(lane_pick_pool "$harness" "$model")"
+  if ! jq -e --arg h "$billed" --arg pool "$pool" \
+    'any(.[]; .harness == $h and ((.pool == "api-credit") == ($pool == "api-credit")))' \
+    <<<"$OWED_LISTING" >/dev/null 2>"$errf"; then
     [[ ! -s "$errf" ]] || die owed-roster-invalid "$(cat "$errf")" "host=$host"
     OWED_VERDICT="verdict=queue"
     return 0

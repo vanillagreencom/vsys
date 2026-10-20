@@ -26,8 +26,8 @@
 # stderr to DEP_ERR.
 #
 # Requires, of a caller that runs its functions: SCRIPT_DIR (the orch scripts
-# directory), DEP_ERR (a file), HANDOFF (the brief's path), and lib/watch-pid.sh and lib/job-unit.sh
-# sourced by the caller. Sourcing it defines names and runs nothing. Sourced,
+# directory), DEP_ERR (a file), HANDOFF (the brief's path), and lib/watch-pid.sh
+# and lib/job-unit.sh sourced by the caller. Sourcing it defines names and runs nothing. Sourced,
 # never run.
 
 # COMMAND started through the orch job runner as NAME and the UTC second, with
@@ -35,18 +35,65 @@
 # current directory: a unit sends its command's output nowhere a caller
 # reads, so the redirection is the job's own first step, and the exec leaves
 # COMMAND the job's main process, so the job ends when it does. The record is
-# the runner file beside STATE. Returns 1 with JOB_UNIT_ERROR_KEY and
-# JOB_UNIT_ERROR set where the launch was refused.
+# a file of the job's own beside STATE, WATCH_JOB_RECORD, made by exclusive
+# creation and handed to COMMAND as OVERSEE_WATCH_JOB_RECORD; never
+# oversee-watch.runner itself, the stop route of the watch holding the claim
+# (references/watch-delivery.md), which a job that may never claim must not
+# take from that watch. The caller moves the record there once its job's watch
+# claims, or gives the job up through watch_job_abandon. Returns 1 with
+# JOB_UNIT_ERROR_KEY and JOB_UNIT_ERROR set where the launch was refused, and
+# WATCH_JOB_STOP the fields of the stop a refused unit's launch took
+# (watch_job_abandon), which a refusal carries before the launch's error.
 watch_job_launch() { # NAME STATE OUT ERR COMMAND...
-  local name="$1" state="$2" out="$3" err="$4"
+  local name="$1" state="$2" out="$3" err="$4" key error
   shift 4
+  WATCH_JOB_RECORD="" WATCH_JOB_STOP=()
   if ! watch_pid_paths "$state"; then
     JOB_UNIT_ERROR_KEY=state-path JOB_UNIT_ERROR="path=$state"
     return 1
   fi
-  job_unit_main launch "$name-$(date -u +%Y%m%dT%H%M%SZ)" "$WATCH_RUNNER_FILE" \
-    -- sh -c 'out=$1 err=$2; shift 2; exec "$@" >>"$out" 2>>"$err"' sh "$out" "$err" "$@" \
-    >/dev/null 2>"$DEP_ERR"
+  if ! WATCH_JOB_RECORD="$(mktemp "$WATCH_RUNNER_FILE.XXXXXX" 2>"$DEP_ERR")"; then
+    WATCH_JOB_RECORD=""
+    JOB_UNIT_ERROR_KEY=record-unwritable JOB_UNIT_ERROR="path=$WATCH_RUNNER_FILE.XXXXXX"
+    return 1
+  fi
+  if ! job_unit_main launch "$name-$(date -u +%Y%m%dT%H%M%SZ)" "$WATCH_JOB_RECORD" \
+      -- sh -c 'out=$1 err=$2; shift 2; exec "$@" >>"$out" 2>>"$err"' sh "$out" "$err" \
+      env OVERSEE_WATCH_JOB_RECORD="$WATCH_JOB_RECORD" "$@" >/dev/null 2>"$DEP_ERR"; then
+    # A unit's launch can fail on the client's side once the manager has
+    # taken the unit (lib/job-unit.sh § job_unit_launch), so that job is
+    # given up as any started job is. A failed setsid fork started nothing.
+    if [[ "$JOB_UNIT_RUNNER" == systemd && "$JOB_UNIT_ERROR_KEY" == launch-failed ]]; then
+      key="$JOB_UNIT_ERROR_KEY" error="$JOB_UNIT_ERROR"
+      watch_job_abandon "$WATCH_JOB_RECORD" 0 || true
+      JOB_UNIT_ERROR_KEY="$key" JOB_UNIT_ERROR="$error"
+    else
+      rm -f -- "$WATCH_JOB_RECORD"
+    fi
+    WATCH_JOB_RECORD=""
+    return 1
+  fi
+}
+
+# Give up a job watch_job_launch started from RECORD whose watch may still
+# run: stop it through RECORD (lib/job-unit.sh § job_unit_stop_job), PID being
+# the pid its watch added there or 0 where it added none, and remove RECORD
+# only where that stop finds the job gone, so a job that may run keeps its one
+# stop route. Sets WATCH_JOB_STOP to the fields a refusal carries:
+# stop=stopped or stop=ended, RECORD removed; or stop=failed record=RECORD
+# stop-error=KEY and the stop's fields, RECORD kept, and returns 1. A setsid
+# job whose watch added no pid has no group to stop, so its stop fails.
+watch_job_abandon() { # RECORD PID
+  local rc=0
+  job_unit_stop_job "$1" "$2" '*oversee-watch*' || rc=$?
+  case "$rc" in
+    0) WATCH_JOB_STOP=(stop=stopped) ;;
+    1) WATCH_JOB_STOP=(stop=ended) ;;
+    *)
+      WATCH_JOB_STOP=(stop=failed "record=$1" "stop-error=$JOB_UNIT_ERROR_KEY" "$JOB_UNIT_ERROR")
+      return 1 ;;
+  esac
+  rm -f -- "$1"
 }
 
 # The watch serving PREDECESSOR handed to SUCCESSOR: the repeat-mode watch
@@ -73,7 +120,9 @@ watch_job_launch() { # NAME STATE OUT ERR COMMAND...
 #                      started where none ran, or where --closed replaced
 #                      the live one stopped= names
 #   1  watch-restart-failed step=state-path, the detail in DEP_ERR, or
-#                      step=helper pid=<N> error=<key> and the runner's error,
+#                      step=helper pid=<N> [stop fields] error=<key> and the
+#                      runner's error, the stop fields watch_job_abandon's
+#                      where the runner refused a unit it may have started,
 #                      or watch_start's: the caller refuses launch before
 #                      stopping its pane
 watch_handover() { # [--closed] PREDECESSOR SUCCESSOR LANE_VAR LANE_HOME HARNESS [FLAG...]
@@ -125,7 +174,8 @@ watch_handover() { # [--closed] PREDECESSOR SUCCESSOR LANE_VAR LANE_HOME HARNESS
       env HANDOFF="$HANDOFF" "$SCRIPT_DIR/oversee-succeed" --watch-restart "$state" "${@:1:5}" \
       "$cwd" "$script" "$argv_count" ${argv[@]+"${argv[@]}"} "${@:6}"; then
     WATCH_HANDOVER_KEY=watch-restart-failed
-    WATCH_HANDOVER_FIELDS=(step=helper "pid=$old" "error=$JOB_UNIT_ERROR_KEY" "$JOB_UNIT_ERROR")
+    WATCH_HANDOVER_FIELDS=(step=helper "pid=$old" ${WATCH_JOB_STOP[@]+"${WATCH_JOB_STOP[@]}"}
+      "error=$JOB_UNIT_ERROR_KEY" "$JOB_UNIT_ERROR")
     return 1
   fi
   WATCH_HANDOVER_KEY=watch-handover
@@ -136,20 +186,37 @@ watch_handover() { # [--closed] PREDECESSOR SUCCESSOR LANE_VAR LANE_HOME HARNESS
 # handoff, harness and flags. A stopped watch with no readable command uses
 # the workflow default and reports the unread path. replace=PID replays as
 # replay does and hands the watch OVERSEE_WATCH_REPLACE=PID, the live watch
-# its start may stop and take over.
+# its start may stop and take over. WATCH_HANDOFF_KEEP set keeps the retained
+# command's --handoff where it names one, in place of HANDOFF.
 # Wait for its claim before reporting success: an accepted job whose command
-# exits during initialization has not left a watch running. The claim is the
+# exits during initialization, a GitHub authentication refusal among them
+# (`oversee-watch` § repeat_watch), has not left a watch running. The wait
+# ends on the watch's own outcome: its claim, or its exit, read off the pid
+# it adds to its job's record (lib/watch-pid.sh § watch_job_pid_write), so a
+# start that refuses is reported as soon as it exits and one still
+# authenticating is waited out. Only a job that adds no pid is bounded here:
+# WATCH_STOP_SECS, twice that for a replay, whose start can first stop the
+# watch it takes over (`oversee-watch` § watch_claim). The job's record
+# becomes the runner record once its watch claims, so the live watch's stop
+# route stands until it is replaced. A job whose watch exited loses its
+# record; any other give-up, an unknown read, no pid by the bound or a record
+# that cannot become the runner record, may leave the job running, so the job
+# is given up through its own record (watch_job_abandon), whose stop fields
+# the refusal carries before the runner line.
+# The claim is the
 # started watch's only where its pid differs from the claim live before the
 # launch, besides naming origin succession and PANE: a new tmux server can
 # hand the replaced watch's pane id to PANE itself, and that watch, started
 # here once before, holds a record whose origin and pane both match.
 watch_start() { # fresh|replay|replace=PID STATE PANE LANE_VAR LANE_HOME HARNESS [FLAG...]
-  local mode="$1" state="$2" pane="$3" var="$4" home="$5" harness="$6" deadline runner rc
+  local mode="$1" state="$2" pane="$3" var="$4" home="$5" harness="$6" deadline runner rc record job refusal=()
   shift 6
-  local flags=() harness_args=() since="" word skip="" argv=()
+  local flags=() harness_args=() account=() since="" word skip="" argv=() handoff="$HANDOFF" kept=""
   local cwd="${WATCH_CWD:-}" script="${WATCH_SCRIPT:-}" launch_cwd="$PWD" name=watch-start replace=() prior=""
   [[ $# -eq 0 ]] || flags=(-- "$@")
   [[ -z "$harness" ]] || harness_args=(--harness "$harness")
+  # Account-free Pi launches keep the caller's credential/provider environment.
+  [[ -z "$var" || -z "$home" ]] || account=("$var=$home")
   case "$mode" in
     fresh)
       # The first lane is the fleet's start; an empty fleet starts now.
@@ -164,13 +231,19 @@ watch_start() { # fresh|replay|replace=PID STATE PANE LANE_VAR LANE_HOME HARNESS
       name=watch-restart
       [[ "$mode" != replace=* ]] || replace=("OVERSEE_WATCH_REPLACE=${mode#replace=}")
       for word in ${WATCH_ARGV[@]+"${WATCH_ARGV[@]}"}; do
-        if [[ -n "$skip" ]]; then skip=""; continue; fi
+        if [[ -n "$skip" ]]; then
+          [[ "$skip" != handoff ]] || kept="$word"
+          skip=""
+          continue
+        fi
         case "$word" in
-          --handoff|--harness) skip=value ;;
-          --handoff=*) ;;
+          --handoff) skip=handoff ;;
+          --harness) skip=value ;;
+          --handoff=*) kept="${word#--handoff=}" ;;
           *) argv+=("$word") ;;
         esac
-      done ;;
+      done
+      [[ -z "${WATCH_HANDOFF_KEEP:-}" || -z "$kept" ]] || handoff="$kept" ;;
     *) WATCH_HANDOVER_KEY=watch-restart-failed WATCH_HANDOVER_FIELDS=(step=mode); return 1 ;;
   esac
   rc=0
@@ -186,10 +259,11 @@ watch_start() { # fresh|replay|replace=PID STATE PANE LANE_VAR LANE_HOME HARNESS
   fi
   rc=0
   if ! watch_job_launch "$name" "$state" "$WATCH_LOG_FILE" "$WATCH_ERR_FILE" \
-      env TMUX_PANE="$pane" "$var=$home" OVERSEE_WATCH_ORIGIN=succession ${replace[@]+"${replace[@]}"} \
-      "$script" ${argv[@]+"${argv[@]}"} --handoff "$HANDOFF" ${harness_args[@]+"${harness_args[@]}"} ${flags[@]+"${flags[@]}"}; then
+      env TMUX_PANE="$pane" ${account[@]+"${account[@]}"} OVERSEE_WATCH_ORIGIN=succession ${replace[@]+"${replace[@]}"} \
+      "$script" ${argv[@]+"${argv[@]}"} --handoff "$handoff" ${harness_args[@]+"${harness_args[@]}"} ${flags[@]+"${flags[@]}"}; then
     WATCH_HANDOVER_KEY=watch-restart-failed
-    WATCH_HANDOVER_FIELDS=(step=start "error=$JOB_UNIT_ERROR_KEY" "$JOB_UNIT_ERROR")
+    WATCH_HANDOVER_FIELDS=(step=start ${WATCH_JOB_STOP[@]+"${WATCH_JOB_STOP[@]}"}
+      "error=$JOB_UNIT_ERROR_KEY" "$JOB_UNIT_ERROR")
     rc=1
   fi
   if ! cd -- "$launch_cwd" 2>>"$DEP_ERR"; then
@@ -197,25 +271,45 @@ watch_start() { # fresh|replay|replace=PID STATE PANE LANE_VAR LANE_HOME HARNESS
     return 1
   fi
   [[ "$rc" -eq 0 ]] || return 1
-  runner="$JOB_UNIT_LINE"
-  # A replay's start can stop the watch it takes over before it claims
-  # (`oversee-watch` § watch_claim), a stop bounded by WATCH_STOP_SECS, so it
-  # gets that bound on top of its own.
+  runner="$JOB_UNIT_LINE" record="$WATCH_JOB_RECORD"
   deadline=$((SECONDS + WATCH_STOP_SECS))
   [[ "$mode" == fresh ]] || deadline=$((SECONDS + 2 * WATCH_STOP_SECS))
   while :; do
     rc=0
     watch_pid_live "$state" 2>"$DEP_ERR" || rc=$?
     if [[ "$rc" -eq 0 && "$WATCH_PID" != "$prior" && "$WATCH_ORIGIN" == succession && "$WATCH_PANE" == "$pane" ]]; then
-      WATCH_HANDOVER_KEY=watch-started
-      WATCH_HANDOVER_FIELDS=("pid=$WATCH_PID" "pane=$pane" "log=$WATCH_LOG_FILE" "err=$WATCH_ERR_FILE" "$runner")
-      return 0
+      if mv -f -- "$record" "$WATCH_RUNNER_FILE" 2>"$DEP_ERR"; then
+        WATCH_HANDOVER_KEY=watch-started
+        WATCH_HANDOVER_FIELDS=("pid=$WATCH_PID" "pane=$pane" "log=$WATCH_LOG_FILE" "err=$WATCH_ERR_FILE" "$runner")
+        return 0
+      fi
+      refusal=(step=runner "pid=$WATCH_PID")
+      break
     fi
-    if [[ "$rc" -gt 1 || "$SECONDS" -ge "$deadline" ]]; then
-      WATCH_HANDOVER_KEY=watch-restart-failed
-      WATCH_HANDOVER_FIELDS=(step=claim "log=$WATCH_ERR_FILE" "$runner")
-      return 1
+    # A job that has added no pid runs until its bound.
+    job=running
+    if [[ "$rc" -gt 1 ]] || ! watch_job_pid_read "$record" 2>"$DEP_ERR"; then
+      job=unknown
+    elif [[ -n "$WATCH_JOB_PID" ]]; then
+      rc=0
+      watch_pid_runs "$WATCH_JOB_PID" 2>"$DEP_ERR" || rc=$?
+      case "$rc" in 0) ;; 1) job=exited ;; *) job=unknown ;; esac
+    elif [[ "$SECONDS" -ge "$deadline" ]]; then
+      job=unpublished
     fi
-    sleep 0.1
+    case "$job" in
+      running) sleep 0.1 ;;
+      exited)
+        rm -f -- "$record"
+        WATCH_HANDOVER_KEY=watch-restart-failed
+        WATCH_HANDOVER_FIELDS=(step=claim "log=$WATCH_ERR_FILE" "$runner")
+        return 1 ;;
+      *) refusal=(step=claim "log=$WATCH_ERR_FILE"); break ;;
+    esac
   done
+  watch_job_pid_read "$record" 2>>"$DEP_ERR" || WATCH_JOB_PID=""
+  watch_job_abandon "$record" "${WATCH_JOB_PID:-0}" || true
+  WATCH_HANDOVER_KEY=watch-restart-failed
+  WATCH_HANDOVER_FIELDS=("${refusal[@]}" "${WATCH_JOB_STOP[@]}" "$runner")
+  return 1
 }
