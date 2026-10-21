@@ -81,6 +81,16 @@ def lane_norm: ascii_downcase | gsub("[^a-z0-9]"; "");
 # in max_binding, which must stay.
 def lane_measured: (.status == "ok" or .status == "rate_limited");
 
+# `plan_ended`, the status of an account whose plan no longer admits a launch:
+# a provider row reading its copy refused for the organization, or a usage
+# refusal on this machine that the account profile confirms as an ended plan.
+# No reset and no later read brings room back, so the account binds as a full
+# wall, bucket `plan`, and never as a reading nobody made: an unmeasured
+# account leaves a standing mark unjudged for as long as the account stays
+# ended, where a wall moves every judge onto another account.
+def lane_ended: .status == "plan_ended";
+def ended_wall: {bucket: "plan", label: null, pct: 100, resets_at: null};
+
 # Whether a provider harness=pi row is an Anthropic API grant
 # (schemas/lane-host.md, accounts): it carries the grant in credit fields, or
 # it is an unread grant whose detail names an api-credit- cause. A raw row and
@@ -125,9 +135,12 @@ def model_binding($model):
 # read as room. With no model named, this bucket decides as it always did.
 #
 # A record whose usage could not be read answers null whatever its other fields
-# say: a window nobody read is not an empty one.
+# say: a window nobody read is not an empty one. A `plan_ended` record is the
+# one exception: its refused read confirmed the plan ended, so it answers
+# ended_wall (lane_ended above).
 def binding_bucket:
-  if ((lane_measured | not) or .headroom_pct == null
+  if lane_ended then ended_wall
+  elif ((lane_measured | not) or .headroom_pct == null
       or .binding_bucket == null) then null
   else {bucket: .binding_bucket,
         label: (if .binding_bucket == "model" then ([.model_buckets[]] | max_by(.pct).label // null) else null end),
@@ -136,7 +149,8 @@ def binding_bucket:
   end;
 
 def lane_binding($model):
-  if (lane_measured | not) then null
+  if lane_ended then ended_wall
+  elif (lane_measured | not) then null
   elif $model != "" then model_binding($model)
   else binding_bucket
   end;
@@ -370,13 +384,16 @@ def credit_room($credit_floor):
 # spend a reserve-only refusal or a fully reserved window seat. Pool accounts
 # spend no plan window; explicit cloud-credit mode is judged by with_lane_tier.
 # A credit choice drops the spent window forecast, which no longer binds it.
+# An ended plan is walled ahead of both: no credit spends it, and a seat on it
+# never regains the room a seat-reserve verdict waits for.
 def with_lane_seat_verdict($wall; $max; $credit_floor; $seats; $reserve):
   . + {_seat: (if .harness != "copilot" and .harness != "pi"
                   and ((._id // .config_dir) as $d | any($seats[]; . == $d)) then 1 else 0 end)}
   | ($wall | wall_verdict($max)) as $ordinary
   | (if ._seat == 1 then [$max, 100 - $reserve] | min else $max end) as $limit
   | ($wall | wall_verdict($limit)) as $plan
-  | (if $ordinary == "walled" and credit_room($credit_floor) and (._seat == 0 or $reserve < 100) then "credits"
+  | (if lane_ended then "walled"
+     elif $ordinary == "walled" and credit_room($credit_floor) and (._seat == 0 or $reserve < 100) then "credits"
      elif ._seat == 1 and $plan == "walled" then "seat-reserve"
      else $plan end) as $kind
   | if $kind == "credits"
@@ -395,9 +412,11 @@ def with_lane_verdict($wall; $max; $credit_floor):
 # the pick and are no record of it: _tier, _expires (E, 0 outside tier 0) and
 # _score (S); and _credit_unread, a credit account whose reading supplies
 # no grant to judge. API grants keep unread provider rows unmeasured. A read
-# API grant also states headroom_pct and binding_bucket, since the plan
-# windows beside it are not what it spends; its binding_resets_at is null,
-# since a grant that ends returns nothing.
+# grant, cloud credit or API, also states headroom_pct and binding_bucket,
+# since the plan windows beside it are not what it spends; its
+# binding_resets_at is null, since a grant that ends returns nothing. `lanes
+# list` judges every grant it lists here too, so the listing and the pick
+# cannot disagree about a grant at the floor.
 def with_lane_tier($pool; $cloud_floor; $retire; $now):
   (.credits // {}) as $c
   | ([($c.resets_at | utc_stamp | reset_epoch),
@@ -405,7 +424,7 @@ def with_lane_tier($pool; $cloud_floor; $retire; $now):
      | map(select(. != null)) | min) as $e
   | ($c.unit == "usd" and ($c.remaining_dollars | type) == "number" and ($c.limit_dollars | type) == "number"
      and $e != null) as $read
-  | (if $pool == "api-credit" and $read and lane_measured and $c.limit_dollars > 0
+  | (if ($pool == "cloud-credit" or ($pool == "api-credit" and lane_measured)) and $read and $c.limit_dollars > 0
      then . + {headroom_pct: (if $e > $now then (100 * $c.remaining_dollars / $c.limit_dollars | floor) else 0 end),
                binding_bucket: "credits", binding_resets_at: null}
      else . end)

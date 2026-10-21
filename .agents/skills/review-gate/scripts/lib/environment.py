@@ -1,4 +1,4 @@
-"""Environment judgments shared by refresh adoption and the standard report."""
+"""Environment judgments for refresh adoption."""
 
 import json
 import os
@@ -12,19 +12,17 @@ def environment_policy(branch, name, environments, policies=None):
         raise ValueError("environments")
     selected = [row for row in environments if row["name"] == name]
     if len(selected) != 1:
-        return {"present": "no", "cause": "missing", "value": "absent"}
+        return {"cause": "missing"}
     policy = selected[0].get("deployment_branch_policy")
     if not isinstance(policy, dict) or policy.get("custom_branch_policies") is not True or policy.get("protected_branches") is not False:
-        kind = "unrestricted" if policy is None else "protected-branches" if isinstance(policy, dict) and policy.get("protected_branches") is True else "malformed"
-        return {"present": "yes", "cause": "branch-policy", "value": kind}
+        return {"cause": "branch-policy"}
     if policies is None:
-        return {"present": "yes", "cause": "pending", "value": "custom"}
+        return {"cause": "pending"}
     if not isinstance(policies, list) or not all(isinstance(row, dict) and isinstance(row.get("name"), str) and isinstance(row.get("type", "branch"), str) for row in policies):
         raise ValueError("branch-policies")
-    observed = "custom:" + ",".join(row.get("type", "branch") + ":" + row["name"] for row in policies)
     if len(policies) != 1 or policies[0].get("name") != branch or policies[0].get("type", "branch") != "branch":
-        return {"present": "yes", "cause": "branch-policy", "value": observed}
-    return {"present": "yes", "cause": "", "value": observed}
+        return {"cause": "branch-policy"}
+    return {"cause": ""}
 
 
 def environment_secrets(names, secrets):
@@ -35,29 +33,22 @@ def environment_secrets(names, secrets):
         cause = "secrets"
     else:
         cause = ""
-    return {"cause": cause, "held": ";".join(name for name in names if name in held),
-            "missing": ";".join(name for name in names if name not in held)}
+    return {"cause": cause, "held": ";".join(name for name in names if name in held)}
 
 
 def secret_placement(names, scopes):
-    """Judge named secret copies; each caller supplies the scopes it reads."""
-    outside, unreadable, causes = [], [], []
+    """Judge named secret copies."""
+    outside, unreadable = [], []
     for row in scopes:
         label = row["scope"]
-        if "error" in row:
-            unreadable.append(label)
-            causes.append(label + ": " + row["error"])
-            continue
         try:
             held = environment_secrets(names, row["secrets"])["held"]
         except ValueError:
             unreadable.append(label)
-            causes.append(label + ": the response is not a list of named secrets")
             continue
         outside.extend(label + ":" + name for name in held.split(";") if name)
     return {"cause": "read" if unreadable else "secrets-outside" if outside else "",
-            "outside": ";".join(outside), "unreadable": ",".join(unreadable),
-            "causes": "\n".join(causes)}
+            "outside": ";".join(outside), "unreadable": ",".join(unreadable)}
 
 
 def gh_api(*arguments):
@@ -135,8 +126,8 @@ def validate_environment(repository, config):
         # GitHub's same-name environment precedence cannot prevent an
         # outside value from filling a name absent from that environment.
         # Both token steps read fixed names, including the FLEET issue pair.
-        # The standard report owns the placement judgment. Only Actions
-        # repository/organization secrets can reach these caller mappings.
+        # Only Actions repository/organization secrets can reach these
+        # caller mappings.
         names = ["KENDEX_APP_ID", "KENDEX_APP_PRIVATE_KEY",
                  "FLEET_GH_APP_ID", "FLEET_GH_APP_PRIVATE_KEY"] if "pairs" in config else config["names"]
         namespaces = [("repository", "repos/" + repository + "/actions/secrets")]
@@ -149,20 +140,3 @@ def validate_environment(repository, config):
     except ValueError:
         refuse("read")
 
-
-if __name__ == "__main__":
-    # validate-standard supplies API data through stdin and consumes JSON.
-    try:
-        data = json.load(sys.stdin)
-        if sys.argv[1] == "policy":
-            result = environment_policy(sys.argv[2], sys.argv[3], data["environments"], data.get("policies"))
-        elif sys.argv[1] == "secrets":
-            result = environment_secrets(sys.argv[2].split(), data)
-        elif sys.argv[1] == "placement":
-            result = secret_placement(sys.argv[2].split(), data)
-        else:
-            raise ValueError("operation")
-        print(json.dumps(result))
-    except (ValueError, KeyError, TypeError) as error:
-        print("review-gate-error=environment-data type=" + type(error).__name__, file=sys.stderr)
-        raise SystemExit(2) from error
