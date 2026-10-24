@@ -584,8 +584,22 @@ OL_WALK_SOURCE_HARNESS="" OL_WALK_SOURCE_FLAGS="" OL_WALK_SOURCE_ROWS=0 OL_WALK_
 OL_WALK_KEEP_UNMEASURED="" OL_KEPT_UNMEASURED=0
 OL_CHOSEN="" OL_HARNESS="" OL_MODEL="" OL_MODEL_CLASS="" OL_EFFORT="" OL_PICK_MODEL="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none
 OL_WALK_SKIPS=() OL_FIELDS=()
+# Preserve the picker's account verdicts before a later entry replaces its
+# record and stderr. The walk's callers print these tab-separated fields.
+ol_walk_pick_skips() { # ENTRY PICK_RECORD
+  local rows lane reason tab=$'\t'
+  rows="$(jq -r 'if (.exclusions // [] | length) == 0 then [["none", "no-lane-qualifies"]]
+    else [.exclusions[] | [.config_dir, .reason]] end | .[] | @tsv' <<<"$2" 2>>"$DEP_ERR")" || {
+    OL_REASON=lanes-failed OL_FIELDS=("entry=$1" step=exclusion-record)
+    return 1
+  }
+  while IFS=$'\t' read -r lane reason; do
+    OL_WALK_SKIPS+=("successor-lane-excluded${tab}entry=$1${tab}lane=$lane${tab}reason=$reason")
+  done <<<"$rows"
+}
+
 ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
-  local trigger="$1" exclude="$2" entry permitted_entry rc count deprecated_entry kept model_line tab=$'\t'
+  local trigger="$1" exclude="$2" entry permitted_entry rc count deprecated_entry kept model_line refused_record tab=$'\t'
   shift 2
   OL_CHOSEN="" OL_LANE_DIR="" OL_FALLBACK_WALKED=none OL_WALK_SKIPS=() OL_FIELDS=() OL_KEPT_UNMEASURED=0
   for entry in "$@"; do
@@ -639,8 +653,12 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
     case "$rc" in
       0) ;;
       3)
-        [[ -n "$OL_WALK_KEEP_UNMEASURED" && "$OL_HARNESS" == "$OL_WALK_CALLER_HARNESS" \
-          && "$OL_ACCOUNT_HARNESS" == "$OL_WALK_KEEP_UNMEASURED" ]] || continue
+        refused_record="$OL_PICK_RECORD"
+        if [[ -z "$OL_WALK_KEEP_UNMEASURED" || "$OL_HARNESS" != "$OL_WALK_CALLER_HARNESS" \
+          || "$OL_ACCOUNT_HARNESS" != "$OL_WALK_KEEP_UNMEASURED" ]]; then
+          ol_walk_pick_skips "$entry" "$refused_record" || return 1
+          continue
+        fi
         # A sweep can recover an earlier failed usage fetch. The named pick
         # must still be unmeasured, and a retired account's unmeasured record
         # is not admission: the account policy owns that separate question.
@@ -648,14 +666,14 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
         ol_lanes "$OL_ACCOUNT_HARNESS" check "$OL_WALK_CALLER_LANE" >/dev/null || rc=$?
         case "$rc" in
           0) ;;
-          4) continue ;;
+          4) ol_walk_pick_skips "$entry" "$refused_record" || return 1; continue ;;
           *) OL_REASON=lanes-failed OL_FIELDS=("entry=$entry" "exit=$rc" step=retained-policy); return 1 ;;
         esac
         rc=0
         ol_pick_record "$OL_HARNESS" "$OL_PICK_MODEL" "$trigger" "" "$OL_WALK_CALLER_LANE" || rc=$?
         case "$rc" in
           5) ;;
-          0|3|4|7) continue ;;
+          0|3|4|7) ol_walk_pick_skips "$entry" "$refused_record" || return 1; continue ;;
           *) OL_REASON=lanes-failed OL_FIELDS=("entry=$entry" "exit=$rc" step=retained-account); return 1 ;;
         esac
         OL_PICKED_DIR="$OL_WALK_CALLER_LANE" kept=1
@@ -671,7 +689,10 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       continue
     fi
     if (( OL_WALK_SUCCESSOR_BOUND > 0 )); then
-      [[ -n "$OL_PICKED_DIR" ]] || continue
+      if [[ -z "$OL_PICKED_DIR" ]]; then
+        OL_WALK_SKIPS+=("successor-count-unmeasured${tab}entry=$entry${tab}lane=none")
+        continue
+      fi
       rc=0
       ol_pick_record "$OL_HARNESS" "$OL_PICK_MODEL" "$trigger" "$OL_PICKED_DIR" || rc=$?
       case "$rc" in
@@ -682,7 +703,10 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
       case "$count" in
         '' | *[!0-9]*) OL_REASON=lanes-failed OL_FIELDS=("entry=$entry" step=successor-count); return 1 ;;
       esac
-      if (( count > 0 && count + 1 <= OL_WALK_SUCCESSOR_BOUND )); then continue; fi
+      if (( count > 0 && count + 1 <= OL_WALK_SUCCESSOR_BOUND )); then
+        OL_WALK_SKIPS+=("successor-count-bound${tab}entry=$entry${tab}lane=$OL_PICKED_DIR${tab}qualifying=$((count + 1))${tab}bound=$OL_WALK_SUCCESSOR_BOUND")
+        continue
+      fi
     fi
     OL_LANE_DIR="$OL_PICKED_DIR" OL_CHOSEN="$entry" OL_KEPT_UNMEASURED="$kept"
     ol_model_line "$model_line"
@@ -702,25 +726,26 @@ ol_walk() { # TRIGGER EXCLUDE_DIR ENTRY...
 # transferable posture (lib/lane-launch.sh §
 # launch_choice_permission_transferable), entry-permission-untransferable
 # where not; with OL_WALK_SOURCE_ROWS 1, a judgement handed no permission
-# words, the source row naming a transferable posture, and a skip says
-# nothing. So no overseer posture crosses to or from pi. A
+# words, the source row naming a transferable posture. Permission skips name
+# no account because they precede its pick. So no overseer posture crosses to
+# or from pi. A
 # numeric entry of another harness than its source is skipped the same way,
 # with `model=` naming the caller's model: that model is spelled for the
 # source harness (copilot's `claude-opus-5.5` is claude's `claude-opus-5-5`),
 # and no table here translates one harness's spelling into another's.
 ol_entry_permitted() { # ENTRY
-  local tab=$'\t' row posture
+  local tab=$'\t' row posture permission
   row="$(launch_choice_row "$OL_HARNESS")"
+  permission="$(launch_choice_permission_write "$OL_HARNESS")" || permission=none
   IFS='|' read -r _ _ _ _ _ posture _ <<<"$row"
   if [[ -z "$OL_WALK_SOURCE_HARNESS" ]]; then
     [[ "$posture" != no-word ]] && launch_choice_permission_write "$OL_HARNESS" >/dev/null && return 0
-    OL_WALK_SKIPS+=("entry-permission-unwritable${tab}entry=$1${tab}harness=$OL_HARNESS")
+    OL_WALK_SKIPS+=("entry-permission-unwritable${tab}entry=$1${tab}harness=$OL_HARNESS${tab}lane=none")
     return 1
   fi
   [[ "$OL_HARNESS" != "$OL_WALK_SOURCE_HARNESS" ]] || return 0
   if [[ "$OL_ENTRY_DEPRECATED" == true && "$1" =~ :[1-9][0-9]*: ]]; then
-    (( OL_WALK_SOURCE_ROWS )) \
-      || OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS${tab}model=${OL_MODEL:-none}")
+    OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS${tab}model=${OL_MODEL:-none}${tab}word=${permission:-none}${tab}lane=none")
     return 1
   fi
   if [[ "${PREFERENCE_ACTIVE:-false}" == true && "$posture" == no-word ]] \
@@ -734,8 +759,7 @@ ol_entry_permitted() { # ENTRY
       return 0
     fi
   fi
-  (( OL_WALK_SOURCE_ROWS )) \
-    || OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS")
+  OL_WALK_SKIPS+=("entry-permission-untransferable${tab}entry=$1${tab}source=$OL_WALK_SOURCE_HARNESS${tab}target=$OL_HARNESS${tab}word=${permission:-none}${tab}lane=none")
   return 1
 }
 
@@ -761,12 +785,18 @@ ol_entry_permitted() { # ENTRY
 # could not be read, and its fields in OL_FIELDS.
 OL_FLAGS=()
 ol_launch_flags() { # [--question-off] HARNESS MODEL EFFORT PICK_MODEL SOURCE [FLAG...]
-  local question=() words lead_model
+  local question=() words lead_model permission
   if [[ "$1" == --question-off ]]; then question=(--question-off); shift; fi
   local harness="$1" model="$2" effort="$3" pick_model="$4" source="$5"
   shift 5
   OL_FLAGS=() OL_FIELDS=()
   OL_REASON=launch-choice-failed
+  # open-terminal owns lane preference admission; this requirement is for overseers.
+  if [[ "${PREFERENCE_ACTIVE:-false}" != true && "$harness" == "$source" ]] \
+    && ! launch_choice_permission_present "$source" "$*"; then
+    permission="$(launch_choice_permission_write "$harness")" && [[ -z "$permission" ]] \
+      || { OL_FIELDS=(reason=permission-unrecorded "harness=$harness" "word=${permission:-none}"); return 1; }
+  fi
   words="$(launch_choice_write "$harness" "$model" "$effort")" || { OL_FIELDS=("harness=$harness"); return 1; }
   launch_choice_shell_words "$words" || return 1
   OL_FLAGS=(${LAUNCH_CHOICE_ARGV[@]+"${LAUNCH_CHOICE_ARGV[@]}"})
@@ -914,18 +944,21 @@ ol_command_line() { # [--brief TEXT] [--resume ID] HARNESS HANDOFF LANE_DIR LAUN
     || OL_IDENTITY=""
 }
 
-# Read the command ol_command_line writes. Its Claude argv ends with one
-# prompt, after the fixed session name. Prefix environment words stay outside
+# Read the command ol_command_line writes. Its argv ends with one prompt,
+# positional or Copilot's interactive option. Prefix environment words stay outside
 # the returned flags. The producer's handoff prompt also supplies its bound
 # destination; an arbitrary --brief has none. No command text is evaluated.
 OL_COMMAND_FLAGS=() OL_COMMAND_MODEL="" OL_COMMAND_HANDOFF="" OL_COMMAND_CWD="" OL_COMMAND_HANDOFF_FILE=""
-ol_command_read() { # HARNESS LINE
-  local i end prompt handoff=""
+ol_command_read() { # HARNESS LINE [LAUNCH_HOME]
+  local i end prompt handoff="" form=prefix
   OL_COMMAND_FLAGS=() OL_COMMAND_MODEL="" OL_COMMAND_HANDOFF="" OL_COMMAND_CWD="" OL_COMMAND_HANDOFF_FILE=""
+  # Resolve account executables through the same judge that rendered the line.
+  if [[ "$1" != claude ]]; then
+    form="$(lane_launch_form "$1 " "$1" "${3:-}")" || return 1
+  fi
   launch_choice_shell_words "$2" || return 1
   [[ ${#LAUNCH_CHOICE_ARGV[@]} -gt 0 ]] || return 1
   end=$((${#LAUNCH_CHOICE_ARGV[@]} - 1))
-  [[ "$1" == claude ]] || return 1
   prompt="${LAUNCH_CHOICE_ARGV[end]}"
   if [[ "$prompt" == "$OL_HANDOFF_PROMPT"* ]]; then
     handoff="${prompt#"$OL_HANDOFF_PROMPT"}"
@@ -937,15 +970,57 @@ ol_command_read() { # HARNESS LINE
     # Recovery must supply a path the public succession and watch can accept.
     if [[ "$handoff" =~ ^[A-Za-z0-9._/-]+$ ]]; then OL_COMMAND_HANDOFF="$handoff"; fi
   fi
-  for ((i = 0; i + 1 < end; i++)); do
-    [[ "${LAUNCH_CHOICE_ARGV[i]}" == -n && "${LAUNCH_CHOICE_ARGV[i+1]}" == overseer ]] || continue
-    i=$((i + 2))
+  for ((i = 0; i < end; i++)); do
+    if [[ "$1" == claude ]]; then
+      (( i + 1 < end )) || continue
+      [[ "${LAUNCH_CHOICE_ARGV[i]}" == -n && "${LAUNCH_CHOICE_ARGV[i+1]:-}" == overseer ]] || continue
+      i=$((i + 2))
+    else
+      [[ "${LAUNCH_CHOICE_ARGV[i]}" != *=* ]] || continue
+      [[ "${LAUNCH_CHOICE_ARGV[i]##*/}" == "$1" || "$form" == "launcher:${LAUNCH_CHOICE_ARGV[i]}" ]] || continue
+      i=$((i + 1))
+      if [[ "$1" == copilot ]]; then
+        if [[ "$prompt" == --interactive=* ]]; then
+          :
+        elif [[ "${LAUNCH_CHOICE_ARGV[end-1]:-}" == -i ]]; then
+          end=$((end - 1))
+        else
+          return 1
+        fi
+      fi
+    fi
     [[ "${LAUNCH_CHOICE_ARGV[end-1]:-}" != -- ]] || end=$((end - 1))
     OL_COMMAND_FLAGS=("${LAUNCH_CHOICE_ARGV[@]:i:end-i}")
     OL_COMMAND_MODEL="$(launch_choice_launch_model "$1" "$2")" || return 1
     return 0
   done
   return 1
+}
+
+# Only the command the record retained supplies permission intent. Read the
+# producer's argv, excluding its prompt; never infer bypass from unattended use.
+OL_PERMISSION_FLAGS=()
+ol_record_permission() { # RECORD HARNESS
+  local line record_home permission spellings i span
+  OL_PERMISSION_FLAGS=()
+  line="$(jq -er '.launch_line | strings | select(length > 0)' <<<"$1" 2>"$DEP_ERR")" || return 1
+  record_home="$(jq -r '.home // .account // ""' <<<"$1" 2>"$DEP_ERR")" || return 1
+  ol_command_read "$2" "$line" "$record_home" || return 1
+  # Keep a nontransferable combination whole: dropping an unknown mode beside
+  # a bypass word would turn the rejected source into a transferable posture.
+  OL_PERMISSION_FLAGS=(${OL_COMMAND_FLAGS[@]+"${OL_COMMAND_FLAGS[@]}"})
+  if launch_choice_permission_transferable "$2" "${OL_COMMAND_FLAGS[*]+${OL_COMMAND_FLAGS[*]}}"; then
+    spellings="$(launch_choice_permission_spellings "$2")"
+    for ((i = 0; i < ${#OL_COMMAND_FLAGS[@]}; i++)); do
+      launch_choice_permission_match "$spellings" "${OL_COMMAND_FLAGS[i]}" "${OL_COMMAND_FLAGS[i+1]:-}"
+      span="$LAUNCH_CHOICE_PERMISSION_SPAN"
+      (( span > 0 )) || continue
+      OL_PERMISSION_FLAGS=("${OL_COMMAND_FLAGS[@]:i:span}")
+      return 0
+    done
+  fi
+  launch_choice_permission_present "$2" "${OL_PERMISSION_FLAGS[*]+${OL_PERMISSION_FLAGS[*]}}" && return 0
+  permission="$(launch_choice_permission_write "$2")" && [[ -z "$permission" ]]
 }
 
 # The record retains both halves of a relative file reference. Public commands
