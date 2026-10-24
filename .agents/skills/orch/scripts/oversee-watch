@@ -4742,7 +4742,7 @@ check_lanes() {
   local seen seen_at seen_pane seen_reported seen_key reset_at reset_utc reset_note event reported_event quiet
   local asking_state fingerprint prior turn_identity capacity capacity_key screen_key close_failed=0
   local pending_closes="${PW_SEEN[0]}" pending_close pending_row pending_key
-  local banner banner_rc turn hosted_item hosted_harness wall_kind
+  local banner banner_rc turn hosted_item hosted_harness hosted_record wall_kind
   local obs_kind=() obs_pid=() obs_cmd=() obs_key=() states=() exit_sources=() wall_kinds=()
   # Read each snapshot row once. Every event loop consumes these same values.
   while IFS=$'\t' read -r i window pid cmd pane_key; do
@@ -4779,10 +4779,13 @@ check_lanes() {
     hosted_lane_item "$lane"
     hosted_item=""; hosted_harness=""
     if item_in "$LANE_ITEM" ${STATUS_VERB[@]+"${STATUS_VERB[@]}"}; then
-      hosted_harness="$(jq -r --arg item "$LANE_ITEM" "$LANE_RUNNING_JQ"'
-        [.lanes[]? | select(running and .item == $item)][0].harness // ""' <<<"${FLEET_STATE:-null}")" \
+      hosted_record="$(jq -r --arg item "$LANE_ITEM" "$LANE_RUNNING_JQ"'
+        [.lanes[]? | select(running and .item == $item)][0] // empty
+        | [.item, (.harness // "")] | join("\u001f")' "$STATE_FILE")" \
         || die state-invalid "" "item=$LANE_ITEM"
-      [[ -z "$hosted_harness" ]] || hosted_item="$LANE_ITEM"
+      [[ -n "$hosted_record" ]] || { states[$i]=unjudged; continue; }
+      IFS=$'\x1f' read -r hosted_item hosted_harness <<<"$hosted_record"
+      [[ -n "$hosted_harness" ]] || hosted_item=""
     fi
     ORCH_LANE_HOST="$HOSTED_HOST" lane_state state "$window" "$cmd" "$pid" "$pane" "" "" "${LANE_ROWS[$i]:-}" "$hosted_item" "$hosted_harness" "${LANE_PANE_SOURCES[$i]:-}" \
       || die limit-scan-failed "" "lane=$lane"

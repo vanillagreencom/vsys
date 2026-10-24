@@ -159,12 +159,19 @@ write    prints the rows and writes the same bytes to the path
          ../communication/references/reports.md § Summary template.
 
 check-summary
-         checks only --summary-file, with the same findings as write. Needs
-         no fleet state, repository, tracker or delivery. Prints no report
-         and sends no notice. Findings remain advisory and exit 0; missing
-         or empty input and an invalid summary cap refuse. An unreadable or
-         incomplete communication template prints summary-shape=unavailable.
-         The installed template supplies the labels and opening item form.
+         checks only --summary-file, with write's findings and the form
+         rule below. Needs no fleet state, repository, tracker or delivery.
+         Prints no report and sends no notice. Findings remain advisory and
+         exit 0; missing or empty input and an invalid summary cap refuse.
+         An unreadable or incomplete communication template prints
+         summary-shape=unavailable.
+         The installed template supplies the labels and opening item form
+         in mrkdwn. A summary whose opening label line starts with that
+         label in Standard Markdown, `> **Overall:**` for `> *Overall:*`,
+         the form a post without a file uses, is held on every line to that
+         rendering instead: `**` for each `*` and `[\[KEY-N\]](URL)` for
+         each `<URL|[KEY-N]>`. Any other summary is held to mrkdwn, as write
+         holds every summary.
 
 Rows:
   Landed          each fleet item, a lanes[] record of any status, with a
@@ -393,9 +400,28 @@ fi
 # an item link. Findings advise the writer, including unavailable template
 # evidence, and never refuse the send. Hold them behind a later refusal key.
 TEMPLATE="$SCRIPT_DIR/../../communication/references/reports.md"
-if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
+# write's summary is always the file's mrkdwn comment; a check-summary caller
+# may post without a file, in the Standard Markdown the template allows there.
+MARKDOWN_OK=0
+[[ "$VERB" != check-summary ]] || MARKDOWN_OK=1
+# The check reads the summary twice: once for its form, then line by line.
+printf '%s\n' "$SUMMARY_TEXT" > "$WORK_DIR/summary" || refuse summary "$SUMMARY"
+if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" -v markdown_ok="$MARKDOWN_OK" '
   function finding(rule, detail) {
     printf "oversee-report: summary-shape=%s%s\n", rule, detail
+  }
+  # The template is mrkdwn, `*X*` bold; Standard Markdown writes `**X**`.
+  function markdown_bold(text) {
+    gsub(/\*/, "**", text)
+    return text
+  }
+  # Template markup in the form this summary is held to.
+  function bold(text) {
+    return markdown ? markdown_bold(text) : text
+  }
+  # A linked key in either form, approved or not.
+  BEGIN {
+    key_link = "<https?://[^<>|[:space:]]+\\|\\[?[A-Z]+-[0-9]+\\]?>|\\[(\\\\\\[)?[A-Z]+-[0-9]+(\\\\\\])?\\]\\(https?://[^()[:space:]]+\\)"
   }
   function label_text(line) {
     sub(/^[[:space:]>-]+/, "", line)
@@ -405,7 +431,8 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
     sub(/[[:space:]]+$/, "", line)
     return line
   }
-  FNR == NR {
+  FNR == 1 { file++ }
+  file == 1 {
     if ($0 == "````text") { example = 1; next }
     if ($0 == "````") { example = 0; next }
     if (!example) next
@@ -413,6 +440,7 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
     if (fenced) { sections[$0] = 1; last_section = $0; next }
     if ($0 ~ /^> \*[^*]+:\*/ || $0 ~ /^- \*[^*<>]+:\*/) {
       key = label_text($0)
+      if (!opening) opening = key
       match($0, /:\*/)
       labels[key] = substr($0, 1, RSTART + 1)
     }
@@ -423,13 +451,25 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
     }
     next
   }
+  # The opening label decides one form for the whole summary, so a line in
+  # the other form is a finding: the post renders it as literal markup.
+  file == 2 {
+    if (!formed && opening && label_text($0) == opening) {
+      formed = 1
+      markdown = markdown_ok && index($0, markdown_bold(labels[opening])) == 1
+    }
+    next
+  }
   {
     if (!item_prefix || !last_section) exit 3
     line = FNR
     text = $0
-    gsub(/<https?:\/\/[^<>|[:space:]]+\|[^<>]+>/, "", text)
+    if (markdown) gsub(/\[\\\[[A-Z]+-[0-9]+\\\]\]\(https?:\/\/[^()[:space:]]+\)/, "", text)
+    else gsub(/<https?:\/\/[^<>|[:space:]]+\|[^<>]+>/, "", text)
+    # A key link left after the held form is stripped renders as literal
+    # markup or an unbracketed key, whatever its project.
     if (text ~ /(^|[^[:alnum:]_])KEN-[0-9]+([^[:alnum:]_]|$)/ ||
-        text ~ /(^|[^[:alnum:]_])#[0-9]+([^[:alnum:]_]|$)/) finding("bare-id", " line=" line)
+        text ~ /(^|[^[:alnum:]_])#[0-9]+([^[:alnum:]_]|$)/ || text ~ key_link) finding("bare-id", " line=" line)
     if ($0 ~ /https?:\/\/github\.com\/[^\/[:space:]<>]+\/[^\/[:space:]<>]+\/(pull|commit)\//) finding("github-link", " line=" line)
     key = label_text($0)
     if (key ~ /^Waiting on you$/) waiting = 1
@@ -442,8 +482,9 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
       session_header = length($0) > length(suffix) && substr($0, length($0) - length(suffix)) == " " suffix
       if (!($0 in sections) && !session_header) finding("label", " line=" line)
     } else if (key in sections || key in labels) {
-      if (!(key in labels) || index($0, labels[key]) != 1) finding("label", " line=" line)
-    } else if ($0 ~ /^(:[[:alnum:]_+-]+:[[:space:]]*)?\*[^*]+\*:?$/ || $0 ~ /^>?[[:space:]]*\*[^*<>]+:\*/ || $0 ~ /^```.+/) {
+      if (!(key in labels) || index($0, bold(labels[key])) != 1) finding("label", " line=" line)
+    } else if ($0 ~ /^(:[[:alnum:]_+-]+:[[:space:]]*)?\*\*?[^*]+\*\*?:?$/ || $0 ~ /^>?[[:space:]]*\*\*?[^*<>]+:\*\*?/ || $0 ~ /^```.+/) {
+      # An unapproved bold label or header is a finding in either markup.
       finding("label", " line=" line)
     }
     if ($0 ~ /^[[:space:]]*[-*][[:space:]]+/) {
@@ -452,7 +493,7 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
       sub(/^[[:space:]]*[-*][[:space:]]+/, "", item)
       rest = item
       keys = 0
-      while (match(rest, /<https?:\/\/[^<>|[:space:]]+\|\[?[A-Z]+-[0-9]+\]?>/)) {
+      while (match(rest, key_link)) {
         keys++
         if (keys == 1) {
           prefix = substr(rest, 1, RSTART - 1)
@@ -461,7 +502,8 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
         }
         rest = substr(rest, RSTART + RLENGTH)
       }
-      if (keys && (keys != 1 || prefix != item_prefix || substr(after, 1, length(item_suffix)) != item_suffix || link !~ /\|\[[A-Z]+-[0-9]+\]>/)) finding("item-line", " line=" line)
+      bracketed = markdown ? link ~ /^\[\\\[[A-Z]+-[0-9]+\\\]\]\(/ : link ~ /^<[^<>]+\|\[[A-Z]+-[0-9]+\]>$/
+      if (keys && (keys != 1 || prefix != bold(item_prefix) || substr(after, 1, length(bold(item_suffix))) != bold(item_suffix) || !bracketed)) finding("item-line", " line=" line)
       words = item
       gsub(/<https?:\/\/[^<>|[:space:]]+\|/, "", words)
       gsub(/>/, "", words)
@@ -475,7 +517,7 @@ if ! SHAPE_FINDINGS="$(LC_ALL=C awk -v cap="$SUMMARY_LINES" '
     if (header) finding("label", " line=" fence_line)
     if (!waiting) finding("waiting-on-you", "")
     if (items > cap) finding("layout", " item-lines=" items " cap=" cap)
-  }' "$TEMPLATE" - <<<"$SUMMARY_TEXT")"; then
+  }' "$TEMPLATE" "$WORK_DIR/summary" "$WORK_DIR/summary")"; then
   SHAPE_FINDINGS="oversee-report: summary-shape=unavailable template=$TEMPLATE"
 fi
 [[ -z "$SHAPE_FINDINGS" ]] || printf '%s\n' "$SHAPE_FINDINGS" >&2
@@ -888,11 +930,13 @@ next_rows() {
 BLOCKERS=""
 VALIDATION=""
 ROUNDS=""
+FINDINGS=""
 running_lanes() {
   local lanes item host root args asks mail rc line failing="" repo list stop minutes channel
   BLOCKERS=""
   VALIDATION=""
   ROUNDS=""
+  FINDINGS=""
   for repo in "${REPOS[@]}"; do
     # github.sh picks its own token, and puts GH_BOT_TOKEN, inherited or from
     # the project's env files, ahead of the keyring and of GITHUB_TOKEN.
@@ -955,6 +999,7 @@ running_lanes() {
     lane_state_rounds "$LANE_ITEM_STATE" "$WORK_DIR/state.err" "$LANE_ITEM_VALIDATION_RUNS" \
       || refuse item-state "$item" "$(cat "$WORK_DIR/state.err")"
     ROUNDS+="- $item: review_rounds=$LANE_REVIEW_ROUNDS fix_receipts=$LANE_FIX_RECEIPTS validation_runs=$LANE_VALIDATION_RUNS restacks=$LANE_RESTACKS repeated_class_rounds=$LANE_REPEATED_CLASS_ROUNDS"$'\n'
+    FINDINGS+="- $item: $LANE_FINDING_OCCURRENCES"$'\n'
     if [[ -n "$LANE_ITEM_STATE" ]]; then
       if ! stop="$(jq -r --arg item "$item" '.post_pr_stop // empty
         | "- \($item) waits on a stopped \(.gate // "post-PR") gate, \(.name // "unnamed"): \((.remaining // []) | join("; "))"' <<<"$LANE_ITEM_STATE")"; then
@@ -1074,6 +1119,7 @@ render() {
     echo "Rounds: none"
   else
     printf 'Rounds:\n%s\n' "$ROUNDS"
+    printf 'Finding occurrences:\n%s' "$FINDINGS"
   fi
   echo
 
