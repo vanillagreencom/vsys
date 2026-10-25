@@ -181,9 +181,10 @@
 #        runs and records that one; where none names a provider it spends an
 #        account nothing names, and its caller entry refuses
 #        `pi-account-unknown`. No permission posture crosses to or from pi,
-#        whose row names no permission word. Unset, the setting is
-#        lib/overseer-launch.sh's OL_DEFAULT_PREFERENCE, the default README.md
-#        § Setup states; set to empty, it names no entry. `kendex tier-model`
+#        whose row names no permission word. With an unset preference,
+#        context-mark succession keeps the caller's harness and model;
+#        other marks use lib/overseer-launch.sh's OL_DEFAULT_PREFERENCE.
+#        A setting set to empty names no entry. `kendex tier-model`
 #        classifies each model (lib/overseer-launch.sh § ol_model_class): a
 #        class runs claude's family alias for it and codex's or copilot's
 #        native default, and a model kendex cannot classify refuses
@@ -393,7 +394,11 @@
 #                    does (step 2). `mark-reached` carries
 #                    `kind` (context, headroom, rate or qualifying), the `value` it read, the
 #                    `mark` it crossed and `succession`, the effective
-#                    ORCH_OVERSEER_SUCCESSION. A reading that could not be
+#                    ORCH_OVERSEER_SUCCESSION, and where a context judgement
+#                    ran, `context_decision`, the shared judge's decision JSON
+#                    (lib/lane-context.sh § lane_context_handoff_decision),
+#                    which the turn-end hook writes into the overseer's
+#                    handoff record. A reading that could not be
 #                    taken at all is `mark-unmeasured kind=<context|headroom|rate|qualifying>
 #                    reason=<...>`,
 #                    which is not a mark that lifted: a caller holding a
@@ -565,6 +570,7 @@ message() { # KEY FIELD=VALUE...
     interrupted) text='A signal stopped the script; the successor window was closed and the caller keeps running.' ;;
     successor-launch) text='The successor command is built; the form names how the picked lane reaches the harness.' ;;
     entry-permission-untransferable) text='This entry names another harness than the caller runs, and something of the caller would not cross to it. Without a model field: the caller runs under permission words with no equivalent on that harness, so a successor there would change what it may do. With a model field: the entry is a deprecated numeric one, which would run that caller model in the spelling of the caller harness, and the walk translates none. The entry is skipped and the walk goes on to the next one, ending at the harness the caller runs.' ;;
+    successor-lane-excluded|successor-count-bound|successor-count-unmeasured) text='' ;;
     successor-status-line) text='The shared installer could not configure this Copilot home or its statusLine fallback. detail names the setup failure and cause names the fallback failure. The entry is skipped.' ;;
     successor-lane-spent) text='The pick named the caller account that this recovery request must leave. Another model bucket or an inventory that has not refreshed can still report launch room there. The entry is skipped. A fleet whose only candidate is that account refuses rather than reopening on it.' ;;
     successor-dialog) text='The successor stopped at a dialog nobody is there to answer; the caller keeps running. The pane line follows.' ;;
@@ -677,6 +683,7 @@ source "$SCRIPT_DIR/lib/lane-model.sh"
 # stop.
 # shellcheck source=lib/overseer-launch.sh
 source "$SCRIPT_DIR/lib/overseer-launch.sh"
+PREFERENCE_ACTIVE=false
 # shellcheck source=lib/watch-pid.sh
 source "$SCRIPT_DIR/lib/watch-pid.sh"
 # shellcheck source=lib/job-unit.sh
@@ -1012,6 +1019,7 @@ if (( JUDGES )); then
   CONTEXT_PCT="$(lane_context_handoff_pct "$requested_pct")" \
     || die invalid-context-mark "ORCH_HANDOFF_CONTEXT_PCT=$requested_pct"
 fi
+context_fields=()
 if (( JUDGES )) && [[ "$CONTEXT_STATE" == unmeasured ]]; then
   due_rc=0
   due="$(lane_context_handoff_due "$tokens" "$window" "$CONTEXT_PCT")" || due_rc=$?
@@ -1020,10 +1028,12 @@ if (( JUDGES )) && [[ "$CONTEXT_STATE" == unmeasured ]]; then
     1) CONTEXT_STATE=unmeasured ;;
     *) die invalid-context-mark "ORCH_HANDOFF_CONTEXT_PCT=$CONTEXT_PCT" ;;
   esac
+  # The judged reading, which the turn-end hook writes into the handoff record.
+  context_fields=("context_decision=$(lane_context_handoff_decision "$tokens" "$window" "$CONTEXT_PCT")")
 fi
 if [[ "$MODE" == check && "$CONTEXT_STATE" == due ]]; then
   message mark-reached kind=context "value=$tokens" "mark=$CONTEXT_PCT" \
-    "succession=$SUCCESSION" headroom=unreadable "window=$window"
+    "succession=$SUCCESSION" headroom=unreadable "window=$window" ${context_fields[@]+"${context_fields[@]}"}
   exit 0
 fi
 [[ -n "${TMUX:-}" ]] || die tmux-missing var=TMUX
@@ -1177,6 +1187,14 @@ if [[ "$MODE" != dead ]]; then
       claude | codex | copilot | pi) CALLER_HARNESS="$reading_harness" ;;
       *) die harness-unnamed "pane=$CALLER_PANE" ;;
     esac
+  fi
+  if [[ "$MODE" != check && "$OL_CUR_RECORD" != null ]] \
+    && ! launch_choice_permission_present "$CALLER_HARNESS" "${HARNESS_FLAGS[*]+${HARNESS_FLAGS[*]}}"; then
+    permission_word="$(launch_choice_permission_write "$CALLER_HARNESS")" || permission_word=""
+    if launch_choice_permission_transferable "$CALLER_HARNESS" "${HARNESS_FLAGS[*]+${HARNESS_FLAGS[*]}} $permission_word" \
+      && ol_record_permission "$OL_CUR_RECORD" "$CALLER_HARNESS"; then
+      HARNESS_FLAGS+=(${OL_PERMISSION_FLAGS[@]+"${OL_PERMISSION_FLAGS[@]}"})
+    fi
   fi
   # The model passes through the rule a reading takes (lib/lane-context.sh §
   # lane_context_mark_model), so a codex session is judged on its account's
@@ -1434,7 +1452,7 @@ build_entries() {
     # The parse is lib/overseer-launch.sh's ol_preference_entries, the one
     # `oversee launch` reads the same setting with, so the two launchers cannot
     # come to admit different entries.
-    ol_preference_entries "$(ol_preference)" || die invalid-preference "entry=$OL_BAD_ENTRY"
+    ol_preference_entries "$(ol_preference "$MARK_KIND")" || die invalid-preference "entry=$OL_BAD_ENTRY"
     ENTRIES=(${OL_ENTRIES[@]+"${OL_ENTRIES[@]}"})
     NAMED_ENTRIES="$OL_NAMED"
     # The walk ALWAYS ends here, whatever the setting says. The caller entry is
@@ -1508,6 +1526,16 @@ walk_entries() {
   OL_WALK_CALLER_PICK_MODEL="$CALLER_MODEL" OL_WALK_CALLER_MODEL="" OL_WALK_CALLER_EFFORT=""
   [[ -z "$OL_CUR_MODEL" ]] || OL_WALK_CALLER_MODEL="$OL_CUR_MODEL" OL_WALK_CALLER_EFFORT="$OL_CUR_EFFORT"
   [[ -z "$CALLER_EXEC_MODEL" ]] || OL_WALK_CALLER_MODEL="$CALLER_EXEC_MODEL"
+  # A bootstrap session may name its model only in the context reading.
+  # With no preference, its context successor must keep that model too.
+  if [[ "$MARK_KIND" == context && -z "${ORCH_OVERSEER_PREFERENCE+x}" \
+    && -z "$OL_WALK_CALLER_MODEL" && -z "$flag_model" ]]; then
+    OL_WALK_CALLER_MODEL="$OL_PREFERENCE_CALLER_MODEL"
+    if [[ -n "$OL_WALK_CALLER_MODEL" ]] \
+      && ! OL_WALK_CALLER_EFFORT="$(launch_choice_effort "$CALLER_HARNESS" "${HARNESS_FLAGS[*]+${HARNESS_FLAGS[*]}}")"; then
+      die launch-choice-failed "harness=$CALLER_HARNESS" step=effort-read
+    fi
+  fi
   # A pi successor runs, and so records, the provider-bearing model its
   # caller's account was judged on, in place of a model from the record or
   # the flags that names no provider, so no generation's record holds a
@@ -1647,13 +1675,13 @@ if [[ "$MODE" == check ]]; then
     [[ "$CALLER_ENDED" != true ]] || reserve_fields+=(status=plan_ended)
     message mark-reached kind=headroom "value=$CALLER_HEADROOM" "mark=$HEADROOM_TRIGGER" \
       "succession=$SUCCESSION" "account=${CALLER_ACCOUNT:-unknown}" "resets=${CALLER_RESETS:-none}" \
-      ${reserve_fields[@]+"${reserve_fields[@]}"}
+      ${reserve_fields[@]+"${reserve_fields[@]}"} ${context_fields[@]+"${context_fields[@]}"}
   elif [[ "$MARK_KIND" == rate ]]; then
     message mark-reached kind=rate "value=$WALL_PROJECTED" "mark=$WALL_MINUTES" \
-      "succession=$SUCCESSION" "account=${CALLER_ACCOUNT:-unknown}"
+      "succession=$SUCCESSION" "account=${CALLER_ACCOUNT:-unknown}" ${context_fields[@]+"${context_fields[@]}"}
   else
     message mark-reached kind=qualifying "value=$QUALIFYING_TOTAL" "mark=$SUCCESSOR_ACCOUNTS" \
-      "succession=$SUCCESSION" "headroom=$HEADROOM_FIELD"
+      "succession=$SUCCESSION" "headroom=$HEADROOM_FIELD" ${context_fields[@]+"${context_fields[@]}"}
   fi
   exit 0
 fi
@@ -1856,6 +1884,12 @@ if [[ "$MODE" == dead ]]; then
     message record-unwritten field=overseer step=identity >&2
     [[ ! -s "$DEP_ERR" ]] || cat -- "$DEP_ERR" >&2
   fi
+  replay_harness="$(jq -r '.harness // ""' <<<"${OL_IDENTITY:-null}" 2>"$DEP_ERR")" \
+    || die record-unread field=harness
+  replay_permission="$(jq -c --arg line "$cmd" '. + {launch_line:$line}' <<<"${OL_IDENTITY:-null}" 2>"$DEP_ERR")" \
+    || die record-unread field=launch_line
+  ol_record_permission "$replay_permission" "$replay_harness" \
+    || die launch-choice-failed reason=permission-unrecorded "harness=${replay_harness:-none}" "word=$(launch_choice_permission_write "$replay_harness" || true)"
   replay_cwd="$(jq -r '.cwd // empty' <<<"${OL_IDENTITY:-null}" 2>/dev/null)" || replay_cwd=""
   [[ -z "$replay_cwd" ]] || CALLER_PATH="$replay_cwd"
 fi
