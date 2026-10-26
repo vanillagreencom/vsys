@@ -693,6 +693,69 @@ environment_receiver() {
 
 environment_receiver_evidence() {
   local remaining=$1 matched
+  case "$program" in
+    python | python3)
+      local source=$1 executable="" span quote c i=0 end found uncertain=""
+      local dynamic_re='(^|[^A-Za-z0-9_])(exec|eval|compile)([^A-Za-z0-9_]|$)'
+      local span_re="^[^\"'#]+"
+      local unsafe_re='(^|[^A-Za-z0-9_])(os|__import__|importlib|getattr|globals|vars|exec|eval|compile)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_])sys[[:space:]]*\.[[:space:]]*modules([^A-Za-z0-9_]|$)'
+      local import_re='(^|[^A-Za-z0-9_])(from|import)([^A-Za-z0-9_]|$)' imports import_kind
+      local module_re='^[[:blank:]]+(pathlib|re|json|textwrap)([[:blank:]]+as[[:blank:]]+[A-Za-z_][A-Za-z0-9_]*)?[[:blank:]]*(,[[:blank:]]*(pathlib|re|json|textwrap)([[:blank:]]+as[[:blank:]]+[A-Za-z_][A-Za-z0-9_]*)?[[:blank:]]*)*$'
+      local from_re='^[[:blank:]]+(pathlib|re|json|textwrap)[[:blank:]]+import[[:blank:]]+'
+      # Source-edit literals are data only with these non-executing imports.
+      # Other imports, dynamic access and uncertain syntax keep raw evidence:
+      # child interpreters can execute a quoted environment read.
+      if [[ ! $source =~ $dynamic_re ]]; then
+        while [ "$i" -lt "${#source}" ]; do
+          c=${source:i:1}
+          case "$c" in
+            '#')
+              span=${source:i}; span=${span%%$'\n'*}
+              executable=$executable$span; i=$((i + ${#span})) ;;
+            "'" | '"')
+              if [ "$i" -gt 0 ]; then
+                case "${source:i-1:1}" in [A-Za-z0-9_] | \\) uncertain=1; break ;; esac
+              fi
+              quote=$c
+              [ "${source:i:3}" != "$c$c$c" ] || quote=$c$c$c
+              end=$((i + ${#quote})); found=""
+              while [ "$end" -lt "${#source}" ]; do
+                if [ "${source:end:1}" = '\' ]; then end=$((end + 2)); continue; fi
+                if [ "${source:end:${#quote}}" = "$quote" ]; then
+                  end=$((end + ${#quote})); found=1; break
+                fi
+                if [ "${#quote}" -eq 1 ] && [ "${source:end:1}" = $'\n' ]; then break; fi
+                span=${source:end}
+                span=${span%%"$c"*}; span=${span%%\\*}
+                [ "${#quote}" -ne 1 ] || span=${span%%$'\n'*}
+                if [ -n "$span" ]; then end=$((end + ${#span})); else end=$((end + 1)); fi
+              done
+              [ -n "$found" ] || { uncertain=1; break; }
+              span=${source:i:end-i}
+              executable=$executable${span//[!$'\n']/ }; i=$end ;;
+            *)
+              [[ ${source:i} =~ $span_re ]] || { uncertain=1; break; }
+              span=${BASH_REMATCH[0]}
+              executable=$executable$span; i=$((i + ${#span})) ;;
+          esac
+        done
+        if [[ $executable =~ $unsafe_re ]]; then uncertain=1; fi
+        imports=$executable
+        while [ -z "$uncertain" ] && [[ $imports =~ $import_re ]]; do
+          matched=${BASH_REMATCH[0]}; import_kind=${BASH_REMATCH[2]}
+          span=${BASH_REMATCH[3]}
+          imports=$span${imports#*"$matched"}
+          span=${imports%%$'\n'*}; span=${span%%;*}; span=${span%%#*}
+          if [ "$import_kind" = from ]; then
+            [[ $span =~ $from_re ]] || uncertain=1
+          else
+            [[ $span =~ $module_re ]] || uncertain=1
+          fi
+          imports=${imports#"$span"}
+        done
+        if [ -z "$uncertain" ]; then remaining=$executable; fi
+      fi ;;
+  esac
   while [[ $remaining =~ $receiver_pattern ]]; do
     matched=${BASH_REMATCH[0]}
     remaining=${remaining#*"$matched"}
@@ -1154,7 +1217,9 @@ environment_dump() { # command kind; arguments are already decoded data
          [ "${stage_kinds[$pos]:-}" = literal ] && [[ ${stage_args[$pos]:-} != [-+]* ]] &&
          [ "${stage_roles[$pos]:-}" = argument ]; then script_pos=$pos; fi
       for ((candidate=0; candidate<${#stage_args[@]}; candidate++)); do
-        [ "${stage_kinds[$candidate]}" != ansi-escaped ] || return 0
+        # ANSI-C escapes have no decoder here. This refusal establishes
+        # unsupported syntax, not a recognized environment producer.
+        [ "${stage_kinds[$candidate]}" != ansi-escaped ] || { environment_refusal=unsupported-ansi-escape; return 0; }
         [ "$candidate" -ge "$main_start" ] || continue
         value=${stage_args[$candidate]}
         case "${stage_roles[$candidate]}" in
@@ -1302,6 +1367,10 @@ refuse() { # KEY VALUE [CAUSE]
         echo "for named non-secret settings, use orch-env NAME DEFAULT; do not read or filter the private file"
         echo "for actual environment producers, read named variables, for example: systemctl --user show-environment | grep '^NAME='"
         echo "nested or unsupported environment routing can refuse conservatively; use the direct filtered form for environment producers" ;;
+      refused=unsupported-ansi-escape)
+        echo "the command contains an ANSI-C escape in shell syntax this hook cannot classify"
+        echo "submit the escaped value as a literal argument or split the command so the escaped expression is outside the unsupported compound syntax"
+        echo "this refusal does not establish a private-file or whole-environment read" ;;
       refused=default-policy)
         echo "the command text sets a systemd-run MemoryMax= or MemoryHigh= cap in kilobytes or megabytes, which the hook's default COMMAND_SAFETY_DENY_PATTERN refuses: a cgroup starved by a cap that small can fail a kernel allocation and leave the host's root volume read-only"
         echo "run it with no memory cap, or with a cap in gigabytes; text that only mentions such a cap goes in a file, because matching reads the command text"
@@ -1391,8 +1460,9 @@ fields="$(jq -er '
     command_argv[argument_index]=$argument
   done
 } <<<"$fields"$'\t'
+environment_refusal=environment-dump
 if environment_dump "$command_kind"; then
-  refuse refused environment-dump
+  refuse refused "$environment_refusal"
 fi
 [ "$cwd_state" != invalid-cwd ] || refuse payload invalid-cwd
 [ -z "$MISSING" ] || refuse missing-tools "${MISSING#,}"

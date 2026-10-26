@@ -33,7 +33,7 @@
 #
 # lib/job-unit.sh starts the child, as a transient systemd user unit named for
 # validate-<worktree directory> (for a lane, its item in lower case) where a
-# user manager answers, lingering or not, and under setsid elsewhere, and ends
+# user manager answers and lingers, and under setsid elsewhere, and ends
 # it. In a unit no
 # process the run starts outlives it; under setsid what the run leaves in its
 # process group ends with it, and ../references/job-units.md § Runner line names
@@ -57,7 +57,9 @@
 #       With --validate-mode ci it is refused as reproduce-ci.
 #       --restack marks a ci request as the restack's own, which
 #       ../workflows/merge-pr-restack.md step 2 makes: a restack is no round,
-#       so CI admission runs no scoped suites and records CI pending at once.
+#       so it skips selector preview and scoped suites. Successful CI admission
+#       records CI pending at once; a refusal runs the range command and names
+#       its cause on start's ci-fallback= line, as ci mode lists below.
 #       Any other mode refuses it as option-unused.
 #       A full start ignores --base and prints one stderr notice naming it.
 #       Range and ci starts require --base. Other unused options are refused.
@@ -253,8 +255,9 @@
 # full request takes CI under the coverage checks above. Unset, failed or
 # unreported selection keeps full and range requests local. For an explicit
 # ci request, an unset selector preserves the existing CI route. A configured
-# selector must report all or subset before CI admission, and the admitted
-# round then runs its scoped suites as ci mode states.
+# selector must report all or subset before CI admission, except under
+# --restack, which skips the selector. The admitted round then runs its
+# scoped suites as ci mode states.
 # The selector may also print expected-secs=N on its own line. It owns the
 # estimate and its margin. Before launching a command, start refuses with
 # over-bound expected-secs=N bound=B when N exceeds DEV_VALIDATE_TIMEOUT_SECS.
@@ -1071,7 +1074,8 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
     [[ "$requested_mode" == full ]] || validate_mode=range
     ci_fallback=class-uncovered
     if ci_class_covered true && ci_runs_validation; then
-      if [[ -z "${selection_cmd//[[:space:]]/}" ]]; then
+      # A restack has no scoped execution to preview.
+      if [[ "$restack" == true || -z "${selection_cmd//[[:space:]]/}" ]]; then
         validate_mode=ci
       else
         selection_previewed=true
@@ -1113,7 +1117,7 @@ if [[ "$mode" == start || "$mode" == resolve ]]; then
   fi
   scoped=false
   if [[ "$validate_mode" != ci && "$selection_previewed" == false ]]; then
-    if [[ "$reproduce" == false && -n "${selection_cmd//[[:space:]]/}" ]]; then
+    if [[ "$reproduce" == false && "$restack" == false && -n "${selection_cmd//[[:space:]]/}" ]]; then
       if preview_selection && { [[ "$selection" == selection=all ]] \
           || [[ "$requested_mode" == range && "$selection" == selection=subset ]]; }; then
         if [[ "$ci_admission_attempted" == false ]]; then
@@ -1539,12 +1543,9 @@ if [[ "$mode" == record ]]; then
       || die timing-unreadable "path=$run_dir/timing"
     record_timing=" seconds=$timing_seconds started-at=$timing_started ended-at=$timing_ended"
   fi
-  # CI proves a ci run's head. Bind the pending receipt to the same
-  # worktree snapshot the classifier judged, even when the round commits later.
-  if [[ "$record_mode" == ci ]]; then
-    record_tree="$(start_field "$run_dir/start" tree)"
-    record_timing="${record_tree:+ tree=$record_tree}$record_timing"
-  fi
+  # Receipts bind the committed contents to the snapshot the classifier judged.
+  record_tree="$(start_field "$run_dir/start" tree)"
+  record_timing="${record_tree:+ tree=$record_tree}$record_timing"
   record_orphaned="$(start_field "$run_dir/start" validate-base-orphaned)"
   record_class_base="$(start_field "$run_dir/start" class-base)"
   record_scoped="$(start_field "$run_dir/start" scoped)"

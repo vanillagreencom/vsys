@@ -17,7 +17,7 @@ On-demand review of local changes: review, present findings, and offer to fix th
 .agents/skills/orch/scripts/resolve-base-branch .
 ```
 
-Use the outputs as `BRANCH`, `ISSUE_ID` (empty means skip every workflow-state step until § 4 mints a local key), and `BASE_BRANCH`; `WT_PATH` is `git-context repo-root .`.
+Use the outputs as `BRANCH`, `ISSUE_ID` (empty means § 2 mints and initializes a local key), and `BASE_BRANCH`; `WT_PATH` is `git-context repo-root .`.
 
 Fill `Worktree:` from `git -C "[DIR]" rev-parse --show-toplevel`. `[DIR]` is the `.` the line above resolves `WT_PATH` from.
 
@@ -51,6 +51,8 @@ A failed check omits the path and carries `- decision index lookup failed for [D
 
 ## 2. Launch Reviewers
 
+With no `ISSUE_ID`, mint `LOCAL_KEY` through `workflow-state new-local-key`, initialize it through `workflow-state init [LOCAL_KEY] --worktree [WT_PATH] --branch [BRANCH]`, and use it as `ISSUE_ID` from here. This workflow removes that local state in § 5. For an issue key with no state, initialize that key first. Apply [Record verified findings](../schemas/workflow-state.md#record-verified-findings) admission for this local batch, with state writes enabled; § 3 supplies acceptance and § 4 supplies disposition and completion.
+
 Apply [Delegation](../references/skill-rules.md#delegation) for the target worktree before selecting any stored reviewer session.
 
 `[AGENTS]` is every `reviewer-*` agent this harness exposes. Resolve the reviewer mode per [references/skill-rules.md § Agent Lifecycle](../references/skill-rules.md#agent-lifecycle):
@@ -78,7 +80,7 @@ Decisions:
 
 Wait for every reviewer. Under an unlimited budget do NOT shut them down before § 4; in wave mode they are already retired.
 
-Extract the report path and verdict from each return; halt and report if any return does not carry them. Overall verdict is `action_required` when any reviewer has blockers, else `pass`. With an `ISSUE_ID`, append each path:
+Extract the report path and verdict from each return; halt and report if any return does not carry them. Apply the shared contract's acceptance to each returned file. Overall verdict is `action_required` when any reviewer has blockers, else `pass`. Append each accepted path:
 
 ```bash
 .agents/skills/orch/scripts/workflow-state append [ISSUE_ID] json_paths "[PATH]"
@@ -97,11 +99,11 @@ Output: [Lane Output](../references/skill-rules.md#lane-output).
 
 </output_format>
 
-Blockers or any `fix`/`issue` suggestion → § 4. Otherwise → § 5.
+Blockers or any `fix`/`issue` suggestion → § 4. Otherwise complete the shared contract with the empty finding set, then → § 5.
 
 ## 4. Present And Fix
 
-Collect the blockers, the `category == "fix"` suggestions, and the `category == "issue"` suggestions. Read `patched_causes` and `frozen_causes` first, with the command [finding-disposition.md § Recurrence](../../reviewer/references/finding-disposition.md#recurrence) states; a finding sharing a cause there takes that section's disposition, never another patch. Decline anything that cannot affect real usage with a one-line reason, per [SKILL.md § The Cycle](../SKILL.md#the-cycle). Nothing left → § 5.
+Collect the blockers, the `category == "fix"` suggestions, and the `category == "issue"` suggestions. Read `patched_causes` and `frozen_causes` first, with the command [finding-disposition.md § Recurrence](../../reviewer/references/finding-disposition.md#recurrence) states; a finding sharing a cause there takes that section's disposition, never another patch. Decline anything that cannot affect real usage with a one-line reason, per [SKILL.md § The Cycle](../SKILL.md#the-cycle). Nothing left → complete the shared contract, then § 5.
 
 Output: [Lane Output](../references/skill-rules.md#lane-output).
 
@@ -136,17 +138,7 @@ Omit empty categories. **Disposition is by rule, not by prompt** — never prese
 
 **Never fix as the main agent.**
 
-With no `ISSUE_ID`, the fix round still needs a workflow-state key. Mint one as `LOCAL_KEY`, init its state, and set `ISSUE_ID` to `LOCAL_KEY` for the rest of § 4. This workflow owns that state and removes it in § 5:
-
-```bash
-.agents/skills/orch/scripts/workflow-state new-local-key
-```
-
-```bash
-.agents/skills/orch/scripts/workflow-state init [LOCAL_KEY] --worktree [WT_PATH] --branch [BRANCH]
-```
-
-Then, with either key:
+Complete [Record verified findings](../schemas/workflow-state.md#record-verified-findings) for this local batch. An empty fix set goes to the filing route below or § 5; otherwise, with either key:
 
 ```bash
 .agents/skills/orch/scripts/workflow-state set-git-head [ISSUE_ID] pre_delegate_sha [WT_PATH]
@@ -174,7 +166,7 @@ Apply [skill-rules.md § Coordination](../references/skill-rules.md#coordination
 
 Shut the review agents down (wave runs already did).
 
-**Skip if** § 4 minted no local key. A key from the branch names live state that later workflows read, so only `LOCAL_KEY` is removed. Its state has no later reader, since the next review mints its own key:
+**Skip if** § 2 minted no `LOCAL_KEY`. A key from the branch names live state that later workflows read, so only `LOCAL_KEY` is removed. Its state has no later reader, since the next review mints its own key:
 
 ```bash
 .agents/skills/orch/scripts/workflow-state remove [LOCAL_KEY]

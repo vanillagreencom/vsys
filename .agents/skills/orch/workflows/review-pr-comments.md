@@ -17,7 +17,14 @@ Resolve `ORCH_DECISION_MODE` once for this post-PR workflow:
 .agents/skills/orch/scripts/orch-env ORCH_DECISION_MODE auto-recommended
 ```
 
-**Standalone init** (`lifecycle: "self"`): `gh pr view --json number -q .number` gives `PR_NUMBER`, and `git-context issue-from-branch .` gives `ISSUE_ID` when the branch carries an issue id. When it does not, `ISSUE_ID` is `pr-[PR_NUMBER]`, the same repository-local fallback key [`ci-fix.md` § 1](ci-fix.md) and [`merge-pr.md` § 3](merge-pr.md) use; a branch with no issue id is ordinary, not a stop. Then, when `workflow-state exists --json [ISSUE_ID]` reports false, resolve `WT_PATH`, read the branch with `git-context branch`, and run `workflow-state init [ISSUE_ID] --worktree [WT_PATH] --branch [BRANCH]`, since the round-start prune reads the worktree from state.
+**Standalone init** (`lifecycle: "self"`): `gh pr view --json number -q .number` gives `PR_NUMBER`, and `git-context issue-from-branch .` gives `ISSUE_ID` when the branch carries an issue id. When it does not, `ISSUE_ID` is `pr-[PR_NUMBER]`, the same repository-local fallback key [`ci-fix.md` § 1](ci-fix.md) and [`merge-pr.md` § 3](merge-pr.md) use; a branch with no issue id is ordinary, not a stop. Except under `--dry-run`, when `workflow-state exists --json [ISSUE_ID]` reports false, resolve `WT_PATH`, read the branch with `git-context branch`, and run `workflow-state init [ISSUE_ID] --worktree [WT_PATH] --branch [BRANCH]`, since the round-start prune reads the worktree from state.
+
+**Dry-run recurrence context.** Under `--dry-run`, check `workflow-state exists --json [ISSUE_ID]` once the key is resolved from caller context or standalone init. Carry the result into §§ 3–5 without writing state:
+
+| State exists | Recurrence handling |
+|---|---|
+| `true` | Read the existing recurrence records as § 5 requires. |
+| `false` | Report `unavailable: workflow state absent`. Skip the state-dependent recurrence lookup. History remains unknown, never empty or zero. |
 
 Both commands below write to that state, so the key must resolve and the state must exist before either runs. Except under `--dry-run`, this triage pass is a continuing action:
 
@@ -80,6 +87,8 @@ Map each comment to a domain from its source type and file path. Domain-to-agent
 
 ## 3. Analyze
 
+Apply [Record verified findings](../schemas/workflow-state.md#record-verified-findings) admission for this native batch, using § 1's inline, PR-level and review-body identities and this invocation's `--dry-run` status. Bind its token as `[TRIAGE_REVIEW_ROUND_ID]` for the domain and synthesis reports below. § 5 supplies acceptance, disposition and completion.
+
 Apply [Delegation](../references/skill-rules.md#delegation) before selecting domain, architecture, or fix agents on every pass. Delegate to the mapped domain agents in parallel.
 
 <delegation_format>
@@ -88,6 +97,8 @@ Analyze these PR review comments for your domain.
 PR: #[PR_NUMBER] - [TITLE]
 Parent Issue: [ISSUE_ID]
 Worktree: [WORKTREE_PATH]
+Review round: [TRIAGE_REVIEW_ROUND_ID, or unavailable under --dry-run]
+Recurrence history: [available, or unavailable: workflow state absent under --dry-run]
 
 Decision context (read before classifying — do NOT suggest changes that contradict these):
 [For each verified decision: "[DECISION_ID]: [ONE_LINE_SUMMARY] — [DECISION_FILE_PATH]"]
@@ -106,7 +117,7 @@ Blocking: [true/false]
 URL: [URL]
 ---
 
-1. Read `.agents/skills/reviewer/references/finding-disposition.md` and apply its verification prerequisite and decision flow to every finding — read the actual source files before classifying any comment.
+1. Read `.agents/skills/reviewer/references/finding-disposition.md` and apply its verification prerequisite and decision flow to every finding — read the actual source files before classifying any comment. When the supplied dry-run recurrence history is unavailable, skip that reference's state-dependent recurrence lookup and retain history as unknown in the report. Otherwise read both recurrence records as it requires.
 2. Classify into arrays per `../../reviewer/schemas/review-finding.md`:
    - `blockers[]`: verified and blocking, or P1/P2
    - `suggestions[]`: verified, non-blocking
@@ -114,7 +125,7 @@ URL: [URL]
    - Noise or failed checks from other sources: omit.
    - Every review-body input must remain in one array, including false claims, Step 0 exclusions, vague or informational items, and other verified declines. Keep these in `questions[]`: copy the original claim into `question` and put `Declined: [VERIFIED_DECISION_FLOW_REASON]` in `draft_response`. Use the existing Question Fields; this is a reply carrier, not a fix item or a question to the user.
    - Already fixed: do NOT omit silently. Return it in `questions[]` with `outcome: "already_fixed"`, `commit: "[SHA]"`, and a `draft_response`.
-3. Preserve `source_id` and `source_type` from the input on every item. This report boundary owns disposition retention: no filter or omission rule removes a review-body input or its verified reply reason.
+3. Preserve `source_id` and `source_type` from the input on every item. Copy the supplied review-round token into `qa_metadata.review_round_id`, or use `null` under `--dry-run`. This report boundary owns disposition retention: no filter or omission rule removes a review-body input or its verified reply reason.
 4. Write the JSON to `[WORKTREE_PATH]/tmp/review-[AGENT]-YYYYMMDD-HHMMSS.json` with your harness file-write tool — never shell redirection, a heredoc, `tee`, or `echo >`.
 5. Return exactly:
 
@@ -124,19 +135,21 @@ URL: [URL]
    </output_format>
 </delegation_format>
 
-Collect each agent's report path for § 5.
+Collect each agent's report path and its bound review-round token for § 5.
 
 ## 4. Synthesize
 
 **Skip if** the comments came from a single domain.
 
-Delegate to the architecture reviewer with the domain report paths, asking for cross-cutting findings only: issues spanning domains, dependencies between suggestions (`dependency: #A blocks #B (reason)`), gaps at domain boundaries, and conflicts between domain recommendations (flag both, resolve neither). It must not modify or overrule domain findings — only add its own, in the same JSON schema at `[WORKTREE_PATH]/tmp/review-arch-synthesis-YYYYMMDD-HHMMSS.json`, returning the same `Report:`/`Verdict:` pair. Add the returned path to the set.
+Delegate to the architecture reviewer with the domain report paths, this batch's `[TRIAGE_REVIEW_ROUND_ID]`, and the same recurrence-history context and lookup instruction as § 3, asking for cross-cutting findings only: issues spanning domains, dependencies between suggestions (`dependency: #A blocks #B (reason)`), gaps at domain boundaries, and conflicts between domain recommendations (flag both, resolve neither). It must not modify or overrule domain findings — only add its own, in the same JSON schema at `[WORKTREE_PATH]/tmp/review-arch-synthesis-YYYYMMDD-HHMMSS.json`, returning the same `Report:`/`Verdict:` pair. It copies the supplied token into `qa_metadata.review_round_id`, or uses `null` under `--dry-run`. Add the returned path and its bound token to the set.
 
 ## 5. Triage Report
 
+Apply [Record verified findings](../schemas/workflow-state.md#record-verified-findings) acceptance to each domain and synthesis report with its assigned `[TRIAGE_REVIEW_ROUND_ID]`. Complete that contract after the disposition below and before § 6, using this native batch's identities and dry-run status.
+
 Read every report and aggregate across agents preserving attribution. Keep every review-body item with its source identity and verified reply draft through § 6.3; do not deduplicate it away. Deduplicate other items by (location, description), keeping the first and noting all sources. `blockers[]` and `category: "fix"` suggestions are fix items; `category: "issue"` suggestions defer to § 6.2; `questions[]` are auto-answered in § 7, except review-body items, which § 6.3 dispositions. Show verified body declines in SKIPPING with their draft reason. These reply-only items never enter the fix set.
 
-**Recurrence before the cap.** A finding sharing a root cause with one a prior pass patched is dispositioned by [finding-disposition.md § Recurrence](../../reviewer/references/finding-disposition.md#recurrence), which allows `structural-close` or `freeze` and no further patch round. Check it here, ahead of § 6.1's round cap. Read both records with the command that section states, before any item below is dispositioned. A finding sharing a cause in `patched_causes` is the recurrence this rule ends, and one sharing a cause in `frozen_causes` is `declined` without re-triaging.
+**Recurrence before the cap.** A finding sharing a root cause with one a prior pass patched is dispositioned by [finding-disposition.md § Recurrence](../../reviewer/references/finding-disposition.md#recurrence), which allows `structural-close` or `freeze` and no further patch round. Check it here, ahead of § 6.1's round cap. Apply the Dry-run recurrence context above: when history is unavailable, report that status in the triage output and leave recurrence unverified. Otherwise read both records with the command that section states, before any item below is dispositioned. A finding sharing a cause in `patched_causes` is the recurrence this rule ends, and one sharing a cause in `frozen_causes` is `declined` without re-triaging.
 
 Auto-fix every valid item — do not prompt for a selection. Skip an item only when it contradicts an active decision (cite the decision id), is too vague to act on, is out of the PR's scope (→ issue), carries a root cause § Recurrence dispositions (→ `RECURRENCE`, never an auto-fix), or cannot affect real usage (decline with one line, per [SKILL.md § The Cycle](../SKILL.md#the-cycle)).
 
@@ -235,7 +248,13 @@ Group the `fix set` by `agent`. Before stamping each group's round, read the tar
 env -u GH_REPO -u GITHUB_REPOSITORY .agents/skills/orch/scripts/pr-view-json [WORKTREE_PATH] [PR_NUMBER] --json state
 ```
 
-Run [dev-fix.md § 2's base-freshness gate](dev-fix.md#2-delegate) before stamping this direct fix round. Then stamp the round as separate tool calls immediately before delegating. Apply the cleanup condition and arm the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
+Run [dev-fix.md § 2's base-freshness gate](dev-fix.md#2-delegate) before stamping this direct fix round. Apply [Finding occurrences § Query and admission](../schemas/workflow-state.md#query-and-admission) to this group's proposed fix classes, writing its requests as `[WORKTREE_PATH]/tmp/finding-requests-[ISSUE_ID].json` from the original review items or exact receipt-origin check names:
+
+```bash
+.agents/skills/orch/scripts/workflow-state findings query [ISSUE_ID] [WORKTREE_PATH]/tmp/finding-requests-[ISSUE_ID].json
+```
+
+Save the exact result with the harness file tool as `[WORKTREE_PATH]/tmp/finding-context-[ISSUE_ID].json`. Take the [finding-specific design read](../references/design-review.md#inputs-and-actions), carrying that JSON in the existing ask/status, before any `new-round-id`, pruning or delegation-time write. Carry the same JSON in this group's delegation below. This direct path owns its read even when dev-fix has not run. Only after that route resolves, stamp the round as separate tool calls immediately before delegating. Apply the cleanup condition and arm the watchdog per [references/skill-rules.md § Round Closure](../references/skill-rules.md#round-closure):
 
 ```bash
 .agents/skills/orch/scripts/workflow-state new-round-id [ISSUE_ID] dev_round_id
@@ -258,7 +277,7 @@ Decide whether this fix round may add protected files. [`../schemas/dev-round.md
 When the list is non-empty, pass those exact repository-relative paths to the writer as one blank-separated `--adds` value, and render the same list after `Adds:` in the delegation — one path is `Adds: tools/one-helper.sh`, several are `Adds: tools/one-helper.sh skills/x/scripts/check`. A blank or tab separates, so a path containing whitespace is read as two paths and cannot be authorized as one — check for that before you write the line.
 
 ```bash
-.agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json --source pr-comments --pr-open [PR_OPEN] [--adds "[REPO_RELATIVE_PATHS]"]
+.agents/skills/orch/scripts/dev-round-write --worktree [WORKTREE_PATH] --issue [ISSUE_ID] --round-id [DEV_ROUND_ID] --items-file [WORKTREE_PATH]/tmp/dev-round-items-[DEV_ROUND_ID].json --source pr-comments --pr-open [PR_OPEN] --finding-occurrences-file [WORKTREE_PATH]/tmp/finding-context-[ISSUE_ID].json [--adds "[REPO_RELATIVE_PATHS]"]
 ```
 
 A chosen cut follows [`dev-fix.md` § 2](dev-fix.md) step 4 with `[SOURCE]` bound to `pr-comments`. A nonzero exit names a usage or environment failure. Report it and stop.
@@ -277,6 +296,7 @@ Fill `Worktree:` from `git -C "[DIR]" rev-parse --show-toplevel`, and `Labels:` 
 Follow workflow: .agents/skills/dev/workflows/dev-fix.md
 
 Source: pr-comments
+Finding occurrences: [UNCHANGED_QUERY_JSON]
 Issue: [ISSUE_ID]
 PR: #[PR_NUMBER]
 Worktree: [WORKTREE_PATH]
