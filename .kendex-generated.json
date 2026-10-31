@@ -418,6 +418,7 @@
   ".agents/skills/preflight/scripts/preflight",
   ".agents/skills/project-management/README.md",
   ".agents/skills/project-management/SKILL.md",
+  ".agents/skills/project-management/kendex.settings.toml.example",
   ".agents/skills/project-management/references/dependencies.md",
   ".agents/skills/project-management/references/labels.md",
   ".agents/skills/project-management/references/project-map.md",
