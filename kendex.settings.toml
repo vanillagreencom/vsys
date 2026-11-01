@@ -156,9 +156,13 @@ PM_CREATE_AUTONOMY = "auto"
 # Opinions a review collects; 2+ unions distinct models on one diff.
 SECOND_OPINION_COUNT = "1"
 
-# The roster is the second-opinion default (pi-copilot, claude,
-# pi-copilot-gpt, codex): Copilot comes first, as the owner asked on
-# 2026-11-01. These two lines pin the claude and codex entries' models.
+# Second-opinion order: Claude CLI first, then GPT through the Copilot seat
+# (pi-copilot-gpt, 1copilot), then Codex CLI as the fallback. The owner set
+# this order for the organization's repositories on 2026-11-01 (Slack
+# 1793558900.347579): the package must not default to Copilot first.
+SECOND_OPINION_MODELS = "claude pi-copilot-gpt codex"
+
+# The CLAUDE_CMD and CODEX_CMD lines below pin those entries' models.
 # The claude entry loads no project settings or hooks (--setting-sources=).
 # The two Pi entries run with no room check: their default check, orch's
 # lanes pick for Pi, refuses here because nothing states a Copilot pool
