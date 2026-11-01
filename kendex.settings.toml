@@ -233,6 +233,12 @@ DEV_VALIDATE_CI_CONTEXT = "CI"
 # it runs. Use a glob where a category is a whole directory or file family.
 HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/package_file_list_check.py scripts/refusal.py scripts/build.ts scripts/sample-check.ts scripts/bench-*.ts scripts/percentile.ts package.json bun.lock .bun-version biome.json tsconfig.json bunfig.toml src/test/* warden/agent_warden_testlib.py .agents/skills/bot-instructions/scripts/* kendex.toml kendex.settings.toml"
 
+# Agent-runtime keys whose change alone classifies as trivial. List only keys
+# no CI job and no review gate reads; never COMMIT_GUARDS_*, REVIEW_GATE_*,
+# DEV_VALIDATE_*, HARNESS_CI_* or ORCH_SIZE_*. ORCH_OVERSEER_* stays off:
+# the review gate's settings reader names ORCH_OVERSEER_PREFERENCE.
+HARNESS_CI_TRIVIAL_SETTINGS = "SECOND_OPINION_* ORCH_LANE_* ORCH_REPORT_* ORCH_TMUX_* ORCH_OWNER_* LINEAR_* REVIEWER_SLOT_BUDGET"
+
 # Test files outside the built-in test rule, counted as test lines rather
 # than production by the branch size and change-class measurements: the
 # Python suites and the warden's shared test library. `*` also matches `/`.
