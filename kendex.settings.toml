@@ -161,15 +161,17 @@ SECOND_OPINION_MODELS = "claude copilot codex"
 # Opinions a review collects; 2+ unions distinct models on one diff.
 SECOND_OPINION_COUNT = "1"
 
-# Roster commands (identities claude / gpt-6.1-sol on the 1copilot home /
-# codex). Copilot comes before codex at the owner's 2026-11-01 request, with
+# Roster commands (identities claude / github-copilot/gpt-6.1-sol through
+# Pi / codex). Copilot comes before codex at the owner's 2026-11-01 request, with
 # no room check: a refusal falls through to codex.
 SECOND_OPINION_CLAUDE_CMD = "claude -p --no-session-persistence --model opus --effort max --allowedTools Bash(read-only:true),Read,Glob,Grep --restricted --permission-mode dontAsk --tools Bash,Read,Glob,Grep"
 
-# No bash: in this non-interactive mode the Copilot CLI runs shell commands
-# without asking, so the entry gets read-only file tools and the diff inline.
-SECOND_OPINION_COPILOT_CMD = "env COPILOT_ALLOW_ALL=false 1copilot --model gpt-6.1-sol --reasoning-effort high --silent --no-ask-user --disable-builtin-mcps --available-tools view rg glob --deny-tool write"
-SECOND_OPINION_COPILOT_MODEL = "gpt-6.1-sol"
+# Pi on the Copilot provider, as kendex's pi-copilot entry: no shell, no
+# repository hooks (--no-extensions), inherited GitHub tokens cleared, and
+# the diff inline. The Copilot CLI ran bash unasked and loads a trusted
+# checkout's hooks, including lane mail, so it is not used here.
+SECOND_OPINION_COPILOT_CMD = "env -u GH_TOKEN -u GITHUB_TOKEN -u COPILOT_GITHUB_TOKEN pi -p --no-session --no-extensions --model github-copilot/gpt-6.1-sol --thinking high --tools read,grep,find,ls"
+SECOND_OPINION_COPILOT_MODEL = "github-copilot/gpt-6.1-sol"
 SECOND_OPINION_COPILOT_INLINE_DIFF = "1"
 
 SECOND_OPINION_CODEX_CMD = "codex exec -m gpt-6.1-sol -s read-only -c model_reasoning_effort=xhigh --ephemeral --disable hooks"
