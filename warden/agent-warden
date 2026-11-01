@@ -1324,7 +1324,8 @@ TEST_WORLD_PATTERNS = env_number("AGENT_WARDEN_TEST_WORLDS", (), _glob_list)
 # One bound for a test world, a failed transient unit and a test process.
 TEST_AGE = env_number("AGENT_WARDEN_TEST_AGE", 3600, _test_age)
 # Each removal first scans and re-reads every process with its open files,
-# about 80 ms of CPU over 700 processes, so ten cost about 0.8 s a tick
+# about 80 ms of CPU over 700 processes, and resolves their argv and
+# environment paths, about 35 ms over 550, so ten cost about 1.2 s a tick
 # and 189 worlds drain in about ten minutes. A cap apart from
 # SCRATCH_REMOVALS_PER_PASS keeps either backlog from starving the other.
 TEST_WORLD_REMOVALS_PER_PASS = 10
@@ -1333,6 +1334,15 @@ TEST_WORLD_REMOVALS_PER_PASS = 10
 # space) still names that world.
 NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
 COMPONENT_RE = re.compile(r"[^/\0]*")
+
+
+def _path_values(element):
+    """The absolute paths one argv element or environment entry can name:
+    itself, its part after the first `=`, and each `:`-separated piece of
+    either, as PATH and `--opt=a:b` hold them."""
+    values = (element, element.partition("=")[2])
+    return list(dict.fromkeys(piece for value in values for piece in (value, *value.split(":"))
+                              if piece.startswith("/")))
 
 
 def _world_prefixes():
@@ -1352,17 +1362,33 @@ def _world_holders(procs, prefixes):
     """(tokens, unread): tokens is every world-like path a readable process
     names in its current directory, executable, open files, argv or
     environment, each as its real parent joined with the one component that
-    follows. unread lists the pids this user runs, outside a desktop unit by
-    _unread_may_hold, that have not exited and for which any of those reads
-    failed. Unlike _scratch_holders no lane lineage bounds them: a test
+    follows. A path in argv or the environment is also read resolved, so
+    one reaching a world through a symlink of its own (TMPDIR under a
+    symlinked directory) still names it; the kernel's cwd, exe and fd links
+    are already resolved. unread lists the pids this user runs, outside a
+    desktop unit by _unread_may_hold, that have not exited and for which any
+    of those reads failed. Unlike _scratch_holders no lane lineage bounds them: a test
     creates its world after its lane launched, so a launch says nothing of
     what an unreadable lane member holds."""
     tokens = set()
     unread = []
     forms = {form: real for _, _, spellings in prefixes for form, real in spellings.items()}
+    # Processes share most argv and environment entries, so each distinct
+    # entry is resolved once a read; resolving every one per process cost
+    # about 175 ms of CPU over 550 processes, once each about 35 ms.
+    seen, aliases = set(), {}
     for pid, proc in procs.items():
         texts = [read(f"/proc/{pid}/environ"), read(f"/proc/{pid}/cmdline")]
         ok = None not in texts
+        entries = set("\0".join(t for t in texts if t).split("\0"))
+        for entry in entries - seen:
+            real = [r for value in _path_values(entry) for r in (os.path.realpath(value),)
+                    if r != value and any(r.startswith(form) for form in forms)]
+            if real:
+                aliases[entry] = real
+        seen |= entries
+        for entry in entries & aliases.keys():
+            texts += aliases[entry]
         for link in ("cwd", "exe"):
             try:
                 texts.append(os.readlink(f"/proc/{pid}/{link}"))
@@ -1425,35 +1451,45 @@ def reap_test_worlds(correct, scan, failed, now=None):
     every process, called as reap_scratch_dirs calls it; failed
     holds the paths whose removal failure is already logged. Returns the
     number of candidates left after this pass, or None when no pattern is
-    set or a pattern's parent could not be listed, and the paths removed."""
+    set, a pattern's parent could not be listed or a match in it could not
+    be stated, and the paths removed."""
     if not TEST_WORLD_PATTERNS:
         return None, []
     now = time.time() if now is None else now
     protected = {os.path.realpath(p) for p in ("/", HOME, RUNTIME_DIR, *_scratch_parents())}
     prefixes = _world_prefixes()
     paths = []
-    listed = True
+    complete = True
     for pattern, real, _ in prefixes:
         leaf = os.path.basename(pattern)
         try:
             names = sorted(os.listdir(real))
         except OSError as e:
             log(f"test world pattern {pattern}: parent unreadable ({type(e).__name__}); not counted")
-            listed = False
+            complete = False
             continue
+        stat_failed = []
         for name in names:
             path = os.path.join(real, name)
             if not fnmatch.fnmatchcase(name, leaf) or path in paths:
                 continue  # two patterns can match one directory
             try:
                 st = os.lstat(path)
-            except OSError:
+            except FileNotFoundError:
+                continue  # removed since the listing
+            except OSError as e:
+                stat_failed.append((path, type(e).__name__))
                 continue
             if (stat.S_ISDIR(st.st_mode) and st.st_uid == UID and now - st.st_mtime >= TEST_AGE
                     and not any(p == path or p.startswith(path + "/") for p in protected)):
                 paths.append(path)
+        if stat_failed:
+            path, kind = stat_failed[0]
+            log(f"test world pattern {pattern}: lstat failed for {len(stat_failed)} match(es), first {path} ({kind}); "
+                f"not counted")
+            complete = False
     if not paths:
-        return (0 if listed else None), []
+        return (0 if complete else None), []
     mounts = _mount_points()
     candidates = []
     holders = _world_holders(scan(), prefixes)
@@ -1465,7 +1501,7 @@ def reap_test_worlds(correct, scan, failed, now=None):
     removed = _remove_unheld(correct, candidates, holders, lambda: _world_holders(scan(), prefixes), _world_in_use,
                              TEST_WORLD_REMOVALS_PER_PASS, failed, "test world", f"older than {int(TEST_AGE)}s")
     failed.intersection_update(paths)
-    return (len(paths) - len(removed) if listed else None), removed
+    return (len(paths) - len(removed) if complete else None), removed
 
 
 def _repo_id(pid):
@@ -1502,17 +1538,16 @@ def _repo_id(pid):
 
 
 def _names_test_world(arg, forms):
-    """Whether argv element arg, or its part after the first `=`, is a path
-    whose ancestor at a pattern's depth matches one of forms, whether or not
-    the directory still exists."""
-    for value in (arg, arg.partition("=")[2]):
-        if not value.startswith("/"):
-            continue
-        parts = os.path.normpath(value).split("/")
-        for form in forms:
-            depth = form.count("/") + 1
-            if len(parts) >= depth and fnmatch.fnmatchcase("/".join(parts[:depth]), form):
-                return True
+    """Whether a path in argv element arg by _path_values, as written or
+    resolved, has an ancestor at a pattern's depth that matches one of
+    forms, whether or not the directory still exists."""
+    for value in _path_values(arg):
+        for spelling in {value, os.path.realpath(value)}:
+            parts = os.path.normpath(spelling).split("/")
+            for form in forms:
+                depth = form.count("/") + 1
+                if len(parts) >= depth and fnmatch.fnmatchcase("/".join(parts[:depth]), form):
+                    return True
     return False
 
 

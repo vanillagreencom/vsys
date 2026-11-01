@@ -131,6 +131,8 @@ class AgentWardenLeftoverRules(WardenRulesCase):
             ("an open file inside it", {HOLDER: readable(fds=["socket:[1]", "{world}/sub/log"])}, (), "kept"),
             ("argv names it through the pattern's symlinked parent",
              {HOLDER: readable(cmdline="x\0{link}/" + WORLD + "/f\0")}, ("link-pattern",), "kept"),
+            ("TMPDIR names it through a symlink the pattern does not use",
+             {HOLDER: readable(environ="TMPDIR={link}/" + WORLD + "\0")}, (), "kept"),
             ("a longer sibling name", {HOLDER: readable(cwd="{world}0")}, (), "removed"),
             ("an fd closed between the listing and its read",
              {HOLDER: readable(fds=[FileNotFoundError(2, "gone")])}, (), "removed"),
@@ -208,9 +210,11 @@ class AgentWardenLeftoverRules(WardenRulesCase):
              "_unread_may_hold(proc):\n            pass\n", "environment unreadable"),
             ("name boundary", "token[len(path)] not in NAME_CHARS", "True", "a longer sibling name"),
             ("owner", "st.st_uid == UID and now", "now", "owned by another uid"),
-            ("symlink", "                st = os.lstat(path)\n            except OSError:\n                continue\n            if (stat",
-             "                st = os.stat(path)\n            except OSError:\n                continue\n            if (stat",
+            ("symlink", "                st = os.lstat(path)\n            except FileNotFoundError:",
+             "                st = os.stat(path)\n            except FileNotFoundError:",
              "a symlink matching the pattern"),
+            ("resolved references", "                aliases[entry] = real\n", "                pass\n",
+             "TMPDIR names it through a symlink the pattern does not use"),
             ("mount point", 'if mounts is None or any(m == path or m.startswith(path + "/") for m in mounts):',
              "if mounts is None:", "a mount point under it"),
         ]
@@ -284,14 +288,26 @@ class AgentWardenLeftoverRules(WardenRulesCase):
 
     def test_test_world_counts_without_a_readable_listing(self):
         with scratch() as tmp:
+            world = Path(tmp) / "vgw-world.1"
+            world.mkdir()
+            real_lstat = os.lstat
+            # (name, patterns, what lstat of the world raises, expected)
             rows = [
-                ("no pattern", (), (None, [])),
-                ("a parent that cannot be listed", (f"{tmp}/missing/vgw-world.*",), (None, [])),
-                ("a listed parent with no match", (f"{tmp}/vgw-world.*",), (0, [])),
+                ("no pattern", (), None, (None, [])),
+                ("a parent that cannot be listed", (f"{tmp}/missing/vgw-world.*",), None, (None, [])),
+                ("a listed parent with no match", (f"{tmp}/vgw-x.*",), None, (0, [])),
+                ("a match removed since the listing", (f"{tmp}/vgw-world.*",), FileNotFoundError(2, "gone"), (0, [])),
+                ("a match whose lstat is denied", (f"{tmp}/vgw-world.*",), PermissionError(13, "denied"), (None, [])),
             ]
-            for name, patterns, expected in rows:
+            for name, patterns, error, expected in rows:
+
+                def lstat(path, *args, **kwargs):
+                    if error is not None and os.path.basename(path) == world.name:
+                        raise error
+                    return real_lstat(path, *args, **kwargs)
+
                 with self.subTest(name=name), patch.object(self.w, "TEST_WORLD_PATTERNS", patterns), \
-                        patch.object(self.w, "log"):
+                        patch.object(self.w, "log"), patch.object(self.w.os, "lstat", side_effect=lstat):
                     self.assertEqual(self.w.reap_test_worlds(True, lambda: {}, set()), expected)
 
     # --- old test processes --------------------------------------------------
@@ -300,6 +316,7 @@ class AgentWardenLeftoverRules(WardenRulesCase):
             base = Path(tmp)
             parent = base / "tmp"
             parent.mkdir()
+            (base / "link").symlink_to(parent)
             main = base / "dev" / "vgshell"
             for name in ("vgs-1", "vgs-2"):
                 gitdir = main / ".git" / "worktrees" / name
@@ -325,6 +342,8 @@ class AgentWardenLeftoverRules(WardenRulesCase):
                 ("argv outside every world", ["scan", f"{parent}/other/x", "relative/vgw-world.7"], 0, 2 * hour,
                  str(main), "not counted"),
                 ("argv at the pattern's parent", ["scan", str(parent)], 0, 2 * hour, str(main), "not counted"),
+                ("an argv path in a world through a symlinked directory", ["scan", f"{base}/link/vgw-world.7/core"], 0,
+                 2 * hour, str(main), "vgshell"),
             ]
             procs, views = {}, {}
             for index, (name, argv, tty, age, cwd, _) in enumerate(rows):
@@ -343,7 +362,7 @@ class AgentWardenLeftoverRules(WardenRulesCase):
                         self.assertEqual(self.w.report_test_processes({pid: procs[pid]}, boot_now), expected)
                 with self.subTest(name="grouped by repository, the unknown last"):
                     self.assertEqual(self.w.report_test_processes(procs, boot_now),
-                                     [{"repo": "vgshell", "processes": 3}, {"repo": None, "processes": 2}])
+                                     [{"repo": "vgshell", "processes": 4}, {"repo": None, "processes": 2}])
             finally:
                 for p in reversed(patches):
                     p.stop()
