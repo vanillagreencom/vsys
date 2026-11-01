@@ -73,7 +73,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                                      side_effect=PermissionError("cwd unreadable") if cwd is None else None), \
                         patch.object(self.w.shutil, "rmtree") as remove:
                     self.assertEqual(self.w._scratch_in_use(str(lane), self.w._scratch_holders({LIVE: worker})), status)
-                    removed = self.w.reap_scratch_dirs(True, {LIVE: worker}, set())
+                    removed = self.w.reap_scratch_dirs(True, lambda: {LIVE: worker}, set())
                 if status == "free":
                     remove.assert_called_once()
                     self.assertEqual(removed, [lane.name])
@@ -107,7 +107,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 old_log = self.w.log
                 self.w.log = logs.append
                 try:
-                    self.assertEqual(self.w.reap_scratch_dirs(False, {}, set()), [])
+                    self.assertEqual(self.w.reap_scratch_dirs(False, lambda: {}, set()), [])
                 finally:
                     self.w.log = old_log
                 report_rows = [
@@ -118,7 +118,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 for name, actual, expected in report_rows:
                     with self.subTest(name=name):
                         self.assertEqual(actual, expected)
-                removed = self.w.reap_scratch_dirs(True, {}, set())
+                removed = self.w.reap_scratch_dirs(True, lambda: {}, set())
                 correct_rows = [
                     ("a live scope's directory survives", live.is_dir(), True),
                     ("a gone scope's directory is removed", gone.exists(), False),
@@ -221,7 +221,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 old = time.time() - w.SCRATCH_GRACE - 1
                 os.utime(gone, (old, old))
                 failed = set()
-                removed = w.reap_scratch_dirs(True, {}, failed)
+                removed = w.reap_scratch_dirs(True, lambda: {}, failed)
                 return removed, gone.exists(), failed
             finally:
                 w.CG_ROOT, w.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -259,7 +259,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 live.mkdir()
                 old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
                 os.utime(live, (old_mtime, old_mtime))
-                mutant.reap_scratch_dirs(True, {}, set())
+                mutant.reap_scratch_dirs(True, lambda: {}, set())
                 self.assertFalse(live.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -282,7 +282,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 scratch_dir.mkdir(parents=True)
                 fresh = scratch_dir / "agent-confine-900-111"
                 fresh.mkdir()  # no matching scope yet, and not backdated
-                removed = self.w.reap_scratch_dirs(True, {}, set())
+                removed = self.w.reap_scratch_dirs(True, lambda: {}, set())
                 self.assertTrue(fresh.is_dir())
                 self.assertEqual(removed, [])
             finally:
@@ -306,7 +306,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 scratch_dir.mkdir(parents=True)
                 fresh = scratch_dir / "agent-confine-900-111"
                 fresh.mkdir()
-                mutant.reap_scratch_dirs(True, {}, set())
+                mutant.reap_scratch_dirs(True, lambda: {}, set())
                 self.assertFalse(fresh.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -335,7 +335,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 self.w.log = logs.append
                 try:
                     self.assertIsNone(self.w.scope_units())
-                    removed = self.w.reap_scratch_dirs(True, {}, set())
+                    removed = self.w.reap_scratch_dirs(True, lambda: {}, set())
                 finally:
                     self.w.log = old_log
                 self.assertEqual(removed, [])
@@ -368,7 +368,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 live.mkdir()
                 old_mtime = time.time() - mutant.SCRATCH_GRACE - 1
                 os.utime(live, (old_mtime, old_mtime))
-                mutant.reap_scratch_dirs(True, {}, set())
+                mutant.reap_scratch_dirs(True, lambda: {}, set())
                 self.assertFalse(live.is_dir())
             finally:
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
@@ -516,7 +516,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         try:
                             with patch.object(self.w.os, "readlink", side_effect=readlink):
                                 self.assertEqual(self.w._scratch_in_use(str(moved), self.w._scratch_holders(procs)), status)
-                                removed = self.w.reap_scratch_dirs(True, procs, set())
+                                removed = self.w.reap_scratch_dirs(True, lambda: procs, set())
                         finally:
                             self.w.read = old_read
                         if status == "free":
@@ -550,7 +550,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 with patch.object(module.time, "time", return_value=now), \
                         patch.object(module, "_proc_tmpdir", return_value=None), \
                         patch.object(module, "log"):
-                    removed = module.reap_scratch_dirs(True, {worker.pid: worker}, set())
+                    removed = module.reap_scratch_dirs(True, lambda: {worker.pid: worker}, set())
                 return removed, marker.exists()
 
     def test_unreadable_detached_worker_keeps_active_scratch(self):
@@ -610,7 +610,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         patch.object(module.os, "readlink", side_effect=counted_readlink), \
                         patch.object(module, "log"):
                     procs = {pid: self.P(pid, 1, "op", ["op"], cg=self._cg("agent-warden-1-2.scope")) for pid in (LIVE, 701)}
-                    removed = module.reap_scratch_dirs(True, procs, set())
+                    removed = module.reap_scratch_dirs(True, lambda: procs, set())
                 return reads, removed
 
     def test_reap_scratch_dirs_reads_each_process_once(self):
@@ -630,56 +630,84 @@ class AgentWardenScratchRules(WardenRulesCase):
 
     def test_reap_scratch_dirs_per_directory_read_mutant_fails(self):
         text = WARDEN.read_text()
-        old = "        if holders is None:\n            holders = _scratch_holders(procs)\n"
+        old = "        if holders is None:\n            holders = _scratch_holders(scan())\n"
         self.assertEqual(text.count(old), 1)
-        mutant = self.load_mutant(text.replace(old, "        holders = _scratch_holders(procs)\n"),
+        mutant = self.load_mutant(text.replace(old, "        holders = _scratch_holders(scan())\n"),
                                   "agent_warden_mutant_scratch_reads")
         reads, removed = self._scratch_reads(mutant, 3)
         self.assertEqual(removed, [])
         self.assertEqual(reads[f"/proc/{LIVE}/environ"], 3)
 
-    def test_worker_entering_a_later_directory_during_a_removal_keeps_it(self):
-        # A known worker with no TMPDIR changes its current directory into
-        # the next gone directory while the warden removes the one before
-        # it. The pass's first holder read predates that move, so the
-        # directory must be read again before its own removal.
+    # A process scan as it stood when the pass began, re-read only for the
+    # pids it already held: a holder that starts during the pass is missed.
+    SNAPSHOT_RESCAN = "(lambda procs: lambda: _scratch_holders(procs))(scan())"
+
+    def _arrival_pass(self, w, arrival):
+        """One correct-mode pass over two gone directories past their grace.
+        While the first is removed, a known worker with no TMPDIR changes its
+        current directory into the second ("moves"), or a new one starts
+        there ("starts"). Returns the names removed and whether the second
+        is still there."""
         with scratch() as tmp:
             base = Path(tmp)
-            (base / "cg" / self.w.SLICE).mkdir(parents=True)
+            (base / "cg" / w.SLICE).mkdir(parents=True)
             first = base / "scratch" / "agent-confine-300-400"
             later = base / "scratch" / "agent-confine-301-400"
             for directory in (first, later):
                 directory.mkdir(parents=True)
                 os.utime(directory, (0, 0))
-            cwd = ["/unrelated"]
-            real_read, real_readlink, real_rmtree = self.w.read, os.readlink, self.w.shutil.rmtree
+            procs = {700: None}
+            cwd = {700: "/unrelated", 701: str(later)}
+            real_read, real_readlink, real_rmtree = w.read, os.readlink, w.shutil.rmtree
+
+            def worker(path):
+                m = re.fullmatch(r"/proc/(\d+)/(environ|cwd)", str(path))
+                return (int(m.group(1)), m.group(2)) if m and int(m.group(1)) in cwd else (None, None)
 
             def read(path, default=None):
-                return "HOME=/home\0" if str(path) == "/proc/700/environ" else real_read(path, default)
+                pid, _ = worker(path)
+                return "HOME=/home\0" if pid else real_read(path, default)
 
             def readlink(path, *args, **kwargs):
-                return cwd[0] if str(path) == "/proc/700/cwd" else real_readlink(path, *args, **kwargs)
+                pid, _ = worker(path)
+                return cwd[pid] if pid else real_readlink(path, *args, **kwargs)
 
             def rmtree(path, *args, **kwargs):
                 if path == str(first):
-                    cwd[0] = str(later)
+                    if arrival == "moves":
+                        cwd[700] = str(later)
+                    else:
+                        procs[701] = None
                 real_rmtree(path, *args, **kwargs)
 
-            with patch.object(self.w, "CG_ROOT", base / "cg"), \
-                    patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
-                    patch.object(self.w, "read", side_effect=read), patch.object(self.w, "log"), \
-                    patch.object(self.w.os, "readlink", side_effect=readlink), \
-                    patch.object(self.w.shutil, "rmtree", side_effect=rmtree):
-                removed = self.w.reap_scratch_dirs(True, {700: None}, set())
-            self.assertEqual(removed, [first.name])
-            self.assertFalse(first.exists())
-            self.assertTrue(later.is_dir())
+            with patch.object(w, "CG_ROOT", base / "cg"), \
+                    patch.object(w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                    patch.object(w, "read", side_effect=read), patch.object(w, "log"), \
+                    patch.object(w.os, "readlink", side_effect=readlink), \
+                    patch.object(w.shutil, "rmtree", side_effect=rmtree):
+                removed = w.reap_scratch_dirs(True, lambda: dict(procs), set())
+            return removed, later.is_dir()
+
+    def test_a_holder_arriving_during_a_removal_keeps_a_later_directory(self):
+        # The pass's first holder read predates the arrival, so each
+        # directory is read again, from a fresh process scan, before its
+        # own removal.
+        for arrival in ("moves", "starts"):
+            with self.subTest(arrival=arrival):
+                self.assertEqual(self._arrival_pass(self.w, arrival), (["agent-confine-300-400"], True))
+
+    def test_a_rescan_of_the_first_snapshot_misses_a_starting_holder(self):
+        text = WARDEN.read_text()
+        old = "lambda: _scratch_holders(scan())"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, self.SNAPSHOT_RESCAN), "agent_warden_mutant_scratch_rescan")
+        self.assertEqual(self._arrival_pass(mutant, "starts"), (["agent-confine-300-400", "agent-confine-301-400"], False))
 
     def test_reap_scratch_dirs_tmpdir_liveness_mutant_fails(self):
         text = WARDEN.read_text()
         old = (
             '        if status == "in-use":\n'
-            '            log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")\n'
+            '            log(f"{kind} {name}: {why} but a live process still uses this directory; not reaping")\n'
             '            continue\n'
         )
         self.assertEqual(text.count(old), 1)
@@ -707,7 +735,7 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                 mutant.read = flaky_read
                 try:
-                    mutant.reap_scratch_dirs(True, {555: self.P(555, 1, "bash", ["bash"])}, set())
+                    mutant.reap_scratch_dirs(True, lambda: {555: self.P(555, 1, "bash", ["bash"])}, set())
                 finally:
                     mutant.read = old_read
                 self.assertFalse(moved.is_dir())
@@ -753,7 +781,7 @@ class AgentWardenScratchRules(WardenRulesCase):
 
                 self.w.read = flaky_read
                 try:
-                    removed = self.w.reap_scratch_dirs(True, {555: self.P(555, 1, "bash", ["bash"])}, set())
+                    removed = self.w.reap_scratch_dirs(True, lambda: {555: self.P(555, 1, "bash", ["bash"])}, set())
                 finally:
                     self.w.read = old_read
                 self.assertTrue(moved.is_dir())
@@ -761,29 +789,30 @@ class AgentWardenScratchRules(WardenRulesCase):
             finally:
                 self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
-    def test_run_reaps_scratch_with_a_fresh_scan_not_plan_procs(self):
+    def test_run_hands_the_reapers_the_process_scan_not_plan_procs(self):
         # run() takes one scan() snapshot up front for plan()'s move
         # decisions (move() itself does not run until much later in the
-        # tick). Passing that same early snapshot to reap_scratch_dirs
-        # reopens the staleness gap the liveness check exists to close: a
-        # process that starts between the snapshot and the reap call --  a
-        # prior tick's moved worker spawning a new child, say -- is simply
-        # absent from it, which _scratch_in_use cannot tell apart from "no
-        # such process". The call site must take a fresh snapshot instead.
+        # tick). Handing that same early snapshot to a reaper reopens the
+        # staleness gap the liveness check exists to close: a process that
+        # starts between the snapshot and a removal -- a prior tick's moved
+        # worker spawning a new child, say -- is simply absent from it, which
+        # the in-use check cannot tell apart from "no such process". Each
+        # call site hands over scan itself, which the reaper calls for every
+        # holder read.
         text = WARDEN.read_text()
-        self.assertEqual(text.count("reap_scratch_dirs(correct, scan(), scratch_failed)\n"), 1)
-        self.assertEqual(text.count("reap_scratch_dirs(correct, procs, scratch_failed)\n"), 0)
+        self.assertEqual(text.count("reap_scratch_dirs(correct, scan, scratch_failed)\n"), 1)
+        self.assertEqual(text.count("reap_test_worlds(correct, scan, world_failed)\n"), 1)
 
     def test_reap_scratch_dirs_stale_snapshot_misses_a_new_live_pid(self):
         # Behavioral proof, against a real subprocess and its real
-        # /proc/<pid>/environ rather than a faked pid: a snapshot that does
+        # /proc/<pid>/environ rather than a faked pid: a scan that does
         # not include that process's pid (as if taken before it started)
-        # lets its directory be reaped out from under it; a snapshot that
+        # lets its directory be reaped out from under it; a scan that
         # does include it (as scan() would, once the process has started --
-        # proven below -- which is what the fixed run() call site passes)
+        # proven below -- which is what run() hands the reaper)
         # keeps the directory. This is the mechanism
-        # test_run_reaps_scratch_with_a_fresh_scan_not_plan_procs proves the
-        # call site relies on. The two procs dicts here are {} and
+        # test_run_hands_the_reapers_the_process_scan_not_plan_procs proves
+        # the call site relies on. The two procs dicts here are {} and
         # {pid: None} rather than a full self.w.scan() of this shared
         # machine's whole process list, which would make the "unknown"
         # branch (an unrelated live pid's environ read losing a race against
@@ -824,13 +853,13 @@ class AgentWardenScratchRules(WardenRulesCase):
                     self.assertIn(proc.pid, self.w.scan())
                     fresh = {proc.pid: None}
 
-                    removed = self.w.reap_scratch_dirs(True, stale, set())
+                    removed = self.w.reap_scratch_dirs(True, lambda: stale, set())
                     self.assertEqual(removed, ["agent-confine-100-200"])
                     self.assertFalse(moved.is_dir())
 
                     moved.mkdir()
                     os.utime(moved, (old_mtime, old_mtime))
-                    removed = self.w.reap_scratch_dirs(True, fresh, set())
+                    removed = self.w.reap_scratch_dirs(True, lambda: fresh, set())
                     self.assertEqual(removed, [])
                     self.assertTrue(moved.is_dir())
                 finally:
@@ -880,7 +909,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                 with patch.object(self.w, "CG_ROOT", base / "cg"), \
                         patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
                         patch.object(self.w, "log", side_effect=logs.append):
-                    self.assertEqual(self.w.reap_scratch_dirs(True, {pid: daemon}, set()), removed)
+                    self.assertEqual(self.w.reap_scratch_dirs(True, lambda: {pid: daemon}, set()), removed)
                 self.assertEqual(len(logs), len(removed) + kept_lines)
                 self.assertEqual(sum(str(pid) in line for line in logs), kept_lines)
 
@@ -912,7 +941,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                     (contextlib.nullcontext() if birth_known else patch.object(module, "_birth_time", return_value=None)), \
                     patch.object(module, "log"):
                 status = module._scratch_in_use(os.path.realpath(gone), module._scratch_holders(procs))
-                removed = module.reap_scratch_dirs(True, procs, set())
+                removed = module.reap_scratch_dirs(True, lambda: procs, set())
             return status, removed, own.is_dir()
 
     def _lane_rows(self):
@@ -1028,7 +1057,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                         os.utime(folder, (0, 0))
                     with patch.object(w, "CG_ROOT", base / "cg"), patch.object(w, "log"), \
                             patch.object(w, "_proc_tmpdir", return_value=None):
-                        self.assertEqual(w.reap_scratch_dirs(True, procs, set()), removed)
+                        self.assertEqual(w.reap_scratch_dirs(True, lambda: procs, set()), removed)
                     self.assertEqual([folder.name for folder in folders if folder.is_dir()],
                                      [folder.name for folder in folders if folder.name not in removed])
 
@@ -1064,7 +1093,7 @@ class AgentWardenScratchRules(WardenRulesCase):
                     patch.object(self.w, "_scratch_holders", side_effect=holders), \
                     patch.object(self.w.random, "sample", side_effect=sample or self.w.random.sample), \
                     patch.object(self.w, "log"):
-                removed = [self.w.reap_scratch_dirs(True, {}, set()) for _ in range(passes)]
+                removed = [self.w.reap_scratch_dirs(True, lambda: {}, set()) for _ in range(passes)]
         return names, removed, attempts, reads[0]
 
     def test_reap_scratch_dirs_caps_removals_per_pass(self):

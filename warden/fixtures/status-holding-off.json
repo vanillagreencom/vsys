@@ -35,6 +35,12 @@
       "tasksMax": 8192
     }
   ],
+  "leftovers": {
+    "failedUnits": 0,
+    "testProcessRepos": [],
+    "testProcesses": 0,
+    "testWorlds": 0
+  },
   "mode": "correct",
   "orphans": [],
   "outside": [
@@ -46,7 +52,7 @@
       "tool": "claude"
     }
   ],
-  "schema": "1.1",
+  "schema": "1.2",
   "slice": {
     "headroomOk": false,
     "high": 68719476736,

@@ -27,6 +27,10 @@ def clean_env(base, *, path=False):
     return env
 
 
+def _refuse_live_bus(self):
+    raise OSError("test harness: no live user bus")
+
+
 def load_warden(env, name="agent_warden_under_test", path=WARDEN):
     old = os.environ.copy()
     os.environ.clear()
@@ -38,6 +42,10 @@ def load_warden(env, name="agent_warden_under_test", path=WARDEN):
             raise RuntimeError("agent-warden import spec unavailable")
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
+        # A run() in this process connects with this process's own user bus
+        # address, and the failed-unit pass runs on every tick, so a module a
+        # test loads never opens a bus: a row that needs one injects a fake.
+        module.Bus.__init__ = _refuse_live_bus
         return module
     finally:
         os.environ.clear()
