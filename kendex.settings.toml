@@ -134,8 +134,10 @@ ORCH_OVERSEER_LANES = "12"
 
 # The models a new or successor overseer tries, in order, as
 # harness:model:effort. A succession's walk then ends in the caller's own
-# harness.
-ORCH_OVERSEER_PREFERENCE = "claude:standard:high,codex:gpt-6.1-sol:high"
+# harness. Standard class at medium effort follows the owner's 2026-10-24
+# overseer policy; this override stands only while the kendex default
+# still names high effort.
+ORCH_OVERSEER_PREFERENCE = "claude:standard:medium,codex:standard:medium"
 ORCH_OVERSEER_HEADROOM_PCT = "5"
 ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
