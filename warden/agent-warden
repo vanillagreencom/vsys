@@ -960,14 +960,14 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
-# Each removal attempt first re-reads every process (VSY-216), about 15 ms
-# over the owner's 800. A backlog of 3,500 folders would cost about 50 s in
-# one pass, past the service's TimeoutStartSec=25, and the kill would land
-# before that tick's moves. So a pass attempts at most this many, whether the
-# removal succeeds or fails, chosen at random when more are free, so folders
-# that keep failing cannot take every slot on every tick. 20 removals
-# measured about 0.48 s of tick CPU idle and 0.67 s loaded, well inside 25 s,
-# and the rest wait for later ticks.
+# Each removal attempt first scans and re-reads every process (VSY-216,
+# VSY-245), about 55 ms of CPU over 700. A backlog of 3,500 folders would
+# cost over three minutes in one pass, past the service's TimeoutStartSec=25,
+# and the kill would land before that tick's moves. So a pass attempts at
+# most this many, whether the removal succeeds or fails, chosen at random
+# when more are free, so folders that keep failing cannot take every slot on
+# every tick. 20 attempts cost about 1.1 s, well inside 25 s, and the rest
+# wait for later ticks.
 SCRATCH_REMOVALS_PER_PASS = 20
 # A gone lane's folder created this long after a live lane's unreadable
 # member started is still read as one it may hold: process start times
@@ -1199,14 +1199,15 @@ def _rmtree_writable(root):
     return {"onerror": lambda func, path, info: onexc(func, path, info[1])}
 
 
-def reap_scratch_dirs(correct, procs, failed):
+def reap_scratch_dirs(correct, scan, failed):
     """Remove a per-scope scratch directory agent-confine created under a
     _scratch_parents() entry once its scope unit is gone from agents.slice
-    AND no live process this user owns has TMPDIR or its current directory there. procs must be a
-    snapshot taken immediately before this call, not reused from earlier in
-    the tick: a process that started since an older snapshot was taken is
-    simply absent from it, which _scratch_in_use cannot tell apart from "no
-    such process". The scope-gone check alone is not enough: move() (the
+    AND no live process this user owns has TMPDIR or its current directory there. scan()
+    reads every process; it is called for the pass's first holder read and
+    again before each removal, never reused from earlier in the tick or the
+    pass: a process that started since an older read is simply absent from
+    it, which _scratch_in_use cannot tell apart from "no such process". The
+    scope-gone check alone is not enough: move() (the
     "nested session" plan() branch) relocates a process into a new scope by
     cgroup membership only, so a moved child keeps the TMPDIR string naming
     its PARENT's original agent-confine scope. When that parent later exits,
@@ -1256,9 +1257,9 @@ def reap_scratch_dirs(correct, procs, failed):
         if not stat.S_ISDIR(st.st_mode):
             continue
         if holders is None:
-            holders = _scratch_holders(procs)
+            holders = _scratch_holders(scan())
         candidates.append((name, path, _scratch_in_use(path, holders)))
-    removed = _remove_unheld(correct, candidates, holders, lambda: _scratch_holders(procs), _scratch_in_use,
+    removed = _remove_unheld(correct, candidates, holders, lambda: _scratch_holders(scan()), _scratch_in_use,
                              SCRATCH_REMOVALS_PER_PASS, failed, "scratch", "scope gone")
     failed.intersection_update(name for _, name in entries)
     return removed
@@ -1268,8 +1269,8 @@ def _remove_unheld(correct, candidates, holders, read_holders, in_use, cap, fail
     """Remove each (name, path, status) candidate whose status is "free",
     at most cap attempts a pass, chosen at random when more are free, so
     folders that keep failing cannot take every slot on every tick. holders
-    is the read that gave each status; read_holders() reads every pid again
-    and in_use(path, holders) judges one path against that read. failed
+    is the read that gave each status; read_holders() scans every process
+    again and in_use(path, holders) judges one path against that read. failed
     holds the names whose removal failure is already logged, kept in the
     state file so a folder that keeps failing is logged once, not at every
     sweep; it is updated in place. Returns the names removed."""
@@ -1286,9 +1287,9 @@ def _remove_unheld(correct, candidates, holders, read_holders, in_use, cap, fail
             if path not in attempts:
                 continue
             # holders can predate an earlier removal in this pass, and a
-            # worker can enter this directory while that removal runs.
-            # Re-read every pid right before a removal, as the per-directory
-            # scan did; a pass that removes nothing still reads each pid once.
+            # worker can enter this directory, or start, while that removal
+            # runs. Scan every process again right before a removal; a pass
+            # that removes nothing still reads each process once.
             holders = read_holders()
             status = in_use(path, holders)
         if status == "in-use":
@@ -1322,8 +1323,8 @@ def _remove_unheld(correct, candidates, holders, read_holders, in_use, cap, fail
 TEST_WORLD_PATTERNS = env_number("AGENT_WARDEN_TEST_WORLDS", (), _glob_list)
 # One bound for a test world, a failed transient unit and a test process.
 TEST_AGE = env_number("AGENT_WARDEN_TEST_AGE", 3600, _test_age)
-# Each removal first re-reads every process with its open files, about
-# 45 ms of CPU over 670 processes, so ten cost about half a second a tick
+# Each removal first scans and re-reads every process with its open files,
+# about 80 ms of CPU over 700 processes, so ten cost about 0.8 s a tick
 # and 189 worlds drain in about ten minutes. A cap apart from
 # SCRATCH_REMOVALS_PER_PASS keeps either backlog from starving the other.
 TEST_WORLD_REMOVALS_PER_PASS = 10
@@ -1415,13 +1416,13 @@ def _mount_points():
             for line in text.splitlines() if len(line.split(" ")) > 4}
 
 
-def reap_test_worlds(correct, procs, failed, now=None):
+def reap_test_worlds(correct, scan, failed, now=None):
     """Remove a directory a TEST_WORLD_PATTERNS entry matches once it is
     older than TEST_AGE and no process holds it by _world_holders. Only a
     real directory this user owns is a candidate, never a symlink, a mount
     point or a directory with one under it, and never the root, HOME, the
-    runtime directory, a scratch parent or an ancestor of one. procs is a
-    snapshot taken just before the call, as for reap_scratch_dirs; failed
+    runtime directory, a scratch parent or an ancestor of one. scan() reads
+    every process, called as reap_scratch_dirs calls it; failed
     holds the paths whose removal failure is already logged. Returns the
     number of candidates left after this pass, or None when no pattern is
     set or a pattern's parent could not be listed, and the paths removed."""
@@ -1455,13 +1456,13 @@ def reap_test_worlds(correct, procs, failed, now=None):
         return (0 if listed else None), []
     mounts = _mount_points()
     candidates = []
-    holders = _world_holders(procs, prefixes)
+    holders = _world_holders(scan(), prefixes)
     for path in paths:
         if mounts is None or any(m == path or m.startswith(path + "/") for m in mounts):
             log(f"test world {path}: a mount point at or under it, or mounts unreadable; not reaping")
             continue
         candidates.append((path, path, _world_in_use(path, holders)))
-    removed = _remove_unheld(correct, candidates, holders, lambda: _world_holders(procs, prefixes), _world_in_use,
+    removed = _remove_unheld(correct, candidates, holders, lambda: _world_holders(scan(), prefixes), _world_in_use,
                              TEST_WORLD_REMOVALS_PER_PASS, failed, "test world", f"older than {int(TEST_AGE)}s")
     failed.intersection_update(paths)
     return (len(paths) - len(removed) if listed else None), removed
@@ -3208,17 +3209,17 @@ def run(correct):
         if only is None:
             try:
                 enforce_task_caps(correct)
-                # A fresh scan, not the plan-time procs above: a worker this
-                # tick's plan() has not even moved yet (move() runs later,
-                # after this block) can be a prior tick's moved child that
-                # spawned a grandchild since procs was captured. That
-                # grandchild's TMPDIR would be invisible to _scratch_in_use
-                # against the stale snapshot. A sub-second window remains
-                # (scan() itself is not atomic); SCRATCH_GRACE and
-                # ORPHAN_GRACE already accept the same class of residual risk
-                # elsewhere in this file.
+                # The reaper scans for itself, not from the plan-time procs
+                # above: a worker this tick's plan() has not even moved yet
+                # (move() runs later, after this block) can be a prior tick's
+                # moved child that spawned a grandchild since procs was
+                # captured. That grandchild's TMPDIR would be invisible to
+                # _scratch_in_use against the stale snapshot. A sub-second
+                # window remains (scan() itself is not atomic); SCRATCH_GRACE
+                # and ORPHAN_GRACE already accept the same class of residual
+                # risk elsewhere in this file.
                 scratch_failed = set(st["scratch_failed"])
-                reap_scratch_dirs(correct, scan(), scratch_failed)
+                reap_scratch_dirs(correct, scan, scratch_failed)
                 st["scratch_failed"] = sorted(scratch_failed)
                 near, unknown_near, near_complete = warn_near_cap()
                 record_near_events(st, near, unknown_near, near_complete, now=tick_now)
@@ -3250,7 +3251,7 @@ def run(correct):
             try:
                 world_procs = scan() if TEST_WORLD_PATTERNS else {}
                 world_failed = set(st["test_world_failed"])
-                leftovers["testWorlds"], _ = reap_test_worlds(correct, world_procs, world_failed)
+                leftovers["testWorlds"], _ = reap_test_worlds(correct, scan, world_failed)
                 st["test_world_failed"] = sorted(world_failed)
             except Exception as e:  # noqa: BLE001
                 log(f"test-world reap raised {e!r}")

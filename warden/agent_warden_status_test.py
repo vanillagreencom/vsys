@@ -482,14 +482,16 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
              {"testWorlds": None, "failedUnits": 2, "testProcesses": None, "testProcessRepos": None}),
         ]
         for name, overrides, expected in rows:
-            scans = iter([{root.pid: root}, {root.pid: root}])
+            # plan()'s scan, then the world scan: the scratch pass scans only
+            # once a gone folder is past its grace, and this sandbox has none.
+            scans = iter([{root.pid: root}])
             stubs = {
                 "scan": lambda: {root.pid: root},
                 "plan": lambda procs, only=None: ([], [], [], []),
                 "reap_orphans": lambda procs, st, correct, only=None: ([], []),
                 "enforce_task_caps": lambda correct: [],
                 "warn_near_cap": lambda: ([], set(), True),
-                "reap_test_worlds": lambda correct, procs, failed: (3, []),
+                "reap_test_worlds": lambda correct, scan, failed: (3, []),
                 "report_test_processes": lambda procs: [{"repo": "vgshell", "processes": 1}],
                 "_failed_unit_pass": lambda correct: 2,
                 "TEST_WORLD_PATTERNS": ("/tmp/vgw-world.*",),
@@ -806,13 +808,12 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             self.write_status_cgroup(self.w, scope="agent-warden-321-654.scope")
             before = self.P(321, 1, "claude", ["claude"], self.A, start=654)
             after = self.P(321, 1, "claude", ["claude"], self._cg("agent-warden-321-654.scope"), start=654)
-            # Three scan() calls per correct tick with a move: the plan-time
-            # snapshot (before), the fresh snapshot reap_scratch_dirs takes
-            # for its own liveness check (irrelevant here -- AGENT_TMPDIR_PARENT
-            # does not exist under this sandboxed HOME, so reap_scratch_dirs
-            # returns before ever reading its procs argument), and the
-            # fresh_labels rescan after the move (after).
-            calls = iter([{before.pid: before}, {}, {after.pid: after}])
+            # Two scan() calls per correct tick with a move here: the
+            # plan-time snapshot (before) and the fresh_labels rescan after
+            # the move (after). reap_scratch_dirs scans only once a gone
+            # folder is past its grace, and AGENT_TMPDIR_PARENT does not
+            # exist under this sandboxed HOME.
+            calls = iter([{before.pid: before}, {after.pid: after}])
             old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
             old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
             old_bus, old_move, old_worktree, old_notify = self.w.Bus, self.w.move, self.w._worktree_label, self.w.notify

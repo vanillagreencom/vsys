@@ -183,7 +183,7 @@ class AgentWardenLeftoverRules(WardenRulesCase):
             for p in patches:
                 p.start()
             try:
-                count, removed = w.reap_test_worlds("report" not in setup, procs, set())
+                count, removed = w.reap_test_worlds("report" not in setup, lambda: procs, set())
             finally:
                 for p in reversed(patches):
                     p.stop()
@@ -230,9 +230,57 @@ class AgentWardenLeftoverRules(WardenRulesCase):
                 (parent / f"vgw-world.{index}").mkdir()
                 os.utime(parent / f"vgw-world.{index}", (0, 0))
             with patch.object(self.w, "TEST_WORLD_PATTERNS", (f"{parent}/vgw-world.*",)), patch.object(self.w, "log"):
-                passes = [self.w.reap_test_worlds(True, {}, set()) for _ in range(2)]
+                passes = [self.w.reap_test_worlds(True, lambda: {}, set()) for _ in range(2)]
         self.assertEqual([(count, len(removed)) for count, removed in passes],
                          [(2, self.w.TEST_WORLD_REMOVALS_PER_PASS), (0, 2)])
+
+    def _arrival_pass(self, w):
+        """One correct-mode reap over two worlds past the age. While the
+        first is removed, a process starts whose current directory is inside
+        the second. Returns the count left, the paths removed and whether
+        the second is still there."""
+        with scratch() as tmp:
+            parent = Path(os.path.realpath(tmp))
+            first, second = parent / "vgw-world.1", parent / "vgw-world.2"
+            for world in (first, second):
+                world.mkdir()
+                os.utime(world, (0, 0))
+            procs = {}
+            real_rmtree = w.shutil.rmtree
+
+            def rmtree(path, *args, **kwargs):
+                real_rmtree(path, *args, **kwargs)
+                if path == str(first):
+                    procs[HOLDER] = w.Proc(HOLDER, ppid=1, comm="test", argv=["test"], exe="/usr/bin/test", cgroup=self.A)
+
+            patches = [patch.object(w, "TEST_WORLD_PATTERNS", (f"{parent}/vgw-world.*",)), patch.object(w, "log"),
+                       patch.object(w, "_mount_points", return_value=set()),
+                       patch.object(w.shutil, "rmtree", side_effect=rmtree),
+                       *fake_proc(w, {HOLDER: readable(cwd=f"{second}/sub")})]
+            for p in patches:
+                p.start()
+            try:
+                count, removed = w.reap_test_worlds(True, lambda: dict(procs), set())
+            finally:
+                for p in reversed(patches):
+                    p.stop()
+            return count, removed, second.is_dir(), str(first), str(second)
+
+    def test_test_world_holder_starting_during_a_removal_keeps_it(self):
+        # The pass's first holder read predates the new process, so each
+        # world is read again, from a fresh process scan, before its own
+        # removal.
+        count, removed, present, first, _ = self._arrival_pass(self.w)
+        self.assertEqual((count, removed, present), (1, [first], True))
+
+    def test_test_world_rescan_of_the_first_snapshot_misses_a_starting_holder(self):
+        text = WARDEN.read_text()
+        old = "lambda: _world_holders(scan(), prefixes)"
+        self.assertEqual(text.count(old), 1)
+        mutant = self.load_mutant(text.replace(old, "(lambda procs: lambda: _world_holders(procs, prefixes))(scan())"),
+                                  "agent_warden_mutant_world_rescan")
+        count, removed, present, first, second = self._arrival_pass(mutant)
+        self.assertEqual((count, removed, present), (0, [first, second], False))
 
     def test_test_world_counts_without_a_readable_listing(self):
         with scratch() as tmp:
@@ -244,7 +292,7 @@ class AgentWardenLeftoverRules(WardenRulesCase):
             for name, patterns, expected in rows:
                 with self.subTest(name=name), patch.object(self.w, "TEST_WORLD_PATTERNS", patterns), \
                         patch.object(self.w, "log"):
-                    self.assertEqual(self.w.reap_test_worlds(True, {}, set()), expected)
+                    self.assertEqual(self.w.reap_test_worlds(True, lambda: {}, set()), expected)
 
     # --- old test processes --------------------------------------------------
     def test_test_process_rows(self):
