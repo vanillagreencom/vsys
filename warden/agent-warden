@@ -2011,28 +2011,29 @@ class Bus:
             if reply.value:
                 lib.sd_bus_message_unref(reply)
 
-    def unit_properties(self, path):
-        """(Transient, FragmentPath, StateChangeTimestampMonotonic) of the unit at object path."""
-        lib, iface = self.lib, b"org.freedesktop.systemd1.Unit"
-        transient, changed, fragment = ctypes.c_int(), ctypes.c_uint64(), ctypes.c_void_p()
-        for member, kind, out in ((b"Transient", b"b", transient), (b"StateChangeTimestampMonotonic", b"t", changed)):
-            err = self.Error()
-            try:
-                if lib.sd_bus_get_property_trivial(self.bus, b"org.freedesktop.systemd1", path, iface, member,
-                                                   ctypes.byref(err), ctypes.c_char(kind), ctypes.byref(out)) < 0:
-                    raise self._failed(member.decode(), err)
-            finally:
-                lib.sd_bus_error_free(ctypes.byref(err))
-        err = self.Error()
+    def unit_property(self, path, member):
+        """The Unit property member of the unit at object path, in one
+        Properties.Get call: Transient as a bool, FragmentPath as a str,
+        StateChangeTimestampMonotonic as an int."""
+        lib, err = self.lib, self.Error()
+        args = (self.bus, b"org.freedesktop.systemd1", path, b"org.freedesktop.systemd1.Unit", member.encode(),
+                ctypes.byref(err))
         try:
-            if lib.sd_bus_get_property_string(self.bus, b"org.freedesktop.systemd1", path, iface, b"FragmentPath",
-                                              ctypes.byref(err), ctypes.byref(fragment)) < 0:
-                raise self._failed("FragmentPath", err)
-            return bool(transient.value), ctypes.string_at(fragment.value).decode("utf-8", "replace"), changed.value
+            if member == "FragmentPath":
+                fragment = ctypes.c_void_p()
+                try:
+                    if lib.sd_bus_get_property_string(*args, ctypes.byref(fragment)) < 0:
+                        raise self._failed(member, err)
+                    return ctypes.string_at(fragment.value).decode("utf-8", "replace")
+                finally:
+                    if fragment.value:
+                        _LIBC.free(ctypes.c_void_p(fragment.value))
+            kind, out = {"Transient": (b"b", ctypes.c_int()), "StateChangeTimestampMonotonic": (b"t", ctypes.c_uint64())}[member]
+            if lib.sd_bus_get_property_trivial(*args, ctypes.c_char(kind), ctypes.byref(out)) < 0:
+                raise self._failed(member, err)
+            return bool(out.value) if kind == b"b" else out.value
         finally:
             lib.sd_bus_error_free(ctypes.byref(err))
-            if fragment.value:
-                _LIBC.free(ctypes.c_void_p(fragment.value))
 
     def reset_failed(self, name):
         lib, err = self.lib, self.Error()
@@ -2050,8 +2051,8 @@ class Bus:
 
 # A failed transient unit (a test's `systemd-run` that exited non-zero)
 # stays listed until reset: 244 of them buried every real failure in
-# `systemctl --user --failed` on 2026-10-31. Each reset costs a property
-# read per unit and the reset call, so a pass resets at most this many and
+# `systemctl --user --failed` on 2026-10-31. Each reset costs three property
+# reads per unit and the reset call, so a pass resets at most this many and
 # spends at most FAILED_UNIT_PASS_SECONDS on the bus, well inside the
 # service's TimeoutStartSec=25, before any move.
 FAILED_UNIT_RESETS_PER_PASS = 20
@@ -2081,6 +2082,10 @@ def reset_failed_units(correct, bus, clock=time.monotonic):
     spent its time budget."""
     deadline = clock() + FAILED_UNIT_PASS_SECONDS
 
+    # Every bus call directly follows a budget() that gave it the time left
+    # as its timeout (sd_bus_call(3): a call naming none takes the bus
+    # default), so the pass's calls end by the deadline however slowly the
+    # manager answers.
     def budget():
         left = deadline - clock()
         if left <= 0:
@@ -2088,19 +2093,29 @@ def reset_failed_units(correct, bus, clock=time.monotonic):
         bus.set_call_timeout(left * 1e6)
         return True
 
+    def properties(path):
+        """(Transient, FragmentPath, StateChangeTimestampMonotonic), or None once the budget is spent."""
+        values = []
+        for member in ("Transient", "FragmentPath", "StateChangeTimestampMonotonic"):
+            if not budget():
+                return None
+            values.append(bus.unit_property(path, member))
+        return values
+
     if not budget():
         return None
     complete, left, attempts = True, 0, 0
     for name, path in bus.failed_units():
-        if not budget():
-            log("failed units: time budget spent; the rest wait for the next pass")
-            return None
         try:
-            transient, fragment, changed = bus.unit_properties(path)
+            read = properties(path)
         except OSError as e:
             log(f"failed unit {name}: properties unreadable ({e}); left alone")
             complete = False
             continue
+        if read is None:
+            log("failed units: time budget spent; the rest wait for the next pass")
+            return None
+        transient, fragment, changed = read
         if not transient or fragment != str(TRANSIENT_DIR / name):
             continue
         if not changed:

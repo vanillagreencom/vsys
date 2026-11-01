@@ -1,3 +1,4 @@
+import math
 import os
 from pathlib import Path
 import re
@@ -66,31 +67,39 @@ def readable(**fields):
 
 
 class FakeUnitBus:
-    """The Bus methods reset_failed_units calls, over units {name: properties
-    or an exception}. Each call advances clock by step seconds."""
+    """The Bus methods reset_failed_units calls, over units {name:
+    (Transient, FragmentPath, StateChangeTimestampMonotonic) or an
+    exception}. Each bus call takes step seconds of clock, or, like
+    sd_bus_call(3), fails with a timeout once it has taken the timeout last
+    set; one property is one call. The timeout starts unbounded, so a call
+    no set_call_timeout preceded takes its whole step."""
+
+    PROPERTIES = ("Transient", "FragmentPath", "StateChangeTimestampMonotonic")
 
     def __init__(self, units, clock, step=0.0):
         self.units, self.clock, self.step = units, clock, step
-        self.reset, self.calls = [], 0
+        self.reset, self.timeout = [], math.inf
 
     def _call(self):
-        self.calls += 1
-        self.clock[0] += self.step
+        self.clock[0] += min(self.step, self.timeout)
+        if self.step > self.timeout:
+            raise OSError("org.freedesktop.DBus.Error.Timeout")
 
     def set_call_timeout(self, usec):
         if usec <= 0:
             raise AssertionError("a call was given no time")
+        self.timeout = usec / 1e6
 
     def failed_units(self):
         self._call()
         return [(name, f"/unit/{name}") for name in self.units]
 
-    def unit_properties(self, path):
+    def unit_property(self, path, member):
         self._call()
         value = self.units[path.rsplit("/", 1)[1]]
         if isinstance(value, Exception):
             raise value
-        return value
+        return value[self.PROPERTIES.index(member)]
 
     def reset_failed(self, name):
         self._call()
@@ -295,12 +304,13 @@ class AgentWardenLeftoverRules(WardenRulesCase):
 
     # --- failed transient units ----------------------------------------------
     def _unit_pass(self, w, units, correct=True, step=0.0):
-        """reset_failed_units over units at a clock three hours on; (left, reset, calls)."""
-        clock = [3 * 3600.0]
+        """reset_failed_units over units at a clock three hours on; (left, reset, seconds the pass took)."""
+        start = 3 * 3600.0
+        clock = [start]
         bus = FakeUnitBus(units, clock, step)
         with patch.object(w, "log"):
             left = w.reset_failed_units(correct, bus, clock=lambda: clock[0])
-        return left, bus.reset, bus.calls
+        return left, bus.reset, clock[0] - start
 
     def _unit_rows(self):
         old, young = 1_000_000, int(3 * 3600e6) - 1_000_000
@@ -338,10 +348,21 @@ class AgentWardenLeftoverRules(WardenRulesCase):
         cap = self.w.FAILED_UNIT_RESETS_PER_PASS
         left, reset, _ = self._unit_pass(self.w, units)
         self.assertEqual((left, len(reset)), (25 - cap, cap))
-        # Each call takes a second of a three-second budget: the list, one
-        # unit's properties and its reset, then the pass stops unfinished.
-        left, reset, calls = self._unit_pass(self.w, units, step=1.0)
-        self.assertEqual((left, reset, calls), (None, ["run-u0.service"], 3))
+        # A three-second budget against a bus whose every call takes step
+        # seconds: (name, step, left, reset). Whatever the step, the pass
+        # stops unfinished within the budget, resetting only what fit.
+        rows = [
+            ("each call takes half a second", 0.5, None, ["run-u0.service"]),
+            ("each call takes a second", 1.0, None, []),
+            ("the property reads take the rest of the budget", 0.75, None, []),
+            ("each call outlasts the time left", 2.0, None, []),
+        ]
+        with patch.object(self.w, "FAILED_UNIT_PASS_SECONDS", 3.0):
+            for name, step, want_left, want_reset in rows:
+                with self.subTest(name=name):
+                    left, reset, seconds = self._unit_pass(self.w, units, step=step)
+                    self.assertEqual((left, reset), (want_left, want_reset))
+                    self.assertLessEqual(seconds, 3.0)
         failing = FakeUnitBus(dict(list(units.items())[:2]), [3 * 3600.0])
         failing.reset_failed = lambda name: (_ for _ in ()).throw(OSError("access denied"))
         with patch.object(self.w, "log"):
