@@ -156,13 +156,18 @@ PM_CREATE_AUTONOMY = "auto"
 # Priority-ordered roster, space/comma separated. Per entry:
 # SECOND_OPINION_<NAME>_CMD (claude and codex have defaults) and
 # SECOND_OPINION_<NAME>_MODEL (identity, when the CLI fronts another model).
-SECOND_OPINION_MODELS = "claude codex"
+SECOND_OPINION_MODELS = "claude copilot codex"
 
 # Opinions a review collects; 2+ unions distinct models on one diff.
 SECOND_OPINION_COUNT = "1"
 
-# Roster commands (identities claude / codex).
+# Roster commands (identities claude / gpt-6.1-sol on the 1copilot home /
+# codex). Copilot comes before codex at the owner's 2026-11-01 request, with
+# no room check: a refusal falls through to codex.
 SECOND_OPINION_CLAUDE_CMD = "claude -p --no-session-persistence --model opus --effort max --allowedTools Bash(read-only:true),Read,Glob,Grep --restricted --permission-mode dontAsk --tools Bash,Read,Glob,Grep"
+
+SECOND_OPINION_COPILOT_CMD = "env COPILOT_ALLOW_ALL=false 1copilot --model gpt-6.1-sol --reasoning-effort high --silent --no-ask-user --disable-builtin-mcps --available-tools bash view rg glob --deny-tool write"
+SECOND_OPINION_COPILOT_MODEL = "gpt-6.1-sol"
 
 SECOND_OPINION_CODEX_CMD = "codex exec -m gpt-6.1-sol -s read-only -c model_reasoning_effort=xhigh --ephemeral --disable hooks"
 
