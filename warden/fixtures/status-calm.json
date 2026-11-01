@@ -25,10 +25,16 @@
       "tasksMax": 8192
     }
   ],
+  "leftovers": {
+    "failedUnits": 0,
+    "testProcessRepos": [],
+    "testProcesses": 0,
+    "testWorlds": 0
+  },
   "mode": "report",
   "orphans": [],
   "outside": [],
-  "schema": "1.1",
+  "schema": "1.2",
   "slice": {
     "headroomOk": true,
     "high": 68719476736,

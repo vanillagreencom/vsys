@@ -679,7 +679,7 @@ class AgentWardenScratchRules(WardenRulesCase):
         text = WARDEN.read_text()
         old = (
             '        if status == "in-use":\n'
-            '            log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")\n'
+            '            log(f"{kind} {name}: {why} but a live process still uses this directory; not reaping")\n'
             '            continue\n'
         )
         self.assertEqual(text.count(old), 1)

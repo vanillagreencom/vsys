@@ -460,7 +460,54 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         self.assertIsNone(doc["waiting"])
         self.assertIsNone(doc["orphans"])
         self.assertIsNone(doc["contained"])
+        self.assertIsNone(doc["leftovers"])
         self.assertFalse(self.w.status_errors(doc))
+
+    def test_each_leftover_pass_nulls_only_its_own_reading(self):
+        # A pass that raises leaves the other readings and the moves alone.
+        root = self.P(9200, 1, "claude", ["claude"], self.A, start=7)
+        raising = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))  # noqa: E731
+        rows = [
+            ("every pass reads", {}, {"testWorlds": 3, "failedUnits": 2, "testProcesses": 1,
+                                      "testProcessRepos": [{"repo": "vgshell", "processes": 1}]}),
+            ("the world pass raises", {"reap_test_worlds": raising},
+             {"testWorlds": None, "failedUnits": 2, "testProcesses": 1,
+              "testProcessRepos": [{"repo": "vgshell", "processes": 1}]}),
+            ("the process report raises", {"report_test_processes": raising},
+             {"testWorlds": 3, "failedUnits": 2, "testProcesses": None, "testProcessRepos": None}),
+            ("the unit pass raises", {"_failed_unit_pass": raising},
+             {"testWorlds": 3, "failedUnits": None, "testProcesses": 1,
+              "testProcessRepos": [{"repo": "vgshell", "processes": 1}]}),
+            ("the world scan raises", {"scan": lambda: next(scans)},
+             {"testWorlds": None, "failedUnits": 2, "testProcesses": None, "testProcessRepos": None}),
+        ]
+        for name, overrides, expected in rows:
+            scans = iter([{root.pid: root}, {root.pid: root}])
+            stubs = {
+                "scan": lambda: {root.pid: root},
+                "plan": lambda procs, only=None: ([], [], [], []),
+                "reap_orphans": lambda procs, st, correct, only=None: ([], []),
+                "enforce_task_caps": lambda correct: [],
+                "warn_near_cap": lambda: ([], set(), True),
+                "reap_test_worlds": lambda correct, procs, failed: (3, []),
+                "report_test_processes": lambda procs: [{"repo": "vgshell", "processes": 1}],
+                "_failed_unit_pass": lambda correct: 2,
+                "TEST_WORLD_PATTERNS": ("/tmp/vgw-world.*",),
+                **overrides,
+            }
+            with self.subTest(name=name), scratch() as tmp:
+                old = self.point_status_state(self.w, Path(tmp))
+                try:
+                    with contextlib.ExitStack() as stack:
+                        for attribute, value in stubs.items():
+                            stack.enter_context(patch.object(self.w, attribute, value))
+                        stack.enter_context(patch.object(self.w, "log"))
+                        self.assertEqual(self.w.run(False), 0)
+                    doc = json.loads(self.w.STATUS.read_text())
+                finally:
+                    self.restore_status_state(self.w, old)
+                self.assertEqual(doc["leftovers"], expected)
+                self.assertFalse(self.w.status_errors(doc))
 
     def test_status_and_only_runs_do_not_write_status(self):
         with scratch() as tmp:
@@ -633,7 +680,9 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                 buses = iter(bus_classes)
                 old_scan, old_plan, old_reap = self.w.scan, self.w.plan, self.w.reap_orphans
                 old_enforce, old_warn, old_headroom = self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom
-                old_bus, old_notify = self.w.Bus, self.w.notify
+                old_bus, old_notify, old_units = self.w.Bus, self.w.notify, self.w._failed_unit_pass
+                # The bus sequence is the moves' alone.
+                self.w._failed_unit_pass = lambda correct: None
                 self.w.scan = lambda: {root.pid: root}
                 self.w.plan = lambda procs, only=None: next(plans)
                 self.w.reap_orphans = lambda procs, st, correct, only=None: ([], [])
@@ -648,7 +697,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                 finally:
                     self.w.scan, self.w.plan, self.w.reap_orphans = old_scan, old_plan, old_reap
                     self.w.enforce_task_caps, self.w.warn_near_cap, self.w.headroom = old_enforce, old_warn, old_headroom
-                    self.w.Bus, self.w.notify = old_bus, old_notify
+                    self.w.Bus, self.w.notify, self.w._failed_unit_pass = old_bus, old_notify, old_units
                     self.restore_status_state(self.w, old)
             return results, [event for event in state["events"] if event["kind"] == "waiting"]
 
@@ -919,6 +968,35 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         doc = json.loads(json.dumps(base))
         doc["orphans"] = None
         rows.append(("orphans null without error allowed", doc, None))
+        leftovers = self.w.status_fixture_docs()["leftovers"]
+        for name, change, field in (
+            ("leftovers missing", lambda d: d.pop("leftovers"), "status"),
+            ("leftovers null allowed", lambda d: d.update(leftovers=None), None),
+            ("leftovers a list", lambda d: d.update(leftovers=[]), "leftovers"),
+            ("leftovers key missing", lambda d: d["leftovers"].pop("failedUnits"), "leftovers"),
+            ("every leftover null allowed", lambda d: d.update(leftovers=dict.fromkeys(d["leftovers"])), None),
+            ("test worlds a boolean", lambda d: d["leftovers"].update(testWorlds=True), "leftovers.testWorlds"),
+            ("failed units negative", lambda d: d["leftovers"].update(failedUnits=-1), "leftovers.failedUnits"),
+            ("test processes a fraction", lambda d: d["leftovers"].update(testProcesses=1.5), "leftovers.testProcesses"),
+            ("repo rows null beside a count", lambda d: d["leftovers"].update(testProcessRepos=None),
+             "leftovers.testProcessRepos"),
+            ("repo rows beside a null count", lambda d: d["leftovers"].update(testProcesses=None),
+             "leftovers.testProcessRepos"),
+            ("repo rows an object", lambda d: d["leftovers"].update(testProcessRepos={}), "leftovers.testProcessRepos"),
+            ("repo row processes null", lambda d: d["leftovers"]["testProcessRepos"][0].update(processes=None),
+             "leftovers.testProcessRepos[0].processes"),
+            ("repo row repo a number", lambda d: d["leftovers"]["testProcessRepos"][0].update(repo=1),
+             "leftovers.testProcessRepos[0].repo"),
+            ("repo row missing processes", lambda d: d["leftovers"]["testProcessRepos"][0].pop("processes"),
+             "leftovers.testProcessRepos[0]"),
+            ("repo rows with the unknown first", lambda d: d["leftovers"]["testProcessRepos"].reverse(),
+             "leftovers.testProcessRepos"),
+            ("leftovers beside a scan error", lambda d: d.update(error="scan", outside=None, waiting=None,
+                                                                 orphans=None, contained=None), "leftovers"),
+        ):
+            doc = json.loads(json.dumps(leftovers))
+            change(doc)
+            rows.append((name, doc, field))
         # Each error opens with the path of the field it rejects, so a row
         # passes only on its own field's error, not on any error at all.
         for name, doc, field in rows:
@@ -964,6 +1042,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         self.assertGreaterEqual(expected["partial"]["counters"]["partial"], 1)
         self.assertEqual(expected["reaped"]["events"][0]["kind"], "reaped")
         self.assertGreaterEqual(expected["reaped"]["counters"]["reaped"], 1)
+        self.assertEqual(expected["leftovers"]["leftovers"]["testProcessRepos"][-1]["repo"], None)
 
 
 

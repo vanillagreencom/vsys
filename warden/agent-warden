@@ -108,7 +108,8 @@ from pathlib import Path
 UID = os.getuid()
 SLICE = "agents.slice"
 CG_ROOT = Path(f"/sys/fs/cgroup/user.slice/user-{UID}.slice/user@{UID}.service")
-STATE_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}")) / "agent-warden"
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{UID}"))
+STATE_DIR = RUNTIME_DIR / "agent-warden"
 STATE = STATE_DIR / "state.json"
 STATUS = STATE_DIR / "status.json"
 LOCK = STATE_DIR / "lock"
@@ -395,6 +396,33 @@ def _interval(raw):
     return int(value) if value.is_integer() else value
 
 
+def _test_age(raw):
+    """At least five minutes: a younger bound could free a test world between
+    its creator's mkdtemp and its first chdir into it."""
+    value = _interval(raw)
+    if value < 300:
+        raise ValueError(raw)
+    return value
+
+
+def _literal_prefix(leaf):
+    return re.match(r"[^*?\[]*", leaf).group(0)
+
+
+def _glob_list(raw):
+    """Absolute patterns with wildcards only in the last component, which
+    opens with at least four literal characters, so a typo such as `/tmp/*`
+    or `~/dev/*` cannot name every directory a user owns. Any bad pattern
+    refuses the whole list, so env_number() leaves the feature off."""
+    patterns = tuple(raw.split())
+    for pattern in patterns:
+        parent, leaf = os.path.split(pattern)
+        if (not os.path.isabs(pattern) or any(c in parent for c in "*?[")
+                or len(_literal_prefix(leaf)) < 4):
+            raise ValueError(pattern)
+    return patterns
+
+
 def _tasks_max(raw):
     """systemd's TasksMax as the launcher passes it: `infinity` is no per-scope
     cap. A percentage is relative to a system limit this module does not read,
@@ -467,10 +495,11 @@ SCOPE_TASKS_WARN = env_number("AGENT_SCOPE_TASKS_WARN",
 # launch. 64 GiB default.
 SCOPE_MEM_HIGH = env_number("AGENT_SCOPE_MEM_HIGH_BYTES", 64 * 1024**3)
 SCOPE_MEM_WARN = env_number("AGENT_SCOPE_MEM_WARN_BYTES", SCOPE_MEM_HIGH * 3 // 4)
-STATUS_SCHEMA = "1.1"
+STATUS_SCHEMA = "1.2"
 STATUS_EVENT_LIMIT = 50
 STATUS_EVENT_KINDS = {"moved", "partial", "reaped", "near-cap", "waiting", "failed"}
 STATUS_NEAR_KINDS = {"tasks", "memory"}
+LEFTOVER_KEYS = ("testWorlds", "failedUnits", "testProcesses", "testProcessRepos")
 STATUS_INTERVAL = env_number("AGENT_WARDEN_INTERVAL", 30, _interval)
 
 
@@ -1229,11 +1258,26 @@ def reap_scratch_dirs(correct, procs, failed):
         if holders is None:
             holders = _scratch_holders(procs)
         candidates.append((name, path, _scratch_in_use(path, holders)))
+    removed = _remove_unheld(correct, candidates, holders, lambda: _scratch_holders(procs), _scratch_in_use,
+                             SCRATCH_REMOVALS_PER_PASS, failed, "scratch", "scope gone")
+    failed.intersection_update(name for _, name in entries)
+    return removed
+
+
+def _remove_unheld(correct, candidates, holders, read_holders, in_use, cap, failed, kind, why):
+    """Remove each (name, path, status) candidate whose status is "free",
+    at most cap attempts a pass, chosen at random when more are free, so
+    folders that keep failing cannot take every slot on every tick. holders
+    is the read that gave each status; read_holders() reads every pid again
+    and in_use(path, holders) judges one path against that read. failed
+    holds the names whose removal failure is already logged, kept in the
+    state file so a folder that keeps failing is logged once, not at every
+    sweep; it is updated in place. Returns the names removed."""
     free = [path for _, path, status in candidates if status == "free"]
     attempts = set(free)
-    if correct and len(free) > SCRATCH_REMOVALS_PER_PASS:
-        attempts = set(random.sample(free, SCRATCH_REMOVALS_PER_PASS))
-        log(f"scratch reap: {len(free)} folder(s) free; attempting {len(attempts)} this pass, "
+    if correct and len(free) > cap:
+        attempts = set(random.sample(free, cap))
+        log(f"{kind} reap: {len(free)} folder(s) free; attempting {len(attempts)} this pass, "
             f"the rest wait for the next")
     removed = []
     unknown = 0
@@ -1245,31 +1289,250 @@ def reap_scratch_dirs(correct, procs, failed):
             # worker can enter this directory while that removal runs.
             # Re-read every pid right before a removal, as the per-directory
             # scan did; a pass that removes nothing still reads each pid once.
-            holders = _scratch_holders(procs)
-            status = _scratch_in_use(path, holders)
+            holders = read_holders()
+            status = in_use(path, holders)
         if status == "in-use":
-            log(f"scratch {name}: scope gone but a live process still uses this directory; not reaping")
+            log(f"{kind} {name}: {why} but a live process still uses this directory; not reaping")
             continue
         if status == "unknown":
             unknown += 1
             continue
         if not correct:
-            log(f"scratch {name}: scope gone; would remove (report mode)")
+            log(f"{kind} {name}: {why}; would remove (report mode)")
             continue
         try:
             shutil.rmtree(path, **_rmtree_writable(path))
             removed.append(name)
             failed.discard(name)
-            log(f"  removed scratch {name}: scope gone")
+            log(f"  removed {kind} {name}: {why}")
         except OSError as e:
             if name not in failed:
                 failed.add(name)
-                log(f"  scratch remove failed: kind={type(e).__name__} name={name} path={e.filename or path}")
+                log(f"  {kind} remove failed: kind={type(e).__name__} name={name} path={e.filename or path}")
     if unknown:
         pids = " ".join(map(str, holders[1][:5]))
-        log(f"scratch reap: kept {unknown} gone scope folder(s); unreadable pid(s) {pids} could hold them")
-    failed.intersection_update(name for _, name in entries)
+        log(f"{kind} reap: kept {unknown} {kind} folder(s); unreadable pid(s) {pids} could hold them")
     return removed
+
+
+# Test worlds: per-run directories a test harness creates under a shared
+# parent and can leave behind. On 2026-10-31, 189 /tmp/vgshell-world.*
+# directories held 8.6 GB of a 32 GB tmpfs. Nothing repository-specific is
+# built in: the operator lists the patterns, and an empty list is off.
+TEST_WORLD_PATTERNS = env_number("AGENT_WARDEN_TEST_WORLDS", (), _glob_list)
+# One bound for a test world, a failed transient unit and a test process.
+TEST_AGE = env_number("AGENT_WARDEN_TEST_AGE", 3600, _test_age)
+# Each removal first re-reads every process with its open files, about
+# 45 ms of CPU over 670 processes, so ten cost about half a second a tick
+# and 189 worlds drain in about ten minutes. A cap apart from
+# SCRATCH_REMOVALS_PER_PASS keeps either backlog from starving the other.
+TEST_WORLD_REMOVALS_PER_PASS = 10
+# A path continues into a longer file name only through these characters, so
+# a reference to a world followed by any other one (`:` in PATH, a quote, a
+# space) still names that world.
+NAME_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+COMPONENT_RE = re.compile(r"[^/\0]*")
+
+
+def _world_prefixes():
+    """(pattern, real parent, the literal text every match and every
+    reference to one starts with) per pattern, the reference text in both
+    the lexical and the resolved spelling of the parent."""
+    out = []
+    for pattern in TEST_WORLD_PATTERNS:
+        parent, leaf = os.path.split(pattern)
+        real = os.path.realpath(parent)
+        literal = _literal_prefix(leaf)
+        out.append((pattern, real, {os.path.join(parent, literal): real, os.path.join(real, literal): real}))
+    return out
+
+
+def _world_holders(procs, prefixes):
+    """(tokens, unread): tokens is every world-like path a readable process
+    names in its current directory, executable, open files, argv or
+    environment, each as its real parent joined with the one component that
+    follows. unread lists the pids this user runs, outside a desktop unit by
+    _unread_may_hold, that have not exited and for which any of those reads
+    failed. Unlike _scratch_holders no lane lineage bounds them: a test
+    creates its world after its lane launched, so a launch says nothing of
+    what an unreadable lane member holds."""
+    tokens = set()
+    unread = []
+    forms = {form: real for _, _, spellings in prefixes for form, real in spellings.items()}
+    for pid, proc in procs.items():
+        texts = [read(f"/proc/{pid}/environ"), read(f"/proc/{pid}/cmdline")]
+        ok = None not in texts
+        for link in ("cwd", "exe"):
+            try:
+                texts.append(os.readlink(f"/proc/{pid}/{link}"))
+            except OSError:
+                ok = False
+        try:
+            fds = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            fds, ok = [], False
+        for fd in fds:
+            try:
+                target = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except FileNotFoundError:
+                continue  # closed since the listing
+            except OSError:
+                ok = False
+                continue
+            # Sockets and pipes read as `socket:[…]`; kernel targets are canonical.
+            if target.startswith("/"):
+                texts.append(target)
+        blob = "\0".join(t for t in texts if t)
+        for form, real in forms.items():
+            start = blob.find(form)
+            while start >= 0:
+                leaf_at = start + len(form) - len(os.path.basename(form))
+                tokens.add(os.path.join(real, COMPONENT_RE.match(blob, leaf_at).group(0)))
+                start = blob.find(form, start + 1)
+        if not ok and proc.uid == UID and not _exited(pid) and _unread_may_hold(proc):
+            unread.append(pid)
+    return tokens, unread
+
+
+def _world_in_use(path, holders):
+    """"in-use" when a token names path or a path inside it, "unknown" when
+    none does but an unread process could, "free" otherwise."""
+    tokens, unread = holders
+    for token in tokens:
+        if token == path or (token.startswith(path) and token[len(path)] not in NAME_CHARS):
+            return "in-use"
+    return "unknown" if unread else "free"
+
+
+def _mount_points():
+    """Every mount point this process sees, or None when mountinfo cannot be
+    read. proc_pid_mountinfo(5): field 5 is the mount point, with space,
+    tab, newline and backslash escaped as octal."""
+    text = read("/proc/self/mountinfo")
+    if text is None:
+        return None
+    return {re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), line.split(" ")[4])
+            for line in text.splitlines() if len(line.split(" ")) > 4}
+
+
+def reap_test_worlds(correct, procs, failed, now=None):
+    """Remove a directory a TEST_WORLD_PATTERNS entry matches once it is
+    older than TEST_AGE and no process holds it by _world_holders. Only a
+    real directory this user owns is a candidate, never a symlink, a mount
+    point or a directory with one under it, and never the root, HOME, the
+    runtime directory, a scratch parent or an ancestor of one. procs is a
+    snapshot taken just before the call, as for reap_scratch_dirs; failed
+    holds the paths whose removal failure is already logged. Returns the
+    number of candidates left after this pass, or None when no pattern is
+    set or a pattern's parent could not be listed, and the paths removed."""
+    if not TEST_WORLD_PATTERNS:
+        return None, []
+    now = time.time() if now is None else now
+    protected = {os.path.realpath(p) for p in ("/", HOME, RUNTIME_DIR, *_scratch_parents())}
+    prefixes = _world_prefixes()
+    paths = []
+    listed = True
+    for pattern, real, _ in prefixes:
+        leaf = os.path.basename(pattern)
+        try:
+            names = sorted(os.listdir(real))
+        except OSError as e:
+            log(f"test world pattern {pattern}: parent unreadable ({type(e).__name__}); not counted")
+            listed = False
+            continue
+        for name in names:
+            path = os.path.join(real, name)
+            if not fnmatch.fnmatchcase(name, leaf) or path in paths:
+                continue  # two patterns can match one directory
+            try:
+                st = os.lstat(path)
+            except OSError:
+                continue
+            if (stat.S_ISDIR(st.st_mode) and st.st_uid == UID and now - st.st_mtime >= TEST_AGE
+                    and not any(p == path or p.startswith(path + "/") for p in protected)):
+                paths.append(path)
+    if not paths:
+        return (0 if listed else None), []
+    mounts = _mount_points()
+    candidates = []
+    holders = _world_holders(procs, prefixes)
+    for path in paths:
+        if mounts is None or any(m == path or m.startswith(path + "/") for m in mounts):
+            log(f"test world {path}: a mount point at or under it, or mounts unreadable; not reaping")
+            continue
+        candidates.append((path, path, _world_in_use(path, holders)))
+    removed = _remove_unheld(correct, candidates, holders, lambda: _world_holders(procs, prefixes), _world_in_use,
+                             TEST_WORLD_REMOVALS_PER_PASS, failed, "test world", f"older than {int(TEST_AGE)}s")
+    failed.intersection_update(paths)
+    return (len(paths) - len(removed) if listed else None), removed
+
+
+def _repo_id(pid):
+    """The basename of the main working tree of the repository pid's
+    current directory lies in, so every worktree of one repository shares
+    an id: the nearest `.git` directory's parent, or for a `.git` file, the
+    parent of the common directory its `gitdir:` names, through that
+    directory's `commondir` (gitrepository-layout(5); both paths may be
+    relative). None when the current directory cannot be read or lies in no
+    repository."""
+    try:
+        path = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+    while True:
+        dotgit = os.path.join(path, ".git")
+        if os.path.isdir(dotgit):
+            return os.path.basename(path) or None
+        text = read(dotgit)
+        if text is not None:
+            m = re.match(r"gitdir: (.+)", text)
+            if m is None:
+                return None
+            gitdir = os.path.join(path, m.group(1).strip())
+            common = (read(os.path.join(gitdir, "commondir")) or "").strip()
+            common = os.path.normpath(os.path.join(gitdir, common))
+            name = os.path.basename(os.path.dirname(common)) if os.path.basename(common) == ".git" \
+                else os.path.basename(common).removesuffix(".git")
+            return name or None
+        parent = os.path.dirname(path)
+        if parent == path:
+            return None
+        path = parent
+
+
+def _names_test_world(arg, forms):
+    """Whether argv element arg, or its part after the first `=`, is a path
+    whose ancestor at a pattern's depth matches one of forms, whether or not
+    the directory still exists."""
+    for value in (arg, arg.partition("=")[2]):
+        if not value.startswith("/"):
+            continue
+        parts = os.path.normpath(value).split("/")
+        for form in forms:
+            depth = form.count("/") + 1
+            if len(parts) >= depth and fnmatch.fnmatchcase("/".join(parts[:depth]), form):
+                return True
+    return False
+
+
+def report_test_processes(procs, boot_now=None):
+    """Processes past TEST_AGE with no terminal whose argv names a test
+    world, as rows of {repo, processes} by _repo_id, sorted with the
+    unknown repository last; None when no pattern is set. Reported only:
+    the warden never signals an individual process."""
+    if not TEST_WORLD_PATTERNS:
+        return None
+    boot_now = time.clock_gettime(time.CLOCK_BOOTTIME) if boot_now is None else boot_now
+    forms = {form for pattern, real, _ in _world_prefixes()
+             for form in (pattern, os.path.join(real, os.path.basename(pattern)))}
+    counts = {}
+    for pid, p in procs.items():
+        if (p.tty == 0 and boot_now - p.start / CLK_TCK >= TEST_AGE
+                and any(_names_test_world(arg, forms) for arg in p.argv)):
+            repo = _repo_id(pid)
+            counts[repo] = counts.get(repo, 0) + 1
+    return [{"repo": repo, "processes": counts[repo]}
+            for repo in sorted(counts, key=lambda r: (r is None, r or ""))]
 
 
 def slice_tasks_max():
@@ -1711,8 +1974,157 @@ class Bus:
             if reply.value:
                 lib.sd_bus_message_unref(reply)
 
+    def set_call_timeout(self, usec):
+        """The timeout of every later call that names none, the property reads included."""
+        if self.lib.sd_bus_set_method_call_timeout(self.bus, ctypes.c_uint64(max(1, int(usec)))) < 0:
+            raise OSError("set_method_call_timeout")
+
+    @staticmethod
+    def _failed(what, err):
+        return OSError(f"{what}: {(err.name or b'?').decode()}: {(err.message or b'').decode()}")
+
+    def failed_units(self):
+        """(name, object path) of each unit ListUnitsFiltered reports failed."""
+        lib, reply, err = self.lib, ctypes.c_void_p(), self.Error()
+        try:
+            if lib.sd_bus_call_method(self.bus, b"org.freedesktop.systemd1", b"/org/freedesktop/systemd1",
+                                      b"org.freedesktop.systemd1.Manager", b"ListUnitsFiltered", ctypes.byref(err),
+                                      ctypes.byref(reply), b"as", ctypes.c_int(1), ctypes.c_char_p(b"failed")) < 0:
+                raise self._failed("ListUnitsFiltered", err)
+            if lib.sd_bus_message_enter_container(reply, ctypes.c_char(b"a"), b"(ssssssouso)") < 0:
+                raise OSError("ListUnitsFiltered: reply")
+            strings = [ctypes.c_char_p() for _ in range(9)]
+            job = ctypes.c_uint32()
+            refs = [ctypes.byref(s) for s in strings]
+            units = []
+            while True:
+                # name, description, load, active, sub, following, path, job id, job type, job path
+                r = lib.sd_bus_message_read(reply, b"(ssssssouso)", *refs[:7], ctypes.byref(job), *refs[7:])
+                if r < 0:
+                    raise OSError("ListUnitsFiltered: reply")
+                if r == 0:
+                    return units
+                if strings[3].value == b"failed":
+                    units.append((strings[0].value.decode(), strings[6].value))
+        finally:
+            lib.sd_bus_error_free(ctypes.byref(err))
+            if reply.value:
+                lib.sd_bus_message_unref(reply)
+
+    def unit_properties(self, path):
+        """(Transient, FragmentPath, StateChangeTimestampMonotonic) of the unit at object path."""
+        lib, iface = self.lib, b"org.freedesktop.systemd1.Unit"
+        transient, changed, fragment = ctypes.c_int(), ctypes.c_uint64(), ctypes.c_void_p()
+        for member, kind, out in ((b"Transient", b"b", transient), (b"StateChangeTimestampMonotonic", b"t", changed)):
+            err = self.Error()
+            try:
+                if lib.sd_bus_get_property_trivial(self.bus, b"org.freedesktop.systemd1", path, iface, member,
+                                                   ctypes.byref(err), ctypes.c_char(kind), ctypes.byref(out)) < 0:
+                    raise self._failed(member.decode(), err)
+            finally:
+                lib.sd_bus_error_free(ctypes.byref(err))
+        err = self.Error()
+        try:
+            if lib.sd_bus_get_property_string(self.bus, b"org.freedesktop.systemd1", path, iface, b"FragmentPath",
+                                              ctypes.byref(err), ctypes.byref(fragment)) < 0:
+                raise self._failed("FragmentPath", err)
+            return bool(transient.value), ctypes.string_at(fragment.value).decode("utf-8", "replace"), changed.value
+        finally:
+            lib.sd_bus_error_free(ctypes.byref(err))
+            if fragment.value:
+                _LIBC.free(ctypes.c_void_p(fragment.value))
+
+    def reset_failed(self, name):
+        lib, err = self.lib, self.Error()
+        try:
+            if lib.sd_bus_call_method(self.bus, b"org.freedesktop.systemd1", b"/org/freedesktop/systemd1",
+                                      b"org.freedesktop.systemd1.Manager", b"ResetFailedUnit", ctypes.byref(err),
+                                      None, b"s", ctypes.c_char_p(name.encode())) < 0:
+                raise self._failed("ResetFailedUnit", err)
+        finally:
+            lib.sd_bus_error_free(ctypes.byref(err))
+
     def close(self):
         self.lib.sd_bus_flush_close_unref(self.bus)
+
+
+# A failed transient unit (a test's `systemd-run` that exited non-zero)
+# stays listed until reset: 244 of them buried every real failure in
+# `systemctl --user --failed` on 2026-10-31. Each reset costs a property
+# read per unit and the reset call, so a pass resets at most this many and
+# spends at most FAILED_UNIT_PASS_SECONDS on the bus, well inside the
+# service's TimeoutStartSec=25, before any move.
+FAILED_UNIT_RESETS_PER_PASS = 20
+FAILED_UNIT_PASS_SECONDS = 3.0
+# Where the user manager writes every transient unit's fragment
+# (systemd.unit(5), "$XDG_RUNTIME_DIR/systemd/transient").
+TRANSIENT_DIR = RUNTIME_DIR / "systemd" / "transient"
+
+
+def _failed_unit_pass(correct):
+    """reset_failed_units on a bus of its own, closed before the moves open theirs."""
+    bus = Bus()
+    try:
+        return reset_failed_units(correct, bus)
+    finally:
+        bus.close()
+
+
+def reset_failed_units(correct, bus, clock=time.monotonic):
+    """Reset each failed unit that is transient, whose fragment is the one
+    the manager wrote for it under TRANSIENT_DIR, and that entered its
+    current state more than TEST_AGE ago by CLOCK_MONOTONIC, which clock
+    reads. A unit with a file anywhere else, or whose properties or age
+    cannot be read, is left alone. Never starts or stops a unit; report
+    mode resets nothing. Returns the number of such units still failed
+    after the pass, or None when the pass could not read every unit or
+    spent its time budget."""
+    deadline = clock() + FAILED_UNIT_PASS_SECONDS
+
+    def budget():
+        left = deadline - clock()
+        if left <= 0:
+            return False
+        bus.set_call_timeout(left * 1e6)
+        return True
+
+    if not budget():
+        return None
+    complete, left, attempts = True, 0, 0
+    for name, path in bus.failed_units():
+        if not budget():
+            log("failed units: time budget spent; the rest wait for the next pass")
+            return None
+        try:
+            transient, fragment, changed = bus.unit_properties(path)
+        except OSError as e:
+            log(f"failed unit {name}: properties unreadable ({e}); left alone")
+            complete = False
+            continue
+        if not transient or fragment != str(TRANSIENT_DIR / name):
+            continue
+        if not changed:
+            log(f"failed unit {name}: no state change time; left alone")
+            complete = False
+            continue
+        if clock() * 1e6 - changed < TEST_AGE * 1e6:
+            continue
+        if not correct or attempts >= FAILED_UNIT_RESETS_PER_PASS:
+            left += 1
+            if not correct:
+                log(f"failed unit {name}: transient, failed over {int(TEST_AGE)}s; would reset (report mode)")
+            continue
+        if not budget():
+            log("failed units: time budget spent; the rest wait for the next pass")
+            return None
+        attempts += 1
+        try:
+            bus.reset_failed(name)
+            log(f"  reset failed unit {name}: transient, failed over {int(TEST_AGE)}s")
+        except OSError as e:
+            left += 1
+            log(f"  failed unit reset failed: unit={name} {e}")
+    return left if complete else None
 
 
 def branch_ok(fresh, member, root, reason):
@@ -2021,7 +2433,7 @@ def record_waiting_events(st, waiting, now=None):
 
 
 def status_document(mode, st, *, slice_reading, lanes, moves=None, waiting=None,
-                    orphans_status=None, contained=None, error=None, now=None):
+                    orphans_status=None, contained=None, leftovers=None, error=None, now=None):
     return {
         "schema": STATUS_SCHEMA,
         "time": _now_seconds(now),
@@ -2034,6 +2446,7 @@ def status_document(mode, st, *, slice_reading, lanes, moves=None, waiting=None,
         "waiting": None if waiting is None else [_tree_status(reason, tree) for reason, tree in waiting],
         "orphans": None if orphans_status is None else sorted(orphans_status, key=lambda row: row["scope"]),
         "contained": None if contained is None else contained_status(contained),
+        "leftovers": leftovers,
         "events": list(st.get("events") if isinstance(st.get("events"), list) else []),
         "counters": status_counters(st),
     }
@@ -2050,7 +2463,7 @@ def status_from_tick(mode, st, tick, *, slice_reading=None, lanes=None):
                            lanes=lane_statuses(procs) if lanes is None else lanes,
                            moves=tick.get("moves"), waiting=tick.get("waiting"),
                            orphans_status=tick.get("orphans"), contained=tick.get("contained"),
-                           error=tick.get("error"))
+                           leftovers=tick.get("leftovers"), error=tick.get("error"))
 
 
 def write_status(doc):
@@ -2152,7 +2565,7 @@ def _check_events(errors, events, where):
 def status_errors(doc):
     errors = []
     top = ("schema", "time", "mode", "interval", "error", "slice", "lanes", "outside",
-           "waiting", "orphans", "contained", "events", "counters")
+           "waiting", "orphans", "contained", "leftovers", "events", "counters")
     if not _check_keys(errors, doc, top, "status"):
         return errors
     schema = doc.get("schema")
@@ -2169,7 +2582,7 @@ def status_errors(doc):
     if error is not None and error != "scan":
         errors.append("error must be scan or null")
     if error is not None:
-        for key in ("outside", "waiting", "orphans", "contained"):
+        for key in ("outside", "waiting", "orphans", "contained", "leftovers"):
             if doc.get(key) is not None:
                 errors.append(f"{key} must be null when error is set")
     else:
@@ -2259,6 +2672,28 @@ def status_errors(doc):
                 if not isinstance(row.get("unit"), str):
                     errors.append(f"{where}.unit must be a string")
                 _check_int(errors, row.get("processes"), f"{where}.processes")
+    leftovers = doc.get("leftovers")
+    if leftovers is not None and _check_keys(errors, leftovers, LEFTOVER_KEYS, "leftovers"):
+        for key in ("testWorlds", "failedUnits", "testProcesses"):
+            _check_int_or_null(errors, leftovers.get(key), f"leftovers.{key}")
+        rows = leftovers.get("testProcessRepos")
+        if (rows is None) != (leftovers.get("testProcesses") is None):
+            errors.append("leftovers.testProcessRepos must be null exactly when testProcesses is")
+        elif rows is not None and not isinstance(rows, list):
+            errors.append("leftovers.testProcessRepos must be a list or null")
+        elif rows is not None:
+            repos = []
+            for i, row in enumerate(rows):
+                where = f"leftovers.testProcessRepos[{i}]"
+                if not _check_keys(errors, row, ("repo", "processes"), where):
+                    continue
+                if row.get("repo") is not None and not isinstance(row.get("repo"), str):
+                    errors.append(f"{where}.repo must be a string or null")
+                else:
+                    repos.append(row.get("repo"))
+                _check_int(errors, row.get("processes"), f"{where}.processes")
+            if repos != sorted(repos, key=lambda r: (r is None, r or "")):
+                errors.append("leftovers.testProcessRepos must be sorted by repo, null last")
     _check_events(errors, doc.get("events"), "events")
     if _check_keys(errors, doc.get("counters"), ("moves", "partial", "reaped", "moveFailures", "scanFailures", "skips"), "counters"):
         for key, value in doc["counters"].items():
@@ -2304,12 +2739,19 @@ def _fixture_tree():
             _fixture_proc(323, 322, "cargo", ["cargo"], FIXTURE_OUTSIDE_CG, start=656)]
 
 
+def _fixture_leftovers(worlds=0, units=0, repos=()):
+    return {"testWorlds": worlds, "failedUnits": units, "testProcesses": sum(n for _, n in repos),
+            "testProcessRepos": [{"repo": repo, "processes": n} for repo, n in repos]}
+
+
 def _fixture_doc(mode, st, *, now, slice_reading=None, lanes=None, moves=None, waiting=None,
-                 orphans_status=None, contained=None, error=None):
+                 orphans_status=None, contained=None, leftovers=None, error=None):
+    if leftovers is None and error is None:
+        leftovers = _fixture_leftovers()
     return status_document(mode, st, slice_reading=_fixture_slice() if slice_reading is None else slice_reading,
                            lanes=_fixture_lanes() if lanes is None else lanes, moves=moves,
                            waiting=waiting, orphans_status=orphans_status, contained=contained,
-                           error=error, now=now)
+                           leftovers=leftovers, error=error, now=now)
 
 
 def status_fixture_docs():
@@ -2350,6 +2792,10 @@ def status_fixture_docs():
     emit_event(st, "reaped", scope="agent-confine-leak.scope", processes=42, now=now + 120)
     docs["reaped"] = _fixture_doc("correct", st, now=now + 120, moves=[], waiting=[],
                                   orphans_status=[], contained=[])
+
+    docs["leftovers"] = _fixture_doc("correct", _fixture_state(), now=now + 180, moves=[], waiting=[],
+                                     orphans_status=[], contained=[],
+                                     leftovers=_fixture_leftovers(3, 1, [("vgshell", 2), (None, 1)]))
     return docs
 
 
@@ -2493,7 +2939,7 @@ def record_move_result(st, summary, failures, root, reason, done, name, moved, m
 DEFAULT_STATE = {"skips": 0, "last_report": 0, "last_correct": 0, "moves": 0, "partial": 0,
                  "scan_failures": 0, "move_failures": 0, "reaped": 0, "orphans": {},
                  "episodes": {}, "events": [], "event_seq": 0, "near_open": [], "waiting_open": [],
-                 "scratch_failed": [], "counters_unknown": False}
+                 "scratch_failed": [], "test_world_failed": [], "counters_unknown": False}
 STATE_COUNTER_KEYS = ("skips", "moves", "partial", "scan_failures", "move_failures", "reaped")
 
 
@@ -2612,6 +3058,7 @@ def state_object(raw):
     _check_string_list(errors, raw.get("near_open", []), "state.near_open")
     _check_string_list(errors, raw.get("waiting_open", []), "state.waiting_open")
     _check_string_list(errors, raw.get("scratch_failed", []), "state.scratch_failed")
+    _check_string_list(errors, raw.get("test_world_failed", []), "state.test_world_failed")
     if not isinstance(raw.get("counters_unknown", False), bool):
         errors.append("state.counters_unknown must be a boolean")
     raw_orphans = raw.get("orphans", {})
@@ -2715,7 +3162,7 @@ def run(correct):
     only = only_pids()
     with State(status=None if only is not None else ("correct" if correct else "report")) as st:
         st["_tick"] = {"procs": None, "moves": [], "waiting": [], "waiting_events": None,
-                       "orphans": [], "contained": [], "error": None, "fresh_labels": False}
+                       "orphans": [], "contained": [], "leftovers": None, "error": None, "fresh_labels": False}
         summary = []  # moved-tree notices; without this the first move raised NameError
         failures = []
         seen_near = set()
@@ -2780,6 +3227,29 @@ def run(correct):
                 clear_episodes(st, {"tasks", "memory"}, seen_near)
             except Exception as e:  # noqa: BLE001
                 log(f"task-cap enforcement raised {e!r}")
+            leftovers = dict.fromkeys(LEFTOVER_KEYS)
+            st["_tick"]["leftovers"] = leftovers
+            # Each pass in its own try, so one that raises nulls only its own
+            # reading and skips neither the others nor the moves.
+            world_procs = None
+            try:
+                world_procs = scan() if TEST_WORLD_PATTERNS else {}
+                world_failed = set(st["test_world_failed"])
+                leftovers["testWorlds"], _ = reap_test_worlds(correct, world_procs, world_failed)
+                st["test_world_failed"] = sorted(world_failed)
+            except Exception as e:  # noqa: BLE001
+                log(f"test-world reap raised {e!r}")
+            try:
+                rows = None if world_procs is None else report_test_processes(world_procs)
+                if rows is not None:
+                    leftovers["testProcesses"] = sum(row["processes"] for row in rows)
+                    leftovers["testProcessRepos"] = rows
+            except Exception as e:  # noqa: BLE001
+                log(f"test-process report raised {e!r}")
+            try:
+                leftovers["failedUnits"] = _failed_unit_pass(correct)
+            except Exception as e:  # noqa: BLE001
+                log(f"failed-unit pass raised {e!r}")
         try:
             reaped, orphan_rows = reap_orphans(procs, st, correct, only)
             st["_tick"]["orphans"] = orphan_rows
