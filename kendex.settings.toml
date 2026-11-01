@@ -161,16 +161,18 @@ SECOND_OPINION_MODELS = "claude copilot codex"
 # Opinions a review collects; 2+ unions distinct models on one diff.
 SECOND_OPINION_COUNT = "1"
 
-# Roster commands (identities claude / gpt-6.1-sol on the 1copilot home /
-# codex). Copilot comes before codex at the owner's 2026-11-01 request, with
+# Roster commands (identities claude / github-copilot/gpt-6.1-sol through
+# Pi on 1copilot / codex). The claude entry loads no project settings or
+# hooks (--setting-sources=). Copilot comes before codex at the owner's 2026-11-01 request, with
 # no room check: a refusal falls through to codex.
-SECOND_OPINION_CLAUDE_CMD = "claude -p --no-session-persistence --model opus --effort max --allowedTools Bash(read-only:true),Read,Glob,Grep --restricted --permission-mode dontAsk --tools Bash,Read,Glob,Grep"
+SECOND_OPINION_CLAUDE_CMD = "claude -p --no-session-persistence --setting-sources= --model opus --effort max --allowedTools Bash(read-only:true),Read,Glob,Grep --restricted --permission-mode dontAsk --tools Bash,Read,Glob,Grep"
 
-# Copilot CLI on the 1copilot home: no shell (it ran bash unasked in this
-# mode), only read-only file tools, inherited GitHub tokens cleared so the
-# stored 1copilot login is used, and the diff inline.
-SECOND_OPINION_COPILOT_CMD = "env -u GH_TOKEN -u GITHUB_TOKEN -u COPILOT_GITHUB_TOKEN COPILOT_ALLOW_ALL=false 1copilot --model gpt-6.1-sol --reasoning-effort high --silent --no-ask-user --disable-builtin-mcps --available-tools view rg glob --deny-tool write"
-SECOND_OPINION_COPILOT_MODEL = "gpt-6.1-sol"
+# Pi on the Copilot provider; its root signs in as the 1copilot account.
+# No shell, no repository hooks (--no-extensions), inherited GitHub tokens
+# cleared, and the diff inline. The Copilot CLI is not used: it ran bash
+# unasked and loads a trusted checkout's hooks, lane mail included.
+SECOND_OPINION_COPILOT_CMD = "env -u GH_TOKEN -u GITHUB_TOKEN -u COPILOT_GITHUB_TOKEN pi -p --no-session --no-extensions --model github-copilot/gpt-6.1-sol --thinking high --tools read,grep,find,ls"
+SECOND_OPINION_COPILOT_MODEL = "github-copilot/gpt-6.1-sol"
 SECOND_OPINION_COPILOT_INLINE_DIFF = "1"
 
 SECOND_OPINION_CODEX_CMD = "codex exec -m gpt-6.1-sol -s read-only -c model_reasoning_effort=xhigh --ephemeral --disable hooks"
