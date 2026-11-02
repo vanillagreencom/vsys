@@ -19,7 +19,7 @@ tags: [planning]
 ## Project Instructions
 
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear for planning, audits, cycles, roadmaps and research completion. (PM-038)
-- The team estimate scale is 1 for hours, 2 for half a day, 3 for a day, 4 for two to three days, and 5 for a week or more. Planned and review-created issues use this scale. (ORCH-M22)
+- The numeric estimate is the project-management package's relative size class, and the time beside an item is one nonstop-hours-to-merge figure, per project-management § Disposition. Planned and review-created issues use it. (ORCH-M22)
 - Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
 
 ### Project map
