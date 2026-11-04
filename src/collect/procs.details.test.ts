@@ -26,7 +26,7 @@ test.each(["EACCES", "EPERM", "ENOENT", "ESRCH", "EIO"])(
   (code) => {
     const f = fixture();
     const group = "agents.slice/a.scope";
-    f.proc(40, group, { parent: 41 });
+    f.proc(40, group, { parent: 41, env: "TMUX_PANE=%3\0" });
     f.proc(41, group, { comm: "bash", command: ["bash"], parent: 0 });
     const details = [
       join(f.config.procRoot, "40/cwd"),
@@ -78,7 +78,11 @@ test.each(["EACCES", "EPERM", "ENOENT", "ESRCH", "EIO"])(
           next.procs.find((p) => p.pid === 40),
           "readable main",
         ),
-      ).toMatchObject({ envAvailable: true, cwd: f.root });
+      ).toMatchObject({
+        envAvailable: true,
+        env: { TMUX_PANE: "%3" },
+        cwd: f.root,
+      });
     } finally {
       text.mockRestore();
       links.mockRestore();

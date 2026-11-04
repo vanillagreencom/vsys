@@ -67,20 +67,20 @@ test.each([
   {
     sources: ["/scratch"],
     missing: false,
-    heading: "all available · 1 read failed",
+    heading: "all available · 1 source unreadable",
   },
   {
     sources: ["/scratch", "/scratch", "/cgroup"],
     missing: false,
-    heading: "all available · 2 reads failed",
+    heading: "all available · 2 sources unreadable",
   },
   {
     sources: ["/scratch"],
     missing: true,
-    heading: "1 not available · 1 read failed",
+    heading: "1 not available · 1 source unreadable",
   },
 ])(
-  "Data sources heading includes failed reads: %j",
+  "Data sources heading counts distinct unreadable sources: %j",
   async ({ sources, missing, heading }) => {
     const s = emptySnapshot();
     if (missing)

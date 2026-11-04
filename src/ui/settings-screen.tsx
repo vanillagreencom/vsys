@@ -589,7 +589,7 @@ export function Settings({
             missing.length ? `${missing.length} not available` : "all available"
           }${
             sources.length
-              ? ` · ${sources.length} ${sources.length === 1 ? "read" : "reads"} failed`
+              ? ` · ${sources.length} ${sources.length === 1 ? "source" : "sources"} unreadable`
               : ""
           }`}
           marginTop={0}
