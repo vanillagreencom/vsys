@@ -179,7 +179,7 @@ export class EventLog {
   private processPrevious: Snapshot | null = null;
   private laneIdentities = new Map<
     string,
-    { lane: Lane; procs: Snapshot["procs"] }
+    { lane: Lane; recordStop: boolean }
   >();
   get previousTime(): number | undefined {
     return this.previous?.time;
@@ -230,47 +230,48 @@ export class EventLog {
       for (const id of this.laneIdentities.keys())
         if (!processPrevious?.lanes.some((lane) => lane.id === id))
           this.laneIdentities.delete(id);
-    // A scope can outlive its processes. Keep its last process-bearing name
-    // until it disappears, rather than naming its stop from the empty scope.
+    // Baseline and stored predecessor lanes seed their stop decision once.
+    // Later occupied samples update identity, not lifecycle admission.
     if (!readNone)
       for (const sample of [before, s]) {
         if (!sample) continue;
-        for (const lane of sample.lanes)
-          if (lane.mainPid !== 0)
-            this.laneIdentities.set(lane.id, {
-              lane,
-              procs: sample.procs.filter((p) => lane.pids.includes(p.pid)),
-            });
+        for (const lane of sample.lanes) {
+          const identity = this.laneIdentities.get(lane.id) ?? {
+            lane,
+            recordStop: !standInLane(lane, sample.procs, c),
+          };
+          if (lane.mainPid !== 0) identity.lane = lane;
+          if (
+            sample === s &&
+            before &&
+            !before.lanes.some((old) => old.id === lane.id)
+          )
+            identity.recordStop =
+              identity.recordStop &&
+              add("lane-start", laneText(lane), {
+                subjectId: lane.id,
+                // An unreadable account stays empty; the UI says it is unavailable.
+                names: {
+                  account: lane.account ?? "",
+                  slice: sliceOf(lane.cgroup),
+                  tool: lane.tool,
+                },
+                values: { pid: lane.mainPid },
+              });
+          this.laneIdentities.set(lane.id, identity);
+        }
       }
-    for (const lane of s.lanes)
-      if (
-        before &&
-        !before.lanes.some((old) => old.id === lane.id) &&
-        !standInLane(lane, s.procs, c)
-      )
-        add("lane-start", laneText(lane), {
-          subjectId: lane.id,
-          // An unreadable account stays empty; the UI says it is unavailable.
-          names: {
-            account: lane.account ?? "",
-            slice: sliceOf(lane.cgroup),
-            tool: lane.tool,
-          },
-          values: { pid: lane.mainPid },
-        });
     for (const lane of before?.lanes ?? []) {
-      const occupied = this.laneIdentities.get(lane.id);
-      const identity = occupied?.lane ?? lane;
+      const identity = this.laneIdentities.get(lane.id);
       if (
-        before &&
-        !s.lanes.some((live) => live.id === lane.id) &&
-        !standInLane(identity, occupied?.procs ?? before.procs, c)
+        identity?.recordStop &&
+        !s.lanes.some((live) => live.id === lane.id)
       ) {
-        add("lane-stop", laneText(identity), {
+        add("lane-stop", laneText(identity.lane), {
           subjectId: lane.id,
           names: {
-            account: identity.account ?? "",
-            slice: sliceOf(identity.cgroup),
+            account: identity.lane.account ?? "",
+            slice: sliceOf(identity.lane.cgroup),
           },
           values: { age: lane.age },
         });

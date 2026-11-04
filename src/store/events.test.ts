@@ -182,7 +182,7 @@ test("stand-in lanes omit starts and stops while real and unread lanes keep both
     ).toEqual(expectedIds);
   }
 });
-test("test scopes omit lane rows through direct and empty-scope disappearance", () => {
+test("test scopes omit lane rows from baseline or start through disappearance", () => {
   // VSY-257's harness script, fixture stub and sleep symlink, plus the
   // non-tool scope members observed by Jarvis on cachy in VSY-262.
   const rows: [string, Partial<Proc>[]][] = [
@@ -215,28 +215,111 @@ test("test scopes omit lane rows through direct and empty-scope disappearance", 
   ];
   const config = { ...c, scratchDirs: ["/home/x/dev/.scratch/agents"] };
   for (const [name, members] of rows)
+    for (const atBaseline of [false, true])
+      for (const emptyBeforeStop of [false, true]) {
+        const running = emptySnapshot(2000);
+        running.procs = members.map((p) =>
+          processSnapshot({ tool: null, ...p }),
+        );
+        const group = groupSnapshot({
+          path: "agents.slice/test.scope",
+          name: "test.scope",
+          pids: running.procs.map((p) => p.pid),
+        });
+        running.lanes = lanes([group], running.procs, config);
+        expect(running.lanes, name).toHaveLength(1);
+        const log = started(atBaseline ? running : undefined);
+        const events = atBaseline ? [] : log.advance(running, config);
+        if (emptyBeforeStop) {
+          const empty = emptySnapshot(3000);
+          empty.lanes = lanes([{ ...group, pids: [] }], [], config);
+          events.push(...log.advance(empty, config));
+        }
+        events.push(...log.advance(emptySnapshot(4000), config));
+        expect(
+          events.filter(
+            (e) => e.kind === "lane-start" || e.kind === "lane-stop",
+          ),
+          `${name}, baseline: ${atBaseline}, empty before stop: ${emptyBeforeStop}`,
+        ).toEqual([]);
+      }
+});
+test("lane stops keep their start admission after the confirmed tool changes", () => {
+  // ProcessCollector can keep a scope's ordinary child after its agent exits,
+  // or observe that child exec an agent after suppressing the scope's start.
+  const agent = processSnapshot({
+    command: ["/home/x/.local/bin/claude"],
+    executable: "/home/x/.local/share/claude/versions/2.1.0",
+    cwd: "/tmp/real-project",
+    env: { CLAUDE_CONFIG_DIR: "/home/x/.claude/work" },
+  });
+  const child = processSnapshot({
+    pid: 41,
+    ppid: 40,
+    comm: "sleep",
+    tool: null,
+    command: ["/usr/bin/sleep", "60"],
+    executable: "/usr/bin/sleep",
+    cwd: "/tmp/real-project",
+  });
+  for (const confirmedAtStart of [true, false])
     for (const emptyBeforeStop of [false, true]) {
       const log = started();
       const running = emptySnapshot(2000);
-      running.procs = members.map((p) => processSnapshot({ tool: null, ...p }));
       const group = groupSnapshot({
-        path: "agents.slice/test.scope",
-        name: "test.scope",
-        pids: running.procs.map((p) => p.pid),
+        path: "agents.slice/real.scope",
+        name: "real.scope",
+        pids: [40, 41],
       });
-      running.lanes = lanes([group], running.procs, config);
-      expect(running.lanes, name).toHaveLength(1);
-      const events = log.advance(running, config);
+      running.procs = [
+        confirmedAtStart ? agent : { ...child, pid: 40, ppid: 1 },
+        child,
+      ];
+      running.lanes = lanes([group], running.procs, c);
+      const events = log.advance(running, c);
+      const latest = emptySnapshot(3000);
+      latest.procs = [
+        confirmedAtStart ? child : { ...agent, pid: 41, ppid: 40 },
+      ];
+      latest.lanes = lanes([{ ...group, pids: [41] }], latest.procs, c);
+      events.push(...log.advance(latest, c));
       if (emptyBeforeStop) {
-        const empty = emptySnapshot(3000);
-        empty.lanes = lanes([{ ...group, pids: [] }], [], config);
-        events.push(...log.advance(empty, config));
+        const empty = emptySnapshot(4000);
+        empty.lanes = lanes([{ ...group, pids: [] }], [], c);
+        events.push(...log.advance(empty, c));
       }
-      events.push(...log.advance(emptySnapshot(4000), config));
+      events.push(...log.advance(emptySnapshot(5000), c));
       expect(
         events.filter((e) => e.kind === "lane-start" || e.kind === "lane-stop"),
-        `${name}, empty before stop: ${emptyBeforeStop}`,
-      ).toEqual([]);
+        `confirmed at start: ${confirmedAtStart}, empty before stop: ${emptyBeforeStop}`,
+      ).toEqual(
+        confirmedAtStart
+          ? [
+              {
+                time: 2000,
+                kind: "lane-start",
+                subject: "work claude real-project PID 40",
+                subjectId: group.path,
+                cause: "",
+                names: {
+                  account: "work",
+                  slice: "agents.slice",
+                  tool: "claude",
+                },
+                values: { pid: 40 },
+              },
+              {
+                time: 5000,
+                kind: "lane-stop",
+                subject: "real-project PID 41",
+                subjectId: group.path,
+                cause: "",
+                names: { account: "", slice: "agents.slice" },
+                values: { age: emptyBeforeStop ? null : 10 },
+              },
+            ]
+          : [],
+      );
     }
 });
 test("a real worktree-root lane keeps start and last occupied stop identity", () => {
