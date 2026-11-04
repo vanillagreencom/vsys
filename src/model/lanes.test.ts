@@ -120,6 +120,19 @@ test("an ungrouped lane takes its main PID from the scope root, not enumeration 
   expect([only.mainPid, only.name]).toEqual([100, "claude wrapper"]);
 });
 
+test("a lane with no configured name falls back to the launched program", () => {
+  const c = { ...defaults(), laneNameParts: [] };
+  const proc = processSnapshot({
+    comm: "MainThread",
+    command: ["/opt/copilot/bin/copilot"],
+    tool: "copilot",
+    cwd: null,
+    group: "/app.slice/escaped",
+  });
+  const lane = present(lanes([], [proc], c)[0], "the unnamed lane");
+  expect(lane.name).toBe("copilot");
+});
+
 test("two agents in one worktree under different accounts get different names", () => {
   const c = defaults();
   const groups = [

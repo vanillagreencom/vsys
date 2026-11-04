@@ -176,10 +176,11 @@ test("a process whose agent name was not confirmed by install location gets a vi
   s.procs = [
     processSnapshot({
       pid: 99,
-      comm: "pi",
+      comm: "MainThread",
+      command: ["/opt/copilot/bin/copilot"],
       tool: null,
-      unconfirmedTool: "pi",
-      unconfirmedPath: "/usr/bin/pi",
+      unconfirmedTool: "copilot",
+      unconfirmedPath: "/opt/copilot/bin/copilot",
     }),
   ];
   const items = attention(s, c, { basePath: base });
@@ -190,8 +191,10 @@ test("a process whose agent name was not confirmed by install location gets a vi
   expect(verdictLine(items, s)).toBe("Healthy");
   // The process, the tool it almost matched and the path tested are all
   // named, not only carried as fields a reader never sees.
-  expect(card.title).toContain("pi");
-  expect(said(card)).toContain("pi (pid 99): pi at /usr/bin/pi");
+  expect(card.title).toContain("copilot");
+  expect(said(card)).toContain(
+    "copilot (pid 99): copilot at /opt/copilot/bin/copilot",
+  );
   // The reader is pointed at the Settings overlay's paths fragment.
   expect(card.view).toBe("Settings");
   expect(card.next).toContain("Settings");
@@ -206,6 +209,7 @@ test("several unconfirmed processes share one card, and a repeated tool name is 
     processSnapshot({
       pid: 10,
       comm: "pi",
+      command: ["/usr/bin/pi"],
       tool: null,
       unconfirmedTool: "pi",
       unconfirmedPath: "/usr/bin/pi",
@@ -215,13 +219,15 @@ test("several unconfirmed processes share one card, and a repeated tool name is 
     processSnapshot({
       pid: 11,
       comm: "pi",
+      command: ["/opt/pi/pi"],
       tool: null,
       unconfirmedTool: "pi",
       unconfirmedPath: "/opt/pi/pi",
     }),
     processSnapshot({
       pid: 12,
-      comm: "node",
+      comm: "node-MainThread",
+      command: ["/usr/bin/node"],
       tool: null,
       unconfirmedTool: "codex",
       unconfirmedPath: "/home/reader/scripts/codex.js",
@@ -258,6 +264,7 @@ test("five or more unconfirmed processes are all named, none dropped behind a co
     processSnapshot({
       pid: 30 + i,
       comm: `tool${i}`,
+      command: [`/usr/bin/tool${i}`],
       tool: null,
       unconfirmedTool: `name${i}`,
       unconfirmedPath: `/opt/name${i}/bin`,
@@ -286,6 +293,7 @@ test("an unconfirmed process with no readable path gets guidance to check it dir
     processSnapshot({
       pid: 20,
       comm: "bash",
+      command: ["/usr/bin/bash"],
       tool: null,
       unconfirmedTool: "pi",
       unconfirmedPath: null,
@@ -312,6 +320,7 @@ test("a mix of readable and unreadable unconfirmed paths gets both pieces of adv
     processSnapshot({
       pid: 21,
       comm: "pi",
+      command: ["/usr/bin/pi"],
       tool: null,
       unconfirmedTool: "pi",
       unconfirmedPath: "/usr/bin/pi",
@@ -319,6 +328,7 @@ test("a mix of readable and unreadable unconfirmed paths gets both pieces of adv
     processSnapshot({
       pid: 22,
       comm: "bash",
+      command: ["/usr/bin/bash"],
       tool: null,
       unconfirmedTool: "codex",
       unconfirmedPath: null,
@@ -345,6 +355,7 @@ test("a named-executable match gets an executables entry recommended, not a path
     processSnapshot({
       pid: 23,
       comm: "pi",
+      command: ["/usr/bin/pi"],
       tool: null,
       unconfirmedTool: "pi",
       unconfirmedPath: "/usr/bin/pi",
@@ -370,6 +381,7 @@ test("a mix of a named match and a scripted match gets both pieces of advice", (
     processSnapshot({
       pid: 24,
       comm: "pi",
+      command: ["/usr/bin/pi"],
       tool: null,
       unconfirmedTool: "pi",
       unconfirmedPath: "/usr/bin/pi",
@@ -378,6 +390,7 @@ test("a mix of a named match and a scripted match gets both pieces of advice", (
     processSnapshot({
       pid: 25,
       comm: "node",
+      command: ["/usr/bin/node"],
       tool: null,
       unconfirmedTool: "codex",
       unconfirmedPath: "/home/reader/scripts/codex.js",

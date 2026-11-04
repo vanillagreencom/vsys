@@ -2,7 +2,7 @@ import { agentToolsPath } from "../config/agent-tools";
 import type { Config } from "../config/config";
 import { sliceCompared } from "../model/lanes";
 import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
-import { laneText, unitLabel } from "../model/naming";
+import { laneText, programName, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import {
@@ -675,7 +675,7 @@ function copy(
       const names = unconfirmed
         .map(
           (proc) =>
-            `${proc.comm} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys could not read"}`,
+            `${programName(proc)} (pid ${proc.pid}): ${proc.unconfirmedTool ?? ""} at ${proc.unconfirmedPath ?? "a path vsys could not read"}`,
         )
         .join(", ");
       // A script against a tool with no install location at all is the one

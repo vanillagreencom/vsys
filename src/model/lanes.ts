@@ -14,6 +14,7 @@ import {
   laneName,
   paneName,
   paneSocket,
+  programName,
   unitLabel,
   windowTitle,
 } from "./naming";
@@ -362,7 +363,7 @@ export function lanes(
         ]) ||
         derived ||
         (group ? unitLabel(group.name) : "") ||
-        main?.comm ||
+        (main ? programName(main) : "") ||
         id,
       account,
       pane,

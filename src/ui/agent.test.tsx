@@ -24,10 +24,36 @@ import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 import { gap } from "./format";
 
-test("process readings occupy their named columns", async () => {
+test("process readings keep whole PIDs and indent program names at four tree levels", async () => {
   const s = emptySnapshot();
-  s.lanes = [laneSnapshot()];
-  s.procs = [processSnapshot({ cpuPercent: 25, threads: 7, rss: 2097152 })];
+  const rows: [number, number, string, string, string][] = [
+    [1528901, 1, "/opt/copilot/bin/copilot", "MainThread", "copilot       "],
+    [1045093, 1528901, "/usr/bin/node", "node-MainThread", "  node        "],
+    [
+      3940001,
+      1045093,
+      "/opt/copilot-bin/MainThread",
+      "MainThread",
+      "    MainThread",
+    ],
+    [4194304, 3940001, "/usr/bin/long-worker-name", "worker", "      long-wo…"],
+  ];
+  s.procs = rows.map(([pid, ppid, command, comm], i) =>
+    processSnapshot({
+      pid,
+      ppid,
+      command: [command],
+      comm,
+      start: 100 + i,
+      cwd: `/repo/process-${i}`,
+      cpuPercent: 25,
+      threads: 7,
+      rss: 2097152,
+    }),
+  );
+  s.lanes = [
+    laneSnapshot({ mainPid: 1528901, pids: s.procs.map((p) => p.pid) }),
+  ];
   const t = await mount(s, defaults(), { width: 160, height: 45 });
   try {
     await t.press("2");
@@ -40,20 +66,33 @@ test("process readings occupy their named columns", async () => {
       ),
       "process header",
     );
-    const row = present(
-      lines.find((line) => line.includes("25.0%")),
-      "process row",
-    );
-    const under = (label: string, value: string) =>
-      row.slice(
-        header.indexOf(label) + label.length - value.length,
-        header.indexOf(label) + label.length,
+    for (const [i, [pid, , , , command]] of rows.entries()) {
+      const row = present(
+        lines.find((line) => line.includes(`/repo/process-${i}`)),
+        `process at depth ${i}`,
       );
-    expect({
-      cpu: under("CPU", "25.0%"),
-      threads: under("threads", "7"),
-      memory: under("memory", "2.0 MiB"),
-    }).toEqual({ cpu: "25.0%", threads: "7", memory: "2.0 MiB" });
+      const under = (label: string, value: string) =>
+        row.slice(
+          header.indexOf(label) + label.length - value.length,
+          header.indexOf(label) + label.length,
+        );
+      expect({
+        pid: row.slice(header.indexOf("PID"), header.indexOf("PID") + 8).trim(),
+        command: row.slice(
+          header.indexOf("command"),
+          header.indexOf("command") + 14,
+        ),
+        cpu: under("CPU", "25.0%"),
+        threads: under("threads", "7"),
+        memory: under("memory", "2.0 MiB"),
+      }).toEqual({
+        pid: String(pid),
+        command,
+        cpu: "25.0%",
+        threads: "7",
+        memory: "2.0 MiB",
+      });
+    }
   } finally {
     await t.close();
   }

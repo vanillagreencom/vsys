@@ -7,6 +7,7 @@ import type { Config } from "../config/config";
 import { type LaneIntent, laneIntent, laneTarget } from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
+import { programName } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
@@ -682,7 +683,7 @@ export function Agent({
                             {tree.map(({ proc: p, depth }) => (
                               <Line key={p.pid} height={1} truncate>
                                 {safe(
-                                  `${processColumns.map((column, index) => cell(column, [`${"  ".repeat(depth)}${p.pid}`, p.comm, percent(p.cpuPercent), String(p.threads), bytes(p.rss, c)][index] ?? gap)).join(columnGap)}${columnGap}${p.cwd ?? gap}`,
+                                  `${processColumns.map((column, index) => cell(column, [String(p.pid), `${"  ".repeat(depth)}${programName(p)}`, percent(p.cpuPercent), String(p.threads), bytes(p.rss, c)][index] ?? gap)).join(columnGap)}${columnGap}${p.cwd ?? gap}`,
                                 )}
                               </Line>
                             ))}

@@ -6,8 +6,41 @@ import {
   jobserver,
   laneName,
   paneName,
+  programName,
   unitLabel,
 } from "./naming";
+
+test("program names follow argv rather than a renamed main thread", () => {
+  const rows: [string[], string, string][] = [
+    [["/opt/copilot/bin/copilot"], "MainThread", "copilot"],
+    [["/usr/bin/node"], "node-MainThread", "node"],
+    [["/usr/bin/bun run /repo/app.ts"], "MainThread", "bun"],
+    [
+      ["npm exec @modelcontextprotocol/server-filesystem /home/u/proj"],
+      "npm exec @mod",
+      "npm",
+    ],
+    [["npm exec @playwright/mcp@latest"], "npm exec @play", "npm"],
+    [
+      [
+        "/opt/google/chrome/chrome --type=renderer --user-data-dir=/tmp/playwright_chromiumdev_profile-x",
+      ],
+      "chrome",
+      "chrome",
+    ],
+    [["worker: pool"], "MainThread", "worker"],
+    [["-bash"], "bash", "bash"],
+    [["/bin/-zsh: login"], "zsh", "zsh"],
+    [[], "kworker/0:1", "kworker/0:1"],
+    [[""], "zombie", "zombie"],
+    [["/opt/copilot-bin/MainThread"], "MainThread", "MainThread"],
+  ];
+  for (const [command, comm, expected] of rows)
+    expect(
+      programName(processSnapshot({ command, comm })),
+      command.join(" "),
+    ).toBe(expected);
+});
 
 test("the account comes from whichever agent configuration directory is set", () => {
   const c = defaults();
