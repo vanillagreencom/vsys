@@ -14,7 +14,20 @@ test("program names follow argv rather than a renamed main thread", () => {
   const rows: [string[], string, string][] = [
     [["/opt/copilot/bin/copilot"], "MainThread", "copilot"],
     [["/usr/bin/node"], "node-MainThread", "node"],
-    [["/usr/bin/bun run app"], "MainThread", "bun"],
+    [["/usr/bin/bun run /repo/app.ts"], "MainThread", "bun"],
+    [
+      ["npm exec @modelcontextprotocol/server-filesystem /home/u/proj"],
+      "npm exec @mod",
+      "npm",
+    ],
+    [["npm exec @playwright/mcp@latest"], "npm exec @play", "npm"],
+    [
+      [
+        "/opt/google/chrome/chrome --type=renderer --user-data-dir=/tmp/playwright_chromiumdev_profile-x",
+      ],
+      "chrome",
+      "chrome",
+    ],
     [["worker: pool"], "MainThread", "worker"],
     [["-bash"], "bash", "bash"],
     [["/bin/-zsh: login"], "zsh", "zsh"],

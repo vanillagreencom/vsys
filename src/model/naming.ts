@@ -3,12 +3,12 @@ import type { CollectionConfig } from "../collect/settings";
 import { serverPart } from "../collect/tmux";
 import type { Proc } from "./types";
 
-/** argv names the launched program; comm may name a runtime's main thread. */
+/** comm may name a runtime's main thread instead of argv[0]'s program. */
 export function programName(proc: Proc): string {
   const command = proc.command[0];
   return command
-    ? basename(command)
-        .replace(/[ :].*$/, "")
+    ? basename(command.replace(/ .*$/, ""))
+        .replace(/:.*$/, "")
         .replace(/^-/, "")
     : proc.comm;
 }
