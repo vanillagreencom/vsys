@@ -195,13 +195,9 @@ test("an unavailable root answer stands whatever the agent slice's own ancestry 
     detail: "ENOENT",
   };
   const agentsSlice = join(f.config.cgroupRoot, "agents.slice");
-  // The agent slice's own ancestry ALSO withholds io here, on purpose: were
-  // the short-circuit on an unavailable root removed, the walk below would
-  // read that withholding and return a freshly built `incomplete` capability
-  // instead of `root`. A fixture where the ancestry delegates cleanly cannot
-  // tell the two apart: both the guarded and the unguarded code fall through
-  // to the same `return root` at the very end, so `toBe(root)` would hold
-  // either way (the recurrence this test replaces).
+  // The ancestry also withholds io, so falling through would return a new
+  // diagnosis instead of the root answer. Clean ancestry cannot distinguish
+  // that fallthrough.
   writeFileSync(
     join(agentsSlice, "cgroup.subtree_control"),
     "cpu memory pids\n",
@@ -572,9 +568,8 @@ test("tmux absent and tmux without a server are separate diagnoses", () => {
 });
 
 test("a tmux with no server running is not a missing tmux", () => {
-  // The words tmux prints when its socket is not there. They read as a missing
-  // file because they are about one, and matching them against a pattern for a
-  // missing program told a reader with tmux installed to install it.
+  // A missing socket is a running tmux command reporting no server, not proof
+  // that tmux is uninstalled.
   const refused = probeTmux([
     "sh",
     "-c",

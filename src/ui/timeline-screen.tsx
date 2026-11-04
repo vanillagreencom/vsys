@@ -196,12 +196,7 @@ export function Timeline({
       ),
     );
   };
-  /**
-   * Open a row: the highlight, the recorded identity and the time cursor move
-   * as one. Every entry calls this — the keys, the mouse, and a row Home asked
-   * for — because a rule written at each entry reaches the entries someone
-   * remembered, and the key path was the one that was not.
-   */
+  /** Keyboard, mouse and Home targets must open through one owner so the highlight, identity and time cursor move together. */
   const open = useCallback(
     (index: number, event: TimelineEvent) => {
       choose(index);
@@ -252,11 +247,9 @@ export function Timeline({
     ["Escaped", "unconfined", String, ui.warn],
     ["Corruption", "corruption", String, ui.danger],
   ] as const;
-  // The window row and its blank, two three-row charts with their titles, the
-  // marker strip and the axis, the cursor readings and the section heading.
-  // With no sample under the cursor those readings are one line, not a wrapped
-  // tile block: budgeting the block on a short first-run Timeline dropped the
-  // sparkline rows and left the space they would have taken empty.
+  // Budget cursor readings as one line without a sample and as tiles with one.
+  // Charging for absent tiles could hide sparklines while leaving their space
+  // empty.
   const cursorHeight = selected ? tilesHeight(rows.length, width - 4, 2) : 1;
   // ...and the unit line the selected row can open under itself.
   const fixed = 2 + 4 + 4 + 3 + cursorHeight + 1 + 1;
@@ -406,9 +399,7 @@ export function Timeline({
           marginTop={0}
           count={changes.length ? `${changes.length}, newest first` : undefined}
         />
-        {/* The shared list, which pages around its own selection. Slicing the
-          first rows here instead let the selection walk off the end of what
-          was drawn, and Enter then acted on a row the reader could not see. */}
+        {/** Use the shared windowed list: a fixed prefix would let selection and Enter reach a row the reader cannot see. */}
         <List
           items={changes}
           selected={row}

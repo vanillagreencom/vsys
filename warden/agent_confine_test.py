@@ -134,8 +134,8 @@ class AgentConfineRules(unittest.TestCase):
             created = Path(default_tmpdir).is_dir()
         rows = [
             ("outside-slice branch succeeds with systemd-run unavailable", result.returncode, 0),
-            # No scope is created here (no user manager), so TMPDIR stays whatever
-            # was inherited rather than resetting to the shared parent (VSY-79).
+            # No new scope means TMPDIR remains inherited; resetting it to the
+            # shared parent would lose the lane’s isolation.
             ("outside-slice branch passes its inherited TMPDIR through unchanged",
              f"TMPDIR={inherited}" in result.stdout.splitlines(), True),
             ("outside-slice branch creates no scratch directory", created, False),
@@ -244,12 +244,9 @@ class AgentConfineRules(unittest.TestCase):
                     self.assertIn(f"TMPDIR={expected}/{unit_match.group(1)}", out_lines)
                     self.assertTrue(scratch_created)
                 else:
-                    # A capped (or unknown) lineage starts no new scope, so
-                    # TMPDIR stays whatever the parent process already set it
-                    # to for its own scope rather than resetting it (VSY-79).
-                    # A known inherited value here (not just an absent
-                    # TMPDIR=) catches a regression that clears it instead of
-                    # passing it through.
+                    # A capped or unknown lineage inherits TMPDIR. Give it a
+                    # known value so clearing the variable cannot pass as
+                    # inheritance.
                     self.assertIn(f"TMPDIR={inherited}", out_lines)
 
     def test_agent_confine_nested_status_three_mutant_fails(self):
@@ -467,7 +464,7 @@ class AgentConfineRules(unittest.TestCase):
                     self.assertEqual(actual, expected)
             (Path(first_tmpdir) / "first-file").write_text("first")
             (Path(second_tmpdir) / "second-file").write_text("second")
-            # rm -rf "$TMPDIR" in one agent leaves the other agent's files (VSY-79).
+            # One lane’s TMPDIR cleanup must leave the other lane’s files.
             shutil.rmtree(first_tmpdir)
             self.assertFalse(Path(first_tmpdir).exists())
             self.assertTrue((Path(second_tmpdir) / "second-file").is_file())

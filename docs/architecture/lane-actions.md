@@ -1,27 +1,29 @@
-# Only a command rebuilt against the current sample reaches the system
+# Lane actions
 
 Read before adding or changing anything the dashboard does to a process, a cgroup or a unit.
 
 ## The approach
 
-A screen holds a `LaneIntent`: the action, the lane id, its main process ID and start time, the scope and the line the reader read. It carries no effect. `resolveIntent()` in `src/model/actions.ts` rebuilds it against the snapshot of the moment into a `LaneCommand`, and refuses when the lane ended, another process instance leads it, the main process is unreadable, its cgroup no longer resolves to a scope, or the rebuilt line differs from the confirmed one. `runEffect()` in `src/effect.ts` performs the command. Write mode ships off, and every action stands behind a confirmation naming the scope.
+Screens hold an intent without an effect. Only `resolveIntent()` in `src/model/actions.ts` can turn it into a command against the current snapshot. Only `runEffect()` in `src/effect.ts` changes system state. [D003](../decisions/D003-action-resolved-at-the-keypress.md) governs this boundary.
 
 ## Why
 
-A confirmation stays open while samples land under it. Twice a review found an action authorised against the lane the reader saw rather than the lane the machine had. A type that cannot carry an effect is checked at every call site by the compiler, where a third check at a third call site would be a third chance to forget ([D003](../decisions/D003-action-resolved-at-the-keypress.md)).
+Samples keep arriving while confirmation is open. The confirmed target and command must still describe the live machine when the reader accepts.
 
 ## Rules
 
-- Do build intents on the screen and commands only through `resolveIntent()`. It is the only exported function returning a `LaneCommand`, and the builder is private to `src/model/actions.ts`. `src/model/actions.test.ts` pins each command and each refusal.
-- Do refuse every action while write mode is off, while a past sample is pinned, and when the current sample no longer names the confirmed line. `src/ui/agent.test.tsx` checks these refusals. `src/ui/App.test.tsx` turns write mode off while a confirmation is open.
-- Do offer actions only to a lane whose cgroup is a `.scope` under the configured root, through `laneTarget()`, and offer Stop only where every directory between the root and the scope is a `.slice` and the leading process's kernel cgroup is that scope with only slices above it apart from one `user@<uid>.service`, whose uid is the one vsys runs as, since that is the only manager `systemctl --user` reaches. A scope nested in another unit's subtree, under a configured root inside a container, under no user manager or another user's, or led by a process in another cgroup keeps Freeze and Thaw and gets no Stop ([D002](../decisions/D002-lane-action-mechanism.md)). `src/model/actions.test.ts` checks these cases.
-- Do report each refusal as its own answer, so a signal that reached nothing never reads as a completed stop.
-- Never change system state anywhere but `runEffect()`. Review holds this; no check refuses a second writer.
-- Moving the reader's own tmux view, `switchToPane()` in `src/effect.ts`, is not an effect: it changes no process, so it waits on neither write mode nor `runEffect()`.
+Review holds boundaries without a named check.
+
+- Build screen rows from `LaneIntent`. Keep the command builder private and resolve every confirmed intent against the current snapshot. Refuse a changed process instance, an unread main process, an ended lane, a lost scope or a changed command line. `src/model/actions.test.ts` checks these refusals.
+- Refuse actions while write mode is off or a past sample is pinned. Confirm the exact command and scope before running it. `src/ui/agent.test.tsx` and `src/ui/App.test.tsx` check this boundary.
+- Offer actions only for an addressable `.scope` under the configured root. Freeze and Thaw write its `cgroup.freeze`. Stop requires only slices between the root and scope, and a matching process kernel path under exactly one `user@<uid>.service` for the current user, with only slices elsewhere above the scope. A nested manager, a container subtree, another user's manager or an unknown manager must never receive a bare scope name through this user's manager. Keep Freeze and Thaw where Stop is unsafe. [D002](../decisions/D002-lane-action-mechanism.md) and `src/model/actions.test.ts` hold this boundary.
+- Report a refused effect as a refusal, never a completed stop.
+- Keep every system change in `runEffect()`. Review holds the single-writer rule.
+- A tmux view switch changes no process or cgroup. It bypasses write mode and the effect path through `switchToPane()` in `src/effect.ts`.
 
 ## The canonical example
 
-`src/model/actions.ts`: `LaneIntent` without an effect, `LaneCommand` with one, a private builder, and `resolveIntent()` as the only exported way from one to the other. Copy the shape for a new action.
+Copy `LaneIntent`, `LaneCommand` and `resolveIntent()` in `src/model/actions.ts`: an inert intent, a private command builder and one resolver at the effect boundary.
 
 ## Revisit when
 
@@ -29,4 +31,4 @@ A lane gains a stable identity independent of its cgroup path and leading proces
 
 ## Not governed
 
-What the optional warden changes automatically: [warden.md](warden.md).
+Automatic correction by the optional [warden](warden.md).

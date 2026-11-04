@@ -44,13 +44,7 @@ export const switchClientArgv = (paneId: string) => [
 export const switchCommand = (target: string) =>
   shellLine(switchClientArgv(target));
 
-/**
- * A pane id, by tmux's own grammar: `%` and digits, nothing else. This decides
- * one thing: whether a handle can be looked up in a map keyed by `%N`. It does
- * not decide what tmux may be asked to do, because `-t` takes any target and
- * `session:window.pane` is one — refusing those refused input tmux accepts,
- * from readers who configured `VSYS_PANE` because the documentation says to.
- */
+/** This checks map keys only: a handle is % followed by digits. tmux -t also accepts session:window.pane, so this predicate must not restrict capture or switch targets. */
 export const isPaneId = (value: string): boolean => /^%\d+$/.test(value);
 
 /** What tmux matches a pane on. The window matches by index or by name. */

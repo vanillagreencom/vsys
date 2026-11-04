@@ -31,8 +31,7 @@ test("a key reads as it is printed on the keyboard", () => {
 test("the tabs share the header row only when the host and the clock leave room", () => {
   const c = defaults();
   const clock = "5:50:23 PM";
-  // The capture at a hundred columns read `cachyHome` and `7 Settin5:50:23 PM`
-  // because the tabs took the columns the host and the clock were using.
+  // The host, tabs and clock must fit without sharing terminal cells.
   const rows: [number, string, boolean][] = [
     [180, "cachy", true],
     [140, "cachy", true],

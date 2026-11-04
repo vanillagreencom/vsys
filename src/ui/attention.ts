@@ -307,12 +307,8 @@ function copy(
         target: first,
       };
     case "damaged-files": {
-      // A remembered damaged check carries no address data at all: the
-      // current report that would have named files is gone or aborted, so
-      // that filesystem's own figure here is unread, not a report that named
-      // none. Summing only the filesystems that do have a figure means one
-      // unread filesystem never erases another, readable filesystem's own
-      // known count the way one shared all-or-nothing total once did.
+      // A remembered check has no address counts. Sum known filesystem counts
+      // without letting an unread filesystem erase them.
       const known = cause.damage.filter((d) => d.files !== null);
       const unread = cause.damage.length - known.length;
       const allUnread = known.length === 0;

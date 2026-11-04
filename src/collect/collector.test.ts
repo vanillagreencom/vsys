@@ -861,9 +861,8 @@ test("tool signals are each tool's paths, version manager directories and execut
   });
 });
 test("the owner's machine keeps every agent it ran, and its local names gain no false lanes", async () => {
-  // The owner runs vsys with no config.toml, the repository's owner overlay,
-  // and every agent CLI installed by mise and launched through one shim, as
-  // these rows reproduce.
+  // A default configuration with a machine overlay must classify CLIs installed
+  // by mise and reached through a shim.
   const owner = join(process.cwd(), "data/owner-agent-tools.json");
   await toolWorld(owner, [
     {
@@ -1321,8 +1320,8 @@ const udisksDrive = {
   serial: "BUS-DRIVE",
 };
 test("a machine whose timer leaves reports reads them, and never asks udisks", async () => {
-  // The author's workstation: no settings file, a timer writing into the
-  // default directory, and a udisks that would answer with other numbers.
+  // A report in the default directory must outrank a different total from
+  // udisks.
   const f = setup();
   const calls: string[][] = [];
   f.write(join(f.config.sysBlockRoot, "nvme0n1/dev"), "259:0\n");
@@ -1388,9 +1387,8 @@ test("with no report directory, udisks answers in its place or says why it canno
     detail: expect.any(String),
   });
   expect(neither.errors).toEqual([]);
-  // With udisks absent too, no source supplies a number, and the capability
-  // still says so: this is not the scenario the fix above changes, and its
-  // source names the report directory that failed, never udisks2.
+  // With neither source available, the capability names the report directory
+  // that failed.
   const neitherSmart = neither.capabilities.find((c) => c.id === "smart");
   expect(neitherSmart?.failure).toBe("absent");
   expect(neitherSmart?.source).toBe(f.config.smartDir);
@@ -1945,10 +1943,9 @@ test("a tmux server that starts after vsys still gets its lanes addressed", asyn
   expect(before.lanes.every((lane) => lane.address === "")).toBe(true);
   // The pane handle still arrives; only its resolution is missing.
   expect(before.lanes.some((lane) => lane.pane.startsWith("%"))).toBe(true);
-  // And the lane holding vsys's own pane is still marked. Carried in the read
-  // that failed, every lane came back unmarked, and the Terminal section drew
-  // vsys's own screen inside itself for that sample: the capture is a separate
-  // spawn that does not depend on this read at all.
+  // A failed address read must retain the own-pane mark from the environment.
+  // Capture uses a separate spawn and could otherwise draw this screen inside
+  // itself.
   expect(before.lanes.find((lane) => lane.pane === "%0")?.self).toBe("yes");
   expect(before.lanes.find((lane) => lane.pane === "%1")?.self).toBe("no");
   expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
@@ -1967,9 +1964,8 @@ test("a tmux server that starts after vsys still gets its lanes addressed", asyn
   expect(after.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(
     true,
   );
-  // Gated on the startup probe this read was never attempted at all, so the
-  // count is what says the gate opened rather than the addresses arriving by
-  // some other route.
+  // The call count proves that a sample attempts the read after an unavailable
+  // startup probe.
   expect(reads).toBe(2);
   // The first snapshot is not rewritten by what the second learned.
   expect(before.capabilities.find((cap) => cap.id === "tmux")?.available).toBe(

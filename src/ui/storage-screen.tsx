@@ -128,19 +128,7 @@ export function scratchOriginText(origin: ScratchOrigin): string {
   }
 }
 
-/**
- * The two things the scratch section says about itself: the state beside its
- * heading, and the line that stands in for the rows when it has none. Both
- * are decided here, from one reading of the settings and the sample, because
- * a settings change reaches the screen before the first sample taken under
- * it: rows outlive the roots that produced them for one frame, and two lines
- * reading different inputs contradicted each other across it.
- *
- * Rows present are a reading, whatever the roots now say. Default roots the
- * scan found absent are a reading too: the defaults are not on this machine.
- * Roots set with no rows are otherwise a measurement still to come, never an
- * absence of roots.
- */
+/** Rows and missing-default readings remain evidence across the frame between a settings edit and its first sample. Derive the heading and empty-state text from one reading so roots set with no rows mean a measurement still to come, not no configured roots. */
 export function scratchSummary(
   c: Config,
   st: Snapshot["storage"],
@@ -270,12 +258,9 @@ export function Storage({
   // moves the rows in the same render, so the row is found after the layout
   // that places it rather than in the render that asked for it.
   useKeepInView(scroller, `storage-${selected}`);
-  // A card names a row and this lands on it. The row is found before the
-  // request is acknowledged, because a collector refresh between the keypress
-  // and this effect can remove the mount or directory it named. Acknowledging
-  // first dropped the request in silence, leaving a screen that looks like the
-  // reader never pressed anything. The request is still consumed either way,
-  // so opening the same card twice lands twice.
+  // Find the target before acknowledging a card request: a refresh can remove
+  // it, and the reader must hear the refusal. Consume the request either way so
+  // it cannot fire on a later sample.
   useEffect(() => {
     if (target === null) return;
     const at = storageItems(s).findIndex((item) => itemPath(item) === target);

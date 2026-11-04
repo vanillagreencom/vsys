@@ -324,10 +324,9 @@ SHELL_COMMS = {"bash", "sh", "fish", "zsh", "dash", "env", "timeout", "nice", "i
 EXCLUDE_FLAGS = {"--chrome-native-host", "--lsp", "--stdio"}
 EXCLUDE_PROGRAMS = {"rust-analyzer", "typescript-language-server", "ugrep"}
 DESKTOP_EXE_PREFIXES = tuple(AGENT_TOOLS["desktopExePrefixes"])
-# Desktop apps that ship a real CLI engine beside their UI: that engine is an
-# agent session even though it lives under a desktop prefix. Matched by path
-# suffix, never by name: Claude Desktop's own Electron binary is named
-# "claude" (2026-09-09, nine UI processes were moved before this rule).
+# A desktop app can bundle a real agent CLI beside its UI. Match the engine by
+# path suffix, not the binary’s name: Claude Desktop’s Electron binary is also
+# named claude.
 BUNDLED_CLI_SUFFIXES = tuple(AGENT_TOOLS["bundledCliSuffixes"])
 # A bundled CLI engine confirms an agent only under a desktop prefix that is a
 # real install location. /tmp is world-writable (mode 1777) on every Linux
@@ -445,44 +444,27 @@ def env_number(name, default, parse=int):
         return default
 
 
-# Orphan reaper: a scope under agents.slice whose launching agent has exited but
-# whose leftover processes keep running. Twice on 2026-09-09/10 this took the
-# machine down: an exited lane left 21 `bun` dev servers (16 cores, 7 GiB), and
-# another left 5140 `npm view` processes that filled TasksMax and SIGABRT-killed
-# every agent on the box. Placement and the mover cannot help: the work is
-# already inside the slice, just abandoned. A scope is an orphan when every one
-# of its processes has been reparented to init or the user systemd manager (its
-# real parent died) and none holds a controlling terminal (nothing interactive
-# is attached). Reaped only after ORPHAN_GRACE seconds in that state, so a brief
-# reparenting during startup or teardown is never touched.
+# Placement cannot fix abandoned work already inside the slice. Require lost
+# launchers and no controlling terminal, then wait through ORPHAN_GRACE so
+# startup and teardown reparenting cannot trigger a stop.
 ORPHAN_GRACE = env_number("AGENT_WARDEN_ORPHAN_GRACE", 300, _finite)
 REAP = os.environ.get("AGENT_WARDEN_REAP", "1") != "0"
 JOB_UNIT_PATTERNS = tuple(x for x in os.environ.get("AGENT_WARDEN_JOB_UNITS", "orch-*.service").split() if x)
 SCOPE_RE = re.compile(r"/agents\.slice/([^/]+\.scope)(?:/|$)")
-# An orphan is reaped only when it is also HARMFUL, so a quiet abandoned dev or
-# preview server (a few idle processes, no CPU, little memory) is reported and left alone. The
-# two outages both crossed one of these: the npm storm reached 5140 processes in
-# one scope; the bun servers each burned ~0.8 of a core. A normal orphaned dev
-# server is ~6 idle processes.
+# Quiet abandoned servers, measured at about six idle processes, stay reported
+# and running. The harm thresholds distinguish them from a measured 5140-process
+# storm or servers using about 0.8 core each.
 ORPHAN_PROC_MAX = env_number("AGENT_WARDEN_ORPHAN_PROCS", 40)
 ORPHAN_CPU_CORES = env_number("AGENT_WARDEN_ORPHAN_CPU", 0.5, _finite)
-# An idle abandoned scope can still hold memory: on 2026-10-05 a smoke run left
-# 20 idle processes holding ~1.7 GB for 12 hours. The live tools seen in orphan
-# scopes hold far less (op 55 MB, lane-mail watch 66 MB, agent-browser 159 MB),
-# so 512 MiB sits about 3x clear of both. Measured as the scope's anonymous
-# memory, so page cache a tool merely read never counts.
+# Anonymous memory counts harm even without CPU use. Live tools measured 55 MB,
+# 66 MB and 159 MB, below the 512 MiB floor. Page cache does not count because
+# merely reading files can populate it.
 ORPHAN_MEM_BYTES = env_number("AGENT_WARDEN_ORPHAN_MEM_BYTES", 512 * 1024**2)
-# Per-scope task ceiling. The slice as a whole caps at 16384 tasks; without a
-# per-scope cap one runaway lane consumes all of it and every other lane dies on
-# thread creation (EAGAIN). The cap must protect against a clearly-pathological
-# runaway, never bite legitimate work: the largest real lane measured 260 tasks
-# and a heavy build peaks in the low hundreds, so 8192 is ~8x any real lane. A
-# runaway capped at 8192 still leaves 8192 of the 16384 slice for every other
-# lane. The warden warns (below) if a lane ever climbs past SCOPE_TASKS_WARN, so
-# a genuinely large legit workload is seen before the cap could limit it.
-# agent-confine sets the cap at scope creation; the warden caps only a scope
-# left UNBOUNDED (an escapee, a raw systemd-run, an old scope) -- a smaller
-# explicit cap or a deliberate larger one is left alone.
+# Per-scope TasksMax prevents one runaway consuming the entire 16384-task slice.
+# The measured real-lane maximum is 260 tasks, below the 8192 default; a capped
+# runaway leaves half the slice for others. Warn before the threshold so large
+# workloads are visible. agent-confine sets new scopes’ caps; the warden changes
+# only an unbounded scope and respects deliberate lower or higher limits.
 SCOPE_CPU_WEIGHT = 99
 # AGENT_SCOPE_TASKS_MAX=infinity reads as math.inf: no per-scope cap, and so
 # no default warning threshold below one.
@@ -696,15 +678,9 @@ class Proc:
 
     @property
     def is_named_agent(self):
-        """Pre-D010 comm-only match, with no install-location confirmation:
-        true whenever the process's own name identifies it as a configured
-        agent tool or an interpreter-hosted CLI started from a mise install.
-        _is_orphan and scope_still_orphan use this, never is_agent, to decide
-        whether a scope holds a live agent session: an install an agent-tools
-        entry describes only through `paths` (no `executables`, no mise
-        directory) can never satisfy D010's location check, so a genuine,
-        running agent on such an install must still read as alive here even
-        though is_agent reads it as unconfirmed. is_agent stays narrow and
+        """A name-only liveness match protects agents whose configured locations
+        the mover cannot confirm, including paths-only installs. Orphan checks
+        use this wider match; is_agent
         keeps gating only the automatic move into agents.slice."""
         if self.excluded or self.is_desktop:
             return False
@@ -960,14 +936,10 @@ SCRATCH_UNIT_RE = re.compile(r"^agent-confine-\d+-\d+$")
 # much shorter bound, since this window is one exec call wide rather than a
 # whole abandoned session.
 SCRATCH_GRACE = env_number("AGENT_WARDEN_SCRATCH_GRACE", 60, _finite)
-# Each removal attempt first scans and re-reads every process (VSY-216,
-# VSY-245), about 55 ms of CPU over 700. A backlog of 3,500 folders would
-# cost over three minutes in one pass, past the service's TimeoutStartSec=25,
-# and the kill would land before that tick's moves. So a pass attempts at
-# most this many, whether the removal succeeds or fails, chosen at random
-# when more are free, so folders that keep failing cannot take every slot on
-# every tick. 20 attempts cost about 1.1 s, well inside 25 s, and the rest
-# wait for later ticks.
+# Each attempt scans every process: about 55 ms of CPU over 700 processes, so 20
+# attempts cost about 1.1 s against TimeoutStartSec=25. Count failed attempts
+# too. Random selection prevents failing folders taking every slot; later ticks
+# drain the rest. The count does not bound wall time.
 SCRATCH_REMOVALS_PER_PASS = 20
 # A gone lane's folder created this long after a live lane's unreadable
 # member started is still read as one it may hold: process start times
@@ -1099,17 +1071,7 @@ def _unread_may_hold(proc):
 
 
 def _scratch_holders(procs):
-    """The directories procs hold: (held, unknown, born_by). held is every
-    pid's TMPDIR and current directory, each resolved, with every ancestor
-    of each, so a candidate directory is in use exactly when held contains
-    it. unknown lists the pids whose environment or current directory could
-    not be read, that have not exited, and that sit outside a desktop unit
-    by _unread_may_hold, less those that hold nothing beyond held by
-    _lineage_born_by. born_by is the newest creation time of a folder any
-    of them may hold, by the same rule. A pass reads every pid here once,
-    plus once per removal it attempts, not once per candidate directory:
-    with one unreadable process, 933 gone directories each rescanned about
-    970 processes, 24 s of CPU per 30 s tick (VSY-216)."""
+    """Return held paths, unread pids and their creation-time bound. Held paths include resolved TMPDIR and cwd ancestors. Unread excludes exited and desktop-unit processes and is limited by _lineage_born_by. Read once for the initial pass and before each attempted removal, not once per retained directory."""
     held = set()
     readable = set()
     unread = []
@@ -1192,8 +1154,8 @@ def _rmtree_writable(root):
         os.chmod(parent, stat.S_IMODE(st.st_mode) | stat.S_IRWXU)
         func(path)
 
-    # onexc arrived in Python 3.12. onerror serves the 3.9 floor warden.md
-    # states and goes once that floor reaches 3.12.
+    # onerror serves Python 3.9–3.11. Remove it when the minimum Python version
+    # reaches 3.12 and onexc is always available.
     if sys.version_info >= (3, 12):
         return {"onexc": onexc}
     return {"onerror": lambda func, path, info: onexc(func, path, info[1])}
@@ -1316,18 +1278,16 @@ def _remove_unheld(correct, candidates, holders, read_holders, in_use, cap, fail
     return removed
 
 
-# Test worlds: per-run directories a test harness creates under a shared
-# parent and can leave behind. On 2026-10-31, 189 /tmp/vgshell-world.*
-# directories held 8.6 GB of a 32 GB tmpfs. Nothing repository-specific is
-# built in: the operator lists the patterns, and an empty list is off.
+# The operator supplies test-world patterns; an empty list disables this pass
+# and no repository-specific pattern is built in.
 TEST_WORLD_PATTERNS = env_number("AGENT_WARDEN_TEST_WORLDS", (), _glob_list)
 # One bound for a test world, a failed transient unit and a test process.
 TEST_AGE = env_number("AGENT_WARDEN_TEST_AGE", 3600, _test_age)
-# Each removal first scans and re-reads every process with its open files,
-# about 80 ms of CPU over 700 processes, and resolves their argv and
-# environment paths, about 35 ms over 550, so ten cost about 1.2 s a tick
-# and 189 worlds drain in about ten minutes. A cap apart from
-# SCRATCH_REMOVALS_PER_PASS keeps either backlog from starving the other.
+# Independent test-world and scratch caps prevent either backlog from starving
+# the other. Re-reading processes with open files measured about 80 ms of CPU
+# over 700 processes; resolving distinct argv and environment paths measured
+# about 35 ms over 550. Ten attempts cost about 1.2 s per tick. Failed attempts
+# count and later ticks drain the rest; the count does not bound wall time.
 TEST_WORLD_REMOVALS_PER_PASS = 10
 # A path continues into a longer file name only through these characters, so
 # a reference to a world followed by any other one (`:` in PATH, a quote, a
@@ -2085,12 +2045,8 @@ class Bus:
         self.lib.sd_bus_flush_close_unref(self.bus)
 
 
-# A failed transient unit (a test's `systemd-run` that exited non-zero)
-# stays listed until reset: 244 of them buried every real failure in
-# `systemctl --user --failed` on 2026-10-31. Each reset costs three property
-# reads per unit and the reset call, so a pass resets at most this many and
-# spends at most FAILED_UNIT_PASS_SECONDS on the bus, well inside the
-# service's TimeoutStartSec=25, before any move.
+# Bound failed-unit resets by both count and bus time so a backlog cannot
+# consume the service deadline before process moves.
 FAILED_UNIT_RESETS_PER_PASS = 20
 FAILED_UNIT_PASS_SECONDS = 3.0
 # Where the user manager writes every transient unit's fragment
@@ -3214,7 +3170,7 @@ def run(correct):
     with State(status=None if only is not None else ("correct" if correct else "report")) as st:
         st["_tick"] = {"procs": None, "moves": [], "waiting": [], "waiting_events": None,
                        "orphans": [], "contained": [], "leftovers": None, "error": None, "fresh_labels": False}
-        summary = []  # moved-tree notices; without this the first move raised NameError
+        summary = []
         failures = []
         seen_near = set()
         seen_move_conditions = set()

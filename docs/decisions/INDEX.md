@@ -1,4 +1,4 @@
-# Architectural Decision Log
+# Decision index
 
 | Date | ID | Research | Decision | Rationale | Revisit When | Status | Link |
 |------|----|----------|----------|-----------|--------------|--------|------|
@@ -13,8 +13,6 @@
 | 2026-10-01 | D009 | [VSY-39](https://linear.app/vanillagreen/issue/VSY-39) | Read a slice unit file as a present slice before its group exists | A defined, inactive slice still holds agents to its limits | A slice is defined by a generator or an unlisted directory | Active | [Full](D009-agent-slice-unit-file.md) |
 | 2026-10-01 | D010 | [VSY-41](https://linear.app/vanillagreen/issue/VSY-41) | Confirm a configured agent name by the tool's install location | A name alone matches anyone's program or script of that name | An agent ships a layout no path fragment or executable path describes | Active | [Full](D010-agent-names-confirmed-by-install-location.md) |
 
----
-
-## Format Reference
+## Format
 
 Format: [decision-format.md](../../.agents/skills/decider/schemas/decision-format.md). Bar: [the decider skill](../../.agents/skills/decider/SKILL.md#what-warrants-a-decision-record-and-why).

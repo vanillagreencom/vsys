@@ -159,9 +159,8 @@ test("a chart names the span it holds, not the span it was asked for", () => {
     ms: window,
     partial: false,
   });
-  // Nothing collected at all is nothing collected. `findIndex` answers -1
-  // there, and the branch that read it as a full window told a reader who had
-  // just started vsys that five minutes of history were on screen.
+  // An empty chart carries no elapsed history. findIndex returning -1 must not
+  // imply a full window.
   expect(collectedSpan([null, null], window)).toEqual({ ms: 0, partial: true });
   expect(spanLabel([null, null], window)).toBe("0s collected of 5m");
   // An empty chart of any length says the same, and one sample in the first

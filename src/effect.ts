@@ -34,15 +34,7 @@ export interface Spawned {
 }
 const spawnChild = (argv: string[]): Spawned =>
   Bun.spawn(argv, { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-/**
- * Moves the reader's own tmux view to a pane. This changes no process and no
- * cgroup: it is the reader looking somewhere else, which is why it does not
- * pass through `runEffect` or wait on write mode. Any non-empty target reaches
- * tmux as a single argument of a spawned array, never through a shell, and
- * tmux decides whether it names anything: `-t` takes a session and window as
- * readily as a pane id, and refusing the first was vsys's restriction rather
- * than tmux's.
- */
+/** A tmux view switch changes no process or cgroup, so it bypasses write mode and runEffect. Pass any non-empty target as one argv element and let tmux decide whether it exists; session and window targets are valid too. */
 export async function switchToPane(
   target: string,
   spawn: (argv: string[]) => Spawned = spawnChild,

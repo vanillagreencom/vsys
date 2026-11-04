@@ -59,18 +59,7 @@ export const udisksTimeoutMs = 5000;
 class RunnerAbandoned extends Error {}
 /** How `timeout did not answer` reads for a given deadline, in one place. */
 const timeoutDetail = (ms: number) => `busctl did not answer within ${ms} ms`;
-/**
- * A margin above the longest a real `spawnText(argv, ms)` can take once its
- * own deadline fires: `ms` to the kill, `killGraceMs` more to the SIGKILL
- * escalation, plus a cushion for the child actually exiting. `withDeadline`'s
- * own clock stays above that span so it never fires before a real call's own
- * `timedOut` outcome does — racing the same `ms` against spawnText's own
- * timer let a real timeout resolve as an ordinary, unexplained result purely
- * by which timer callback ran first. This margin exists only to abandon an
- * injected `run` that never resolves at all, never to detect a real timeout,
- * so its own message carries no borrowed `timeoutDetail` wording: the two
- * outcomes are different events and must not read alike.
- */
+/** The outer deadline exceeds spawnText’s timeout, kill grace and exit cushion, so it cannot replace a real timedOut result with an unexplained result. It only abandons an injected run that never settles and reports that distinct failure. */
 const deadlineMarginMs = killGraceMs + 500;
 function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -480,38 +469,7 @@ function mergeReading(
   };
 }
 
-/**
- * One collector's udisks reading, held for `udisksHoldMs` on the clock it is
- * given. A collector given none never asks udisks, which keeps the system bus
- * out of the test suite.
- *
- * The hold hides the expensive part — asking each drive for its own SMART
- * attributes — but never the listing: `listUdisks` is udisksd answering from
- * its own object cache, not a drive query, so re-reading it every sample
- * costs nothing the hold exists to save, and it is what notices a kernel
- * name now sitting behind a different serial, WWN or `TimeDetected`, or a
- * held name the listing no longer answers for at all.
- *
- * The held reading, and the hold's one shared clock, cover only the
- * provable targets `isProvable` selects — a drive udisks gives neither a
- * Serial, a WWN nor a `TimeDetected` for is rare enough that the accepted
- * answer for it is simpler than chasing it: it never enters this mechanism
- * at all, is never queried, and `unprovableRow` renders its row fresh, as
- * unknown, every single sample — no clock, no held reading, no query ever
- * runs for it, so it can never serve a departed drive's numbers and never
- * costs udisks anything either. `mergeReading` is what puts its row back
- * beside the provable ones in the reading this method returns.
- *
- * Among the provable targets, a kernel name whose identity changed, that
- * gained or lost it entirely, or that the fresh provable targets no longer
- * name at all, drops the whole held (provable) reading and reads it fresh
- * rather than serving the departed drive's numbers; a same-identity re-read
- * keeps serving the held one. A listing that could not itself be read is
- * read as a sign to drop the held reading too, never as proof nothing
- * changed. A provable target the held reading has no row for, a drive newly
- * attached or newly reporting a Serial, a WWN or a `TimeDetected`, drops it
- * the same way, so that drive is read in the sample it first appears.
- */
+/** Hold SMART queries for udisksHoldMs, but re-read the cached object listing each sample to detect replacement drives. Only targets with a serial, WWN or TimeDetected enter the hold or get queried; other rows stay unknown. A changed or unread listing invalidates the hold so it cannot serve a departed drive’s numbers. */
 export class Udisks {
   private held: { at: number; reading: UdisksReading } | null = null;
   constructor(

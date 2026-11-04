@@ -484,10 +484,8 @@ test("the device error counters are legible at a hundred columns", async () => {
   try {
     await t.press("5");
     const frame = t.frame();
-    // The device row's own columns fill a terminal this narrow, so the
-    // counters wrap onto a line of their own. They are the reading behind the
-    // row's colour, and since the mount detail stopped repeating them, the
-    // only copy of it.
+    // These counters explain the device colour and must remain readable when
+    // narrow rows force them onto a separate line.
     expect(frame).toContain("corruption 3 (+1)");
     expect(frame.split("corruption 3").length - 1).toBe(1);
   } finally {

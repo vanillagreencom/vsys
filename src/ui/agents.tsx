@@ -89,14 +89,7 @@ type NumericColumn = {
     ? K
     : never;
 }[(typeof columns)[number]];
-/**
- * Table columns whose values are numbers, which read down their last digit.
- * The names are still written out, because a type is not a value, but the
- * type is derived from `Lane` and requires exactly the numeric fields among
- * the configurable columns: one missing or one too many is a compile error.
- * A plain list is what left `cache`, `readRate`, `writeRate`, `sccache` and
- * `blocked` aligned left beside their neighbours.
- */
+/** Numeric configurable columns derive their type from Lane, so missing or extra fields fail compilation and cannot silently align as text. */
 const numericColumns: Record<NumericColumn, true> = {
   cpu: true,
   pressure: true,
@@ -199,10 +192,9 @@ export function useLaneTrends(
   // An answer lands in `answered`, which React does not watch, so landing one
   // asks for a render.
   const [, redraw] = useState(0);
-  // The one moment this reads against, and the one the caller draws against.
-  // Keying on the sample time would cost a read per visible row every second;
-  // keying on nothing but the lane and the window is what this did, and the
-  // window then never moved at all.
+  // Use one bucket boundary for reading and drawing. Sample-time keys would
+  // read every row every sample; omitting the boundary would leave the window
+  // fixed.
   const at = trendEnd(end, windowMs);
   // A redraw is asked for only while the screen is up. An answer that lands
   // after it is gone is still kept, because it answers the question the

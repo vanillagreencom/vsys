@@ -10,7 +10,7 @@
 
 **Decision**: The program reads processes on a worker thread the collector keeps until a collection setting changes. The thread reads each file synchronously, holds the environment cache and the last counters, takes one request per sample, plus an open-files request while Agent detail's Open files section is open, and answers each in turn with JSON text. The dashboard and `--once` use the same thread.
 
-**Why**: Synchronous reads cost less processor time than Bun's asynchronous ones, and a thread of vsys's own is where blocking delays no keystroke. The reads overlapped less, so a sample's elapsed time rose past the 20 ms fixture target, and that is accepted for the lower processor time.
+**Why**: Synchronous reads cost less processor time than Bun's asynchronous ones, and a thread of vsys's own is where blocking delays no keystroke. Less overlap puts sample elapsed time beyond the 20 ms fixture target; that tradeoff is accepted for lower processor time.
 
 **Rejected**: Synchronous reads on the dashboard thread, which block a keystroke for the whole read; and a new thread per sample, which pays the startup each refresh and loses the environment cache.
 

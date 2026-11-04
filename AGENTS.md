@@ -4,7 +4,7 @@ A Linux terminal dashboard for agent processes and system health, in TypeScript 
 
 ## Commands
 
-- `python3 scripts/ci.py`: the whole check contract, from the repository root; `main()` in the script is what it runs. Run it before claiming a change green.
+- `python3 scripts/ci.py`: the whole check contract, from the repository root. Run it before claiming a change green.
 - `bun test src/`: the application suites alone, from the repository root; a run started elsewhere fails and says so.
 - `bun src/main.ts --once`: one JSON snapshot with no terminal, which is how a script sees real output.
 - The repository pins its Bun in `.bun-version` and ships it as a dependency. Where the system Bun differs, prefix a command with `PATH="$PWD/node_modules/.bin:$PATH"`.
@@ -14,7 +14,6 @@ A Linux terminal dashboard for agent processes and system health, in TypeScript 
 - `tsconfig.json` sets `noUncheckedIndexedAccess`. Guard an indexed read or restructure it so the compiler sees it present; never assert it with `!` or a cast. A test reads an element it depends on through `present()` in `src/test/present.ts`.
 - Collection reads only the settings in `collectionKeys` in `src/collect/settings.ts`. A new collection setting goes there, or the runtime will not rebuild the collector when it changes.
 - Nothing is appended to a lane name to make it unique. The process id is a column of its own, and prose names a lane through `laneText()` in `src/model/naming.ts`.
-- A change that makes a claim in a doc false changes the doc in the same commit. A claim that something is enforced names the test, or says that review holds it.
 - `docs/media/vsys-tour.gif` is product content: the tour the README shows.
 
 ## Read when

@@ -389,9 +389,8 @@ export class ProcessCollector implements ProcessSource {
     for (const pid of envPids) {
       const p = byPid.get(pid);
       if (!p) throw new Error("Selected process is missing");
-      // execve() keeps a process's pid and start time but replaces its
-      // environment, so a changed command line (read fresh every sample,
-      // per Invariant 2) invalidates the cache even under the same identity.
+      // execve() preserves pid and start time but replaces the environment. A
+      // changed command line invalidates the cache under the same identity.
       const commandKey = p.command.join("\0");
       const cached = this.env.get(pid);
       if (cached?.start === p.start && cached.command === commandKey) {

@@ -12,6 +12,6 @@
 
 **Why**: A save must not turn a derived default into user intent. The overlay is the one machine-local file both the dashboard and the warden read, and it can add names but not remove shipped ones, so a list that removes one stays a dashboard-only override.
 
-**Rejected**: Saving the resolved configuration. It froze the dashboard on one agent list while the warden kept reading the shipped data and the overlay.
+**Rejected**: Saving the resolved configuration. It pins derived tool data in the dashboard while the warden continues to read shared data.
 
 **Revisit when**: The shared agent-tool schema can record removals.

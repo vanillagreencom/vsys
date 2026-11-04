@@ -685,8 +685,8 @@ test("a lane exiting under the selection keeps one lane under highlight, pane an
     await t.update(arrived);
     const after = t.frame();
     expect(after).toContain("lane-n");
-    // Still the fallback the exit resolved to, not the lane that took the row
-    // number the reader's selection used to name.
+    // The selection keeps its fallback after another lane reuses the departed
+    // lane’s row number.
     expect(selectedRow(after)).toContain("lane-b");
     expect(after).toContain("/repo/b");
     expect(after).not.toContain("/repo/n");
@@ -728,7 +728,7 @@ function sameWorktree(resolved: boolean) {
 
 test("a listed pane part shows the resolved address as its own column", async () => {
   const c = defaults();
-  // The setting that once composed `%9` into the name now selects this column.
+  // The pane name part selects the address column.
   expect(c.laneNameParts).toContain("pane");
   // Below the width that puts the selected agent's summary beside the list,
   // so every line in the frame is a list line.
@@ -964,10 +964,8 @@ test("the trend re-reads when its newest bucket rolls over, and not before", asy
     await t.update({ ...s, time: s.time + 1000 });
     await t.update({ ...s, time: s.time + 2000 });
     expect(asked.length).toBe(first);
-    // Past it: the newest bucket has rolled over, so the drawn shape can
-    // change and every visible row is read again. Keyed on lane and window
-    // alone this stayed at `first` for as long as the screen was open, and the
-    // trend aged out of its own window.
+    // After the bucket rolls over, every visible row needs a new read so the
+    // trend advances with its window.
     await t.update({ ...s, time: s.time + bucketMs + 1000 });
     expect(asked.length).toBe(first * 2);
     expect([...new Set(asked)].sort()).toEqual(["lane-a", "lane-b"]);
@@ -1172,8 +1170,7 @@ test("a sample inside a bucket does not slide the drawn window", async () => {
 });
 
 test("a configurable numeric column reads down its last digit", async () => {
-  // Five numeric columns were missing from the right-align set, so a reader
-  // who configured one got a number that did not line up with its neighbours.
+  // Every configurable numeric column must align with its numeric neighbours.
   const c = {
     ...defaults(),
     columns: ["name", "cache", "readRate", "blocked", "sccache"],
@@ -1422,8 +1419,8 @@ test("search finds a row by the address and the window it shows", async () => {
       for (const ch of query) await t.press(ch);
       await t.press("enter");
       const frame = t.frame();
-      // Neither field was searched, so typing either removed the only row
-      // that carries it.
+      // A query typed from the visible pane address or window name must find
+      // its row.
       expect({ query, kept: frame.includes("lane-a") }).toEqual({
         query,
         kept: true,

@@ -29,12 +29,7 @@ interface Chart {
   columns: Map<number, Column>;
 }
 
-/**
- * The window's points and changes, kept from one sample to the next. A draw
- * reads the samples that arrived since the last one and drops those that left
- * the window: copying a retained day and rescanning it for every chart took
- * several times a 100 ms refresh.
- */
+/** Keep the chart window incrementally so a draw visits arriving and expired points, not the entire retained day. */
 export class Retained {
   /** The window's points, oldest first. */
   points: Point[] = [];

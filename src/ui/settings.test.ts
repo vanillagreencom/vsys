@@ -108,10 +108,8 @@ test("a stored value reads in the unit the reader reads, not the unit it is stor
 
 test("an interval under a second reads as itself, never as zero", () => {
   const c = defaults();
-  // `age()` floors to whole seconds. Through it a 500 ms refresh read `0s`
-  // and 1500 ms read `1s`, so a reader who set 500 was told the interval was
-  // zero. `validate()` accepts refreshMs from 100 upward, so these are values
-  // the settings screen has to show.
+  // Valid refresh intervals include fractions of seconds. age() floors to
+  // seconds and cannot display those values faithfully.
   expect(settingDisplay("refreshMs", 100, c)).toBe("100ms");
   expect(settingDisplay("refreshMs", 500, c)).toBe("500ms");
   expect(settingDisplay("refreshMs", 999, c)).toBe("999ms");
@@ -125,8 +123,8 @@ test("an interval under a second reads as itself, never as zero", () => {
 
 test("an interval of a minute or more is not shown shorter than it is", () => {
   const c = defaults();
-  // Through `age()` a minute or more floored to whole minutes, so a valid
-  // 90 s read the same as 60 s and 3599 s the same as 3540 s.
+  // Minute-scale intervals need their seconds too: whole-minute formatting
+  // would conflate different settings.
   const shown = (ms: number) => settingDisplay("scratchRefreshMs", ms, c);
   expect(shown(90000)).not.toBe(shown(60000));
   expect(shown(3599000)).not.toBe(shown(3540000));

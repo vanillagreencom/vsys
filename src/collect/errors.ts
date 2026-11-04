@@ -9,12 +9,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 
-/**
- * When a filesystem's corruption counter last grew. The history window is a
- * day and a quiet counter can be older than that, so this outlives both the
- * window and the process: without it "last new error 31 h ago" becomes "no
- * errors", which is the reading that hid the damage in the first place.
- */
+/** Growth times outlive the history window and the process: a quiet counter can be older than either, and forgetting it would report no errors. */
 export interface ErrorRecord {
   /** The counter the previous sample read, which growth is measured against. */
   counter: number;

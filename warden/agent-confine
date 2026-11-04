@@ -1,25 +1,8 @@
 #!/usr/bin/env bash
-#
-# Run an agent harness inside agents.slice (CPUWeight=25 -- agents use the whole
-# idle machine but yield to interactive work under contention), with build/test
-# concurrency capped. Used by the per-account wrappers (1claude/9claude/...) and
-# safe to put in front of any harness command.
-#
-# WHY: agents run `cargo test`, and libtest defaults to one thread per core --
-# a single test binary was measured at 65 threads / 2883% CPU on this 32-thread
-# box (2026-07-29). Two independent limits, because either alone is leaky:
-#
-#   1. The env caps stop self-oversubscription at the source. Test threads stay
-#      low (they explode; extra threads rarely help wall-clock). Build jobs get
-#      half the box so a lone agent still builds fast; the slice weight -- not
-#      the cap -- is what keeps the desktop responsive.
-#   2. The slice weight holds even when an agent overrides the env or passes an
-#      explicit --test-threads. Weight needs the in-kernel scheduler (EEVDF);
-#      sched_ext ignores it (see AGENTS.md "CPU scheduler").
-#
-# Fail-soft by design: if systemd-run or the user manager is unavailable (cron,
-# no session D-Bus, a stripped container), the agent still launches -- capped by
-# the env but outside the slice -- rather than not launching at all.
+# Environment caps limit self-oversubscription; slice weight preserves desktop
+# share even when a tool overrides those caps. A measured libtest binary used 65
+# threads and 2883% CPU on a 32-thread host, so the limits serve different
+# needs. CPUWeight requires the in-kernel scheduler; sched_ext ignores it.
 
 set -euo pipefail
 
@@ -36,19 +19,15 @@ CAPS=(
 	"RUST_TEST_THREADS=${AGENT_TEST_THREADS:-8}"
 	"NEXTEST_TEST_THREADS=${AGENT_TEST_THREADS:-8}"
 	"CARGO_BUILD_JOBS=${AGENT_BUILD_JOBS:-16}"
-	# Agent harnesses pick their exec shell from $SHELL. The login shell is fish
-	# (unsupported), which made Claude Code fall back to zsh (nomatch/alias
-	# traps) and tell agents they were "in fish". Force bash: it's what models
-	# emit. Codex ignores $SHELL (reads passwd) but already falls back to bash.
+	# Agent harnesses select an exec shell through SHELL. Use bash to avoid fish
+	# incompatibilities and zsh nomatch or alias rules; Codex reads passwd and
+	# falls back independently.
 	"SHELL=/bin/bash"
-	# Agent scratch belongs off RAM. AGENT_TMPDIR can point at a
-	# workstation-specific scratch subvolume; otherwise use XDG cache.
-	# One mold link at a time, machine-wide (lock under /tmp, shared by every
-	# lane whatever its TMPDIR). Fourteen concurrent links from one lane wrote
-	# ~200 MB each per 5 s on 2026-09-08 and stalled the desktop on disk; mold
-	# is multithreaded, so one at a time keeps link throughput and drops the
-	# burst. Measured +0.3 s on a 1.0 s twelve-binary build. AGENT_MOLD_JOBS=
-	# (empty) disables it for a launch; mold ignores every value except 1.
+	# Agent scratch belongs off RAM: use AGENT_TMPDIR or the XDG cache default.
+	# Serialize mold links across lanes to avoid disk bursts. Fourteen concurrent
+	# links measured about 200 MB each per five seconds; serialization added 0.3 s
+	# to a 1.0 s twelve-binary build. An empty AGENT_MOLD_JOBS disables this; mold
+	# recognizes only 1.
 	"MOLD_JOBS=${AGENT_MOLD_JOBS-1}"
 )
 
@@ -99,18 +78,11 @@ if grep -qs 'agents\.slice' /proc/self/cgroup; then
 	esac
 fi
 
-# Probe before committing: `systemd-run --scope` fails outright without a user
-# manager, and that must not take the agent down with it.
-#
-# --unit names the scope ourselves. systemd-run builds its default name from its
-# own pid, and a launch from inside another transient scope can hit a name
-# systemd still holds ("Unit run-p<pid>-i<id>.scope was already loaded"). That
-# ends the launch: the exec below has replaced this script, so no fallback is
-# left to catch it (seen 2026-09-07).
-#
-# A failure after the probe passes stays fatal on purpose. Nothing here starts
-# the agent outside the slice as a consolation: an agent that runs unconfined
-# but looks fine is the failure that went unseen for weeks.
+# Probe for a user manager before exec, since an unavailable manager must not
+# prevent the capped launch. Name the scope explicitly: a default systemd-run
+# pid-based name can collide with a retained unit. A later failure stays fatal
+# because exec leaves no fallback, and silently launching outside the slice
+# would hide the failure.
 SYSTEMD_SCOPE_ARGS=(--user --quiet --collect --scope --slice=agents.slice)
 # systemd before 254 passes scope arguments literally. 254 adds this option;
 # 258 expands scope arguments by default. --help tests option parsing without
@@ -122,43 +94,22 @@ fi
 if command -v systemd-run >/dev/null 2>&1 &&
 	systemd-run "${SYSTEMD_SCOPE_ARGS[@]}" \
 		true >/dev/null 2>&1; then
-	# Sibling scopes share the slice's CPU equally only while the CPU controller
-	# is enabled inside agents.slice, and systemd enables it only when some
-	# child carries a non-default CPU setting. An explicit CPUWeight=100 was
-	# measured not to enable it; CPUWeight=99 did.
-	#
-	# TasksMax bounds ONE session's threads+processes so a runaway lane cannot
-	# eat the whole slice's ceiling and starve every other lane of thread
-	# creation. Twice (2026-09-09/10) one lane leaked thousands of processes
-	# (5140 `npm view`, 21 `bun` servers) and filled the 16384-task slice limit;
-	# every other agent then died with "Resource temporarily unavailable"
-	# (EAGAIN) on thread spawn. Per-scope this contains the blast to the
-	# offending lane: it hits 8192 and fails its own spawns; the others keep
-	# running. 8192 is ~8x any real lane (largest measured 260 tasks), so it
-	# never bites legit work; a runaway capped there still leaves half the
-	# 16384-task slice for every other lane. Override: AGENT_SCOPE_TASKS_MAX.
-	# MemoryHigh: a soft per-lane ceiling. A lane leaking memory then reclaims
-	# its OWN pages first (throttled at this point) instead of pressuring other
-	# lanes and pushing the slice toward its 112G hard cap, where the OOM kill
-	# could land on a different lane. 64G is ~2x the largest measured single-lane
-	# peak (31 GiB), so it never bites a real build; it is soft, so it only slows
-	# a leak, never kills legit work. Override: AGENT_SCOPE_MEM_HIGH.
-	# (Real-time scheduling is blocked by the RLIMIT_RTPRIO=0 set near the top,
-	# not here: LimitRTPRIO is not a valid property on a scope.)
-	#
-	# This exec is the only place a brand-new scope is created, so it is the
-	# only place TMPDIR changes. A directory shared by every lane let one
-	# lane's `rm -rf "$TMPDIR"` delete every other lane's scratch (VSY-79).
-	# Keying the subdirectory to this scope's own --unit name lets the
-	# warden's scope-enumerating pass remove it once the scope is gone,
-	# since this launcher execs below and cannot run code after that.
+	# A non-default CPUWeight enables the controller for equal sibling shares: 100
+	# measured ineffective and 99 effective. TasksMax contains a runaway in one
+	# scope so it cannot consume the whole slice. The measured real-lane maximum is
+	# 260 tasks, below the default 8192; a capped runaway leaves half the
+	# 16384-task slice. AGENT_SCOPE_TASKS_MAX overrides it. MemoryHigh makes a
+	# leaking lane reclaim its own pages before pressuring neighbours. The 64 GiB
+	# default is above the measured 31 GiB single-lane peak and is soft;
+	# AGENT_SCOPE_MEM_HIGH overrides it. RLIMIT_RTPRIO=0 is set before every exec
+	# because LimitRTPRIO is not a scope property. This scope-creating exec alone
+	# sets TMPDIR. A scope-keyed directory prevents one lane’s cleanup from
+	# reaching another lane’s scratch and lets the warden remove it after the scope
+	# ends.
 	agent_confine_unit="agent-confine-$$-${RANDOM}"
 	agent_confine_scratch="$AGENT_EFFECTIVE_TMPDIR/$agent_confine_unit"
-	# Plain mkdir (no -p) for the leaf: -p succeeds silently on a directory
-	# that already exists, which would hand a $$/$RANDOM collision a
-	# pre-existing directory instead of failing, reusing scratch between two
-	# unrelated lanes exactly as this issue fixes for the shared-TMPDIR case.
-	# -p stays for the parent, which every lane legitimately shares.
+	# Use plain mkdir for the leaf: mkdir -p would hand a name collision another
+	# lane’s existing directory. The shared parent still uses -p.
 	if mkdir -p -m 700 -- "$AGENT_EFFECTIVE_TMPDIR" 2>/dev/null &&
 		mkdir -m 700 -- "$agent_confine_scratch" 2>/dev/null &&
 		[ -d "$agent_confine_scratch" ] && [ -w "$agent_confine_scratch" ]; then

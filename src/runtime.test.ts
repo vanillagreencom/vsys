@@ -122,10 +122,8 @@ test("a save publishes the moved file's path before it writes, with no sample in
       agentToolsPath: f.agentToolsPath,
       writeConfig: async (path, body) => {
         writeConfigCalls++;
-        // The write is about to use `path`; the fix publishes that same
-        // value to the screen before this call, so the last frame already
-        // names it. Without the fix, the last frame still names the file
-        // from before the move, and this assertion catches that.
+        // The displayed path must be published before the write and name the
+        // exact destination that write uses.
         expect(framePaths.at(-1)).toBe(path);
         await writeFileAtomic(path, body);
       },

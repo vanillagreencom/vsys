@@ -230,9 +230,8 @@ test("the pane vsys draws in is the one tmux exported into vsys's own shell", as
 });
 
 test("a configured address is a target tmux accepts, not one vsys refuses", async () => {
-  // `-t` takes a target, and `session:window.pane` is one. Refusing it was
-  // vsys's own restriction, and it refused the value the documentation tells
-  // a reader to put in `VSYS_PANE`.
+  // A session:window.pane address is a valid tmux target and must reach the
+  // server unchanged.
   expect(capturePaneArgv("work:2.1")).toEqual([
     "tmux",
     "capture-pane",
@@ -240,11 +239,8 @@ test("a configured address is a target tmux accepts, not one vsys refuses", asyn
     "-t",
     "work:2.1",
   ]);
-  // A stand-in server, so this asserts what vsys does rather than what the
-  // machine running the suite happens to have. Asked for the real thing, this
-  // passed on a machine with no tmux: the spawn threw `Executable not found
-  // in $PATH`, which is neither empty nor the old sentence, so a test named
-  // for tmux accepting an address passed where tmux did not exist.
+  // A stand-in server makes this assert the target sent by vsys rather than the
+  // host installation or an unrelated spawn error.
   const asked: string[][] = [];
   const server = (said: string): Ask => {
     return (argv) => {
@@ -257,9 +253,7 @@ test("a configured address is a target tmux accepts, not one vsys refuses", asyn
     capturePane("work:2.1", server("can't find pane: work:2.1")),
   ).rejects.toThrow("can't find pane: work:2.1");
   expect(asked).toEqual([["tmux", "capture-pane", "-p", "-t", "work:2.1"]]);
-  // What reaches the reader when the server refuses is the server's own
-  // words. What used to reach them was `work:2.1 is not a pane address`,
-  // about a value they were told to set.
+  // A server refusal reaches the reader in the server’s own words.
   const lines = await capturePane("work:2.1", async (argv) => {
     asked.push(argv);
     return "one\ntwo\n";
