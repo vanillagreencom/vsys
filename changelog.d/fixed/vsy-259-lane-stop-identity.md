@@ -1,0 +1,1 @@
+- Timeline stop rows keep the lane name, account and PID from the last sample holding a process when its scope remains empty before disappearing.

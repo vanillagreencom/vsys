@@ -571,7 +571,6 @@ export class History {
     if (cached && cached.time >= cutoff && (!row || cached.time >= row.time))
       return normalizeSnapshot(cached);
     const data = row?.data;
-    // Rows an older build wrote lack the fields this build reads.
     return data
       ? normalizeSnapshot(JSON.parse(History.decodeRow(data)) as Snapshot)
       : null;

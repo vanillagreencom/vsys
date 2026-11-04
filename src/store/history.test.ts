@@ -233,6 +233,126 @@ test("SQLite reopens full process snapshots and alert history", () => {
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
 });
+for (const persistence of [false, true])
+  test(`a long-lived memberless scope stops without reading older snapshots: persistence=${persistence}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    f.config.persistence = persistence;
+    const h = new History(f.config);
+    cleanup.push(() => h.close());
+    const time = Date.now() - 901_000;
+    const empty = emptySnapshot(time);
+    // A container parent scope can stay listed without ever holding a process.
+    empty.lanes = [
+      laneSnapshot({
+        name: "container parent",
+        account: null,
+        mainPid: 0,
+        age: null,
+      }),
+    ];
+    for (let i = 0; i < 901; i++) h.add({ ...empty, time: time + i * 1000 });
+    // biome-ignore lint/complexity/useLiteralKeys: verifies the fixture reaches sealed checkpoints
+    const chunks = h["archive"]["chunks"];
+    expect(
+      chunks.filter((chunk) => chunk.segments.length > 0).length,
+    ).toBeGreaterThanOrEqual(3);
+    const writer = persistence ? new History(f.config) : h;
+    if (writer !== h) cleanup.push(() => writer.close());
+    const archiveRead = spyOn(Archive.prototype, "at");
+    const inflate = spyOn(Bun, "gunzipSync");
+    try {
+      const gone = time + 901_000;
+      writer.add(emptySnapshot(gone));
+      expect(archiveRead).not.toHaveBeenCalled();
+      expect(inflate).toHaveBeenCalledTimes(persistence ? 1 : 0);
+      const stop = present(
+        writer.events(gone, 0).find((event) => event.kind === "lane-stop"),
+        "memberless container stop",
+      );
+      expect(stop.time).toBe(gone);
+      expect(stop.subject).toBe("container parent");
+      expect(stop.names).toEqual({ account: "", slice: "agents.slice" });
+      expect(stop.values).toEqual({ age: null });
+    } finally {
+      archiveRead.mockRestore();
+      inflate.mockRestore();
+    }
+  });
+for (const predecessor of ["populated", "empty", "absent"] as const)
+  test(`a foreign predecessor preserves only carried identity for a present scope: ${predecessor}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    f.config.persistence = true;
+    const first = new History(f.config);
+    const second = new History(f.config);
+    cleanup.push(
+      () => first.close(),
+      () => second.close(),
+    );
+    const time = Date.now();
+    const original = emptySnapshot(time);
+    original.lanes = [
+      laneSnapshot({ name: "Claude lane", account: "work", mainPid: 42 }),
+    ];
+    first.add(original);
+    const empty = emptySnapshot(time + 1);
+    empty.lanes = [
+      laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
+    ];
+    second.add(
+      predecessor === "populated"
+        ? {
+            ...original,
+            time: time + 1,
+            lanes: [
+              laneSnapshot({
+                name: "Foreign Claude lane",
+                account: "personal",
+                mainPid: 84,
+              }),
+            ],
+          }
+        : predecessor === "empty"
+          ? empty
+          : emptySnapshot(time + 1),
+    );
+    if (predecessor !== "empty") {
+      first.add({ ...empty, time: time + 2 });
+      expect(
+        first.events(time + 2, 0).filter((event) => event.kind === "lane-stop"),
+      ).toEqual([]);
+    }
+    const archiveRead = spyOn(Archive.prototype, "at");
+    try {
+      first.add(emptySnapshot(time + 3));
+      expect(archiveRead).not.toHaveBeenCalled();
+      const stop = present(
+        first.events(time + 3, 0).find((event) => event.kind === "lane-stop"),
+        "stop after a foreign predecessor",
+      );
+      expect(stop.time).toBe(time + 3);
+      expect(stop.subject).toBe(
+        predecessor === "populated"
+          ? "Foreign Claude lane PID 84"
+          : predecessor === "absent"
+            ? "agent 42"
+            : "Claude lane PID 42",
+      );
+      expect(stop.names).toEqual({
+        account:
+          predecessor === "populated"
+            ? "personal"
+            : predecessor === "absent"
+              ? ""
+              : "work",
+        slice: "agents.slice",
+      });
+      expect(stop.values).toEqual({ age: null });
+    } finally {
+      archiveRead.mockRestore();
+    }
+  });
 for (const resume of ["collision", "foreign append", "restart", "reconfigure"])
   test(`snapshot events follow the stored predecessor after ${resume}`, () => {
     const f = fixture();

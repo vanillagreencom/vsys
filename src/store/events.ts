@@ -177,6 +177,10 @@ export class EventLog {
   private verdictLevel: Level = "ok";
   /** The last accepted sample that read processes. */
   private processPrevious: Snapshot | null = null;
+  private laneIdentities = new Map<
+    string,
+    Pick<Lane, "name" | "mainPid" | "account" | "cgroup">
+  >();
   get previousTime(): number | undefined {
     return this.previous?.time;
   }
@@ -220,6 +224,24 @@ export class EventLog {
     // What the processes last read showed, and nothing through a sample that
     // read none.
     const before = readNone ? null : processPrevious;
+    // A stored predecessor can end a scope another writer observed. A scope
+    // still present can be empty and retain the identity this writer saw.
+    if (processPrevious !== this.processPrevious)
+      for (const id of this.laneIdentities.keys())
+        if (!processPrevious?.lanes.some((lane) => lane.id === id))
+          this.laneIdentities.delete(id);
+    // A scope can outlive its processes. Keep its last process-bearing name
+    // until it disappears, rather than naming its stop from the empty scope.
+    if (!readNone)
+      for (const sample of [before, s])
+        for (const lane of sample?.lanes ?? [])
+          if (lane.mainPid !== 0)
+            this.laneIdentities.set(lane.id, {
+              name: lane.name,
+              mainPid: lane.mainPid,
+              account: lane.account,
+              cgroup: lane.cgroup,
+            });
     const standInLane = (lane: Lane, sample: Snapshot): boolean =>
       lane.tool === "" &&
       sample.procs.some((p) => p.pid === lane.mainPid && standIn(p, c));
@@ -244,12 +266,21 @@ export class EventLog {
         before &&
         !s.lanes.some((live) => live.id === lane.id) &&
         !standInLane(lane, before)
-      )
-        add("lane-stop", laneText(lane), {
+      ) {
+        const identity = this.laneIdentities.get(lane.id) ?? lane;
+        add("lane-stop", laneText(identity), {
           subjectId: lane.id,
-          names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },
+          names: {
+            account: identity.account ?? "",
+            slice: sliceOf(identity.cgroup),
+          },
           values: { age: lane.age },
         });
+      }
+    if (!readNone)
+      for (const id of this.laneIdentities.keys())
+        if (!s.lanes.some((lane) => lane.id === id))
+          this.laneIdentities.delete(id);
     // The lanes the last read held that this unread sample dropped.
     const unreadLanes = new Set(
       readNone

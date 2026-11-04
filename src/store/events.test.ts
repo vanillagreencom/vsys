@@ -64,6 +64,80 @@ test("a lane start and stop name the account and the slice", () => {
   expect(stop[0]?.names.slice).toBe("agents.slice");
   expect(stop[0]?.values.age).toBe(30);
 });
+test("a lane stop names its last process-bearing sample across an empty scope", () => {
+  const running = emptySnapshot(1000);
+  running.lanes = [
+    laneSnapshot({
+      name: ".claude claude vsy-255",
+      account: ".claude",
+      mainPid: 42,
+    }),
+  ];
+  const log = started(running);
+  const empty = emptySnapshot(2000);
+  empty.lanes = [
+    laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
+  ];
+  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual(
+    [],
+  );
+  const stops = log
+    .advance(emptySnapshot(3000), c)
+    .filter((e) => e.kind === "lane-stop");
+  expect(stops.map((e) => e.time)).toEqual([3000]);
+  const stop = present(stops[0], "stop after the scope emptied");
+  expect(stop.subject).toBe(".claude claude vsy-255 PID 42");
+  expect(stop.subjectId).toBe(present(running.lanes[0], "running lane").id);
+  expect(stop.names).toEqual({ account: ".claude", slice: "agents.slice" });
+  expect(stop.values).toEqual({ age: null });
+});
+test("a lane that never held a process keeps its empty-scope stop identity", () => {
+  const empty = emptySnapshot(1000);
+  empty.lanes = [
+    laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
+  ];
+  const log = started(empty);
+  const stop = present(
+    log.advance(emptySnapshot(2000), c).find((e) => e.kind === "lane-stop"),
+    "stop for a never-populated scope",
+  );
+  expect(stop.subject).toBe("agent 42");
+  expect(stop.names).toEqual({ account: "", slice: "agents.slice" });
+  expect(stop.values).toEqual({ age: null });
+});
+test("retained lane identity updates with a process and ends with its scope", () => {
+  const first = emptySnapshot(1000);
+  first.lanes = [laneSnapshot({ name: "old", account: "old", mainPid: 40 })];
+  const log = started(first);
+  const latest = emptySnapshot(2000);
+  latest.lanes = [
+    laneSnapshot({ name: "latest", account: "work", mainPid: 41 }),
+  ];
+  log.advance(latest, c);
+  const empty = emptySnapshot(3000);
+  empty.lanes = [laneSnapshot({ name: "empty", account: null, mainPid: 0 })];
+  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual(
+    [],
+  );
+  expect(
+    log
+      .advance({ ...empty, time: 4000 }, c)
+      .filter((e) => e.kind === "lane-stop"),
+  ).toEqual([]);
+  const stop = present(
+    log.advance(emptySnapshot(5000), c).find((e) => e.kind === "lane-stop"),
+    "stop after the latest process",
+  );
+  expect(stop.subject).toBe("latest PID 41");
+  expect(stop.names.account).toBe("work");
+  log.advance({ ...empty, time: 6000 }, c);
+  const reused = present(
+    log.advance(emptySnapshot(7000), c).find((e) => e.kind === "lane-stop"),
+    "stop after scope identity reuse",
+  );
+  expect(reused.subject).toBe("empty");
+  expect(reused.names.account).toBe("");
+});
 test("stand-in lanes omit starts and stops while real and unread lanes keep both", () => {
   const rows: [string, string, Partial<Proc> | null, boolean][] = [
     ["stand-in main", "", {}, false],
