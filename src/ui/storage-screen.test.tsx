@@ -1309,7 +1309,7 @@ test("narrow Storage keeps each row's status and each scratch root's origin", as
     path,
     bytes:
       path === "/stored" ? null : path === "/typed" ? c.scratchQuota + 1 : 1,
-    age: 0,
+    age: path === "/typed" ? 12600 : path === "/shipped" ? 45 : null,
     error: path === "/stored" ? "EPERM" : null,
     origin,
   });
@@ -1320,7 +1320,7 @@ test("narrow Storage keeps each row's status and each scratch root's origin", as
     // A row an older build stored, whose origin is not known.
     root("/stored", null),
   ];
-  s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
+  s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 3600, error: null }];
   const report =
     "/home/reader/.local/state/vsys/reports/11111111-2222-3333-4444-555555555555";
   s.storage.scrubs = [{ path: report, text: "report failed", problem: true }];
@@ -1351,6 +1351,26 @@ test("narrow Storage keeps each row's status and each scratch root's origin", as
       expect(onScreen(word).glyph).toBe(shown(RGBA.fromIndex(role), "fg"));
     }
     expect(t.frame().replace(/[\s│]/g, "")).toContain(report);
+    const sizeEdges = (
+      [
+        ["/typed", "10.0 GiB"],
+        ["/shipped", "1 B"],
+        ["/agent", "1 B"],
+        ["/stored", "not avail…"],
+        ["/agent/s", "1 B"],
+      ] as const
+    ).map(([path, reading]) => {
+      const row = present(
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes(`${path} `)),
+        `the ${path} size row`,
+      );
+      expect(row).toContain(reading);
+      return row.indexOf(reading) + reading.length;
+    });
+    expect(new Set(sizeEdges).size).toBe(1);
     await t.press(c.keys.scratch);
     expect(selectedRow(t.frame())).toContain("Warning");
     // Only the selected root opens its detail: with /typed selected, the

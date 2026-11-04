@@ -247,7 +247,21 @@ export function Storage({
   /** Undefined text tells the shell the selected row carries no command. */
   onCopy: (command: string | undefined) => void;
 }) {
-  const items = storageItems(s);
+  const items = storageItems(s).map((item) => {
+    if (item.kind !== "scratch") return item;
+    const x = item.scratch;
+    const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
+    const modifiedSeconds =
+      x.modifiedAt == null
+        ? x.age
+        : Math.max(0, (s.time - x.modifiedAt) / 1000);
+    return {
+      ...item,
+      status: x.error ? "unread" : over ? "Warning" : "",
+      modifiedText:
+        modifiedSeconds == null ? "" : `${age(modifiedSeconds)} ago`,
+    };
+  });
   const ids = items.map(storageKey);
   // The selection follows its row, because a mount or a directory that sorts
   // above it moves every row below. Where the row has gone the nearest row
@@ -471,6 +485,36 @@ export function Storage({
     c.scratchQuota,
     ...[...st.scratch, ...st.sessions].map((x) => x.bytes ?? 0),
   );
+  const scratchRows = items.filter((item) => item.kind === "scratch");
+  const statusColumn: Column = {
+    label: "State",
+    width: Math.max(0, ...scratchRows.map((item) => textWidth(item.status))),
+  };
+  const readingColumn: Column = { label: "Size", width: 10, align: "right" };
+  const barColumn: Column = { label: "", width: 12 };
+  const ageColumn: Column = {
+    label: "Age",
+    width: Math.max(
+      0,
+      ...scratchRows.map((item) => textWidth(item.modifiedText)),
+    ),
+  };
+  const scratchColumns = [barColumn, readingColumn, ageColumn, statusColumn];
+  // The list gives up optional columns together so every root and session
+  // keeps its reading and status in the same columns.
+  for (const optional of [barColumn, ageColumn]) {
+    if (
+      columnsWidth(scratchColumns.filter((column) => column.width > 0)) +
+        columnGap.length <
+      rowWidth
+    )
+      break;
+    optional.width = 0;
+  }
+  const scratchPath = pathColumn(
+    scratchColumns.filter((column) => column.width > 0),
+    40,
+  );
   /**
    * One filesystem's integrity, in plain words with both of its times. What
    * the check found sits one level down, and the raw counters and the raw
@@ -646,39 +690,15 @@ export function Storage({
   };
   const scratchRow = (
     i: number,
-    item: Extract<StorageItem, { kind: "scratch" }>,
+    item: Extract<(typeof items)[number], { kind: "scratch" }>,
   ) => {
     const x = item.scratch;
-    const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
-    const modifiedSeconds =
-      x.modifiedAt == null
-        ? x.age
-        : Math.max(0, (s.time - x.modifiedAt) / 1000);
-    const modified = modifiedSeconds == null ? null : age(modifiedSeconds);
-    const status = x.error ? "unread" : over ? "Warning" : "";
-    const statusColumn: Column = { label: "State", width: textWidth(status) };
-    const readingColumn: Column = { label: "Size", width: 10, align: "right" };
-    const barColumn: Column = { label: "", width: 12 };
-    const modifiedText = modified === null ? "" : `${modified} ago`;
-    const ageColumn: Column = { label: "Age", width: textWidth(modifiedText) };
-    const following = (): Column[] => [
-      ...(barColumn.width ? [barColumn] : []),
-      readingColumn,
-      ...(ageColumn.width ? [ageColumn] : []),
-      ...(status ? [statusColumn] : []),
-    ];
-    // The bar and age can go; the reading and status must fit even when the
-    // list is too narrow to keep a path beside all optional columns.
-    for (const optional of [barColumn, ageColumn]) {
-      if (columnsWidth(following()) + columnGap.length < rowWidth) break;
-      optional.width = 0;
-    }
-    const path = pathColumn(following(), 40);
+    const { status, modifiedText } = item;
     return storageRow(
       i,
       () => (
         <>
-          {cell(path, x.path)}
+          {cell(scratchPath, x.path)}
           {barColumn.width > 0 && (
             <>
               {columnGap}
@@ -695,9 +715,9 @@ export function Storage({
               attributes={ui.dim}
             >{`${columnGap}${cell(ageColumn, modifiedText)}`}</span>
           )}
-          {status && (
+          {statusColumn.width > 0 && (
             <>
-              {"  "}
+              {columnGap}
               <Ink color={statusColor(status)}>
                 {cell(statusColumn, status)}
               </Ink>
@@ -711,7 +731,7 @@ export function Storage({
         // columns to its required reading and status.
         under: () => {
           const error = x.error;
-          const cutPath = textWidth(x.path) > path.width;
+          const cutPath = textWidth(x.path) > scratchPath.width;
           const origin = item.session ? null : item.scratch.origin;
           if (error === null && origin === null && !cutPath) return null;
           return (
@@ -801,7 +821,7 @@ export function Storage({
     );
   };
   /** Draws `item`, the row at `i`, by its kind. */
-  const drawItem = (item: StorageItem, i: number): ReactNode => {
+  const drawItem = (item: (typeof items)[number], i: number): ReactNode => {
     switch (item.kind) {
       case "filesystem":
         return filesystemRows(i, item.group);
