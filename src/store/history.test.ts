@@ -233,6 +233,55 @@ test("SQLite reopens full process snapshots and alert history", () => {
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
 });
+for (const [resume, held, gap] of [
+  ["restart", true, "none"],
+  ["foreign append", true, "none"],
+  ["restart after unread", true, "unread"],
+  ["never populated", false, "none"],
+  ["foreign reused scope", false, "absent"],
+] as const)
+  test(`an empty scope stop follows its stored process-bearing predecessor: ${resume}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    f.config.persistence = true;
+    const first = new History(f.config);
+    const second = new History(f.config);
+    cleanup.push(
+      () => first.close(),
+      () => second.close(),
+    );
+    const time = Date.now();
+    const original = emptySnapshot(time);
+    original.lanes = [
+      laneSnapshot({ name: "Claude lane", account: "work", mainPid: 42 }),
+    ];
+    const empty = emptySnapshot(time + 2);
+    empty.lanes = [
+      laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
+    ];
+    if (held || gap === "absent") second.add(original);
+    if (gap !== "none")
+      first.add({
+        ...emptySnapshot(time + 1),
+        processRead: gap === "unread" ? "unknown" : "complete",
+      });
+    first.add(empty);
+    const writer = resume.startsWith("foreign")
+      ? second
+      : new History(f.config);
+    if (writer !== second) cleanup.push(() => writer.close());
+    writer.add(emptySnapshot(time + 3));
+    const stop = present(
+      writer.events(time + 3, 0).find((e) => e.kind === "lane-stop"),
+      "stored-predecessor stop",
+    );
+    expect(stop.subject).toBe(held ? "Claude lane PID 42" : "agent 42");
+    expect(stop.names).toEqual({
+      account: held ? "work" : "",
+      slice: "agents.slice",
+    });
+    expect(stop.values).toEqual({ age: null });
+  });
 for (const resume of ["collision", "foreign append", "restart", "reconfigure"])
   test(`snapshot events follow the stored predecessor after ${resume}`, () => {
     const f = fixture();

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
-import type { Alert, Snapshot } from "../model/types";
+import type { Alert, Lane, Snapshot } from "../model/types";
 import { processesUnread } from "../model/verdict";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
@@ -251,7 +251,13 @@ export class History {
       point(
         s,
         this.c,
-        this.eventLog.advance(s, this.c, previous, processPrevious),
+        this.eventLog.advance(
+          s,
+          this.c,
+          previous,
+          processPrevious,
+          (id, time) => this.laneIdentityBefore(id, time),
+        ),
       );
     const db = this.db;
     // Points another dashboard committed to the shared database since this
@@ -575,6 +581,21 @@ export class History {
     return data
       ? normalizeSnapshot(JSON.parse(History.decodeRow(data)) as Snapshot)
       : null;
+  }
+  private laneIdentityBefore(id: string, time: number): Lane | undefined {
+    // Empty scopes carry no process identity after a restart. An absent lane
+    // ends the lifetime, so a reused scope cannot inherit an earlier name.
+    for (
+      let sample = this.at(time - 1);
+      sample;
+      sample = this.at(sample.time - 1)
+    ) {
+      if (processesUnread(sample)) continue;
+      const lane = sample.lanes.find((lane) => lane.id === id);
+      if (!lane) return undefined;
+      if (lane.mainPid !== 0) return lane;
+    }
+    return undefined;
   }
   /** Recorded changes in the window, newest first. */
   events(end: number, durationMs: number): TimelineEvent[] {
