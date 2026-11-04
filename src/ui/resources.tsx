@@ -324,8 +324,7 @@ export function groupCause(
 export function groupLevel(g: Group, s: Snapshot, c: Config): Level {
   return groupCause(g, s, c)?.level ?? "ok";
 }
-function causeText(cause: GroupCause | null, c: Config): string {
-  if (cause === null) return "OK";
+function causeText(cause: GroupCause, c: Config): string {
   switch (cause.kind) {
     case "unconfined":
       return "agent outside the agent slice";

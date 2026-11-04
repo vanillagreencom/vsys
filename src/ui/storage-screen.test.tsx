@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
@@ -10,7 +11,14 @@ import type {
 } from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
-import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
+import {
+  cellStyle,
+  isChildLine,
+  mount,
+  onScreen,
+  selectedRow,
+  shown,
+} from "../test/harness";
 import { present } from "../test/present";
 import { osc52 } from "./clipboard";
 import { age } from "./format";
@@ -1294,13 +1302,15 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
   }
 });
 
-test("each scratch root says where it came from under its row", async () => {
+test("narrow Storage keeps each row's status and each scratch root's origin", async () => {
+  const c = defaults();
   const s = emptySnapshot();
   const root = (path: string, origin: ScratchOrigin | null) => ({
     path,
-    bytes: 1,
+    bytes:
+      path === "/stored" ? null : path === "/typed" ? c.scratchQuota + 1 : 1,
     age: 0,
-    error: null,
+    error: path === "/stored" ? "EPERM" : null,
     origin,
   });
   s.storage.scratch = [
@@ -1311,11 +1321,38 @@ test("each scratch root says where it came from under its row", async () => {
     root("/stored", null),
   ];
   s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
+  const report =
+    "/home/reader/.local/state/vsys/reports/11111111-2222-3333-4444-555555555555";
+  s.storage.scrubs = [{ path: report, text: "report failed", problem: true }];
   // The narrowest terminal the screen is drawn for: an origin after the
   // row's fixed columns would start past its last column.
-  const t = await mount(s, defaults(), { width: 80, height: 40 });
+  const t = await mount(s, c, { width: 80, height: 40 });
   try {
     await t.press("5");
+    for (const [path, status, role] of [
+      ["/typed", "Warning", 3],
+      ["/stored", "unread", 3],
+      [report.slice(0, 20), "Error", 1],
+    ] as const) {
+      const row = present(
+        t.ui.captureSpans().lines.find((line) =>
+          line.spans
+            .map((span) => span.text)
+            .join("")
+            .includes(path),
+        ),
+        `the ${path} row`,
+      );
+      expect(row.spans.map((span) => span.text).join("")).toContain(status);
+      const word = present(
+        row.spans.find((span) => span.text.includes(status)),
+        `the ${path} status`,
+      );
+      expect(onScreen(word).glyph).toBe(shown(RGBA.fromIndex(role), "fg"));
+    }
+    expect(t.frame().replace(/[\s│]/g, "")).toContain(report);
+    await t.press(c.keys.scratch);
+    expect(selectedRow(t.frame())).toContain("Warning");
     // Only the selected root opens its detail: with /typed selected, the
     // root under it says nothing about where it came from.
     const opened = t.frame().split("\n");

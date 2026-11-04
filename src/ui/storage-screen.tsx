@@ -21,7 +21,14 @@ import type {
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
 import { keyLabel, screenPad, sideWidth } from "./chrome";
-import { columnGap, fit } from "./columns";
+import {
+  type Column,
+  cell,
+  columnGap,
+  columnsWidth,
+  fit,
+  textWidth,
+} from "./columns";
 import { age, amount, bytes, gap } from "./format";
 import {
   blocksText,
@@ -414,6 +421,16 @@ export function Storage({
   // padding, and the panel is a share of the terminal row.
   const side = items.length ? sideWidth(width + screenPad * 2) : 0;
   const listWidth = width - side - (side ? sideGap : 0);
+  // ListRow owns one marker cell. Reserve the following columns before a
+  // path takes its share, so a long path cannot hide the row's only status.
+  const rowWidth = listWidth - 1;
+  const pathColumn = (following: Column[], cap: number): Column => ({
+    label: "Path",
+    width: Math.max(
+      1,
+      Math.min(cap, rowWidth - columnsWidth(following) - columnGap.length),
+    ),
+  });
   // The selected row's detail, taken as the rows are drawn below, for the
   // panel the lists are drawn beside.
   let selectedDetail: ReactNode = null;
@@ -638,26 +655,51 @@ export function Storage({
         ? x.age
         : Math.max(0, (s.time - x.modifiedAt) / 1000);
     const modified = modifiedSeconds == null ? null : age(modifiedSeconds);
+    const status = x.error ? "unread" : over ? "Warning" : "";
+    const statusColumn: Column = { label: "State", width: textWidth(status) };
+    const readingColumn: Column = { label: "Size", width: 10, align: "right" };
+    const barColumn: Column = { label: "", width: 12 };
+    const modifiedText = modified === null ? "" : `${modified} ago`;
+    const ageColumn: Column = { label: "Age", width: textWidth(modifiedText) };
+    const following = (): Column[] => [
+      ...(barColumn.width ? [barColumn] : []),
+      readingColumn,
+      ...(ageColumn.width ? [ageColumn] : []),
+      ...(status ? [statusColumn] : []),
+    ];
+    // The bar and age can go; the reading and status must fit even when the
+    // list is too narrow to keep a path beside all optional columns.
+    for (const optional of [barColumn, ageColumn]) {
+      if (columnsWidth(following()) + columnGap.length < rowWidth) break;
+      optional.width = 0;
+    }
+    const path = pathColumn(following(), 40);
     return storageRow(
       i,
       () => (
         <>
-          {safe(fit(x.path, 40))}
-          {columnGap}
-          <Bar value={x.bytes} max={scratchTop} width={12} />
+          {cell(path, x.path)}
+          {barColumn.width > 0 && (
+            <>
+              {columnGap}
+              <Bar value={x.bytes} max={scratchTop} width={barColumn.width} />
+            </>
+          )}
           {columnGap}
           <Reading
             value={x.bytes}
-            text={fit(amount(x.bytes, c), 10, "right")}
+            text={cell(readingColumn, amount(x.bytes, c))}
           />
-          {modified != null && (
-            <span attributes={ui.dim}>{`  ${modified} ago`}</span>
+          {ageColumn.width > 0 && (
+            <span
+              attributes={ui.dim}
+            >{`${columnGap}${cell(ageColumn, modifiedText)}`}</span>
           )}
-          {(over || x.error) && (
+          {status && (
             <>
               {"  "}
-              <Ink color={statusColor(x.error ? "unread" : "Warning")}>
-                {x.error ? "unread" : "Warning"}
+              <Ink color={statusColor(status)}>
+                {cell(statusColumn, status)}
               </Ink>
               {x.error && ` ${safe(x.error)}`}
             </>
@@ -665,15 +707,16 @@ export function Storage({
         </>
       ),
       {
-        // The origin sits under the row rather than after its columns, where
-        // a narrow terminal cuts it and pushes the error out. The panel's
-        // narrower lists cut the error too, so the panel states it whole.
+        // Detail keeps the path and error whole when the row gives up their
+        // columns to its required reading and status.
         under: () => {
-          const error = wrap ? x.error : null;
+          const error = x.error;
+          const cutPath = textWidth(x.path) > path.width;
           const origin = item.session ? null : item.scratch.origin;
-          if (error === null && origin === null) return null;
+          if (error === null && origin === null && !cutPath) return null;
           return (
             <>
+              {cutPath && <Field label="Path" value={safe(x.path)} wrap />}
               {error !== null && (
                 <Line flexShrink={0} wrapMode="word">
                   <Ink color={statusColor("unread")}>unread</Ink>
@@ -726,36 +769,29 @@ export function Storage({
       </Fragment>
     );
   };
-  const scrubRow = (i: number, scrub: Scrub) =>
-    storageRow(
+  const scrubRow = (i: number, scrub: Scrub) => {
+    const status =
+      scrub.readable === false ? "unread" : scrub.problem ? "Error" : "clean";
+    const statusColumn: Column = { label: "State", width: textWidth(status) };
+    const path = pathColumn([statusColumn], textWidth(scrub.path));
+    return storageRow(
       i,
       () => (
         <>
-          {safe(scrub.path)}
+          {cell(path, scrub.path)}
           {/* A file vsys could not read reported nothing at all, and
               saying it reported a problem puts words in it. */}
           {"  "}
-          <Ink
-            color={statusColor(
-              scrub.readable === false
-                ? "unread"
-                : scrub.problem
-                  ? "Error"
-                  : "clean",
-            )}
-          >
-            {scrub.readable === false
-              ? "unread"
-              : scrub.problem
-                ? "Error"
-                : "clean"}
-          </Ink>
+          <Ink color={statusColor(status)}>{cell(statusColumn, status)}</Ink>
           {scrub.problem && scrub.readable !== false ? " problem reported" : ""}
         </>
       ),
       {
         under: () => (
           <>
+            {textWidth(scrub.path) > path.width && (
+              <Field label="Path" value={safe(scrub.path)} wrap />
+            )}
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
               {safe(scrub.text)}
             </Line>
@@ -763,6 +799,7 @@ export function Storage({
         ),
       },
     );
+  };
   /** Draws `item`, the row at `i`, by its kind. */
   const drawItem = (item: StorageItem, i: number): ReactNode => {
     switch (item.kind) {
