@@ -233,17 +233,54 @@ test("SQLite reopens full process snapshots and alert history", () => {
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
 });
-for (const [resume, held, gap, legacy, emptySamples] of [
-  ["restart", true, "none", false, 1],
-  ["foreign append", true, "none", false, 1],
-  ["restart after unread", true, "unread", false, 1],
-  ["never populated", false, "none", false, 1],
-  ["foreign reused scope", false, "absent", false, 1],
-  ["restart with legacy populated sample", true, "none", true, 1],
-  ["restart with legacy absence", false, "absent", true, 1],
-  ["restart after two empty samples", true, "none", false, 2],
-] as const)
-  test(`an empty scope stop follows its stored process-bearing predecessor: ${resume}`, () => {
+for (const persistence of [false, true])
+  test(`a long-lived memberless scope stops without reading older snapshots: persistence=${persistence}`, () => {
+    const f = fixture();
+    cleanup.push(f.cleanup);
+    f.config.persistence = persistence;
+    const h = new History(f.config);
+    cleanup.push(() => h.close());
+    const time = Date.now() - 901_000;
+    const empty = emptySnapshot(time);
+    // A container parent scope can stay listed without ever holding a process.
+    empty.lanes = [
+      laneSnapshot({
+        name: "container parent",
+        account: null,
+        mainPid: 0,
+        age: null,
+      }),
+    ];
+    for (let i = 0; i < 901; i++) h.add({ ...empty, time: time + i * 1000 });
+    // biome-ignore lint/complexity/useLiteralKeys: verifies the fixture reaches sealed checkpoints
+    const chunks = h["archive"]["chunks"];
+    expect(
+      chunks.filter((chunk) => chunk.segments.length > 0).length,
+    ).toBeGreaterThanOrEqual(3);
+    const writer = persistence ? new History(f.config) : h;
+    if (writer !== h) cleanup.push(() => writer.close());
+    const archiveRead = spyOn(Archive.prototype, "at");
+    const inflate = spyOn(Bun, "gunzipSync");
+    try {
+      const gone = time + 901_000;
+      writer.add(emptySnapshot(gone));
+      expect(archiveRead).not.toHaveBeenCalled();
+      expect(inflate).toHaveBeenCalledTimes(persistence ? 1 : 0);
+      const stop = present(
+        writer.events(gone, 0).find((event) => event.kind === "lane-stop"),
+        "memberless container stop",
+      );
+      expect(stop.time).toBe(gone);
+      expect(stop.subject).toBe("container parent");
+      expect(stop.names).toEqual({ account: "", slice: "agents.slice" });
+      expect(stop.values).toEqual({ age: null });
+    } finally {
+      archiveRead.mockRestore();
+      inflate.mockRestore();
+    }
+  });
+for (const predecessor of ["populated", "empty", "absent"] as const)
+  test(`a foreign predecessor preserves only carried identity for a present scope: ${predecessor}`, () => {
     const f = fixture();
     cleanup.push(f.cleanup);
     f.config.persistence = true;
@@ -258,63 +295,44 @@ for (const [resume, held, gap, legacy, emptySamples] of [
     original.lanes = [
       laneSnapshot({ name: "Claude lane", account: "work", mainPid: 42 }),
     ];
-    const empty = emptySnapshot(time + 2);
+    first.add(original);
+    const empty = emptySnapshot(time + 1);
     empty.lanes = [
       laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
     ];
-    if (held || gap === "absent") second.add(original);
-    if (gap !== "none")
-      first.add({
-        ...emptySnapshot(time + 1),
-        processRead: gap === "unread" ? "unknown" : "complete",
-      });
-    for (let i = 0; i < emptySamples; i++) {
-      first.add({ ...empty, time: time + 2 + i });
+    second.add(
+      predecessor === "populated"
+        ? { ...original, time: time + 1 }
+        : predecessor === "empty"
+          ? empty
+          : emptySnapshot(time + 1),
+    );
+    if (predecessor !== "empty") {
+      first.add({ ...empty, time: time + 2 });
       expect(
-        first.events(time + 2 + i, 0).filter((e) => e.kind === "lane-stop"),
+        first.events(time + 2, 0).filter((event) => event.kind === "lane-stop"),
       ).toEqual([]);
     }
-    if (legacy) {
-      // Collector.sample before processRead existed wrote no read-state field.
-      const db = new Database(f.config.sqlitePath);
-      for (const row of db
-        .query<{ time: number; data: Uint8Array }, []>(
-          "SELECT time, data FROM samples",
-        )
-        .all()) {
-        const stored: Record<string, unknown> = JSON.parse(
-          new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
-        );
-        delete stored.processRead;
-        db.query("UPDATE samples SET data = ? WHERE time = ?").run(
-          Bun.gzipSync(JSON.stringify(stored)),
-          row.time,
-        );
-      }
-      db.close();
+    const archiveRead = spyOn(Archive.prototype, "at");
+    try {
+      first.add(emptySnapshot(time + 3));
+      expect(archiveRead).not.toHaveBeenCalled();
+      const stop = present(
+        first.events(time + 3, 0).find((event) => event.kind === "lane-stop"),
+        "stop after a foreign predecessor",
+      );
+      expect(stop.time).toBe(time + 3);
+      expect(stop.subject).toBe(
+        predecessor === "absent" ? "agent 42" : "Claude lane PID 42",
+      );
+      expect(stop.names).toEqual({
+        account: predecessor === "absent" ? "" : "work",
+        slice: "agents.slice",
+      });
+      expect(stop.values).toEqual({ age: null });
+    } finally {
+      archiveRead.mockRestore();
     }
-    const writer = resume.startsWith("foreign")
-      ? second
-      : new History(f.config);
-    if (writer !== second) cleanup.push(() => writer.close());
-    const gone = time + 2 + emptySamples;
-    writer.add(emptySnapshot(gone));
-    const stops = writer
-      .events(gone, gone - time)
-      .filter((e) => e.kind === "lane-stop");
-    expect(stops.map((e) => e.time).sort((a, b) => a - b)).toEqual(
-      gap === "absent" ? [time + 1, gone] : [gone],
-    );
-    const stop = present(
-      stops.find((e) => e.time === gone),
-      "stored-predecessor stop",
-    );
-    expect(stop.subject).toBe(held ? "Claude lane PID 42" : "agent 42");
-    expect(stop.names).toEqual({
-      account: held ? "work" : "",
-      slice: "agents.slice",
-    });
-    expect(stop.values).toEqual({ age: null });
   });
 for (const resume of ["collision", "foreign append", "restart", "reconfigure"])
   test(`snapshot events follow the stored predecessor after ${resume}`, () => {

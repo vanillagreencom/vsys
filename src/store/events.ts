@@ -200,7 +200,6 @@ export class EventLog {
     c: Config,
     previous: Snapshot | null = this.previous,
     processPrevious: Snapshot | null = this.processPrevious,
-    identityBefore?: (id: string, time: number) => Lane | undefined,
   ): TimelineEvent[] {
     const out: TimelineEvent[] = [];
     const add = (
@@ -225,8 +224,12 @@ export class EventLog {
     // What the processes last read showed, and nothing through a sample that
     // read none.
     const before = readNone ? null : processPrevious;
-    // A stored predecessor can belong to a lifetime another writer observed.
-    if (processPrevious !== this.processPrevious) this.laneIdentities.clear();
+    // A stored predecessor can end a scope another writer observed. A scope
+    // still present can be empty and retain the identity this writer saw.
+    if (processPrevious !== this.processPrevious)
+      for (const id of this.laneIdentities.keys())
+        if (!processPrevious?.lanes.some((lane) => lane.id === id))
+          this.laneIdentities.delete(id);
     // A scope can outlive its processes. Keep its last process-bearing name
     // until it disappears, rather than naming its stop from the empty scope.
     if (!readNone)
@@ -264,10 +267,7 @@ export class EventLog {
         !s.lanes.some((live) => live.id === lane.id) &&
         !standInLane(lane, before)
       ) {
-        const identity =
-          this.laneIdentities.get(lane.id) ??
-          identityBefore?.(lane.id, before.time) ??
-          lane;
+        const identity = this.laneIdentities.get(lane.id) ?? lane;
         add("lane-stop", laneText(identity), {
           subjectId: lane.id,
           names: {

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Config } from "../config/config";
-import type { Alert, Lane, Snapshot } from "../model/types";
+import type { Alert, Snapshot } from "../model/types";
 import { processesUnread } from "../model/verdict";
 import { Archive } from "./archive";
 import { EventLog, type TimelineEvent } from "./events";
@@ -251,13 +251,7 @@ export class History {
       point(
         s,
         this.c,
-        this.eventLog.advance(
-          s,
-          this.c,
-          previous,
-          processPrevious,
-          (id, time) => this.laneIdentityBefore(id, time),
-        ),
+        this.eventLog.advance(s, this.c, previous, processPrevious),
       );
     const db = this.db;
     // Points another dashboard committed to the shared database since this
@@ -564,10 +558,6 @@ export class History {
     return this.points.recent(end, limit);
   }
   at(time: number): Snapshot | null {
-    const raw = this.rawAt(time);
-    return raw ? normalizeSnapshot(raw) : null;
-  }
-  private rawAt(time: number): Snapshot | null {
     const cutoff =
       (this.points.get(this.points.size - 1)?.time ?? Date.now()) -
       this.c.historyHours * 3600000;
@@ -579,28 +569,11 @@ export class History {
       )
       .get(time, cutoff);
     if (cached && cached.time >= cutoff && (!row || cached.time >= row.time))
-      return cached;
+      return normalizeSnapshot(cached);
     const data = row?.data;
-    return data ? (JSON.parse(History.decodeRow(data)) as Snapshot) : null;
-  }
-  private laneIdentityBefore(id: string, time: number): Lane | undefined {
-    // Empty scopes carry no process identity after a restart. An absent lane
-    // ends the lifetime, so a reused scope cannot inherit an earlier name.
-    for (
-      let sample = this.rawAt(time - 1);
-      sample;
-      sample = this.rawAt(sample.time - 1)
-    ) {
-      // Legacy records lack processRead but did read processes. Normalize
-      // only after judging that raw evidence, as predecessor selection does.
-      if (processesUnread(sample)) continue;
-      const lane = normalizeSnapshot(sample).lanes.find(
-        (lane) => lane.id === id,
-      );
-      if (!lane) return undefined;
-      if (lane.mainPid !== 0) return lane;
-    }
-    return undefined;
+    return data
+      ? normalizeSnapshot(JSON.parse(History.decodeRow(data)) as Snapshot)
+      : null;
   }
   /** Recorded changes in the window, newest first. */
   events(end: number, durationMs: number): TimelineEvent[] {
