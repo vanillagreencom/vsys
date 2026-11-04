@@ -404,6 +404,10 @@ test("the table keeps State after PID in the initial viewport regardless of conf
     ["State omitted", base.columns.filter((name) => name !== "state")],
     ["State before Agent", ["state", "name", "cpu"]],
     ["Agent omitted", ["cpu", "state"]],
+    // The chooser appends Agent when it is shown again; saved config also
+    // accepts Agent anywhere among the optional columns.
+    ["Agent last", [...base.columns.filter((name) => name !== "name"), "name"]],
+    ["Agent in the middle", ["cwd", "branch", "name", "cpu", "state"]],
   ];
   const s = emptySnapshot();
   s.groups = [groupSnapshot()];

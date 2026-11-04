@@ -726,8 +726,8 @@ export function Agents({
     },
   ];
   // The table's own columns, read by its heading and by every row in it. The
-  // process id and State stay together after the name, or first where the
-  // name is not shown, so optional columns cannot hide a lane's status.
+  // enabled name, process id and State lead regardless of configured order,
+  // so optional columns cannot hide a lane's status.
   const accountProcs = new Map(
     (table && c.columns.includes("account") ? s.procs : []).map((p) => [
       p.pid,
@@ -735,23 +735,20 @@ export function Agents({
     ]),
   );
   const tableAccount = (lane: Lane) => accountText(lane, accountProcs);
-  const tableCells: { name: string | null; column: Column }[] = c.columns
-    .filter((name) => name !== "state")
-    .map((name) => {
-      const column = tableColumn(name);
-      if (name === "account")
-        column.width = Math.max(
-          column.width,
-          ...lanes.map((lane) => textWidth(tableAccount(lane))),
-        );
-      return { name, column };
-    });
-  tableCells.splice(
-    tableCells.findIndex(({ name }) => name === "name") + 1,
-    0,
-    { name: null, column: pidColumn },
-    { name: "state", column: tableColumn("state") },
-  );
+  const tableCells: { name: string | null; column: Column }[] = [
+    ...(c.columns.includes("name") ? ["name"] : []),
+    null,
+    "state",
+    ...c.columns.filter((name) => name !== "name" && name !== "state"),
+  ].map((name) => {
+    const column = name === null ? pidColumn : tableColumn(name);
+    if (name === "account")
+      column.width = Math.max(
+        column.width,
+        ...lanes.map((lane) => textWidth(tableAccount(lane))),
+      );
+    return { name, column };
+  });
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
     if (!found) throw new Error(`No lane column named ${label}`);
