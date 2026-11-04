@@ -299,8 +299,8 @@ test("every integrity state, and which reading produces it", () => {
       "damaged",
     ],
     [
-      // The reading that hid the damage: a counter that grew after the last
-      // check, and a check old enough that nothing has looked since.
+      // Counter growth after the last check stays new even when the counter is
+      // now flat.
       "the counter grew after the last check",
       filesystem({ lastErrorAt: now - 31 * 3600000, lastErrorSize: 26 }),
       [report({ startedAt: now - 4 * day })],
@@ -663,11 +663,8 @@ test("a finished report with no readable start time still speaks for itself", ()
   expect(undatedDamage.groups).toEqual([
     { logical: 1, paths: ["/r/target/x"], kind: "files" },
   ]);
-  // The accepted scope boundary: an undated report that finished clean still
-  // clears a remembered damaged check, rather than letting the memory of
-  // damage outrank a newer, if undated, clean result. It reads "unknown"
-  // rather than "healthy", because a report with no start time dates no
-  // check, which matches pre-existing behavior for a dateless report.
+  // An undated finished clean report clears remembered damage, but cannot
+  // establish a recent check and therefore reads unknown.
   const undatedClean = integrity(
     filesystem(),
     {

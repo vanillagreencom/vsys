@@ -1,37 +1,40 @@
-# One detector, one ranking, one card per cause
+# Cause judgments
 
-Read before adding a cause, changing how causes rank, changing a meter, or changing the summary JSON.
+Read before adding a cause, changing its rank, changing a meter or changing summary JSON.
 
 ## The approach
 
-`causes()` in `src/model/verdict.ts` is the one detector. A cause is one detected problem held as data: its level, its subjects, its named consumer and its numbers, and every lane hitting one problem shares one cause. The ladder ranks causes worst first through `causeOrder`, its first verdict-worthy element is the verdict, and every element is one Home card. A housekeeping cause is a card but never the verdict. The meters read the same numbers, and `summarySnapshot()` in `src/model/export.ts` is the contract for `vsys --once --summary`. CPU percent is utilization in units of one logical core, and pressure is the recent share of time tasks stalled on a resource.
+`causes()` in `src/model/verdict.ts` detects each problem once. Severity and `causeOrder` rank it. One cause supplies one Home card, and the first verdict-worthy cause supplies the verdict. Meters consume the same readings. `summarySnapshot()` in `src/model/export.ts` supplies `vsys --once --summary`.
 
 ## Why
 
-A second detector lets a tile and a card disagree about one machine. One ranking table covering every cause means a cause cannot be added without a rank, and nothing ranks a cause by its position in a ladder it may no longer appear in.
+Separate detectors or rankings let a meter, card and alert disagree about the same machine. Shared judgments keep unknown readings distinct from clear ones.
 
 ## Rules
 
-- Do add a cause to `CauseId`, `causeOrder` and `causeEvidence` together. The two tables are records over `CauseId`, so the type check refuses a cause one of them lacks.
-- Do say in `causeEvidence` whether a cause is a level, which must hold before it alerts, or an event, which alerts on the sample that shows it. The event log reads it ([history.md](history.md)).
-- Do judge memory high once through `memoryHighJudgments()` in `src/model/verdict.ts`. The cause, event log and notifications use that judgment. A failed limit read keeps an active alert; a measured unlimited limit clears it. `src/model/alerts.test.ts` checks both alert consumers across failed reads and recovery.
-- Do make a cause's `lanes`, `groups` and `paths` its subjects, each its own alert. `at` names where a card lands without making that row a subject.
-- Do name a cgroup through `consumerName()`: the lane name where the group is a lane, otherwise the decoded unit name.
-- Do raise `service-cpu` for each `.service` unit directly under `system.slice`, or one level inside a slice there, whose CPU over the last 60 minutes is at or above `serviceCpuPercent`, default 25 percent of one core. The unit is one of the cause's `groups`. `ServiceCpu` in `src/collect/services.ts` reads each unit's `cpu.stat` once a minute and keeps the checkpoints in memory. A settings change hands them to the new collector. A scope or a mount is never a subject, because the card's `systemctl restart` refuses a scope and unmounts a mount. The average is taken from a checkpoint 60 to 75 minutes old. A unit with no such checkpoint in its current cgroup is absent at any threshold. An unread unit is unjudged. `src/collect/services.test.ts` checks the card, the alerts and the resets.
-- Do read agent lanes through `agentLanes()` and the agents' total through `agentTotal()`. Where the probe found no agent slice, sum measured agent cgroups without overlapping their subtrees, then add uncovered process sums. An uncovered unknown or an incomplete process read keeps the total unknown. `src/model/verdict.test.ts` checks nested groups, process fallbacks and unknown readings through the Home meters and Timeline points.
-- Do raise a card for every integrity state but `healthy` and `checking`, reading `integrities()` in `src/model/integrity.ts`, so Home never reads healthy while Storage reads otherwise. `src/model/verdict.test.ts` drives one snapshot per state.
-- Do end every card with a next step, and never offer a command carrying an unresolved value. `src/ui/attention.test.ts` checks every cause.
-- Never make a housekeeping cause the verdict, and never raise a card for a source read failure or for a recorded event alone. `src/model/verdict.test.ts` and `src/ui/attention.test.ts` check both.
-- Never add a word to the summary. It holds ids and raw numbers, null means not measured, and a skipped scratch scan keeps its cause with a null level so it never reads as healthy, as does `service-cpu` while the units are unread or none has an hour average. `src/main.test.ts` snapshots the schema, whose id is `summarySchema` in `src/model/export.ts`.
+Review holds boundaries without a named check.
+
+- Add a cause to `CauseId`, `causeOrder` and `causeEvidence` together. The type check holds both tables to the cause union.
+- Classify evidence as a sustained level or a one-sample event in `causeEvidence`. The [event store](history.md) uses that classification for holds.
+- Judge memory-high through `memoryHighJudgments()` for causes, events and notifications. An unread limit keeps an alert active; measured unlimited clears it. `src/model/alerts.test.ts` checks the shared judgment.
+- Put affected subjects in `lanes`, `groups` and `paths`, one alert per subject. Use `at` only for the card's destination; it must not create an alert.
+- Name cgroup consumers through `consumerName()`, using a lane name when one exists and a decoded unit otherwise.
+- Judge service CPU only for `.service` units directly under `system.slice` or one slice below it. Scopes and mounts are unsafe targets for the suggested restart. Respect the checkpoint window in `src/collect/services.ts`; no qualifying checkpoint means no average or cause, and an unread unit is unjudged. Carry checkpoints across collector replacement. `src/collect/services.test.ts` checks this boundary.
+- Read agent lanes through `agentLanes()` and totals through `agentTotal()`. Without an agent slice, count each measured subtree once, then uncovered process sums. Uncovered unknowns or incomplete process reads keep the total unknown. `src/model/verdict.test.ts` checks totals.
+- Raise integrity cards from `integrities()` in `src/model/integrity.ts` for every state except `healthy` and `checking`. Home and Storage must use one judgment; `src/model/verdict.test.ts` checks it.
+- End every card with a next step. Offer no command with an unresolved value. `src/ui/attention.test.ts` checks card actions.
+- Never make housekeeping the verdict or raise a card solely for a source-read failure or stored event. `src/model/verdict.test.ts` and `src/ui/attention.test.ts` check these exclusions.
+- Keep cause and meter values in the summary as ids and raw numbers under `summarySchema` in `src/model/export.ts`. Null means not measured. A skipped scratch scan and unavailable service average retain their cause with a null level, never healthy. `src/main.test.ts` checks the summary contract.
+- Keep CPU utilization in percent of one logical core and pressure in the recent share of time tasks stalled. They measure different quantities.
 
 ## The canonical example
 
-The `free-space` cause in `causes()`: one threshold from the settings, one subject per filesystem below it, its rank and evidence kind from the two tables, and the Storage line reading the same figure. Its consumer and numbers describe the filesystem with the least free space. Each alert keeps its own filesystem's numbers, as required by [history.md](history.md). `src/model/verdict.test.ts` and `src/store/events.test.ts` check both contracts. Copy it for a new cause.
+Copy `free-space` in `causes()`: one configured threshold, one subject per affected filesystem and the shared rank and evidence tables. Card totals describe their named consumer; each alert retains its own subject's numbers.
 
 ## Revisit when
 
-A consumer needs a summary field the model does not hold as a number, or a cause needs a rank that depends on another cause's presence.
+A consumer needs prose in the summary, or a cause's rank must depend on another cause's presence.
 
 ## Not governed
 
-How an alert opens and closes over time: [history.md](history.md). How a card is drawn: [ui.md](ui.md).
+Alert holds: [history.md](history.md). Card drawing: [ui.md](ui.md).

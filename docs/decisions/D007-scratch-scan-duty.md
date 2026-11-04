@@ -10,7 +10,7 @@
 
 **Decision**: Scratch traversal runs on a worker thread that reads each directory in one listing and takes each entry's status synchronously. It works for a slice, rests until that slice is no more than its duty's share of the two, and becomes eligible again only once the rescan interval has passed since the last traversal finished. A caller that waits for the reading gets the whole thread.
 
-**Why**: Resting is what bounds the cost. Faster reads alone leave a continuous traversal taking whatever a large root demands, and measured from its start a traversal longer than the interval was eligible again the instant it ended.
+**Why**: Resting is what bounds the cost. Faster reads alone leave a continuous traversal taking whatever a large root demands, and measuring the interval from traversal start would make a long traversal immediately eligible again.
 
 **Rejected**: An incremental filesystem index. It avoids re-reading unchanged directories, and it holds state vsys would have to keep correct against every writer on the machine.
 

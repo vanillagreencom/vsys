@@ -156,15 +156,10 @@ export function Settings({
   const column = twoColumns ? Math.floor((width - 3) / 2) : width;
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   const renderer = useRenderer();
-  // Every entry is a block with its row at the top, so whether anything is
-  // drawn under the selected row is one question the block answers: it has a
-  // second child. Naming the openers instead missed a kind twice — a
-  // capability shows its reason as soon as it is selected, a setting shows its
-  // help sentence — and a third clause would have missed the next one.
-  //
-  // The second pass is for the arithmetic, which reads positions the opening
-  // has not been laid out into yet. The question above it is asked of the
-  // tree, which holds the detail already, so it needs no second pass.
+  // Read expansion from the block’s children, not an inventory of openers: a
+  // selected capability or help sentence can expand without an explicit open
+  // action. Child presence is known before layout; positions need the next
+  // frame.
   // biome-ignore lint/correctness/useExhaustiveDependencies: the column count, the editor, the sources row and an opened capability are re-run triggers here, not values the effect reads
   useEffect(() => {
     const box = scroller.current;
@@ -221,14 +216,7 @@ export function Settings({
     openCap,
     renderer,
   ]);
-  /**
-   * The one place the selection follows the query. Three paths change what the
-   * filter shows — typing in the box, opening it on a query already there, and
-   * clearing it — and each decided the row for itself. The capability rows are
-   * listed whatever the filter says, so the first row of a filtered list is
-   * not the first row the filter matched, and every path that reached for row
-   * zero landed the highlight on a row the query never matched.
-   */
+  /** Typing, opening and clearing search must choose through one owner. Capability rows are always listed, so row zero need not be the first query match. */
   const filterTo = (text: string) => {
     setQuery(text);
     if (!text.trim()) {
@@ -252,11 +240,8 @@ export function Settings({
    */
   async function save(key: string, read: () => unknown) {
     try {
-      // The value is produced inside the guard, not handed in already made.
-      // The text box takes half-typed TOML on purpose, so a list the reader
-      // has not finished throws here rather than parsing: evaluated at the
-      // call site it threw before this `try`, and Enter did nothing and said
-      // nothing on the one screen built so a reader need not know the grammar.
+      // Produce the value inside try: half-typed TOML may throw, and the save
+      // must turn that into a notice instead of losing the keypress.
       const parsed = read();
       const next = key.startsWith("keys.")
         ? { ...c, keys: { ...c.keys, [key.slice(5)]: parsed } }
@@ -337,8 +322,7 @@ export function Settings({
       }
       return true;
     }
-    // A picker is modal. Opening search behind it left the picker running
-    // unseen, swallowing every key until the reader found Escape.
+    // A picker owns every key until it closes, including the find key.
     if (name === c.keys.search && !editing && !picking) {
       key.preventDefault();
       setSearching(true);

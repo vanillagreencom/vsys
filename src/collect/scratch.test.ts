@@ -269,8 +269,7 @@ test("a reading names only the roots of the sample it is published for", async (
 
 test("a list equal to the shipped one is default and any other list is the reader's", async () => {
   const shipped = defaultScratchDirs();
-  // The author's workstation runs with no settings file, so these three are
-  // what it measures. They stay in the default, and stay scanned there.
+  // The shipped scratch roots must remain measurable with no settings file.
   expect(shipped).toEqual(
     expect.arrayContaining([
       join(homedir(), "dev/.scratch/agents"),

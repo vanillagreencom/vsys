@@ -1078,10 +1078,9 @@ function sharedHistory(busyTimeoutMs?: number) {
   return { root, path: config.sqlitePath, config, h, probe, stored };
 }
 
-// A margin for the rows below. Two start a worker thread, and one commits 132
-// samples as synced SQLite transactions, the workload the lane-series suite
-// records failing on time inside the full suite. A loaded host can stretch
-// either past the runner's default; no row's verdict rests on the timeout.
+// These cases start workers or sync SQLite while other suites may use the same
+// disk. The timeout leaves room for host contention; no assertion measures
+// elapsed time.
 const slowRowMs = 30_000;
 
 /** The SQLite error code `run` throws, or null when it returns. */

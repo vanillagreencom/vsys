@@ -54,9 +54,8 @@ export function smartReports(
   try {
     names = readdirSync(c.smartDir);
   } catch (error) {
-    // Only a directory that is not there is no timer installed; anything
-    // else that stopped the listing is an error in the sample, as it was
-    // before udisks could stand in.
+    // Only a missing directory means no reporter. Other listing failures remain
+    // source errors even when udisks can answer.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
       r.error(c.smartDir, error);
     return { reports: new Map(), outcome: classify(error) };

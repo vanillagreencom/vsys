@@ -312,9 +312,8 @@ class AgentWardenScratchRules(WardenRulesCase):
                 mutant.CG_ROOT, mutant.AGENT_TMPDIR_PARENT = old_cg, old_parent
 
     def test_reap_scratch_dirs_refuses_on_unreadable_scope_list(self):
-        # scope_units() failing to list agents.slice at all must never read as
-        # "every scope is gone": that would delete every live lane's scratch
-        # through the exact cross-lane destruction this issue fixes.
+        # An unread scope list must not establish that every scope is gone,
+        # which could remove live scratch directories.
         with scratch() as tmp:
             base = Path(tmp)
             old_cg, old_parent = self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT
@@ -614,11 +613,9 @@ class AgentWardenScratchRules(WardenRulesCase):
                 return reads, removed
 
     def test_reap_scratch_dirs_reads_each_process_once(self):
-        # Each live pid's environment and current directory are read once
-        # per pass, whatever the number of gone directories: on the owner's
-        # machine 933 gone directories each rescanned about 970 processes,
-        # 24 s of CPU per tick (VSY-216). A pass with no gone directory
-        # past its grace reads no process at all.
+        # A pass that removes nothing reads each live process once, independent
+        # of directory count. No directory past grace means no process read is
+        # needed.
         once = {f"/proc/{LIVE}/environ": 1, "/proc/701/environ": 1, f"/proc/{LIVE}/cwd": 1, "/proc/701/cwd": 1}
         rows = [
             ("three gone directories, each unknown", 3, (once, [])),
@@ -848,8 +845,8 @@ class AgentWardenScratchRules(WardenRulesCase):
                         if time.monotonic() >= deadline:
                             self.fail("subprocess did not exec in time for its environ to carry TMPDIR")
                         time.sleep(0.02)
-                    # scan() itself -- what the fixed run() call site uses --
-                    # really does see the process once it has started.
+                    # The actual scan() must include the child once it has
+                    # started.
                     self.assertIn(proc.pid, self.w.scan())
                     fresh = {proc.pid: None}
 
@@ -884,12 +881,9 @@ class AgentWardenScratchRules(WardenRulesCase):
         return proc.pid
 
     def test_unreadable_process_holds_scratch_only_through_its_cgroup(self):
-        # A non-dumpable desktop process kept every gone folder on the
-        # owner's machine: 932 of 933 each tick, one journal line each per
-        # run (VSY-218). Its cgroup is a desktop unit, which no lane starts,
-        # so the folders go. A contained job unit in app.slice is not one: a
-        # lane started it, so it keeps both and says so in one line per run,
-        # not one per folder.
+        # A non-dumpable desktop process cannot hold lane scratch because no
+        # lane starts its unit. A contained job unit can, so it must retain the
+        # directories and report one aggregate unknown line.
         pid = self._non_dumpable_process()
         user = f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service"
         rows = [
@@ -981,14 +975,10 @@ class AgentWardenScratchRules(WardenRulesCase):
         ]
 
     def test_unreadable_process_in_a_lane_scope_rows(self):
-        # An op daemon in a live lane scope kept every gone folder of every
-        # lane for days (VSY-219). Beside a readable scope-mate it holds
-        # only what that mate holds now, so every other gone folder goes,
-        # however old. In an orphan lane, with no readable mate, what an
-        # unreadable member holds existed when it started: another lane's
-        # folder created after the latest such start goes, and every older
-        # one stays unknown. Its own lane's folder stays while the lane is
-        # live.
+        # A readable scope-mate bounds what an unreadable lane process holds
+        # now. Without one, creation time bounds inherited directories; older
+        # directories stay unknown. Its own live scope always protects its own
+        # folder.
         for name, members, birth_known, status in self._lane_rows():
             with self.subTest(name=name):
                 removed = ["agent-confine-100-200"] if status == "free" else []
@@ -1032,11 +1022,9 @@ class AgentWardenScratchRules(WardenRulesCase):
                 self.assertNotEqual(self._lane_reap(mutant, members, birth_known), (status, removed, True))
 
     def test_reap_scratch_dirs_sweeps_the_old_default_parent(self):
-        # AGENT_TMPDIR moved to ~/dev/.scratch/agents and left 2,474 folders
-        # under agent-confine's default ${XDG_CACHE_HOME}/agents/tmp, which the
-        # warden never listed (VSY-218). Both parents take the same rule: a
-        # live scope's folder stays, and a tied unreadable process keeps both
-        # gone folders.
+        # Both configured and default scratch parents follow the same keep rule
+        # so a configuration change cannot strand old folders. Live scopes and
+        # tied unreadable processes protect either parent.
         with scratch() as tmp:
             base = Path(tmp)
             env = {**self.env, "AGENT_TMPDIR": str(base / "scratch"), "XDG_CACHE_HOME": str(base / "cache")}
@@ -1097,10 +1085,8 @@ class AgentWardenScratchRules(WardenRulesCase):
         return names, removed, attempts, reads[0]
 
     def test_reap_scratch_dirs_caps_removals_per_pass(self):
-        # Each removal re-reads every process first. The owner's backlog of
-        # about 3,500 folders would take about 50 s in one pass, past the
-        # service's 25 s timeout, so a pass stops at its cap and the next
-        # pass takes the rest.
+        # Each removal re-reads every process, so cap attempts per pass and
+        # drain the remainder on later ticks.
         names, removed, _, _ = self._capped_passes(2, 2)
         self.assertEqual([len(names) for names in removed], [2, 1])
         self.assertEqual(sorted(removed[0] + removed[1]), names)
@@ -1172,11 +1158,10 @@ class AgentWardenScratchRules(WardenRulesCase):
         return (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime), walked
 
     def test_report_pass_cost_per_gone_folder_stays_small(self):
-        # The pass with no folder pays interpreter start, import and the
-        # /proc scans; the difference is the reaper's own walk over 5,000
-        # folders, about 0.04 s. The fastest of three passes each keeps
-        # machine load out of both sides. VSY-216's regression, every
-        # process re-read for every folder, costs seconds here.
+        # Compare a pass with no folders against 5000 gone folders to isolate
+        # traversal cost. The minimum of three reduces host-load noise; re-
+        # reading every process for every folder costs seconds rather than the
+        # measured 0.04 s difference.
         idle, loaded = ([self._report_pass(folders) for _ in range(3)] for folders in (0, 5000))
         self.assertEqual([walked for _, walked in idle + loaded], [0, 0, 0, 5000, 5000, 5000])
         self.assertLess(min(cpu for cpu, _ in loaded) - min(cpu for cpu, _ in idle), 0.1)

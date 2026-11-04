@@ -82,10 +82,8 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
     return { failure: "absent", detail: String(error) };
   }
   if (result.exitCode === 0) return null;
-  // tmux ran and refused, which is never an absence however it is worded. A
-  // server that is not up says `error connecting to /tmp/tmux-1000/default
-  // (No such file or directory)`, and matching that against a pattern for a
-  // missing program told a reader who has tmux installed to go and install it.
+  // tmux ran and refused. A missing socket means no server, not a missing
+  // program.
   return {
     failure: "incomplete",
     detail:

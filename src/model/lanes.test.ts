@@ -655,8 +655,8 @@ test("a configured pane address is the address, not a key into the server", () =
     lanes(groups, [configured], c, 0, tmuxRead(panes))[0],
     "the lane configured by address",
   );
-  // Looked up in a map keyed by `%N` it found nothing and the row showed no
-  // address at all, for the configuration this repository documents.
+  // A configured address already names the target and must survive without a
+  // handle lookup.
   expect({ pane: byAddress.pane, address: byAddress.address }).toEqual({
     pane: "work:2.1",
     address: "work:2.1",
@@ -717,9 +717,8 @@ test("a pane on another tmux server resolves to nothing, not to a stranger", () 
     window: mine.window,
     elsewhere: mine.elsewhere,
   }).toEqual({ address: "work:1.1", window: "build", elsewhere: false });
-  // The other resolves to nothing and says why. Compared by handle alone both
-  // rows showed `work:1.1`, and a switch would have moved the reader to a pane
-  // they have never seen.
+  // A different known server must resolve no address: the same handle there
+  // names a stranger’s pane.
   expect({
     address: theirs.address,
     window: theirs.window,
@@ -774,8 +773,8 @@ test("a restarted server on the same socket path is a different server", () => {
   const pair = lanes(groups, [stale, sibling], c, 0, tmuxRead(panes, socket));
   const dead = present(pair[0], "the lane on the dead server");
   const live = present(pair[1], "the lane on the live server");
-  // Compared by path alone the stale lane showed `work:1.1` and offered a
-  // switch, and the reader would have landed in a stranger's pane.
+  // The server pid distinguishes a restarted server even when it reuses the
+  // socket path.
   expect({ address: dead.address, elsewhere: dead.elsewhere }).toEqual({
     address: "",
     elsewhere: true,
@@ -897,12 +896,8 @@ test("vsys's own pane is marked however the lane's target spells it", () => {
   // so the same partial read still answers `no` and the guard above cannot be
   // widened into one that refuses every lane after a partial read.
   expect(ownPaneMark("%99", "%146", false, partial, null)).toBe("no");
-  // Three targets tmux resolves to vsys's own pane that a comparison on the
-  // text alone sends elsewhere. Each answered `no` before, which is the answer
-  // that runs the capture, and the capture carries the lane's raw target.
-  //
-  // A handle padded with zeros. `%00146` and `%146` are one pane to tmux, and
-  // the map is keyed by tmux's own output, which never pads.
+  // These targets can reach vsys’s own pane. The own-pane guard must follow
+  // tmux target semantics rather than compare only raw spelling.
   expect(ownPaneMark("%00146", "%146", false, panes, null)).toBe("yes");
   // A handle in the pane component, which tmux resolves without reference to
   // the window beside it, against a server holding a window whose literal name
@@ -1013,15 +1008,9 @@ test("the pane vsys draws in is marked on the lane, in either form it carries", 
   // draws in no pane has no comparison left to fail.
   const outside = lanes(groups, lot, c, 0, { ...asRead, own: "" });
   expect(outside.map((lane) => lane.self)).toEqual(["no", "no", "no", "no"]);
-  // A `list-panes` that failed leaves no map. The handle form is still
-  // decided, because vsys's own handle comes from its own environment and
-  // compares directly. The address form is not: only the map says which pane
-  // `vsys:2.1` is, so vsys cannot tell whether this lane holds the pane it
-  // draws in, and it says that rather than `no`. Answering `no` is what let
-  // the capture run against vsys's own pane on the sample after a failed read.
-  // The third lane is the reason only the address form goes undecided: a
-  // handle that is not vsys's own is settled without the map too, so a failed
-  // read does not cost the reader every terminal on the machine.
+  // With no pane map, handles compare directly against the environment; an
+  // address stays undecided. Refusing every handle after a failed read would
+  // also hide terminals that are known to differ.
   const refused = lanes(groups, [byHandle, byAddress, other], c, 0, {
     ...asRead,
     byId: new Map(),

@@ -343,15 +343,9 @@ export function lanes(
         id,
       account,
       pane,
-      // The resolved address is a reading, not part of the name: `%9` stays
-      // the handle every action uses, and the address is what a reader reads.
-      //
-      // The map is keyed by tmux's own `%N`, and `paneEnv` reads `VSYS_PANE`
-      // first, which this project documents and tests as holding an address
-      // like `work:2.1`. Looked up by that, every configured lane found
-      // nothing and showed no address at all. An address configured directly
-      // is already the thing a reader types, so it is carried as it stands;
-      // what it cannot give is a window name, which only the server knows.
+      // A raw handle remains the action target. A configured address already
+      // names the target and needs no handle-map lookup; only the server can
+      // supply its window name.
       address: elsewhere
         ? ""
         : isPaneId(pane)

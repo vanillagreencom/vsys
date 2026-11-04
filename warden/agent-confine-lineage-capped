@@ -6,9 +6,8 @@ exits 1), means "unknown": the launcher then keeps the current cgroup, because
 staying inside a limit is the safe error. Same rule as agent-warden's."""
 import os
 import sys
-# Loading agent-warden writes its bytecode cache. Without a prefix the cache
-# lands in a __pycache__ beside this file: a real directory in ~/.local/bin and
-# another in the repo, which stow then refuses to link over (2026-09-11).
+# Keep imported bytecode in the cache prefix: __pycache__ beside a stowed
+# launcher would occupy a directory stow needs to link.
 if sys.pycache_prefix is None:
     sys.pycache_prefix = os.path.join(
         os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),

@@ -114,11 +114,8 @@ class Points {
     return this.ring.all();
   }
   push(p: Point): void {
-    // A full ring evicts its oldest point on a push and hands it back. That is
-    // the same eviction `shift` performs and it drops the same changes, so
-    // both go through `drop`: keeping an evicted point's change in the index
-    // put a change outside retention on Home, where opening it landed on no
-    // Timeline row at all.
+    // Ring eviction and shift both drop the evicted point’s changes. Otherwise
+    // Home could offer an event the Timeline can no longer reach.
     const evicted = this.ring.push(p);
     const events = p.events ?? [];
     if (events.length)

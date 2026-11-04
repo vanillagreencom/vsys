@@ -1616,7 +1616,7 @@ test("a damaged-files card keeps a readable filesystem's own count beside one th
   expect(card?.next).toContain("open /a, then restore");
   expect(card?.next).not.toContain("each of these filesystems");
   expect(card?.next).not.toContain("that filesystem");
-  // The first affected filesystem still lands the card, VSY-98's precedent.
+  // The card targets its first affected filesystem.
   expect(card?.target).toEqual({ kind: "path", path: "a" });
 });
 
@@ -2075,8 +2075,7 @@ test("a damaged-files card's next step matches the ways text's singular/plural f
     expect(oneCard.next).toContain(branch.singular);
     expect(oneCard.next).not.toContain(branch.plural);
     expect(oneCard.target).toEqual({ kind: "path", path: "a" });
-    // A second filesystem built the same way turns `next` plural; `target`
-    // still points at the first filesystem, per VSY-98's decision.
+    // Plural copy still targets the first affected filesystem.
     const two = emptySnapshot();
     branch.build(two, "a", "/a");
     branch.build(two, "b", "/b");

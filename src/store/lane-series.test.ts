@@ -73,12 +73,10 @@ test("reopened history loads complete lane series without duplicating concurrent
   } finally {
     f.cleanup();
   }
-  // A margin, because this case writes 130 samples to SQLite and reads them
-  // back: it takes a third of a second alone and about five seconds inside the
-  // full suite, where the other files are competing for the same disk. Against
-  // the default five seconds that is no margin at all, and the case has failed
-  // on timing rather than on what it asserts. Nothing here is slow on purpose;
-  // what is asserted is the data, never the time.
+  // This replay writes 130 SQLite samples. It measured about one third of a
+  // second alone and five seconds while the full suite competes for disk,
+  // leaving no margin under the default five-second timeout. The assertion
+  // concerns data, not elapsed time.
 }, 30000);
 test("one read of many stored lanes decompresses each stored row once, and keeps only live lanes", async () => {
   const f = fixture();

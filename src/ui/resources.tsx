@@ -326,12 +326,9 @@ export function Resources({
     selection,
     setSelection,
   );
-  // A card that names a group lands on it. An idle group is not in the rows
-  // until they are all shown, so the target opens them. The group is found
-  // before the request is acknowledged, because a collector refresh between
-  // the keypress and this effect can remove it; acknowledging first dropped
-  // the request in silence. The request is still consumed either way, so
-  // opening the same card twice lands twice.
+  // Find a card’s target before acknowledging it: a refresh can remove the row,
+  // and the reader must hear that refusal. Consume the request either way so it
+  // cannot fire on a later sample.
   useEffect(() => {
     if (target === null) return;
     const key = rowKey(target);

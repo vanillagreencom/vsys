@@ -136,8 +136,8 @@ test("the cursor readings are tiles, one quantity above each number", async () =
   try {
     await t.press("6");
     const lines = t.frame().split("\n");
-    // Six readings on one row joined by dots is a run to parse; each now
-    // names its quantity on the row above its own number.
+    // Cursor tiles name each quantity separately so six readings cannot run
+    // together as one unlabelled line.
     const labels = lines.findIndex(
       (line) => line.includes("CPU wait") && line.includes("Disk wait"),
     );

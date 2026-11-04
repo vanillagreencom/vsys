@@ -1,20 +1,20 @@
-# A filesystem is healthy only when a finished check says so
+# Storage integrity
 
 Read before changing whether a filesystem reads as damaged, checked or healthy, how vsys reads the error counter, the kernel log and the check report, or the scrub reporter, the drive reporter, the report format, their installers or the udisks2 fallback.
 
 ## The approach
 
-Storage answers two questions per filesystem: is its data damaged, and when was it last read end to end. Three sources answer. A check report says what a completed Btrfs scrub found. The error counter and the kernel log each record a failed checksum read when one happens. `integrity()` in `src/model/integrity.ts` is the one reading; the filesystem, not the mount and not the device, is its unit through `volumesByDevice`; and the cause ladder, the Storage row and the drill-down all read it. The collector remembers the last finished check in `FinishedScrubMemory` in `src/collect/btrfs.ts` across a later report that did not finish.
+Judge storage by filesystem through `integrity()` in `src/model/integrity.ts`. Check reports, error counters, kernel logs and remembered finished checks provide independent evidence. Home, Storage and drill-downs consume that one judgment.
 
-vsys runs no privileged code. Two reporters run as root from systemd and leave files vsys reads with the user's permissions. `scripts/scrub-reporter/vsys-scrub-report` runs after each Btrfs scrub, from a `btrfs-scrub@.service` drop-in, and writes one check report per mount into `scrubDir`. `scripts/smart-reporter/vsys-smart-report` runs from a timer and writes one `smartctl` report per drive into `smartDir`. The vsys and vsys-git packages install the reporter files listed in `packaging/vsys-runtime-files.txt`; a one-command installer per reporter fetches them from a tagged release instead. Where no drive report exists, vsys asks udisks2 over the system bus through `busctl`.
+The dashboard reads with the user's permissions. Root-side reporters in `scripts/scrub-reporter/` and `scripts/smart-reporter/` leave reports it can read. Their shared text contract belongs here because Bash writers and TypeScript readers must agree.
 
 ## Why
 
-The error counter counts reads that failed. It stays still while nothing reads the damaged part, so a flat counter is not a sound filesystem; only a finished check read the whole filesystem. A scrub that stops early overwrites its mount's report that proved the filesystem sound, and without the memory that filesystem would fall back to unknown.
-
-Resolving a damaged block to a file and reading SMART attributes need root, and vsys reads the machine with the user's permissions. The dashboard reads what a privileged reporter wrote and is never privileged itself. A report file is a contract shared by two programs in two languages, so its rules live here rather than in either one.
+A flat error counter proves no new failed read, not healthy data. Only a completed check reads the whole filesystem. Remembered evidence prevents an interrupted check from erasing the last completed result. Keeping privileged readers outside the dashboard preserves its permission boundary.
 
 ## Rules
+
+Review holds boundaries without a named check.
 
 - Do read as untroubled only `healthy` and `checking`. A filesystem never checked, whose current report could not be read, or whose counter is unreadable is never `healthy`. `src/model/integrity.test.ts` pins one row per state.
 - Do let each source answer alone. Remembered damage and new counter or kernel-log errors still apply when the latest report cannot be read. Its address and block figures stay unknown. `src/collect/btrfs.test.ts` and `src/model/integrity.test.ts` check this priority. With the kernel log only, a logged failure still dates the last new error and names its inode; with neither source, the filesystem was never checked. The Storage row names the source of each time.
@@ -22,8 +22,8 @@ Resolving a damaged block to a file and reading SMART attributes need root, and 
 - Do keep the time of the last counter growth in `errorMemoryPath`, outside the process, and treat a counter at zero after a reboot as a new baseline, never a repair.
 - Do merge and replace the error memory under one file lock. A competing save reports its refusal and retries on the next sample. `src/collect/errors.test.ts` checks saves that overlap during writing and replacement.
 - Do judge a remembered finished check as the live one is judged, through `scrubFoundDamage()`. A remembered check that found damage reads `damaged` whatever the current report says.
-- Do hand a replaced collector the same `FinishedScrubMemory` instance ([layers.md](layers.md)), so a scrub that finishes during the handover lands in the one memory. Bind each report's filesystem identity and start time to the file version that supplied its text through `Reader.scrubReport()`. A failed read may retain those fields only for that version. A readable replacement replaces both fields, including missing values. `src/collect/io.test.ts`, `src/collect/collector.test.ts` and `src/collect/btrfs.test.ts` check it.
-- Do treat an unreadable report with unknown association as possibly belonging to any filesystem. Its filename names a mount, which another filesystem can reuse. Keep report selection in `reportFor()` and health in `integrity()`. Only proof that an unreadable report is older or unrelated lets a readable report determine health. Unknown order and equal start times prove neither. Independent confirmed damage and new errors still stand, while unreadable figures stay unknown. `src/model/integrity.test.ts` and `src/collect/btrfs.test.ts` check startup, file replacement, mount reuse and selection.
+- Do hand a replaced collector the same `FinishedScrubMemory` instance ([layers.md](layers.md)), so a scrub that finishes during the handover lands in the one memory. Bind each report's filesystem identity and start time to the file version that supplied its text through `Reader.scrubReport()`. A failed read may retain those fields only for that version. A readable replacement replaces both fields, including missing values. `src/collect/io.test.ts`, `src/collect/collector.test.ts` and `src/collect/btrfs.test.ts` check the handover.
+- Do treat an unreadable report with unknown association as possibly belonging to any filesystem. Its filename names a mount, which another filesystem can reuse. Keep report selection in `reportFor()` and health in `integrity()`. Only proof that an unreadable report is older or unrelated lets a readable report determine health. Unknown order and equal start times prove neither. Independent confirmed damage and new errors still stand, while unreadable figures stay unknown. `src/model/integrity.test.ts` and `src/collect/btrfs.test.ts` check this boundary.
 - Do search the kernel log through `journalctl --output=json --grep` from the last retained cursor, record a failed search as a source error, and keep the failures earlier searches read. Keep the cursor before an unmatched failure while the boot ID is unreadable, so restored access can recover that failure. Keep the mount mappings from that cursor until it advances. A later mount must not resolve an earlier unmatched failure during replay. `src/collect/kernel-log.test.ts` checks recovery and device reuse.
 - Do treat a logged failure as new until a check that started at or after it finishes. `integrity()` in `src/model/integrity.ts` holds this rule; `src/model/integrity.test.ts` checks it.
 - Do list every file a report names as possibly damaged, with every name its address carries, and count blocks the check counted beyond the listed addresses as unnamed damage.
@@ -44,7 +44,7 @@ Resolving a damaged block to a file and reading SMART attributes need root, and 
 
 ## The canonical example
 
-`integrity()` in `src/model/integrity.ts`: one function taking the report, the counter memory, the logged failures and the remembered check, and returning the state with its two dated times and their sources. Copy it: every reader calls it rather than judging a source itself. For another root-side reader, copy the layout of `scripts/smart-reporter/`: the reporter, its service and timer, the tmpfiles line that creates the report directory, and an installer that verifies checksums before writing anything.
+Copy `integrity()` in `src/model/integrity.ts` for one judgment over independent sources. For another root-side reader, copy `scripts/smart-reporter/`: a separate reporter, systemd units and an installer that verifies checksums before writing.
 
 ## Revisit when
 

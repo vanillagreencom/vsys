@@ -604,9 +604,8 @@ test("Home counts an alert once when the clock steps back and recovers", async (
 
 test("Home marks one focus at a time, on every kind of row it lists", async () => {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
-  // A sample with all three row types on screen at once: concerns, a change,
-  // and agents. The rule was written at each render site, so it reached two of
-  // the three and the test that named it used only a concern.
+  // Keep every Home row kind in the fixture so selection and focus checks cover
+  // concerns, changes and agents.
   const h = new History(c);
   h.add(emptySnapshot(1000));
   const s = everyCauseSnapshot(c);
@@ -828,9 +827,8 @@ test("a Home row opens the change the reader chose, not the first at its moment"
     const chosen = selectedRow(t.frame());
     expect(chosen).toContain(second.subject);
     await t.press("enter");
-    // The Timeline lands on that change, not on the first one sharing its
-    // time. Matching by time always found the first however far down the
-    // reader had moved.
+    // Changes sharing a timestamp need distinct identities so the selected
+    // change, rather than its neighbour, opens.
     expect(t.frame()).toContain("What changed");
     expect(selectedRow(t.frame())).toContain(second.subject);
   } finally {
@@ -988,8 +986,8 @@ test("the recap holds what happened while the reader was away for longer than th
   try {
     await t.press("1");
     const frame = t.frame();
-    // The section is for the reader who was away. Sourcing it from the window
-    // told them nothing had changed while the change sat in history.
+    // Recent changes must include retained events outside the current Timeline
+    // window.
     expect(frame).not.toContain("Nothing has changed");
     expect(frame).toContain("lane-a");
     // And opening that row lands on it, which needs a window wide enough to
@@ -1023,9 +1021,8 @@ test("a memory-reclaim card opens on the scope holding the swap", async () => {
     await t.press("1");
     for (let i = 0; i < at; i++) await t.press("j");
     await t.press("enter");
-    // The card's own text names the scope holding the most swap, so that is
-    // the row it lands on. Carrying no group landed on whichever row
-    // Resources already had selected, silently and without an error.
+    // The card targets the scope its own copy names, rather than the Resources
+    // selection already on screen.
     expect(t.frame()).toContain("Groups");
     expect(selectedRow(t.frame())).toContain("gnome");
   } finally {

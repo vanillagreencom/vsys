@@ -102,14 +102,7 @@ class Pace {
   }
 }
 
-/**
- * Read each entry once; root and session totals have independent hard-link
- * sets. Entry reads are synchronous: one directory listing, then one status
- * read per listed entry on the calling thread. The asynchronous form
- * submitted a separate request per entry and spent measurably more CPU for
- * the same readings, and this traversal runs on a thread of its own where
- * blocking delays no sample.
- */
+/** Entry reads are synchronous on the scan thread. Separate asynchronous requests per entry cost more CPU for the same reading, and blocking this thread delays no sample. Root and session totals need independent hard-link sets. */
 async function scanRoot(
   root: ScanRoot,
   now: number,

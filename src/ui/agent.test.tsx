@@ -901,8 +901,8 @@ test("a switch that is refused tells the reader why", async () => {
     expect(selectedRow(t.frame())).toContain("Go to terminal");
     await t.press("enter");
     await t.update(s);
-    // The server's own words reach the reader. Dropped, the key did nothing
-    // and said nothing, and the rejection went to the runtime instead.
+    // A rejected switch must produce a visible notice containing the server’s
+    // reason.
     expect(t.frame()).toContain("can't find pane %1");
   } finally {
     await t.close();
@@ -929,9 +929,8 @@ test("a capture arriving under the reader does not take the row they are on", as
     for (let i = 0; i < 8; i++) await t.press("j");
     await t.settle();
     expect(selectedRow(t.frame())).toContain("Actions");
-    // Twelve lines land above the row the keys still act on. Told to re-run
-    // only when `selected` changed, this effect did not run at all, and the
-    // reader was left pressing enter on a row that had left the screen.
+    // A capture arriving above the selected row can push it off-screen without
+    // changing the selection. The scroll must follow the new layout.
     await act(async () => {
       release?.(Array.from({ length: 12 }, (_, i) => `capline ${i}`));
       await Promise.resolve();
@@ -947,12 +946,9 @@ test("a capture arriving under the reader does not take the row they are on", as
 
 test("the chase after a capture waits for the renderer's own frame under its real frame cap", async () => {
   let release: ((lines: string[]) => void) | null = null;
-  // A manual clock holds the renderer's own next frame back until this test
-  // advances it, the way a live renderer's frame cap holds its own render
-  // timer back for the whole frame interval. `maxFps: 60` is the renderer's
-  // own default cap, restored here in place of the harness's usual uncapped
-  // one, which is what let this scenario's existing coverage pass while the
-  // production bug, underneath it, went unobserved.
+  // The manual clock holds back the renderer’s frame under its default 60 FPS
+  // cap. Uncapped direct renders would lay out the capture before the deferred
+  // measurement and hide the ordering under test.
   const clock = new ManualClock();
   const t = await paned(
     {
@@ -977,11 +973,8 @@ test("the chase after a capture waits for the renderer's own frame under its rea
       release?.(Array.from({ length: 12 }, (_, i) => `capline ${i}`));
       await Promise.resolve();
     });
-    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
-    // chase used to run on, to fire for real. The manual clock has not moved,
-    // so the renderer's own next frame, which only that clock can trigger,
-    // provably has not happened yet, and the screen is still drawing the
-    // frame from before the capture landed.
+    // A real short wait lets setTimeout(0) fire while the manual frame clock
+    // stays still. The screen must not measure the grown row before that frame.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(selectedRow(t.frame())).toContain("Actions");
     // Only now does the renderer's own frame arrive, under its real cap. One

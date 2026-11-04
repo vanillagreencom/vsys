@@ -56,14 +56,11 @@ NAMED = 953118621696
 # by printing no inode. On some kernels a logged block start can sit in a gap
 # before the block's first extent, so neither answer is free space.
 NO_EXTENT = 1597612883968
-# The second sector (offset 4096) of NO_EXTENT's own floored block: resolving
-# it exercises the "ioctl succeeds but holds no inode" no-extent path beside
-# NO_EXTENT's own "ioctl fails" path, within the one block both now floor to.
+# The second sector, offset 4096 from NO_EXTENT, takes the empty-inode path
+# beside the first sector’s no-extent failure.
 EMPTY = NO_EXTENT + 4096
-# Each of these is the start of its own 64 KiB block, not an address a few
-# bytes from NO_EXTENT: once the scan floors to a block and sweeps only its
-# own 16 sectors, an address that close would floor into NO_EXTENT's block
-# and never reach the fixture below that gives it its own distinct failure.
+# Use separate 64 KiB blocks so the sector scans reach distinct resolver
+# failures rather than overlap the NO_EXTENT fixture.
 UNMOUNTED = NO_EXTENT + 65536 * 6
 SPLIT = NO_EXTENT + 65536 * 7
 SPACED = NO_EXTENT + 65536 * 8
@@ -809,12 +806,9 @@ esac
             )
 
     def test_migration_targets_the_downloaded_confs_own_report_directory_not_the_hardcoded_default(self) -> None:
-        # An old tag's vsys-report.conf (VSYS_VERSION pinned to it, or the
-        # unversioned install run in the window before a new release is cut)
-        # still points ExecStopPost at a pre-VSY-75 report directory, never
-        # at the new hardcoded default. Migration must follow that directory,
-        # not the hardcoded one, so a carried-over report is never written
-        # somewhere nothing else reads.
+        # A pinned release or a release preceding a directory change can name a
+        # different report directory. Migration must follow the installed drop-
+        # in so copied reports reach its reader.
         with scratch() as tmp:
             base = Path(tmp)
             old_tag_dir = base / "old-tag-report-dir"

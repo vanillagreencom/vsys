@@ -33,7 +33,7 @@ Linux with cgroup v2 only. Release installations need `flock` from util-linux on
 
 ## How it works
 
-vsys reads the kernel's process and control-group files with your own permissions. It groups each agent's processes by control group, samples their use every second, and keeps the history for the charts and the timeline. Nothing on the machine changes until you turn write mode on and confirm an action.
+vsys reads the kernel's process and control-group files with your own permissions. It groups each agent's processes by control group, samples their use every second, and keeps the history for the charts and the timeline. The dashboard runs a process or control-group action only after you turn write mode on and confirm it.
 
 ## Optional components
 
@@ -60,7 +60,7 @@ Settings live in `~/.config/vsys/config.toml`. Edit them from the Settings scree
 | Setting | What it changes |
 | --- | --- |
 | `watchedSlices` | The control groups shown in the agent list. |
-| `agentTools` | The program names vsys treats as agents. Settings saves additions to `~/.config/vsys/agent-tools.json`, which the warden also reads. |
+| `agentTools` | The program names vsys treats as agents. Add names through Settings. |
 | `historyHours` | The time range of the charts and the timeline. |
 | `persistence` | Keeps history across restarts. Off by default. |
 | `writeMode` | Allows freeze, thaw and stop. Off by default. |

@@ -418,9 +418,8 @@ test("the header lays out on the row its own predicate promised", async () => {
   } finally {
     await fits.close();
   }
-  // Five columns short of that, the tabs take a row of their own. The earlier
-  // predicate accepted this width, and the row it drew ran the last tab into
-  // the clock: `7 Settin5:50:23 PM`.
+  // At this narrower width, tabs need a second row so the last tab cannot
+  // overlap the clock.
   const tight = await mount(s, c, { width: exact - 5, height: 24 });
   try {
     await tight.press("z");

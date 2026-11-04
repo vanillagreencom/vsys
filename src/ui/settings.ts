@@ -589,14 +589,7 @@ export function settingLabel(key: string): string {
 export function settingHelp(key: string): string {
   return settingInfo[key]?.help ?? "";
 }
-/**
- * A stored millisecond count as the interval it sets. `age()` floors to whole
- * seconds, so a 500 ms refresh read `0s` and 1500 ms read `1s`, telling a
- * reader an interval they had set was zero. `validate()` accepts `refreshMs`
- * from 100, so sub-second and fractional-second intervals are ordinary values
- * and keep their own reading. A minute or more is written in every unit it
- * holds, because `age()` floors to whole minutes and read 90 s as `1m`.
- */
+/** Keep fractional seconds and every duration unit: age() floors seconds and minutes, so it cannot represent valid refresh intervals exactly. */
 function interval(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const total = ms / 1000;

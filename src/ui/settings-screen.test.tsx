@@ -673,12 +673,9 @@ test("the editor opens in view when the layout moves the row it edits", async ()
 test("the second scroll read waits for the renderer's own frame under its real frame cap", async () => {
   const c = defaults();
   const s = emptySnapshot();
-  // A manual clock holds the renderer's own next frame back until this test
-  // advances it, the way a live renderer's frame cap holds its own render
-  // timer back for the whole frame interval. `maxFps: 60` is the renderer's
-  // own default cap, restored here in place of the harness's usual uncapped
-  // one, which is what let VSY-29's test pass while the production bug,
-  // underneath it, went unobserved.
+  // The manual clock holds the renderer’s next frame under its default 60 FPS
+  // cap, so deferred measurement cannot borrow layout from an uncapped direct
+  // render.
   const clock = new ManualClock();
   const t = await mount(s, c, { width: 180, height: 30, maxFps: 60, clock });
   try {
@@ -692,10 +689,8 @@ test("the second scroll read waits for the renderer's own frame under its real f
     await act(async () => {
       t.ui.mockInput.pressEnter();
     });
-    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
-    // deferred pass used to run on, to fire for real. The manual clock has
-    // not moved, so the renderer's own next frame, which only that clock can
-    // trigger, provably has not happened yet.
+    // A real short wait lets setTimeout(0) fire while the manual frame clock
+    // stays still. The measurement must wait for the renderer’s frame.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(t.frame()).not.toContain(`${lastKeyLabel(c)} · Enter saves`);
     // Only now does the renderer's own frame arrive, under its real cap. One
@@ -746,13 +741,11 @@ test("a list the reader has not finished says why it was not saved", async () =>
     // value did not reach the file.
     expect(saved).toEqual([]);
     expect(frame).not.toContain("Agent programs saved");
-    // And they were told something rather than nothing, which is the whole of
-    // the finding: evaluated outside the guard the throw escaped `save`, and
-    // Enter did nothing and said nothing.
+    // Invalid editor text must produce a visible notice and must not reach the
+    // settings file.
     expect(frame).not.toBe(quiet);
-    // What the notice says is the parser's business. It is Bun's sentence, not
-    // ours, and pinning it here failed on a runner with a different Bun while
-    // the behaviour was correct.
+    // The notice uses Bun’s parser diagnostic, so assert that it is visible
+    // without pinning wording that changes between Bun versions.
   } finally {
     await t.close();
   }
@@ -831,10 +824,8 @@ test("a picker's scroll read waits for the renderer's own frame under its real f
     await act(async () => {
       t.ui.mockInput.pressEnter();
     });
-    // A real, short wait: long enough for a bare `setTimeout(0)`, the one the
-    // deferred pass used to run on, to fire for real. The manual clock has
-    // not moved, so the renderer's own next frame, which only that clock can
-    // trigger, provably has not happened yet.
+    // A real short wait lets setTimeout(0) fire while the manual frame clock
+    // stays still. The picker must wait for the renderer’s frame.
     await new Promise((resolve) => setTimeout(resolve, 20));
     clock.advance(200);
     // One render lays the picker out for the first time; the frame event
@@ -871,8 +862,8 @@ test("search does not open behind a picker", async () => {
         .at(-1) ?? "";
     const from = options.indexOf(c.sort);
     expect(chosen()).toContain(present(options[from], "the held sort choice"));
-    // The find key inside a picker. It used to open search, reset the
-    // selection and leave the picker running unseen, swallowing every key.
+    // A modal picker must retain the find key so search cannot replace its
+    // visible row while it still receives keys.
     await t.press("/");
     expect(t.frame()).not.toContain("Find a setting");
     // The picker is still what receives keys, which is what the reader needs:
@@ -1122,8 +1113,8 @@ test("the sources list opens with its last entry readable", async () => {
     expect(t.frame()).not.toContain("/proc/source-3");
     await t.press("enter");
     const frame = t.frame();
-    // The phrase both spellings of this row share: the design pass rewrites
-    // its label, and which row is selected is the claim, not its wording.
+    // Match the row by its shared subject; the assertion concerns selection
+    // rather than alternate label wording.
     expect(selectedRow(frame)).toContain("vsys cannot read");
     // The count and when they failed, and no consequence: a failed
     // notification or a scratch scan that keeps its last data blanks nothing.

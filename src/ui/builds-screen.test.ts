@@ -173,8 +173,7 @@ test("an unstated pool size is not reported as an unreadable one", async () => {
     await t.press("4");
     const frame = t.frame();
     expect(frame).toContain("pool size not stated in the build flags");
-    // The old wording sent a reader to look for a permissions problem that
-    // never existed.
+    // An unknown pool size must not imply a permissions problem.
     expect(frame).not.toContain("not readable");
     expect(frame).not.toContain("from the fifo");
   } finally {

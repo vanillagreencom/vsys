@@ -109,13 +109,7 @@ export type CauseAt =
   | { kind: "lane"; id: string }
   | { kind: "group"; path: string }
   | { kind: "path"; path: string };
-/**
- * One damaged filesystem's own files/unnamed/blocks counts, kept apart from
- * every other aggregated filesystem's. A filesystem damaged only by a
- * remembered finished check has no address data of its own and reads null
- * here; that must never erase another, readable filesystem's own counts the
- * way summing them together once did.
- */
+/** Keep each damaged filesystem’s counts separate. A remembered check has no address data, so its unknown counts must not erase another filesystem’s readable counts. */
 export interface DamageFigures {
   files: number | null;
   unnamed: number | null;
@@ -581,9 +575,8 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       values: { filesystems: damaged.length },
     });
   }
-  // The counter grew, or the kernel logged a failed read, and nothing has read
-  // the filesystem since, so no check has confirmed what that cost. This is
-  // the reading that was missing.
+  // An error after the last check remains unchecked damage, whether the counter
+  // grew or the kernel logged a failed read.
   const grown = filesystems.filter((item) => item.state === "new-errors");
   const [firstGrown, ...moreGrown] = grown;
   if (firstGrown) {
@@ -640,14 +633,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       },
     });
   }
-  /**
-   * The scope holding the most swap, resolved once because two causes name it
-   * — and they mean different things by it. The swap cause is about that
-   * scope, so it is one of its subjects. The memory-reclaim cause is about
-   * reclaim stalling tasks; the scope is only where to look, and naming it a
-   * subject there opened a second alert for something that had not itself
-   * gone wrong.
-   */
+  /** The swap cause is about the top holder; the reclaim cause only points to it. Keep that distinction so a changing top holder cannot create a second alert for something that did not stall. */
   const swapHolder = topSwapHolder(s.groups, c);
   const holderName = consumerName(swapHolder, s);
   const holderAt: CauseAt | undefined = swapHolder

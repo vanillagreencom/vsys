@@ -221,9 +221,8 @@ export class ScratchCollector {
           };
         })
         .finally(() => {
-          // Eligibility runs from completion. Measured from the attempt, a
-          // scan that outlasts the interval is eligible again the instant it
-          // finishes, which is what left the traversal running without pause.
+          // Eligibility starts at completion. A scan longer than the interval
+          // would run continuously if the interval started at the attempt.
           this.finished = this.clock();
           this.job = undefined;
         });

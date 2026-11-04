@@ -161,11 +161,7 @@ export function headerRowWidth(
     [...clock].length
   );
 }
-/**
- * Whether the tabs fit on the header's own row. At a hundred columns the
- * capture read `cachyHome` and `7 Settin5:50:23 PM` because the tabs took the
- * columns the host and the clock were already using.
- */
+/** Tabs share the header row only when they fit beside the host, marker and clock. */
 export function tabsFitOneRow(
   width: number,
   host: string,

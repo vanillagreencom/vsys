@@ -10,9 +10,6 @@ Error-counter persistence requires `flock` from util-linux. A missing command is
 bun install
 bun run start                      # the dashboard against this checkout; needs a TTY
 bun src/main.ts --once             # one JSON snapshot, no terminal; exit 2 on source errors
-bun src/main.ts --once --summary   # the verdict JSON scripts read
-bun src/main.ts --once --markdown  # the snapshot as Markdown
-bun src/main.ts --config PATH      # another settings file
 ```
 
 ## Test
@@ -34,7 +31,7 @@ bun run compile    # the standalone ./vsys binary the release and the vsys-git p
 bun run smoke      # one fixture sample with the bundle and one with a freshly compiled binary
 ```
 
-A new worker thread goes into `entrypoints` in `scripts/build.ts` and `ARTIFACTS` in `scripts/ci.py`; [layers.md](docs/architecture/layers.md) says why.
+Worker packaging follows [layers.md](docs/architecture/layers.md).
 
 ## Benchmarks
 
@@ -62,10 +59,6 @@ bun run bench:writes     # the write budget alone; in the check contract
 `AUR_SSH_PRIVATE_KEY` is a secret of the `aur` environment, not a repository secret: only a run on the `main` branch or on a `v*` tag can read it. To rotate it, set it in that environment: `gh secret set AUR_SSH_PRIVATE_KEY --env aur`.
 
 ### AUR packages
-
-Both AUR packages depend on `python`, `systemd` and `systemd-libs`, because the warden uses Python and `libsystemd.so.0`, and vsys and the warden run the systemd tools.
-
-Both AUR packages disable makepkg strip and debug splitting, because stripping a Bun compiled binary removes its appended program bundle.
 
 The first push to the AUR creates each package, so bootstrap each one with the script CI runs. The script pins the version. For `vsys` it also fills in the published checksums, and refuses to push a recipe that still carries a `SKIP` placeholder.
 

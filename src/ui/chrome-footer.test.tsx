@@ -3,9 +3,8 @@ import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { Footer } from "./chrome";
 
-// The status is the machine's standing on every screen. A hint list longer
-// than the row once kept its width and pushed the status past the edge, cut
-// and run into the last hint with no blank between them.
+// The machine status must stay visible with a separating blank even when hints
+// exceed the row.
 test.each([60, 80, 90, 120])(
   "the footer keeps the standing whole after a gap at %i columns",
   async (width) => {

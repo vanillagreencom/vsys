@@ -53,8 +53,7 @@ function report(overrides: Partial<Scrub> = {}): Scrub {
 }
 
 test("the line answers both questions without opening anything", () => {
-  // The case that started this: a counter flat for 31 hours, a check four days
-  // old. A flat counter is not a healthy disk, and the line says so.
+  // A flat counter does not establish health when the last full check is stale.
   const line = integrityLine(
     state([report({ startedAt: now - 4 * day })], now - 31 * 3600000),
   );

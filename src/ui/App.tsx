@@ -250,9 +250,8 @@ export function App({
   const [opened, setOpened] = useState(0);
   const counted = useRef<number | null>(null);
   useEffect(() => {
-    // Only what arrived since the last sample. Reading the whole retained
-    // window and filtering it meant scanning every point vsys holds, on every
-    // sample, to count the handful that were new.
+    // Count only alerts newer than the last sample; scanning the full retained
+    // window would make every sample pay for old data.
     const since = counted.current;
     // A clock stepped back hands over frames at or before the counted time.
     // Following them would count stored alerts again as the clock recovers.
@@ -427,11 +426,9 @@ export function App({
         snapshot={snapshot}
         config={c}
         items={issues}
-        // The newest few from everything retained, not the Timeline's
-        // current window: this section exists for the reader who was away,
-        // and a five-minute window told them nothing had changed while an
-        // hour sat in history. It asks for the rows it shows, so finding them
-        // stops rather than scanning a day of history on every render.
+        // Recent changes use everything retained, not the Timeline window, so a
+        // returning reader can find older changes. Ask only for displayed rows
+        // to avoid a full-history scan.
         changes={history.recentEvents(snapshot.time, recentChanges)}
         alertsOpened={opened}
         retained={retained}

@@ -381,22 +381,11 @@ export class Collector {
     const sccache = await this.sccache?.collect(r, time);
     this.controller.signal.throwIfAborted();
     mark("sccache");
-    // One read for the whole server, however many lanes ask for an address.
-    // A server that stops answering mid-run leaves the addresses empty rather
-    // than failing the sample: a pane address is a convenience, not a reading.
-    //
-    // The read is attempted whenever tmux is installed, not only when a server
-    // answered at startup. Gating on the startup probe froze a machine that
-    // had no server yet into never having one, which is the ordinary order for
-    // a dashboard whose agents start after it. The read is its own probe:
-    // measured on this machine, a refused `list-panes` costs 1.06 ms at the
-    // median against 1.26 ms for one that answers, so asking is cheaper than
-    // asking twice.
-    //
-    // The pane vsys draws in is in vsys's own environment, not in the
-    // server's answer, so it stands whether or not one came: a sample that
-    // lost the addresses must not lose the one lane the Terminal section may
-    // never capture, which is vsys's own screen.
+    // Attempt the read whenever tmux is installed: an agent server can start
+    // after the dashboard. One list-panes call also probes availability. A
+    // refused call measured a median 1.06 ms against 1.26 ms for an answer.
+    // Keep the own-pane identity from the environment even when addresses are
+    // unread, so capture cannot read this screen.
     let panes = ownPaneSet();
     if (this.tmux && this.tmuxOnPath)
       try {
