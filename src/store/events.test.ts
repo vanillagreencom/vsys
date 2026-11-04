@@ -78,7 +78,9 @@ test("a lane stop names its last process-bearing sample across an empty scope", 
   empty.lanes = [
     laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
   ];
-  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual([]);
+  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual(
+    [],
+  );
   const stops = log
     .advance(emptySnapshot(3000), c)
     .filter((e) => e.kind === "lane-stop");
@@ -114,9 +116,13 @@ test("retained lane identity updates with a process and ends with its scope", ()
   log.advance(latest, c);
   const empty = emptySnapshot(3000);
   empty.lanes = [laneSnapshot({ name: "empty", account: null, mainPid: 0 })];
-  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual([]);
+  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual(
+    [],
+  );
   expect(
-    log.advance({ ...empty, time: 4000 }, c).filter((e) => e.kind === "lane-stop"),
+    log
+      .advance({ ...empty, time: 4000 }, c)
+      .filter((e) => e.kind === "lane-stop"),
   ).toEqual([]);
   const stop = present(
     log.advance(emptySnapshot(5000), c).find((e) => e.kind === "lane-stop"),
