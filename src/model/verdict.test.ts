@@ -212,6 +212,32 @@ test("a process whose name was not confirmed by install location is its own caus
   // The cause carries the raw process, not merely a count: a process a
   // confirmed agent's name also matched is left out.
   expect(cause?.procs).toEqual([unconfirmed]);
+  const rows = [
+    {
+      command: ["bash", "/tmp/run/harness-bin/pi"],
+      unconfirmedPath: "/tmp/run/harness-bin/pi",
+      expected: false,
+    },
+    { cwd: "/repo/kendex/tmp/v/.tmpABCD", expected: false },
+    {
+      command: ["/tmp/run/pi"],
+      unconfirmedPath: "/usr/bin/sleep",
+      expected: false,
+    },
+    {
+      command: ["/usr/local/bin/pi"],
+      unconfirmedPath: "/usr/local/bin/pi",
+      cwd: "/home/x/dev/.worktrees/kendex/ken-4687",
+      expected: true,
+    },
+  ];
+  for (const { expected, ...override } of rows) {
+    const proc = { ...unconfirmed, ...override };
+    s.procs = [proc];
+    const found = causes(s, c).find((item) => item.id === "unconfirmed-tool");
+    expect(found?.procs ?? []).toEqual(expected ? [proc] : []);
+    expect(proc.unconfirmedTool).toBe("pi");
+  }
   // A snapshot with no unconfirmed name at all raises no cause.
   s.procs = [processSnapshot({ pid: 1 })];
   expect(

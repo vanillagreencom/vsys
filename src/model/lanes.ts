@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
+import { scriptArgument } from "../collect/builds";
 import type { CollectionConfig } from "../collect/settings";
 import {
   isPaneId,
@@ -54,6 +55,28 @@ export function escaped(
     sliceCompared(capabilities) &&
     !inSlice(p.group, c.agentSlice)
   );
+}
+/** Temporary unconfirmed names cannot use a durable install-location entry. */
+export function standIn(p: Proc, c: CollectionConfig): boolean {
+  if (p.tool !== null || !p.unconfirmedTool) return false;
+  return [
+    p.cwd,
+    p.command[0],
+    scriptArgument(p.command),
+    p.unconfirmedPath,
+  ].some((path) => {
+    if (path === undefined || path === null || !isAbsolute(path)) return false;
+    const absolute = resolve(path);
+    return (
+      absolute.split("/").includes("tmp") ||
+      c.scratchDirs.some((root) => {
+        const dir = resolve(root);
+        return (
+          absolute === dir || absolute.startsWith(dir === "/" ? dir : `${dir}/`)
+        );
+      })
+    );
+  });
 }
 /** An ancestor cgroup cap also limits a lane. */
 export function dangerousCap(

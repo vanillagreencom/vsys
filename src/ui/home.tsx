@@ -83,8 +83,8 @@ import {
 /** What an open card writes before the step to take, and before the command. */
 const nextLabel = "Next ";
 const copyLabel = "Copy ";
-/** The one line under those naming the keys that reach them. */
-const keysRows = 1;
+/** The key line and the blank row above it. */
+const keysRows = 2;
 /** The Home list mixes concerns, changes and agents; Enter opens the selected one. */
 export type HomeItem =
   | { kind: "concern"; item: Attention }
@@ -289,7 +289,7 @@ export function Home({
       </Line>
     ));
   // The lines under the description: what to do next, the command it offers,
-  // and the one line naming the keys that reach them.
+  // and the key line with its blank row above.
   const actions = (item: Attention) =>
     lines(nextLabel, item.next).length +
     (item.command === undefined ? 0 : lines(copyLabel, item.command).length) +
@@ -678,6 +678,7 @@ export function Home({
                             flexShrink={0}
                             truncate
                             attributes={ui.dim}
+                            marginTop={1}
                           >
                             {fit(
                               `${keyLabel(c.keys.open)} opens ${row.item.target?.kind === "lane" ? "the agent" : row.item.view}${row.item.command === undefined ? "" : ` · ${keyLabel(c.keys.copy)} copies the command`}`,

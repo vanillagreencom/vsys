@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
-import { escaped, lanePressure } from "../model/lanes";
+import { escaped, lanePressure, standIn } from "../model/lanes";
 import { laneText } from "../model/naming";
-import type { Snapshot } from "../model/types";
+import type { Lane, Snapshot } from "../model/types";
 import {
   type Cause,
   type CauseId,
@@ -220,8 +220,15 @@ export class EventLog {
     // What the processes last read showed, and nothing through a sample that
     // read none.
     const before = readNone ? null : processPrevious;
+    const standInLane = (lane: Lane, sample: Snapshot): boolean =>
+      lane.tool === "" &&
+      sample.procs.some((p) => p.pid === lane.mainPid && standIn(p, c));
     for (const lane of s.lanes)
-      if (before && !before.lanes.some((old) => old.id === lane.id))
+      if (
+        before &&
+        !before.lanes.some((old) => old.id === lane.id) &&
+        !standInLane(lane, s)
+      )
         add("lane-start", laneText(lane), {
           subjectId: lane.id,
           // An unreadable account stays empty; the UI says it is unavailable.
@@ -233,7 +240,11 @@ export class EventLog {
           values: { pid: lane.mainPid },
         });
     for (const lane of before?.lanes ?? [])
-      if (!s.lanes.some((live) => live.id === lane.id))
+      if (
+        before &&
+        !s.lanes.some((live) => live.id === lane.id) &&
+        !standInLane(lane, before)
+      )
         add("lane-stop", laneText(lane), {
           subjectId: lane.id,
           names: { account: lane.account ?? "", slice: sliceOf(lane.cgroup) },

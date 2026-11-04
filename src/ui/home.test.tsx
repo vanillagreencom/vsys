@@ -1559,13 +1559,16 @@ test("an open card writes what its room holds, and every action line shows", asy
       expect(card).toBeGreaterThan(0);
       expect(next).toBeGreaterThan(card);
       expect(copied).toBeGreaterThan(next);
-      expect(hint).toBe(copied + 1);
+      expect(hint).toBe(copied + 2);
       expect(footer).toBeGreaterThan(hint);
       // A wide screen draws a second column beside the card, so every row is
       // read only as far as the panel the card sits in.
       const panel = screenPad + panelWidth(screenWidth(size.width));
       const words = (row: string) =>
         row.slice(0, panel).replace("│", "").trim();
+      expect(words(present(rows[copied + 1], "the row above the keys"))).toBe(
+        "",
+      );
       const drawn = rows.slice(card + 1, next).map(words);
       // The last row of the description is the blank above the action lines:
       // the rule of the block runs down it and no word does.
@@ -1590,11 +1593,11 @@ test("an open card writes what its room holds, and every action line shows", asy
   expect(tallRows.filter((row) => row === "")).toHaveLength(3);
   // The short screen spends twelve of its rows on the verdict, the tiles and
   // the headings above the list, so the card gives ground the way it is
-  // written to: the trails go, then a conclusion, counted where it stood.
+  // written to: the trails and conclusions become their summary.
   const short = shortRows.join(" ").replace(/\s+/g, " ");
   expect(short).not.toContain("Started from PID");
-  expect(short.split("Launched bare")).toHaveLength(2);
-  expect(short).toContain("And 1 more group of processes not written here.");
+  expect(short).not.toContain("Launched bare");
+  expect(short).toContain("2 groups of processes: 2 bare.");
   expect(short).toContain("10 processes in 5 lanes: kendex agent-0 PID 1000");
   expect(shortRows.length).toBeLessThan(tallRows.length);
 });
@@ -1675,7 +1678,7 @@ test("a screen too short for every fact counts what the card gave up", async () 
   // Short enough that the card cannot write both conclusions: it keeps the
   // first whole and counts the group it gave up, and the reader still has the
   // step to take and the command under it.
-  const short = await open({ width: 160, height: 24 });
+  const short = await open({ width: 160, height: 25 });
   expect(short.detail.split("Launched bare")).toHaveLength(2);
   expect(short.detail).toContain(
     "And 1 more group of processes not written here.",
@@ -1712,6 +1715,7 @@ test("a card draws the rows it was measured for, at every width", async () => {
     const t = await mount(s, c, size);
     try {
       await t.ui.renderOnce();
+      await t.settle();
       const rows = t.frame().split("\n");
       const card = rows.findIndex((row) => row.includes("▾"));
       const next = rows.findIndex((row) => row.includes("Next "));

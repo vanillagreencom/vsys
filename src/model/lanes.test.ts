@@ -14,6 +14,7 @@ import {
   parentChain,
   processTree,
   sliceCompared,
+  standIn,
 } from "./lanes";
 import type { Capability, Group, Lane, Proc, ProcessRead } from "./types";
 import { buildLoad } from "./verdict";
@@ -23,6 +24,59 @@ const tmuxRead = (byId: Map<string, PaneAddress>, socket = "", own = "") => ({
   socket,
   own,
   byId,
+});
+
+test("only an unconfirmed name with an absolute temporary path is a stand-in", () => {
+  const c = { ...defaults(), scratchDirs: ["/home/x/dev/.scratch/agents/"] };
+  const candidate = processSnapshot({
+    tool: null,
+    unconfirmedTool: "claude",
+    unconfirmedPath: "/usr/local/bin/claude",
+    cwd: "/home/x/dev/.worktrees/kendex/ken-4687",
+    command: ["claude"],
+  });
+  const rows: [string, Partial<Proc>, boolean][] = [
+    [
+      "harness-bin script",
+      { command: ["bash", "/tmp/run/harness-bin/claude"] },
+      true,
+    ],
+    ["Rust fixture cwd", { cwd: "/home/x/dev/kendex/tmp/v/.tmpABCD" }, true],
+    [
+      "symlink argv",
+      { command: ["/tmp/run/claude"], unconfirmedPath: "/usr/bin/sleep" },
+      true,
+    ],
+    ["tested path", { unconfirmedPath: "/var/tmp/run/claude" }, true],
+    ["cache tmp component", { cwd: "/home/x/.cache/agents/tmp/run" }, true],
+    ["scratch root", { cwd: "/home/x/dev/.scratch/agents" }, true],
+    [
+      "scratch child",
+      { command: ["bun", "/home/x/dev/.scratch/agents/run/claude"] },
+      true,
+    ],
+    [
+      "confirmed under tmp",
+      { tool: "claude", unconfirmedTool: null, cwd: "/tmp/run" },
+      false,
+    ],
+    ["stable install", { command: ["/home/x/.local/bin/claude"] }, false],
+    [
+      "bare argv",
+      { command: ["claude"], cwd: null, unconfirmedPath: null },
+      false,
+    ],
+    [
+      "relative tmp",
+      { command: ["tmp/claude"], cwd: null, unconfirmedPath: null },
+      false,
+    ],
+    ["scratch sibling", { cwd: "/home/x/dev/.scratch/agents-old/run" }, false],
+    ["tmp name prefix", { cwd: "/home/x/tmp-worktree" }, false],
+    ["prompt argument", { command: ["/usr/bin/other", "/tmp/claude"] }, false],
+  ];
+  for (const [name, override, expected] of rows)
+    expect(standIn({ ...candidate, ...override }, c), name).toBe(expected);
 });
 
 test("process trees keep children under their own parent despite PID order", () => {

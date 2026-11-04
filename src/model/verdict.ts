@@ -2,7 +2,13 @@ import { compileOrLink } from "../collect/builds";
 import type { CollectionConfig } from "../collect/settings";
 import type { Config } from "../config/config";
 import { damageCounts, integrities } from "./integrity";
-import { coveringGroup, inSlice, lanePressure, sliceCompared } from "./lanes";
+import {
+  coveringGroup,
+  inSlice,
+  lanePressure,
+  sliceCompared,
+  standIn,
+} from "./lanes";
 import { laneText, unitLabel } from "./naming";
 import type {
   Group,
@@ -764,10 +770,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         quota: c.scratchQuota,
       },
     });
-  // A name a process carries that its tool's install locations did not
-  // confirm never became a lane, so this is the one place it is still
-  // visible: nowhere on Agents names a process the collector left out.
-  const unconfirmed = s.procs.filter((proc) => proc.unconfirmedTool);
+  // A rejected install location stays actionable unless it changes with
+  // each temporary stand-in.
+  const unconfirmed = s.procs.filter(
+    (proc) => proc.unconfirmedTool && !standIn(proc, c),
+  );
   const [firstUnconfirmed] = unconfirmed;
   if (firstUnconfirmed)
     add("unconfirmed-tool", "warn", {

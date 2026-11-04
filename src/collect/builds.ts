@@ -3,6 +3,12 @@ import type { AgentToolsDocument, DesktopPaths } from "../config/agent-tools";
 
 /** Runtimes an agent CLI's script runs under, where the script names it. */
 const scriptRunners = ["bun", "node", "python", "python3", "bash", "sh"];
+/** The script as given to a runtime, before resolving symbolic links. */
+export function scriptArgument(command: string[]): string | undefined {
+  return scriptRunners.includes(basename(command[0] ?? ""))
+    ? command[1]
+    : undefined;
+}
 /**
  * Runtimes whose program can replace the process title: Node and Bun rewrite
  * the whole argument area and the kernel's name for the process.
@@ -104,7 +110,7 @@ export function toolName(
 ): ToolMatch {
   const runner = basename(command[0] ?? "");
   const named = tools.find((tool) => tool === comm || tool === runner);
-  const argument = scriptRunners.includes(runner) ? command[1] : undefined;
+  const argument = scriptArgument(command);
   const scriptName =
     argument === undefined
       ? null
