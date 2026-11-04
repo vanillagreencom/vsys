@@ -15,6 +15,7 @@ Replay is evidence. Changing a stored value based only on its appearance invents
 Review holds boundaries without a named check.
 
 - Give a stored field its unknown value when an older record cannot establish it, never zero. Keep normalization idempotent and share reading rules between replay and chart projections. `src/store/history.test.ts` checks older records.
+- Keep a service's average so far and its span null when a stored snapshot predates them. Never reconstruct them from its hour average; `normalizeSnapshot()` in `src/store/migrate.ts` owns this load rule.
 - Keep exported snapshots independent of the replay cache. `src/store/archive.test.ts` checks mutation isolation.
 - Bound retention by time. Grow the points ring rather than drop a point still in the retained window.
 - Keep each sample's history writes within `WRITE_BUDGET_MS` in `scripts/bench-history.ts`, half the shortest accepted refresh interval. `bun run bench:writes`, in `scripts/ci.py`, holds the median without competing disk load; loaded cost depends on the disk too.

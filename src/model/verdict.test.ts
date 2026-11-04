@@ -16,6 +16,7 @@ import {
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  serviceSnapshot,
   volumeSnapshot,
 } from "../test/fixture";
 import { present } from "../test/present";
@@ -64,6 +65,27 @@ function healthy(): Snapshot {
 
 test("a healthy machine has no causes at all", () => {
   expect(causes(healthy(), defaults())).toEqual([]);
+});
+
+test("service CPU judges only the hour even when the average so far is 90%", () => {
+  const c = defaults();
+  for (const [cpuHourPercent, fired] of [
+    [null, false],
+    [0, false],
+    [50, true],
+  ] as const) {
+    const s = healthy();
+    s.services = [
+      serviceSnapshot({
+        cpuHourPercent,
+        cpuSoFarPercent: 90,
+        cpuSoFarMs: 10 * 60_000,
+      }),
+    ];
+    const cause = causes(s, c).find((cause) => cause.id === "service-cpu");
+    expect(cause !== undefined).toBe(fired);
+    if (fired) expect(cause?.values.hour).toBe(50);
+  }
 });
 
 test("severity ranks the ladder and housekeeping never leads it", () => {

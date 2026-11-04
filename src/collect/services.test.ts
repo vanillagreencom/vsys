@@ -5,6 +5,7 @@ import { defaults } from "../config/config";
 import { causes, unjudged } from "../model/verdict";
 import { EventLog, type TimelineEvent } from "../store/events";
 import { emptySnapshot, fixture, serviceSnapshot } from "../test/fixture";
+import { present } from "../test/present";
 import { attention } from "../ui/attention";
 import { Collector, createCollector } from "./collector";
 import { Reader } from "./io";
@@ -70,6 +71,48 @@ function host(o: { paths?: string[]; serviceCpuPercent?: number } = {}) {
     events.filter((e) => e.cause === "service-cpu" && e.kind === "alert-close");
   return { f, c, top, run, card, opened, closed };
 }
+
+test("service averages use the oldest retained checkpoint at 0, 1, 30 and 61 minutes", () => {
+  const h = host();
+  for (const row of [
+    { minutes: 0, percent: 50, span: null, average: null, hour: null },
+    { minutes: 1, percent: 50, span: minute, average: 50, hour: null },
+    {
+      minutes: 29,
+      percent: 10,
+      span: 30 * minute,
+      average: 340 / 30,
+      hour: null,
+    },
+    {
+      minutes: 31,
+      percent: 90,
+      span: 60 * minute,
+      average: 3080 / 60,
+      hour: 3080 / 60,
+    },
+  ]) {
+    const s = h.run(row.percent, row.minutes);
+    const service = present(s.services?.[0], "the checkpointed service");
+    expect(service.cpuSoFarMs).toBe(row.span);
+    if (row.average === null) expect(service.cpuSoFarPercent).toBeNull();
+    else expect(service.cpuSoFarPercent).toBeCloseTo(row.average, 5);
+    if (row.hour === null) expect(service.cpuHourPercent).toBeNull();
+    else expect(service.cpuHourPercent).toBeCloseTo(row.hour, 5);
+  }
+});
+
+test("90% for ten minutes is displayed but raises no service cause or alert", () => {
+  const h = host();
+  const s = h.run(90, 10);
+  expect(present(s.services?.[0], "the warming service")).toMatchObject({
+    cpuHourPercent: null,
+    cpuSoFarPercent: 90,
+    cpuSoFarMs: 10 * minute,
+  });
+  expect(h.card(s)).toBeUndefined();
+  expect(h.opened()).toEqual([]);
+});
 
 test("a unit at half a core for an hour raises its card and one alert; at 5% none", () => {
   for (const [percent, raised] of [
@@ -179,6 +222,10 @@ test("a restarted unit or a counter that went back starts a new hour", () => {
     const s = h.run(null, 1);
     expect(s.services?.[0]?.read).toBe(true);
     expect(s.services?.[0]?.cpuHourPercent).toBeNull();
+    expect(present(s.services?.[0], "the reset service")).toMatchObject({
+      cpuSoFarPercent: null,
+      cpuSoFarMs: null,
+    });
     expect(h.card(s)).toBeUndefined();
     // A unit with no hour is absent, not unread, so its alert closes.
     h.run(null, 1);
@@ -243,6 +290,11 @@ test("an unread unit or slice keeps its open alert open and is never a zero", ()
       expect(h.closed()).toEqual([]);
       expect(s.services?.[0]?.read ?? false).toBe(false);
       expect(s.services?.[0]?.cpuHourPercent ?? null).toBeNull();
+      if (s.services !== null)
+        expect(present(s.services[0], "the unread service")).toMatchObject({
+          cpuSoFarPercent: null,
+          cpuSoFarMs: null,
+        });
       const held = unjudged(s, h.c)["service-cpu"];
       expect(held === "all" ? held : [...(held ?? [])]).toEqual(expected);
       expect(causes(s, h.c).some((x) => x.id === "service-cpu")).toBe(false);

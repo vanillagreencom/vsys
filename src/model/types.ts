@@ -523,6 +523,10 @@ export interface Service {
    * has a checkpoint that old in this cgroup, and while it is unread.
    */
   cpuHourPercent: number | null;
+  /** Percent of one core since the oldest retained checkpoint; display only. */
+  cpuSoFarPercent: number | null;
+  /** Span of that average, null with fewer than two checkpoints or an unread unit. */
+  cpuSoFarMs: number | null;
 }
 /** A complete sample carries failures rather than converting them to zero. */
 export type ProcessRead = "complete" | "incomplete" | "unknown";

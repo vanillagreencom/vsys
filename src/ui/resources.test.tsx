@@ -603,7 +603,7 @@ test("a group with an unread threshold input is graded a warning, not clear", as
   }
 });
 
-test("Resources lists system services busiest first, an unread or unmeasured hour never as a number", async () => {
+test("Resources displays and orders measured service windows without grading warm-up CPU", async () => {
   const c = defaults();
   const s = emptySnapshot();
   s.groups = [
@@ -631,7 +631,19 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
       { kind: "measuring", level: "ok" },
     ],
     [
-      unit("hot", { cpuHourPercent: hot }),
+      unit("warming", { cpuSoFarPercent: 30, cpuSoFarMs: 12 * 60_000 }),
+      { kind: "warming", level: "ok", average: 30, spanMs: 12 * 60_000 },
+    ],
+    [
+      unit("zero", { cpuSoFarPercent: 0, cpuSoFarMs: 60_000 }),
+      { kind: "warming", level: "ok", average: 0, spanMs: 60_000 },
+    ],
+    [
+      unit("hot", {
+        cpuHourPercent: hot,
+        cpuSoFarPercent: 99,
+        cpuSoFarMs: 60_000,
+      }),
       {
         kind: "busy",
         level: "warn",
@@ -653,7 +665,9 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
   expect(resourceRows(s, false).map((row) => [row.kind, row.path])).toEqual([
     ["group", "a.scope"],
     ["service", "system.slice/hot.service"],
+    ["service", "system.slice/warming.service"],
     ["service", "system.slice/cool.service"],
+    ["service", "system.slice/zero.service"],
     ["service", "system.slice/unread.service"],
     ["service", "system.slice/young.service"],
   ]);
@@ -667,7 +681,17 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
         `the ${name} row`,
       );
     expect(row("hot")).toContain("50.0%");
+    expect(row("hot")).toContain("· 1h");
     expect(row("cool")).toContain("5.0%");
+    // These are the window labels and bar the Resources reader consumes.
+    expect(row("warming")).toContain("30.0% · 12m");
+    expect(row("warming")).toMatch(/██/);
+    expect(row("zero")).toContain("0.0% · 1m");
+    expect(row("zero")).toContain("────────");
+    expect(
+      lines.find((line) => line.includes("Service") && line.includes("CPU")),
+    ).toBeDefined();
+    expect(t.frame()).not.toContain("Hour average");
     for (const name of ["unread", "young"])
       expect(row(name)).not.toMatch(/\d%/);
     // A unit vsys has watched for under an hour may have run for days, so
@@ -686,9 +710,31 @@ test("Resources lists system services busiest first, an unread or unmeasured hou
     expect(colour("hot")).toBe(warn);
     expect(colour("cool")).not.toBe(warn);
     expect(colour("cool")).not.toBe("missing");
+    expect(colour("warming")).not.toBe(warn);
     // The keyboard leaves the last group for the busiest service.
     await t.press("down");
     expect(selectedRow(t.frame())).toMatch(/^hot\b/);
+    await t.press("down");
+    expect(selectedRow(t.frame())).toMatch(/^warming\b/);
+    const detailLines = t.frame().split("\n");
+    const panelColumn = present(
+      detailLines.find((line) => line.includes("Status")),
+      "the selected service status",
+    ).indexOf("Status");
+    const detail = detailLines
+      .map((line) => line.slice(panelColumn))
+      .join(" ")
+      .replace(/\s+/g, " ");
+    expect(detail).toContain(
+      "averaged 30.0% of a core over the last 12 minutes;",
+    );
+    expect(detail).toContain("the hour average needs 48 more minutes");
+    await t.update({
+      ...s,
+      services: s.services.filter((service) => service.cpuHourPercent !== null),
+    });
+    expect(t.frame()).toContain("Hour average");
+    expect(t.frame()).not.toContain("· 1h");
   } finally {
     await t.close();
   }

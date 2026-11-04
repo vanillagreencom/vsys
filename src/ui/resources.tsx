@@ -9,6 +9,7 @@ import { meterTile, type Target } from "./attention";
 import { screenPad, sideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
 import {
+  age,
   amount,
   bytes,
   count,
@@ -61,10 +62,18 @@ export type ResourceRow =
 /** The identity a row is selected and targeted by. */
 const rowKey = (row: { kind: string; path: string }): string =>
   `${row.kind}:${row.path}`;
+/** The displayed CPU reading, never a substitute for the hour-only cause. */
+function serviceCpu(service: Service): number | null {
+  if (!service.read) return null;
+  return (
+    service.cpuHourPercent ??
+    (service.cpuSoFarMs !== null ? service.cpuSoFarPercent : null)
+  );
+}
 /** Every selectable row in the order drawn: the groups, then the services busiest first. */
 export function resourceRows(s: Snapshot, all: boolean): ResourceRow[] {
   const services = [...(s.services ?? [])].sort(
-    (a, b) => (b.cpuHourPercent ?? -1) - (a.cpuHourPercent ?? -1),
+    (a, b) => (serviceCpu(b) ?? -1) - (serviceCpu(a) ?? -1),
   );
   return [
     ...groupRows(s, all).map(
@@ -75,11 +84,12 @@ export function resourceRows(s: Snapshot, all: boolean): ResourceRow[] {
     ),
   ];
 }
-/** What a system service's row says about its last hour. */
+/** What a system service's row says about its measured CPU window. */
 export type ServiceState =
   | { kind: "unread"; level: "warn" }
-  /** Read, with no hour behind it yet in this cgroup. */
+  /** Read, with fewer than two checkpoints in this cgroup. */
   | { kind: "measuring"; level: "ok" }
+  | { kind: "warming"; level: "ok"; average: number; spanMs: number }
   | { kind: "busy"; level: "warn"; hour: number; threshold: number }
   | { kind: "clear"; level: "ok"; hour: number };
 /**
@@ -93,21 +103,33 @@ export function serviceState(
 ): ServiceState {
   if (!service.read) return { kind: "unread", level: "warn" };
   const hour = service.cpuHourPercent;
-  if (hour === null) return { kind: "measuring", level: "ok" };
+  if (hour === null) {
+    const average = serviceCpu(service);
+    return average !== null && service.cpuSoFarMs !== null
+      ? {
+          kind: "warming",
+          level: "ok",
+          average,
+          spanMs: service.cpuSoFarMs,
+        }
+      : { kind: "measuring", level: "ok" };
+  }
   return busy.has(service.path)
     ? { kind: "busy", level: "warn", hour, threshold: c.serviceCpuPercent }
     : { kind: "clear", level: "ok", hour };
 }
-/** The hour column's text: a number only where the hour was measured. */
-function hourText(state: ServiceState): string {
+/** Mixed windows name their span so a warm-up reading cannot look like an hour. */
+function serviceCpuText(state: ServiceState, allHours: boolean): string {
   switch (state.kind) {
     case "unread":
       return "unread";
     case "measuring":
       return "measuring";
+    case "warming":
+      return `${percent(state.average)} · ${age(state.spanMs / 1000)}`;
     case "busy":
     case "clear":
-      return percent(state.hour);
+      return `${percent(state.hour)}${allHours ? "" : " · 1h"}`;
     default:
       return state satisfies never;
   }
@@ -117,7 +139,16 @@ function serviceStatusText(state: ServiceState): string {
     case "unread":
       return `CPU use ${gap}: cpu.stat could not be read`;
     case "measuring":
-      return "vsys has less than an hour of readings for this unit";
+      return "vsys needs two checkpoints to measure CPU use for this unit";
+    case "warming": {
+      const minutes = Math.floor(state.spanMs / 60_000);
+      const remaining = Math.ceil((3_600_000 - state.spanMs) / 60_000);
+      const hour =
+        remaining > 0
+          ? `the hour average needs ${remaining} more ${remaining === 1 ? "minute" : "minutes"}`
+          : "the hour average needs a checkpoint 60 to 75 minutes old";
+      return `averaged ${percent(state.average)} of a core over the last ${count(minutes, "minute")}; ${hour}`;
+    }
     case "busy":
       return `averaged ${percent(state.hour)} of a core over the last hour, at or above ${percent(state.threshold)}`;
     case "clear":
@@ -296,7 +327,7 @@ function causeText(cause: GroupCause | null, c: Config): string {
 
 /**
  * The machine's meters, then the resource groups as a tree, then the system
- * services with their CPU average over the last hour.
+ * services with their hour average, or their average so far while it fills.
  */
 export function Resources({
   snapshot: s,
@@ -412,16 +443,17 @@ export function Resources({
     ),
   };
   const groupColumns: Column[] = [nameColumn, ...fixed];
-  const hourColumn: Column = {
-    label: "Hour average",
-    width: 13,
+  const allHours = services.every((row) => row.service.cpuHourPercent !== null);
+  const serviceCpuColumn: Column = {
+    label: allHours ? "Hour average" : "CPU",
+    width: 16,
     align: "right",
   };
   const serviceColumn: Column = { ...nameColumn, label: "Service" };
-  const serviceColumns: Column[] = [serviceColumn, cpuBar, hourColumn];
-  const topHour = Math.max(
+  const serviceColumns: Column[] = [serviceColumn, cpuBar, serviceCpuColumn];
+  const topServiceCpu = Math.max(
     100,
-    ...services.map((row) => row.service.cpuHourPercent ?? 0),
+    ...services.map((row) => serviceCpu(row.service) ?? 0),
   );
   const inner = width - 4;
   // The meters that are not builds, and the Swap tile beside them.
@@ -635,6 +667,7 @@ export function Resources({
               }
               render={({ service }, i, isSelected) => {
                 const state = serviceState(service, busy, c);
+                const cpu = serviceCpu(service);
                 return (
                   <Row
                     key={rowKey({ kind: "service", path: service.path })}
@@ -645,15 +678,18 @@ export function Resources({
                     {safe(cell(serviceColumn, unitLabel(service.name)))}
                     {columnGap}
                     <Bar
-                      value={service.cpuHourPercent}
-                      max={topHour}
+                      value={cpu}
+                      max={topServiceCpu}
                       width={cpuBar.width}
                       color={metric.cpu}
                     />
                     {columnGap}
                     <Reading
-                      value={service.cpuHourPercent}
-                      text={cell(hourColumn, hourText(state))}
+                      value={cpu}
+                      text={cell(
+                        serviceCpuColumn,
+                        serviceCpuText(state, allHours),
+                      )}
                     />
                   </Row>
                 );
