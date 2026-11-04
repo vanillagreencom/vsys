@@ -726,8 +726,8 @@ export function Agents({
     },
   ];
   // The table's own columns, read by its heading and by every row in it. The
-  // process id is not a configurable column: it is fixed after the name, or
-  // first where the name is not shown, and has no sort to click.
+  // process id and State stay together after the name, or first where the
+  // name is not shown, so optional columns cannot hide a lane's status.
   const accountProcs = new Map(
     (table && c.columns.includes("account") ? s.procs : []).map((p) => [
       p.pid,
@@ -735,8 +735,9 @@ export function Agents({
     ]),
   );
   const tableAccount = (lane: Lane) => accountText(lane, accountProcs);
-  const tableCells: { name: string | null; column: Column }[] = c.columns.map(
-    (name) => {
+  const tableCells: { name: string | null; column: Column }[] = c.columns
+    .filter((name) => name !== "state")
+    .map((name) => {
       const column = tableColumn(name);
       if (name === "account")
         column.width = Math.max(
@@ -744,12 +745,13 @@ export function Agents({
           ...lanes.map((lane) => textWidth(tableAccount(lane))),
         );
       return { name, column };
-    },
+    });
+  tableCells.splice(
+    tableCells.findIndex(({ name }) => name === "name") + 1,
+    0,
+    { name: null, column: pidColumn },
+    { name: "state", column: tableColumn("state") },
   );
-  tableCells.splice(c.columns.indexOf("name") + 1, 0, {
-    name: null,
-    column: pidColumn,
-  });
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
     if (!found) throw new Error(`No lane column named ${label}`);

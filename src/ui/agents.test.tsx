@@ -397,6 +397,66 @@ test("the table's cells land under their headings, not beside them", async () =>
   }
 });
 
+test("the table keeps State after PID in the initial viewport regardless of configured columns", async () => {
+  const base = defaults();
+  const rows: [string, string[]][] = [
+    ["default columns", base.columns],
+    ["State omitted", base.columns.filter((name) => name !== "state")],
+    ["State before Agent", ["state", "name", "cpu"]],
+    ["Agent omitted", ["cpu", "state"]],
+  ];
+  const s = emptySnapshot();
+  s.groups = [groupSnapshot()];
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", mainPid: 4071, state: "running" }),
+    laneSnapshot({ id: "b", name: "lane-b", mainPid: 4072, unconfined: true }),
+    laneSnapshot({ id: "c", name: "lane-c", mainPid: 4073, state: "blocked" }),
+  ];
+  for (const [label, configured] of rows) {
+    const c = { ...base, columns: configured, sort: "name", descending: false };
+    const t = await mount(s, c, { width: 80, height: 24 });
+    try {
+      await t.press("2");
+      await t.press(c.keys.details);
+      await t.settle();
+      const lines = t.frame().split("\n");
+      const heading = present(
+        lines.find((line) => line.includes("PID") && line.includes("State")),
+        `${label} table heading`,
+      );
+      expect(heading.match(/State/g)).toEqual(["State"]);
+      expect(heading).toMatch(/PID\s+State/);
+      const stateAt = heading.indexOf("State");
+      for (const [pid, status, color] of [
+        [4071, "running", undefined],
+        [4072, "Error", ui.danger],
+        [4073, "Warning", ui.warn],
+      ] as const) {
+        const lineAt = lines.findIndex((line) => line.includes(String(pid)));
+        const row = present(lines[lineAt], `${label} lane ${pid}`);
+        expect({ label, pid, stateAt: row.indexOf(status) }).toEqual({
+          label,
+          pid,
+          stateAt,
+        });
+        if (color) {
+          const drawn = present(
+            t.ui.captureSpans().lines[lineAt],
+            `${label} lane ${pid} spans`,
+          );
+          expect(
+            drawn.spans.some(
+              (span) => span.text.trim() === status && span.fg.equals(color),
+            ),
+          ).toBe(true);
+        }
+      }
+    } finally {
+      await t.close();
+    }
+  }
+});
+
 /** A history that records which lane series were asked for, and in how many reads. */
 function countingHistory(c: Config, s: Snapshot) {
   const h = new History(c);
