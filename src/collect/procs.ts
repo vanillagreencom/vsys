@@ -2,6 +2,7 @@ import {
   lstatSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   type Stats,
   statSync,
@@ -30,6 +31,26 @@ import type { CollectionConfig } from "./settings";
  * collector already takes.
  */
 export const scratchEnv = ["TMPDIR", "CLAUDE_CODE_TMPDIR"] as const;
+
+/** The kernel can withhold these details even for a process of the same uid. */
+function processDetail(
+  r: Reader,
+  root: string,
+  name: "cwd" | "exe" | "environ",
+): string | null {
+  const path = join(root, name);
+  try {
+    return name === "environ" ? readFileSync(path, "utf8") : readlinkSync(path);
+  } catch (e) {
+    if (
+      !["ENOENT", "ESRCH", "EACCES", "EPERM"].includes(
+        (e as NodeJS.ErrnoException).code ?? "",
+      )
+    )
+      r.error(path, e);
+    return null;
+  }
+}
 /**
  * Whether a source error left a process out of the reading. `read` records a
  * process's own directory when it could not read that process, and the process
@@ -290,10 +311,10 @@ export class ProcessCollector implements ProcessSource {
           throw new Error("cgroup v2 membership missing");
         const helper = excludedArgv(command, c.excludeArgv);
         // Kernel threads and zombies have no userspace executable or cwd.
-        const cwd = command.length ? r.link(`${root}/cwd`) : null;
+        const cwd = command.length ? processDetail(r, root, "cwd") : null;
         const executable = () => {
           if (!executables.has(stat.pid))
-            executables.set(stat.pid, r.link(`${root}/exe`));
+            executables.set(stat.pid, processDetail(r, root, "exe"));
           return executables.get(stat.pid) ?? null;
         };
         const match =
@@ -397,9 +418,9 @@ export class ProcessCollector implements ProcessSource {
         p.env = cached.values;
         p.envAvailable = true;
       } else {
-        const path = join(c.procRoot, String(pid), "environ");
-        try {
-          for (const entry of readFileSync(path, "utf8").split("\0")) {
+        const raw = processDetail(r, join(c.procRoot, String(pid)), "environ");
+        if (raw !== null) {
+          for (const entry of raw.split("\0")) {
             const split = entry.indexOf("=");
             const name = entry.slice(0, split);
             if (split >= 0 && allowed.has(name))
@@ -411,13 +432,6 @@ export class ProcessCollector implements ProcessSource {
             values: p.env,
           });
           p.envAvailable = true;
-        } catch (e) {
-          if (
-            !["ENOENT", "ESRCH"].includes(
-              (e as NodeJS.ErrnoException).code ?? "",
-            )
-          )
-            r.error(path, e);
         }
       }
       if (p.cwd) {
@@ -442,7 +456,7 @@ export class ProcessCollector implements ProcessSource {
       if (p?.command.length)
         p.executable = executables.has(pid)
           ? (executables.get(pid) ?? null)
-          : r.link(join(c.procRoot, String(pid), "exe"));
+          : processDetail(r, join(c.procRoot, String(pid)), "exe");
     }
     for (const key of this.env.keys())
       if (!identities.has(key)) this.env.delete(key);

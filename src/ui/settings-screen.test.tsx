@@ -61,6 +61,48 @@ test("unreadable sources are counted once each, most failed reads first", () => 
   expect(sourceCounts(emptySnapshot())).toEqual([]);
 });
 
+// This heading is the delivered status, not an internal diagnostic message.
+test.each([
+  { sources: [], missing: false, heading: "all available" },
+  {
+    sources: ["/scratch"],
+    missing: false,
+    heading: "all available · 1 source unreadable",
+  },
+  {
+    sources: ["/scratch", "/scratch", "/cgroup"],
+    missing: false,
+    heading: "all available · 2 sources unreadable",
+  },
+  {
+    sources: ["/scratch"],
+    missing: true,
+    heading: "1 not available · 1 source unreadable",
+  },
+])(
+  "Data sources heading counts distinct unreadable sources: %j",
+  async ({ sources, missing, heading }) => {
+    const s = emptySnapshot();
+    if (missing)
+      present(
+        s.capabilities.find((cap) => cap.id === "psi"),
+        "PSI capability",
+      ).available = false;
+    s.errors = sources.map((source) => ({ source, message: "EACCES" }));
+    const t = await mount(s, defaults());
+    try {
+      await t.press("7");
+      const row = t
+        .frame()
+        .split("\n")
+        .find((line) => line.includes("Data sources"));
+      expect(row?.replace(/─.*$/, "").trim()).toBe(`Data sources  ${heading}`);
+    } finally {
+      await t.close();
+    }
+  },
+);
+
 test("Settings names the file an edit saves to, for the XDG default and an explicit --config", async () => {
   const c = defaults();
   const s = emptySnapshot();

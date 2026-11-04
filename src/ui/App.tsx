@@ -551,7 +551,9 @@ export function App({
   const status = lead
     ? `${issues.length} ${issues.length === 1 ? "concern" : "concerns"}`
     : (history.retentionWarning ??
-      (unread ? `${unread} sources unreadable` : "all clear"));
+      (unread
+        ? `${unread} ${unread === 1 ? "source" : "sources"} unreadable`
+        : "all clear"));
   return (
     <KeyProvider handlers={handlers}>
       <box
