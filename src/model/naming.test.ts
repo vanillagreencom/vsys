@@ -42,17 +42,83 @@ test("program names follow argv rather than a renamed main thread", () => {
     ).toBe(expected);
 });
 
-test("the account comes from whichever agent configuration directory is set", () => {
+test("account selection prefers its tool, excludes other tools and preserves configured fallback order", () => {
   const c = defaults();
-  const claude = processSnapshot({
-    env: { CLAUDE_CONFIG_DIR: "/home/x/.2claude" },
-  });
-  const codex = processSnapshot({ env: { CODEX_HOME: "/home/x/.codex-work" } });
-  expect(accountName(claude, c)).toBe(".2claude");
-  expect(accountName(codex, c)).toBe(".codex-work");
-  expect(accountName(processSnapshot({ env: {} }), c)).toBeNull();
+  const mixed = {
+    CLAUDE_CONFIG_DIR: "/home/u/.2claude",
+    CODEX_HOME: "/home/u/.codex-work",
+    COPILOT_HOME: "/home/u/.1copilot",
+  };
+  const rows: [
+    string,
+    string[],
+    Record<string, string>,
+    boolean,
+    string | null,
+  ][] = [
+    [
+      "copilot",
+      c.accountEnv,
+      { COPILOT_HOME: mixed.COPILOT_HOME },
+      true,
+      ".1copilot",
+    ],
+    ["copilot", c.accountEnv, mixed, true, ".1copilot"],
+    ["claude", c.accountEnv, mixed, true, ".2claude"],
+    ["codex", c.accountEnv, mixed, true, ".codex-work"],
+    [
+      "copilot",
+      c.accountEnv,
+      { CLAUDE_CONFIG_DIR: mixed.CLAUDE_CONFIG_DIR },
+      true,
+      null,
+    ],
+    [
+      "copilot",
+      ["ACCOUNT_DIR", "COPILOT_HOME"],
+      { ...mixed, ACCOUNT_DIR: "/x/fallback" },
+      true,
+      ".1copilot",
+    ],
+    [
+      "copilot",
+      ["CLAUDE_CONFIG_DIR", "ACCOUNT_DIR", "OTHER_DIR"],
+      { ...mixed, ACCOUNT_DIR: "/x/first", OTHER_DIR: "/x/second" },
+      true,
+      "first",
+    ],
+    [
+      "copilot",
+      ["COPILOT_ALT", "COPILOT_HOME"],
+      { ...mixed, COPILOT_ALT: "/x/first" },
+      true,
+      "first",
+    ],
+    ["copilot", c.accountEnv, mixed, false, null],
+    ["copilot", c.accountEnv, {}, true, null],
+    ["copilot", c.accountEnv, { COPILOT_HOME: "" }, true, null],
+    ["", c.accountEnv, mixed, true, null],
+  ];
+  for (const [tool, accountEnv, env, envAvailable, expected] of rows)
+    expect({
+      tool,
+      account: accountName(
+        processSnapshot({ env, envAvailable }),
+        { ...c, accountEnv },
+        tool,
+      ),
+    }).toEqual({ tool, account: expected });
+  expect(accountName(undefined, c, "copilot")).toBeNull();
   expect(
-    accountName(processSnapshot({ env: {}, envAvailable: false }), c),
+    accountName(
+      processSnapshot({ env: { LOCAL_HOME: "/x/local" } }),
+      {
+        ...c,
+        agentTools: [...c.agentTools, "local"],
+        accountEnv: ["LOCAL_HOME"],
+      },
+      "copilot",
+    ),
   ).toBeNull();
 });
 

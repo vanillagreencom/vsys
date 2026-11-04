@@ -22,6 +22,7 @@ import {
   textWidth,
 } from "./columns";
 import {
+  accountText,
   amount,
   blockedText,
   bucketPeaks,
@@ -720,8 +721,23 @@ export function Agents({
   // The table's own columns, read by its heading and by every row in it. The
   // process id is not a configurable column: it is fixed after the name, or
   // first where the name is not shown, and has no sort to click.
+  const accountProcs = new Map(
+    (table && c.columns.includes("account") ? s.procs : []).map((p) => [
+      p.pid,
+      p,
+    ]),
+  );
+  const tableAccount = (lane: Lane) => accountText(lane, accountProcs);
   const tableCells: { name: string | null; column: Column }[] = c.columns.map(
-    (name) => ({ name, column: tableColumn(name) }),
+    (name) => {
+      const column = tableColumn(name);
+      if (name === "account")
+        column.width = Math.max(
+          column.width,
+          ...lanes.map((lane) => textWidth(tableAccount(lane))),
+        );
+      return { name, column };
+    },
   );
   tableCells.splice(c.columns.indexOf("name") + 1, 0, {
     name: null,
@@ -936,7 +952,14 @@ export function Agents({
                       .map(({ name, column }) =>
                         name === null
                           ? pidCell(lane.mainPid)
-                          : cell(column, safe(laneValue(lane, name, c))),
+                          : cell(
+                              column,
+                              safe(
+                                name === "account"
+                                  ? tableAccount(lane)
+                                  : laneValue(lane, name, c),
+                              ),
+                            ),
                       )
                       .join(columnGap),
                   )

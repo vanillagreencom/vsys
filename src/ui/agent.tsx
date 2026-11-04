@@ -15,6 +15,7 @@ import { badgeText, laneBadge, laneLevel, lowCap } from "./agents";
 import { keyLabel, screenPad } from "./chrome";
 import { type Column, cell, columnGap, fit, headerText } from "./columns";
 import {
+  accountText,
   age,
   amount,
   blockedText,
@@ -103,7 +104,9 @@ export function AgentIdentity({
   snapshot: Snapshot;
   config: Config;
 }) {
-  const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
+  const procs = new Map(snapshot.procs.map((p) => [p.pid, p]));
+  const proc = procs.get(lane.mainPid);
+  const account = accountText(lane, procs);
   const badge = laneBadge(lane, c);
   return (
     <>
@@ -119,11 +122,11 @@ export function AgentIdentity({
           {safe(badgeText(badge, lane, c))}
         </Line>
       )}
-      <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
+      <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
         {safe(
           [
             lane.tool || "no agent program",
-            `account ${lane.account ?? gap}`,
+            lane.account === null ? account : `account ${account}`,
             // The address is what a reader can act on; the raw `%N` is the
             // handle vsys acts through, and both are shown rather than one
             // standing in for the other.

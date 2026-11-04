@@ -9,6 +9,7 @@ import {
 } from "../collect/tmux";
 import {
   accountName,
+  accountSource,
   firstEnv,
   jobserver,
   laneName,
@@ -299,7 +300,8 @@ export function lanes(
       scopeMain(group ? group.pids : members.map((p) => p.pid), memberIndex) ??
       members.find((p) => p.tool) ??
       members[0];
-    const tool = members.find((p) => p.tool)?.tool ?? "";
+    const source = accountSource(main, members);
+    const tool = source?.agent.tool ?? "";
     const cwd = main?.cwd ?? "";
     const branch = main?.branch ?? "";
     const derived =
@@ -308,7 +310,11 @@ export function lanes(
         : c.laneNaming === "env"
           ? main?.env[c.laneEnv]
           : basename(cwd);
-    const account = accountName(main, c);
+    const account = accountName(
+      source?.environment,
+      c,
+      tool || source?.agent.unconfirmedTool || "",
+    );
     const pane = paneName(main, c);
     const mine = paneSocket(main);
     /**

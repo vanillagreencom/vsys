@@ -1,0 +1,1 @@
+- Copilot lanes show their own account, including when launched below a shell, without inheriting another tool's account. Agents explains missing accounts for confirmed agents and keeps account names for unconfirmed agents.

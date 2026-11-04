@@ -9,6 +9,7 @@ import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
+import { lanes } from "../model/lanes";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import {
@@ -18,7 +19,13 @@ import {
   processSnapshot,
   userManager,
 } from "../test/fixture";
-import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
+import {
+  isChildLine,
+  mount,
+  overflowing,
+  selectedRow,
+  underMarked,
+} from "../test/harness";
 import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
@@ -204,6 +211,204 @@ test("agent detail names the account, the charged resources, the limits and the 
     await t.close();
   }
 });
+
+// The account column and identity line are product output: these words explain
+// which account the lane spends, or why vsys cannot name it.
+test.each([
+  {
+    account: ".1copilot",
+    envAvailable: false,
+    main: true,
+    expected: ".1copilot",
+  },
+  {
+    account: null,
+    envAvailable: true,
+    main: true,
+    expected: "default account",
+  },
+  {
+    account: null,
+    envAvailable: false,
+    main: true,
+    expected: "account unknown: environment not readable",
+  },
+  {
+    account: null,
+    envAvailable: undefined,
+    main: true,
+    expected: "account unknown: environment not readable",
+  },
+  {
+    account: null,
+    envAvailable: true,
+    main: false,
+    expected: "account unknown: environment not readable",
+  },
+])(
+  "account output names $account with environment $envAvailable and main $main",
+  async ({ account, envAvailable, main, expected }) => {
+    const c = { ...defaults(), columns: ["name", "account", "tool"] };
+    const s = emptySnapshot();
+    s.lanes = [laneSnapshot({ account, tool: "copilot" })];
+    s.procs = main
+      ? [processSnapshot({ tool: "copilot", env: {}, envAvailable })]
+      : [];
+    const t = await mount(s, c, { width: 160, height: 40 });
+    try {
+      await t.press("2");
+      expect(t.frame()).toContain(expected);
+      await t.press(c.keys.details);
+      const row = present(
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes("▍")),
+        "account table row",
+      );
+      expect(row).toContain(expected);
+      expect(overflowing(t.ui, expected)).toEqual([]);
+      await t.press("enter");
+      expect(t.frame()).toContain(expected);
+      expect(overflowing(t.ui, expected)).toEqual([]);
+      await act(async () => t.ui.resize(60, 40));
+      await t.settle();
+      expect(t.frame()).toContain(expected);
+      expect(overflowing(t.ui, expected)).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  },
+);
+
+test.each([
+  {
+    scenario: "child account",
+    tool: "copilot",
+    child: true,
+    read: true,
+    named: true,
+    rootRead: false,
+    expected: ".1copilot",
+  },
+  {
+    scenario: "child default",
+    tool: "copilot",
+    child: true,
+    read: true,
+    named: false,
+    rootRead: false,
+    expected: "default account",
+  },
+  {
+    scenario: "child unread",
+    tool: "copilot",
+    child: true,
+    read: false,
+    named: false,
+    rootRead: false,
+    expected: "account unknown: environment not readable",
+  },
+  {
+    scenario: "read shell fallback",
+    tool: "copilot",
+    child: true,
+    read: false,
+    named: false,
+    rootRead: true,
+    expected: "default account",
+  },
+  {
+    scenario: "non-agent",
+    tool: null,
+    child: false,
+    read: true,
+    named: false,
+    rootRead: true,
+    expected: gap,
+  },
+  {
+    scenario: "unconfirmed Claude",
+    tool: null,
+    child: false,
+    read: true,
+    named: true,
+    rootRead: true,
+    expected: ".2claude",
+  },
+])(
+  "derived account output for $scenario reaches summary, table and detail",
+  async ({ tool, child, read, named, rootRead, expected }) => {
+    const c = { ...defaults(), columns: ["name", "account", "tool"] };
+    const s = emptySnapshot();
+    const root = processSnapshot({
+      pid: 40,
+      ppid: 1,
+      start: 100,
+      tool: null,
+      comm: "bash",
+      envAvailable: child ? rootRead : read,
+      unconfirmedTool: !child && named ? "claude" : null,
+      env: !child && named ? { CLAUDE_CONFIG_DIR: "/home/u/.2claude" } : {},
+    });
+    s.procs = [root];
+    if (child)
+      s.procs.push(
+        processSnapshot({
+          pid: 41,
+          ppid: 40,
+          start: 200,
+          tool,
+          envAvailable: read,
+          env: named ? { COPILOT_HOME: "/home/u/.1copilot" } : {},
+        }),
+      );
+    s.groups = [groupSnapshot({ pids: s.procs.map((p) => p.pid) })];
+    s.lanes = lanes(s.groups, s.procs, c);
+    const t = await mount(s, c, { width: 160, height: 40 });
+    try {
+      await t.press("2");
+      for (const view of ["summary", "table", "detail"]) {
+        if (view === "table") await t.press(c.keys.details);
+        if (view === "detail") await t.press("enter");
+        const frame = t.frame();
+        const lines = frame.split("\n");
+        if (view === "table") {
+          const heading = present(
+            lines.find(
+              (line) => line.includes("Account") && line.includes("Program"),
+            ),
+            "account heading",
+          );
+          const row = present(
+            lines.find((line) => line.includes("▍")),
+            "account row",
+          );
+          expect(
+            row.slice(heading.indexOf("Account"), heading.indexOf("Program")),
+            view,
+          ).toContain(expected);
+        } else {
+          const identity = present(
+            lines.find(
+              (line) =>
+                line.includes(" · ") &&
+                line.includes(tool || "no agent program"),
+            ),
+            "agent identity line",
+          );
+          expect(identity, view).toContain(
+            named ? `account ${expected}` : expected,
+          );
+        }
+        if (!tool) expect(frame, view).not.toContain("default account");
+        expect(overflowing(t.ui, expected), view).toEqual([]);
+      }
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 async function limitsLine(jobsKnown: boolean): Promise<string> {
   const s = emptySnapshot();

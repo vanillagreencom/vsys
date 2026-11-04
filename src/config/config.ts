@@ -255,7 +255,7 @@ export function defaults(
     laneNaming: "worktree",
     laneEnv: "VSYS_LANE",
     laneNameParts: [...nameParts],
-    accountEnv: ["CLAUDE_CONFIG_DIR", "CODEX_HOME"],
+    accountEnv: ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME"],
     paneEnv: ["VSYS_PANE", "TMUX_PANE"],
     titleEnv: ["VSYS_PANE_TITLE"],
     sccacheNames: ["sccache"],
