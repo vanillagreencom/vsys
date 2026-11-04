@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import random
 import re
-import resource
 import subprocess
 import sys
 import tempfile
@@ -629,11 +628,14 @@ class AgentWardenScratchRules(WardenRulesCase):
         text = WARDEN.read_text()
         old = "        if holders is None:\n            holders = _scratch_holders(scan())\n"
         self.assertEqual(text.count(old), 1)
-        mutant = self.load_mutant(text.replace(old, "        holders = _scratch_holders(scan())\n"),
-                                  "agent_warden_mutant_scratch_reads")
-        reads, removed = self._scratch_reads(mutant, 3)
-        self.assertEqual(removed, [])
-        self.assertEqual(reads[f"/proc/{LIVE}/environ"], 3)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = materialize_warden_script(Path(tmp), text.replace(old, "        holders = _scratch_holders(scan())\n"))
+            mutant = load_warden(self.env, "agent_warden_mutant_scratch_reads", path)
+            reads, removed = self._scratch_reads(mutant, 3)
+            self.assertEqual(removed, [])
+            self.assertEqual(reads[f"/proc/{LIVE}/environ"], 3)
+            with self.assertRaises(AssertionError):
+                self._assert_report_pass_reads(mutant)
 
     # A process scan as it stood when the pass began, re-read only for the
     # pids it already held: a holder that starts during the pass is missed.
@@ -1114,57 +1116,41 @@ class AgentWardenScratchRules(WardenRulesCase):
         self.assertEqual(len(attempts), 8)
         self.assertIn(["agent-confine-302-400"], removed)
 
-    def _report_pass(self, folders):
-        """CPU seconds and folders walked for one --report pass of the whole
-        script, this machine's real process list included, over `folders`
-        gone folders in a private parent. CG_ROOT points at a private
-        agents.slice so no live scope is read, and PATH is empty so no
-        notice can be sent. The walk is counted as lstat calls on a path
-        directly under that parent."""
-        driver = (
-            "import importlib.machinery, importlib.util, os, sys\n"
-            "from pathlib import Path\n"
-            "loader = importlib.machinery.SourceFileLoader('agent_warden_cpu', sys.argv[1])\n"
-            "module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))\n"
-            "loader.exec_module(module)\n"
-            "module.CG_ROOT = Path(sys.argv[2])\n"
-            "walked, real_lstat = [0], os.lstat\n"
-            "def lstat(path, *args, **kwargs):\n"
-            "    walked[0] += os.path.dirname(os.fspath(path)) == sys.argv[3]\n"
-            "    return real_lstat(path, *args, **kwargs)\n"
-            "os.lstat = lstat\n"
-            "code = module.main(['agent-warden', '--report'])\n"
-            "sys.stderr.write(f'walked={walked[0]}\\n')\n"
-            "sys.exit(code)\n"
-        )
+    def _report_pass(self, module, folders):
+        """Real process reads in one scratch report pass. Fix the snapshot
+        to this live process so unrelated process arrivals and exits cannot
+        change the count; environment, cwd and directory reads stay real."""
         with scratch() as tmp:
             base = Path(tmp)
-            for directory in ("home", "run", "cache", "bin", "cg/agents.slice", "scratch"):
-                (base / directory).mkdir(parents=True)
+            (base / "cg" / module.SLICE).mkdir(parents=True)
+            parent = base / "scratch"
+            parent.mkdir()
+            now = 1000.0
+            expired = now - module.SCRATCH_GRACE - 1
             for index in range(folders):
-                folder = base / "scratch" / f"agent-confine-{9000000 + index}-1"
+                folder = parent / f"agent-confine-{9000000 + index}-1"
                 folder.mkdir()
-                os.utime(folder, (0, 0))
-            env = {"HOME": str(base / "home"), "XDG_RUNTIME_DIR": str(base / "run"),
-                   "XDG_CACHE_HOME": str(base / "cache"), "AGENT_TMPDIR": str(base / "scratch"),
-                   "PATH": str(base / "bin"), "PYTHONDONTWRITEBYTECODE": "1"}
-            before = resource.getrusage(resource.RUSAGE_CHILDREN)
-            result = subprocess.run([sys.executable, "-c", driver, str(WARDEN), str(base / "cg"),
-                                     os.path.realpath(base / "scratch")],
-                                    env=env, capture_output=True, text=True, timeout=60)
-            after = resource.getrusage(resource.RUSAGE_CHILDREN)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        walked = int(re.search(r"^walked=(\d+)$", result.stderr, re.M).group(1))
-        return (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime), walked
+                os.utime(folder, (expired, expired))
+            procs = {LIVE: module.Proc(LIVE)}
+            with patch.object(module, "CG_ROOT", base / "cg"), \
+                    patch.object(module, "AGENT_TMPDIR_PARENT", str(parent)), \
+                    patch.object(module.time, "time", return_value=now), \
+                    patch.object(module, "read", wraps=module.read) as read, \
+                    patch.object(module.os, "readlink", wraps=module.os.readlink) as readlink, \
+                    patch.object(module.os, "lstat", wraps=module.os.lstat) as lstat, \
+                    patch.object(module, "log"):
+                self.assertEqual(module.reap_scratch_dirs(False, lambda: procs, set()), [])
+            walked = sum(os.path.dirname(os.fspath(call.args[0])) == str(parent) for call in lstat.call_args_list)
+            self.assertEqual(walked, folders)
+            return {kind: sum(call.args[0] == f"/proc/{LIVE}/{kind}" for call in spy.call_args_list)
+                    for kind, spy in (("environ", read), ("cwd", readlink))}
 
-    def test_report_pass_cost_per_gone_folder_stays_small(self):
-        # Compare a pass with no folders against 5000 gone folders to isolate
-        # traversal cost. The minimum of three reduces host-load noise; re-
-        # reading every process for every folder costs seconds rather than the
-        # measured 0.04 s difference.
-        idle, loaded = ([self._report_pass(folders) for _ in range(3)] for folders in (0, 5000))
-        self.assertEqual([walked for _, walked in idle + loaded], [0, 0, 0, 5000, 5000, 5000])
-        self.assertLess(min(cpu for cpu, _ in loaded) - min(cpu for cpu, _ in idle), 0.1)
+    def _assert_report_pass_reads(self, module):
+        for folders, reads in ((0, 0), (5000, 1)):
+            self.assertEqual(self._report_pass(module, folders), {"environ": reads, "cwd": reads}, f"{folders} folders")
+
+    def test_report_pass_reads_each_process_once(self):
+        self._assert_report_pass_reads(self.w)
 
     def test_scope_units_skips_one_vanished_entry(self):
         # scope_units() must not discard scopes it already read just because
