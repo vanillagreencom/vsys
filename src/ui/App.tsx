@@ -47,7 +47,7 @@ import { Resources } from "./resources";
 import { Retained } from "./retained";
 import { Settings } from "./settings-screen";
 import { Storage } from "./storage-screen";
-import { levelColor, ui } from "./theme";
+import { ui } from "./theme";
 import { Timeline, windowAt, windows } from "./timeline-screen";
 import { Line, Toast } from "./widgets";
 
@@ -154,6 +154,7 @@ export const hints: Record<
   AgentGone: (c) => [[c.keys.back, "back"]],
   Resources: (c) => [
     ["↑↓", "select"],
+    ["PgUp/PgDn", "fields"],
     [c.keys.details, "all groups"],
   ],
   Builds: (c) => [
@@ -584,9 +585,7 @@ export function App({
         <Footer
           hints={[...hints[hintView](c), [c.keys.help, "keys"]]}
           status={status}
-          statusColor={
-            lead ? levelColor(lead.danger ? "danger" : "warn") : ui.ok
-          }
+          statusColor={status === "all clear" ? ui.ok : ui.fg}
           statusDim={!lead && status !== "all clear"}
         />
         {toast && <Toast text={toast.text} level={toast.level} />}

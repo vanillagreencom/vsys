@@ -1,4 +1,4 @@
-import type { MouseEvent, RGBA, ScrollBoxRenderable } from "@opentui/core";
+import type { MouseEvent, ScrollBoxRenderable } from "@opentui/core";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
@@ -7,7 +7,6 @@ import {
   damageCounts,
   type Integrity,
   integrity,
-  integrityLevel,
   volumesByDevice,
 } from "../model/integrity";
 import type {
@@ -22,7 +21,14 @@ import type {
 import type { Level } from "../model/verdict";
 import { type WriteTotal, writeTotals } from "../model/writes";
 import { keyLabel, screenPad, sideWidth } from "./chrome";
-import { columnGap, fit } from "./columns";
+import {
+  type Column,
+  cell,
+  columnGap,
+  columnsWidth,
+  fit,
+  textWidth,
+} from "./columns";
 import { age, amount, bytes, gap } from "./format";
 import {
   blocksText,
@@ -51,7 +57,7 @@ import {
   lifetimeSourceText,
   reporterOffer,
 } from "./settings";
-import { levelColor, metric, scrollbar, ui } from "./theme";
+import { metric, type StatusWord, scrollbar, statusColor, ui } from "./theme";
 import {
   Bar,
   CommandOffer,
@@ -241,7 +247,22 @@ export function Storage({
   /** Undefined text tells the shell the selected row carries no command. */
   onCopy: (command: string | undefined) => void;
 }) {
-  const items = storageItems(s);
+  const items = storageItems(s).map((item) => {
+    if (item.kind !== "scratch") return item;
+    const x = item.scratch;
+    const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
+    const modifiedSeconds =
+      x.modifiedAt == null
+        ? x.age
+        : Math.max(0, (s.time - x.modifiedAt) / 1000);
+    const status: StatusWord | "" = x.error ? "unread" : over ? "Warning" : "";
+    return {
+      ...item,
+      status,
+      modifiedText:
+        modifiedSeconds == null ? "" : `${age(modifiedSeconds)} ago`,
+    };
+  });
   const ids = items.map(storageKey);
   // The selection follows its row, because a mount or a directory that sorts
   // above it moves every row below. Where the row has gone the nearest row
@@ -415,6 +436,16 @@ export function Storage({
   // padding, and the panel is a share of the terminal row.
   const side = items.length ? sideWidth(width + screenPad * 2) : 0;
   const listWidth = width - side - (side ? sideGap : 0);
+  // ListRow owns one marker cell. Reserve the following columns before a
+  // path takes its share, so a long path cannot hide the row's only status.
+  const rowWidth = listWidth - 1;
+  const pathColumn = (following: Column[], cap: number): Column => ({
+    label: "Path",
+    width: Math.max(
+      1,
+      Math.min(cap, rowWidth - columnsWidth(following) - columnGap.length),
+    ),
+  });
   // The selected row's detail, taken as the rows are drawn below, for the
   // panel the lists are drawn beside.
   let selectedDetail: ReactNode = null;
@@ -432,7 +463,7 @@ export function Storage({
   const storageRow = (
     i: number,
     line: (open: boolean) => ReactNode,
-    { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
+    { under }: { under?: () => ReactNode } = {},
   ) => {
     const open = i === selected;
     const detail = open ? under?.() : null;
@@ -442,7 +473,6 @@ export function Storage({
         key={rowIds[i]}
         id={`storage-${i}`}
         selected={open}
-        color={color}
         onOpen={() => choose(i)}
         under={!side && detail && <Detail>{detail}</Detail>}
       >
@@ -456,6 +486,36 @@ export function Storage({
     c.scratchQuota,
     ...[...st.scratch, ...st.sessions].map((x) => x.bytes ?? 0),
   );
+  const scratchRows = items.filter((item) => item.kind === "scratch");
+  const statusColumn: Column = {
+    label: "State",
+    width: Math.max(0, ...scratchRows.map((item) => textWidth(item.status))),
+  };
+  const readingColumn: Column = { label: "Size", width: 10, align: "right" };
+  const barColumn: Column = { label: "", width: 12 };
+  const ageColumn: Column = {
+    label: "Age",
+    width: Math.max(
+      0,
+      ...scratchRows.map((item) => textWidth(item.modifiedText)),
+    ),
+  };
+  const scratchColumns = [barColumn, readingColumn, ageColumn, statusColumn];
+  // The list gives up optional columns together so every root and session
+  // keeps its reading and status in the same columns.
+  for (const optional of [barColumn, ageColumn]) {
+    if (
+      columnsWidth(scratchColumns.filter((column) => column.width > 0)) +
+        columnGap.length <
+      rowWidth
+    )
+      break;
+    optional.width = 0;
+  }
+  const scratchPath = pathColumn(
+    scratchColumns.filter((column) => column.width > 0),
+    40,
+  );
   /**
    * One filesystem's integrity, in plain words with both of its times. What
    * the check found sits one level down, and the raw counters and the raw
@@ -465,26 +525,27 @@ export function Storage({
   const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
   const install = reporterOffer(s, c, "scrub");
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
-    const level = integrityLevel(item.state);
+    const { word, rest } = integrityLine(item, scrubSource);
     const counts = damageCounts(item);
     return storageRow(
       i,
       (open) => (
-        <Disclosure
-          open={open}
-          name={integrityLine(item, scrubSource)}
-          count={counts.files || undefined}
-        />
+        <>
+          <Disclosure open={open} name="" />
+          <Ink color={statusColor(word)}>{word}</Ink>
+          {safe(rest)}
+          {counts.files ? `  ${counts.files}` : ""}
+        </>
       ),
       {
-        color: level === "ok" ? undefined : levelColor(level),
         under: () => (
           <>
             {/* The panel is far from the row, which the lists' narrower
                 width cuts, so the panel states it whole. */}
             {wrap && (
               <Line flexShrink={0} wrapMode="word" marginBottom={1}>
-                {safe(integrityLine(item, scrubSource))}
+                <Ink color={statusColor(word)}>{word}</Ink>
+                {safe(rest)}
               </Line>
             )}
             {/* The headline reading is what the last check found. The
@@ -527,9 +588,12 @@ export function Storage({
                 <Line {...detailLine} flexShrink={0}>
                   <span attributes={ui.dim}>{fit("block", 16)}</span>
                   {`${group.logical}  `}
-                  <span fg={group.kind === "none" ? undefined : ui.danger}>
-                    {damageAdvice(group)}
-                  </span>
+                  {group.kind !== "none" && (
+                    <>
+                      <Ink color={statusColor("Error")}>Error</Ink>{" "}
+                    </>
+                  )}
+                  {damageAdvice(group)}
                 </Line>
                 {group.paths.map((path) => (
                   <Line key={path} flexShrink={0} wrapMode="word">
@@ -574,14 +638,14 @@ export function Storage({
             {/* The report's own words are a third idea under the counter and
                 the sentence explaining it, so they start after a blank row. */}
             {item.scrub && (
-              <Line
-                flexShrink={0}
-                wrapMode="word"
-                marginTop={1}
-                attributes={ui.dim}
-              >
-                {safe(item.scrub.text)}
-              </Line>
+              <box flexDirection="column" flexShrink={0} marginTop={1}>
+                {item.scrub.text.split("\n").map((line, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a report line is its position
+                  <Line key={i} flexShrink={0} wrapMode="word">
+                    {safe(line)}
+                  </Line>
+                ))}
+              </box>
             )}
           </>
         ),
@@ -599,18 +663,20 @@ export function Storage({
               below holds the whole cause. The marker, the disclosure and the
               mount take the first 43 cells. */}
           {cause && (
-            <Ink color={ui.danger}>
-              {safe(fit(volumeCauseText(cause, c), listWidth - 43))}
-            </Ink>
+            <>
+              <Ink color={statusColor("Error")}>Error</Ink>{" "}
+              {safe(fit(volumeCauseText(cause, c), listWidth - 49))}
+            </>
           )}
         </>
       ),
       {
-        color: levelColor(volumeLevel(v, c.freeFloor)),
         under: () => (
           <>
             {cause && (
-              <Line flexShrink={0} wrapMode="word" fg={ui.danger}>
+              <Line flexShrink={0} wrapMode="word">
+                <Ink color={statusColor("Error")}>Error</Ink>
+                {": "}
                 {safe(volumeCauseText(cause, c))}
               </Line>
             )}
@@ -625,51 +691,57 @@ export function Storage({
   };
   const scratchRow = (
     i: number,
-    item: Extract<StorageItem, { kind: "scratch" }>,
+    item: Extract<(typeof items)[number], { kind: "scratch" }>,
   ) => {
     const x = item.scratch;
-    const over = x.bytes !== null && !item.session && x.bytes > c.scratchQuota;
-    const modifiedSeconds =
-      x.modifiedAt == null
-        ? x.age
-        : Math.max(0, (s.time - x.modifiedAt) / 1000);
-    const modified = modifiedSeconds == null ? null : age(modifiedSeconds);
+    const { status, modifiedText } = item;
     return storageRow(
       i,
       () => (
         <>
-          {safe(fit(x.path, 40))}
-          {columnGap}
-          <Bar
-            value={x.bytes}
-            max={scratchTop}
-            width={12}
-            level={over ? "warn" : "ok"}
-          />
+          {cell(scratchPath, x.path)}
+          {barColumn.width > 0 && (
+            <>
+              {columnGap}
+              <Bar value={x.bytes} max={scratchTop} width={barColumn.width} />
+            </>
+          )}
           {columnGap}
           <Reading
             value={x.bytes}
-            text={fit(amount(x.bytes, c), 10, "right")}
+            text={cell(readingColumn, amount(x.bytes, c))}
           />
-          {modified != null && (
-            <span attributes={ui.dim}>{`  ${modified} ago`}</span>
+          {ageColumn.width > 0 && (
+            <span
+              attributes={ui.dim}
+            >{`${columnGap}${cell(ageColumn, modifiedText)}`}</span>
           )}
-          {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
+          {statusColumn.width > 0 && (
+            <>
+              {columnGap}
+              <Ink color={status ? statusColor(status) : ui.fg}>
+                {cell(statusColumn, status)}
+              </Ink>
+              {x.error && ` ${safe(x.error)}`}
+            </>
+          )}
         </>
       ),
       {
-        color: over ? ui.warn : undefined,
-        // The origin sits under the row rather than after its columns, where
-        // a narrow terminal cuts it and pushes the error out. The panel's
-        // narrower lists cut the error too, so the panel states it whole.
+        // Detail keeps the path and error whole when the row gives up their
+        // columns to its required reading and status.
         under: () => {
-          const error = wrap ? x.error : null;
+          const error = x.error;
+          const cutPath = textWidth(x.path) > scratchPath.width;
           const origin = item.session ? null : item.scratch.origin;
-          if (error === null && origin === null) return null;
+          if (error === null && origin === null && !cutPath) return null;
           return (
             <>
+              {cutPath && <Field label="Path" value={safe(x.path)} wrap />}
               {error !== null && (
-                <Line flexShrink={0} wrapMode="word" fg={ui.warn}>
+                <Line flexShrink={0} wrapMode="word">
+                  <Ink color={statusColor("unread")}>unread</Ink>
+                  {": "}
                   {safe(error)}
                 </Line>
               )}
@@ -703,22 +775,12 @@ export function Storage({
       first.total !== null && first.free !== null
         ? first.total - first.free
         : null;
-    // The heading's colour is the worse of what its mounts report and
-    // what the filesystem's integrity says, so damage found by a check
-    // colours the heading even while every mount reads normally.
-    const worst: Level =
-      volumes.some((v) => volumeLevel(v, c.freeFloor) === "danger") ||
-      integrityLevel(state.state) === "danger"
-        ? "danger"
-        : integrityLevel(state.state) === "warn"
-          ? "warn"
-          : "ok";
     return (
       <Fragment key={`filesystem-${id}`}>
         <Line height={1} flexShrink={0} truncate>
-          <span fg={levelColor(worst)}>{safe(fit(device, 42))}</span>
+          <span>{safe(fit(device, 42))}</span>
           {columnGap}
-          <Bar value={used} max={first.total ?? 1} width={12} level={worst} />
+          <Bar value={used} max={first.total ?? 1} width={12} />
           {`${columnGap}${fit(amount(first.free, c), 10, "right")} free of ${amount(first.total, c)}`}
           <span attributes={ui.dim}>
             {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
@@ -728,27 +790,29 @@ export function Storage({
       </Fragment>
     );
   };
-  const scrubRow = (i: number, scrub: Scrub) =>
-    storageRow(
+  const scrubRow = (i: number, scrub: Scrub) => {
+    const status =
+      scrub.readable === false ? "unread" : scrub.problem ? "Error" : "clean";
+    const statusColumn: Column = { label: "State", width: textWidth(status) };
+    const path = pathColumn([statusColumn], textWidth(scrub.path));
+    return storageRow(
       i,
       () => (
         <>
-          {safe(scrub.path)}
+          {cell(path, scrub.path)}
           {/* A file vsys could not read reported nothing at all, and
               saying it reported a problem puts words in it. */}
-          <span attributes={scrub.problem ? ui.none : ui.dim}>
-            {scrub.readable === false
-              ? "  could not be read"
-              : scrub.problem
-                ? "  problem reported"
-                : "  clean"}
-          </span>
+          {"  "}
+          <Ink color={statusColor(status)}>{cell(statusColumn, status)}</Ink>
+          {scrub.problem && scrub.readable !== false ? " problem reported" : ""}
         </>
       ),
       {
-        color: scrub.problem ? ui.danger : undefined,
         under: () => (
           <>
+            {textWidth(scrub.path) > path.width && (
+              <Field label="Path" value={safe(scrub.path)} wrap />
+            )}
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
               {safe(scrub.text)}
             </Line>
@@ -756,8 +820,9 @@ export function Storage({
         ),
       },
     );
+  };
   /** Draws `item`, the row at `i`, by its kind. */
-  const drawItem = (item: StorageItem, i: number): ReactNode => {
+  const drawItem = (item: (typeof items)[number], i: number): ReactNode => {
     switch (item.kind) {
       case "filesystem":
         return filesystemRows(i, item.group);

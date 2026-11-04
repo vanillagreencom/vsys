@@ -36,7 +36,14 @@ import {
 import { heldLabel, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import { firstRow, useSelection } from "./selection";
-import { levelColor, metric, scrollbar, textInput, ui } from "./theme";
+import {
+  levelStatus,
+  metric,
+  scrollbar,
+  statusColor,
+  textInput,
+  ui,
+} from "./theme";
 import {
   Bar,
   Ink,
@@ -58,7 +65,7 @@ export const columnLabels: Record<string, string> = {
   cwd: "Worktree",
   branch: "Branch",
   tool: "Program",
-  cpu: "CPU",
+  cpu: "CPU %/core",
   pressure: "CPU wait",
   rss: "Memory",
   swap: "Swap",
@@ -126,7 +133,7 @@ export function tableColumn(name: string): Column {
 const listHeading: Record<string, string> = {
   name: "Agent",
   tool: "Program",
-  cpu: "CPU",
+  cpu: "CPU %/core",
   rss: "Memory",
   pressure: "Wait",
   state: "State",
@@ -676,7 +683,7 @@ export function Agents({
     pidColumn,
     ...(shown.has("Program") ? [{ label: "Program", width: 9 }] : []),
     { label: "", width: 10 },
-    { label: "CPU", width: 7, align: "right" as const },
+    { label: "CPU %/core", width: 12, align: "right" as const },
     ...(shown.has("Trend") ? [{ label: "Trend", width: trendWidth }] : []),
     { label: "Memory", width: 10, align: "right" as const },
     ...(shown.has("Wait")
@@ -719,8 +726,8 @@ export function Agents({
     },
   ];
   // The table's own columns, read by its heading and by every row in it. The
-  // process id is not a configurable column: it is fixed after the name, or
-  // first where the name is not shown, and has no sort to click.
+  // enabled name, process id and State lead regardless of configured order,
+  // so optional columns cannot hide a lane's status.
   const accountProcs = new Map(
     (table && c.columns.includes("account") ? s.procs : []).map((p) => [
       p.pid,
@@ -728,20 +735,19 @@ export function Agents({
     ]),
   );
   const tableAccount = (lane: Lane) => accountText(lane, accountProcs);
-  const tableCells: { name: string | null; column: Column }[] = c.columns.map(
-    (name) => {
-      const column = tableColumn(name);
-      if (name === "account")
-        column.width = Math.max(
-          column.width,
-          ...lanes.map((lane) => textWidth(tableAccount(lane))),
-        );
-      return { name, column };
-    },
-  );
-  tableCells.splice(c.columns.indexOf("name") + 1, 0, {
-    name: null,
-    column: pidColumn,
+  const tableCells: { name: string | null; column: Column }[] = [
+    ...(c.columns.includes("name") ? ["name"] : []),
+    null,
+    "state",
+    ...c.columns.filter((name) => name !== "name" && name !== "state"),
+  ].map((name) => {
+    const column = name === null ? pidColumn : tableColumn(name);
+    if (name === "account")
+      column.width = Math.max(
+        column.width,
+        ...lanes.map((lane) => textWidth(tableAccount(lane))),
+      );
+    return { name, column };
   });
   const laneColumn = (label: string): Column => {
     const found = laneColumns.find((x) => x.label === label);
@@ -773,12 +779,7 @@ export function Agents({
    * can draw a lane by a rule the other has dropped.
    */
   const laneRow = (lane: Lane, isSelected: boolean, line: ReactNode) => (
-    <Row
-      key={lane.id}
-      selected={isSelected}
-      color={levelColor(laneLevel(lane, c))}
-      onOpen={() => onOpen(lane.id)}
-    >
+    <Row key={lane.id} selected={isSelected} onOpen={() => onOpen(lane.id)}>
       {line}
     </Row>
   );
@@ -843,7 +844,7 @@ export function Agents({
               lane={selectedLane}
               snapshot={s}
               config={c}
-              width={side}
+              width={Math.max(1, side - 2)}
             />
           )
         }
@@ -948,20 +949,34 @@ export function Agents({
                   laneRow(
                     lane,
                     isSelected,
-                    tableCells
-                      .map(({ name, column }) =>
-                        name === null
-                          ? pidCell(lane.mainPid)
-                          : cell(
+                    tableCells.map(({ name, column }, at) => (
+                      <span key={name ?? "pid"}>
+                        {at > 0 && columnGap}
+                        {name === "state" && laneBadge(lane, c) ? (
+                          <Ink
+                            color={statusColor(
+                              levelStatus(laneBadge(lane, c)?.level ?? "ok"),
+                            )}
+                          >
+                            {cell(
                               column,
-                              safe(
-                                name === "account"
-                                  ? tableAccount(lane)
-                                  : laneValue(lane, name, c),
-                              ),
+                              levelStatus(laneBadge(lane, c)?.level ?? "ok"),
+                            )}
+                          </Ink>
+                        ) : name === null ? (
+                          pidCell(lane.mainPid)
+                        ) : (
+                          cell(
+                            column,
+                            safe(
+                              name === "account"
+                                ? tableAccount(lane)
+                                : laneValue(lane, name, c),
                             ),
-                      )
-                      .join(columnGap),
+                          )
+                        )}
+                      </span>
+                    )),
                   )
                 }
               />
@@ -1027,7 +1042,7 @@ export function Agents({
                     {columnGap}
                     <Reading
                       value={lane.cpu}
-                      text={cell(laneColumn("CPU"), share(lane.cpu))}
+                      text={cell(laneColumn("CPU %/core"), share(lane.cpu))}
                     />
                     {showTrend && columnGap}
                     {showTrend && (
@@ -1049,8 +1064,8 @@ export function Agents({
                     )}
                     {columnGap}
                     {badge ? (
-                      <Ink color={levelColor(badge.level)}>
-                        {cell(laneColumn("State"), badgeText(badge, lane, c))}
+                      <Ink color={statusColor(levelStatus(badge.level))}>
+                        {cell(laneColumn("State"), levelStatus(badge.level))}
                       </Ink>
                     ) : (
                       <span attributes={ui.dim}>

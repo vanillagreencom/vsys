@@ -270,7 +270,7 @@ test("a numeric column ends where its heading ends, on the rendered screen", asy
     // Right-aligned cells and their headings share a last column, which is
     // what one shared column spec buys.
     const rows: [string, string][] = [
-      ["CPU", "5.0%"],
+      ["CPU %/core", "5.0%"],
       ["Memory", "1.0 KiB"],
       ["Wait", "8.0%"],
     ];
@@ -385,7 +385,7 @@ test("the table's cells land under their headings, not beside them", async () =>
     // The heading and the row read one spec, so a numeric cell ends where its
     // heading ends whatever the widths are.
     for (const [label, value] of [
-      ["CPU", "5.0%"],
+      ["CPU %/core", "5.0%"],
       ["Memory", "1.0 KiB"],
     ] as const)
       expect({
@@ -394,6 +394,70 @@ test("the table's cells land under their headings, not beside them", async () =>
       }).toEqual({ label, ends: row.indexOf(value) + value.length });
   } finally {
     await t.close();
+  }
+});
+
+test("the table keeps State after PID in the initial viewport regardless of configured columns", async () => {
+  const base = defaults();
+  const rows: [string, string[]][] = [
+    ["default columns", base.columns],
+    ["State omitted", base.columns.filter((name) => name !== "state")],
+    ["State before Agent", ["state", "name", "cpu"]],
+    ["Agent omitted", ["cpu", "state"]],
+    // The chooser appends Agent when it is shown again; saved config also
+    // accepts Agent anywhere among the optional columns.
+    ["Agent last", [...base.columns.filter((name) => name !== "name"), "name"]],
+    ["Agent in the middle", ["cwd", "branch", "name", "cpu", "state"]],
+  ];
+  const s = emptySnapshot();
+  s.groups = [groupSnapshot()];
+  s.lanes = [
+    laneSnapshot({ id: "a", name: "lane-a", mainPid: 4071, state: "running" }),
+    laneSnapshot({ id: "b", name: "lane-b", mainPid: 4072, unconfined: true }),
+    laneSnapshot({ id: "c", name: "lane-c", mainPid: 4073, state: "blocked" }),
+  ];
+  for (const [label, configured] of rows) {
+    const c = { ...base, columns: configured, sort: "name", descending: false };
+    const t = await mount(s, c, { width: 80, height: 24 });
+    try {
+      await t.press("2");
+      await t.press(c.keys.details);
+      await t.settle();
+      const lines = t.frame().split("\n");
+      const heading = present(
+        lines.find((line) => line.includes("PID") && line.includes("State")),
+        `${label} table heading`,
+      );
+      expect(heading.match(/State/g)).toEqual(["State"]);
+      expect(heading).toMatch(/PID\s+State/);
+      const stateAt = heading.indexOf("State");
+      for (const [pid, status, color] of [
+        [4071, "running", undefined],
+        [4072, "Error", ui.danger],
+        [4073, "Warning", ui.warn],
+      ] as const) {
+        const lineAt = lines.findIndex((line) => line.includes(String(pid)));
+        const row = present(lines[lineAt], `${label} lane ${pid}`);
+        expect({ label, pid, stateAt: row.indexOf(status) }).toEqual({
+          label,
+          pid,
+          stateAt,
+        });
+        if (color) {
+          const drawn = present(
+            t.ui.captureSpans().lines[lineAt],
+            `${label} lane ${pid} spans`,
+          );
+          expect(
+            drawn.spans.some(
+              (span) => span.text.trim() === status && span.fg.equals(color),
+            ),
+          ).toBe(true);
+        }
+      }
+    } finally {
+      await t.close();
+    }
   }
 });
 
@@ -1220,7 +1284,9 @@ test("a configurable numeric column reads down its last digit", async () => {
 test("a tile in a narrow pane marks its cut instead of stopping mid-word", async () => {
   const c = defaults();
   const s = emptySnapshot();
-  s.lanes = [laneSnapshot({ name: "lane-a", cpu: 12.3, cpuShare: 12.3 })];
+  s.lanes = [
+    laneSnapshot({ name: "lane-a", cpu: 12.3, cache: 1e12, swap: 1e12 }),
+  ];
   s.groups = [groupSnapshot()];
   const t = await mount(s, c, { width: 180, height: 30 });
   try {
@@ -1230,7 +1296,7 @@ test("a tile in a narrow pane marks its cut instead of stopping mid-word", async
     const line = t
       .frame()
       .split("\n")
-      .find((row) => row.includes("of one core"));
+      .find((row) => row.includes("cache 931.3"));
     expect(line).toBeDefined();
     expect(line).toContain("…");
   } finally {
@@ -1253,7 +1319,7 @@ test("a narrowing list gives up its readings before what names the row", async (
   const rows: [number, string[], string[]][] = [
     [140, ["Pane", "PID", "Program", "Trend", "Wait"], []],
     [130, ["Pane", "PID", "Program", "Wait"], ["Trend"]],
-    [110, ["Pane", "PID", "Wait"], ["Program", "Trend"]],
+    [110, ["Pane", "PID"], ["Program", "Trend", "Wait"]],
     [100, ["Pane", "PID"], ["Program", "Trend", "Wait"]],
   ];
   for (const [width, present, absent] of rows) {
@@ -1329,11 +1395,11 @@ test("the Agents list marks the heading its sort is drawn under", async () => {
   const rows: [string, number, string[], string, string][] = [
     ["name", 140, [], "Agent", "Agent ↓"],
     ["tool", 140, [], "Program", "Program ↓"],
-    ["cpu", 140, [], "CPU", "↓ CPU"],
+    ["cpu", 140, [], "CPU", "↓ CPU %/core"],
     ["rss", 140, [], "Memory", "↓ Memory"],
     ["pressure", 140, [], "Wait", "↓ Wait"],
     ["state", 140, [], "State", "State ↓"],
-    ["cpu", 140, [c.keys.reverse], "CPU", "↑ CPU"],
+    ["cpu", 140, [c.keys.reverse], "CPU", "↑ CPU %/core"],
     ["cpu", 140, [c.keys.reverse, c.keys.sort], "Wait", "↑ Wait"],
     ["tool", 110, [], "Program", ""],
     ["pressure", 100, [], "Wait", ""],
@@ -1388,7 +1454,7 @@ test("the Agents list marks the heading its sort is drawn under", async () => {
     await refused.press("2");
     await refused.press(c.keys.reverse);
     expect(refused.frame()).toContain("config not written");
-    expect(sortMarks(refused.frame())).toEqual(["↓ CPU"]);
+    expect(sortMarks(refused.frame())).toEqual(["↓ CPU %/core"]);
   } finally {
     await refused.close();
   }
@@ -1435,8 +1501,8 @@ test("search finds a row by the address and the window it shows", async () => {
   }
 });
 
-test("a lane row in the list and in the table is coloured and opened by one rule", async () => {
-  const c = defaults();
+test("a lane row in the list and in the table keeps its text plain and opens by one rule", async () => {
+  const c = { ...defaults(), columns: ["name", "account", "state", "cpu"] };
   const s = emptySnapshot();
   s.lanes = [
     laneSnapshot({ id: "a", name: "lane-a", cpu: 9 }),
@@ -1473,11 +1539,24 @@ test("a lane row in the list and in the table is coloured and opened by one rule
         view,
         drawn: true,
       });
-      // The row's level is its colour, read where the highlight is not on it.
+      // Severity belongs to the state chip, so the lane name stays plain.
       expect({ view, colour: colour(k, "lane-z") }).toEqual({
         view,
-        colour: "danger",
+        colour: "other",
       });
+      const escaped = present(
+        k.ui
+          .captureSpans()
+          .lines.find((line) =>
+            line.spans.some((span) => span.text.includes("lane-z")),
+          ),
+        "escaped lane row",
+      );
+      expect(
+        escaped.spans.some(
+          (span) => span.text.trim() === "Error" && span.fg.equals(ui.danger),
+        ),
+      ).toBe(true);
       await k.press("j");
       await k.press("enter");
       keyed = k.frame();

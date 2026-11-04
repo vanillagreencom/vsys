@@ -3,12 +3,7 @@ import { type ReactNode, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
-import {
-  type Level,
-  type Meter,
-  meters,
-  processesComplete,
-} from "../model/verdict";
+import { type Meter, meters, processesComplete } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import {
   type Attention,
@@ -59,8 +54,8 @@ import {
 } from "./regions";
 import type { ChartField, Retained } from "./retained";
 import { type Selection, useSelection } from "./selection";
-import { levelColor, metric, scrollbar, ui } from "./theme";
-import { eventKey, eventParts } from "./timeline";
+import { levelStatus, metric, scrollbar, statusColor, ui } from "./theme";
+import { eventKey, eventParts, eventStatus } from "./timeline";
 import {
   Bar,
   Detail,
@@ -98,7 +93,7 @@ export type HomeItem =
  * reader which way it is sorted.
  */
 export const busiestSorts: [string, string][] = [
-  ["CPU", "cpu"],
+  ["CPU %/core", "cpu"],
   ["Memory", "rss"],
   ["Agent", "name"],
   ["State", "state"],
@@ -237,7 +232,19 @@ export function Home({
   // drawn from these rows, because the renderer's own wrapping also breaks
   // after a full stop and would split `agents.slice` across a row these
   // never counted.
-  const verdict = wrapLines(verdictLine(items, s), width);
+  const lead = verdictItem(items);
+  const headline = verdictLine(items, s);
+  const verdictStatus = lead
+    ? levelStatus(lead.danger ? "danger" : "warn")
+    : headline === "Healthy"
+      ? "OK"
+      : undefined;
+  const verdict = wrapLines(
+    verdictStatus
+      ? `${verdictStatus}: ${lead ? headline.replace(/^[^:]+: /, "") : headline}`
+      : headline,
+    width,
+  );
   // Without every process, the lanes miss each escaped agent, so the count
   // is not a fact.
   const agentCount = processesComplete(s)
@@ -292,7 +299,9 @@ export function Home({
   // and the key line with its blank row above.
   const actions = (item: Attention) =>
     lines(nextLabel, item.next).length +
-    (item.command === undefined ? 0 : lines(copyLabel, item.command).length) +
+    (item.command === undefined
+      ? 0
+      : lines(copyLabel, item.command).length + 1) +
     keysRows;
   const described = (item: Attention) =>
     cardDetail(
@@ -370,13 +379,12 @@ export function Home({
     row: HomeItem,
     i: number,
     line: ReactNode,
-    { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
+    { under }: { under?: () => ReactNode } = {},
   ) => (
     <ListRow
       key={homeKey(row)}
       id={`home-${i}`}
       selected={marked(i)}
-      color={color}
       onOpen={() => openRow(row, i)}
       under={marked(i) && under?.()}
     >
@@ -499,8 +507,6 @@ export function Home({
     }
     return false;
   });
-  const lead = verdictItem(items);
-  const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
   const panel = panelWidth(width);
   // A tile row shares its width between the tiles on it, two columns apart,
   // so the chart is as wide as the tile that carries it however many that is.
@@ -520,7 +526,7 @@ export function Home({
   // while a name that identifies nothing shows in nothing.
   const homeNameFloor = 24;
   const barColumn: Column = { label: "", width: 10 };
-  const cpuColumn: Column = { label: "CPU", width: 7, align: "right" };
+  const cpuColumn: Column = { label: "CPU %/core", width: 12, align: "right" };
   const memoryColumn: Column = { label: "Memory", width: 10, align: "right" };
   const stateOption: Column = { label: "State", width: 9 };
   const fixedWith = (state: boolean): Column[] => [
@@ -540,8 +546,8 @@ export function Home({
   // mark instead of stopping mid-word.
   const changeColumns: [Column, Column, Column] = [
     { label: "", width: 11, align: "right" },
-    { label: "", width: 13 },
-    { label: "", width: Math.max(8, panel - 5 - 11 - 13 - 4) },
+    { label: "", width: 22 },
+    { label: "", width: Math.max(8, panel - 5 - 11 - 22 - 4) },
   ];
   const nameColumn: Column = {
     label: "Agent",
@@ -568,9 +574,17 @@ export function Home({
         {verdict.map((line, at) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
           <Line key={at} height={1} flexShrink={0} truncate>
-            <span fg={levelColor(level)} attributes={ui.bold}>
-              {line}
-            </span>
+            {at === 0 && verdictStatus ? (
+              <>
+                <Ink color={statusColor(verdictStatus)} attributes={ui.bold}>
+                  {verdictStatus}
+                </Ink>
+                {": "}
+                {line.slice(verdictStatus.length + 2)}
+              </>
+            ) : (
+              line
+            )}
           </Line>
         ))}
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
@@ -633,12 +647,18 @@ export function Home({
                     // the marker says open only while the detail is drawn.
                     // The title is cut to the row with its mark, and the
                     // detail repeats what a cut can lose.
-                    <Disclosure
-                      open={marked(i)}
-                      name={fit(safe(row.item.title), panel - 3)}
-                    />,
+                    <>
+                      <Disclosure open={marked(i)} name="" />
+                      <Ink
+                        color={statusColor(
+                          row.item.danger ? "Error" : "Warning",
+                        )}
+                      >
+                        {row.item.danger ? "Error" : "Warning"}
+                      </Ink>{" "}
+                      {fit(safe(row.item.title), panel - 11)}
+                    </>,
                     {
-                      color: row.item.danger ? ui.danger : ui.warn,
                       under: () => (
                         <Detail>
                           {/* One paragraph per idea, every one after the first
@@ -669,7 +689,7 @@ export function Home({
                               where they sat. */}
                           {action(nextLabel, row.item.next, undefined, 1)}
                           {row.item.command !== undefined &&
-                            action(copyLabel, row.item.command, ui.accent)}
+                            action(copyLabel, row.item.command, ui.accent, 1)}
                           {/* One row, cut with its mark where the card is
                               narrower than the line: a row the edge shortens
                               says nothing of what it dropped. */}
@@ -722,11 +742,18 @@ export function Home({
                     {`${cell(timeColumn, e.time)}${columnGap}`}
                   </span>
                   <Ink
-                    color={levelColor(e.level)}
+                    color={statusColor(eventStatus(row.event, e.level))}
                     attributes={e.level === "ok" ? ui.none : ui.bold}
                   >
-                    {cell(kindColumn, e.kind)}
+                    {eventStatus(row.event, e.level)}
                   </Ink>
+                  {fit(
+                    eventStatus(row.event, e.level) === e.kind
+                      ? ""
+                      : ` ${e.kind}`,
+                    kindColumn.width - eventStatus(row.event, e.level).length,
+                  )}
+                  {columnGap}
                   {safe(cell(subjectColumn, e.text))}
                 </>,
               );

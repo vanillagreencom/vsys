@@ -14,10 +14,13 @@ Shared layout keeps headings aligned with rows and a selected identity attached 
 
 Review holds boundaries without a named check.
 
-- Take every colour from `src/ui/theme.ts`. Severity uses red, amber and green; actions use cyan; grey recedes behind selection. Never put colour values in screens. `src/ui/theme.test.tsx` checks the palette across views.
+- Take every colour from `src/ui/theme.ts`. Map status words through its four classes: success, warning, error and neutral. Only a status word or chip takes green, amber or red; identities, readings and explanations keep the default foreground. Actions use cyan and grey recedes behind selection. Never colour a whole row by severity. `src/ui/theme.test.tsx` checks the palette and status placement across tabs.
 - Render lines through `Line` in `src/ui/widgets.tsx`; OpenTUI otherwise uses a fixed foreground.
 - Feed headings and rows one `Column[]`. Mark a cut and show the whole text in detail. `src/ui/columns.test.ts` checks column arithmetic.
 - Use `pidColumn` from `src/ui/columns.ts` on every lane-name view. `src/ui/home.test.tsx` checks identity columns across views and widths.
+- Give each Resources Selected value its own labelled `Field`; show an unset readable limit as `no limit` and keep an unread value unknown. `src/ui/resources.test.tsx` checks the fields and quota units.
+- Leave a blank row before every displayed command and before its copy hint. `src/ui/widgets.test.tsx` checks `CommandOffer`; `src/ui/home.test.tsx` checks an open card.
+- Express CPU use as percent of one core in tiles, columns, facts, chart headings and thresholds. `src/ui/agent.test.tsx` and `src/ui/resources.test.tsx` check the displayed unit.
 - Draw every selectable row through `ListRow` and expanded content through `Detail` in `src/ui/widgets.tsx`. Preserve the rule and indent that distinguish nested content. `src/ui/App.test.tsx` checks shared nesting.
 - Register screen keys through `useScreenKeys` in `src/ui/keys.tsx` so an editor receives keys first. List only effective keys in the footer. `src/ui/App.test.tsx` checks offered keys.
 - Follow item identity through `useSelection` in `src/ui/selection.ts`. A new item reusing a row number must not take the selection.

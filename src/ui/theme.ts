@@ -102,3 +102,53 @@ export function levelColor(level: Level): RGBA {
 export function readingWeight(n: number | null | undefined): number {
   return n ? ui.none : ui.dim;
 }
+
+/** The short words that may carry status colour; prose and readings stay plain. */
+export const statusClasses = {
+  OK: "success",
+  Healthy: "success",
+  available: "success",
+  clean: "success",
+  "all clear": "success",
+  "Alert closed": "success",
+  live: "success",
+  Warning: "warning",
+  unread: "warning",
+  "not available": "warning",
+  "Never checked": "warning",
+  "Check overdue": "warning",
+  "Damage state unknown": "warning",
+  Error: "error",
+  Damaged: "error",
+  "New errors": "error",
+  "read-only": "error",
+  Stop: "error",
+  measuring: "neutral",
+  warming: "neutral",
+  Checking: "neutral",
+  "not measured yet": "neutral",
+  running: "neutral",
+  sleeping: "neutral",
+  "Lane started": "neutral",
+  "Lane stopped": "neutral",
+  "Moved cgroup": "neutral",
+  Freeze: "neutral",
+  Thaw: "neutral",
+  Verdict: "neutral",
+  Escaped: "warning",
+  Corruption: "error",
+} as const;
+export type StatusWord = keyof typeof statusClasses;
+export function statusColor(word: StatusWord): RGBA {
+  const role = statusClasses[word];
+  return role === "success"
+    ? ui.ok
+    : role === "warning"
+      ? ui.warn
+      : role === "error"
+        ? ui.danger
+        : ui.fg;
+}
+export function levelStatus(level: Level): "OK" | "Warning" | "Error" {
+  return level === "danger" ? "Error" : level === "warn" ? "Warning" : "OK";
+}

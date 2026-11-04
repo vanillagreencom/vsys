@@ -2,6 +2,7 @@ import type { Config } from "../config/config";
 import type { CauseId, Level } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import { age, amount, gap, share } from "./format";
+import { levelStatus, type StatusWord } from "./theme";
 
 /** One short clause per cause, so an event states why without a second line. */
 const phrases: Record<CauseId, string> = {
@@ -150,4 +151,21 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
 export function eventLine(e: TimelineEvent, c: Config): string {
   const { time, kind, text } = eventParts(e, c);
   return `${time} ${kind}: ${text}`;
+}
+
+/** Event kinds describe activity; only alert and verdict levels judge its severity. */
+export function eventStatus(event: TimelineEvent, level: Level): StatusWord {
+  switch (event.kind) {
+    case "alert-open":
+    case "verdict":
+      return levelStatus(level);
+    case "alert-close":
+      return "Alert closed";
+    case "lane-start":
+      return "Lane started";
+    case "lane-stop":
+      return "Lane stopped";
+    case "cgroup-move":
+      return level === "warn" ? "Warning" : "Moved cgroup";
+  }
 }

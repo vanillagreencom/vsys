@@ -657,8 +657,11 @@ test("a scope nested in another unit's subtree lists Freeze and Thaw but no Stop
     for (let i = 0; i < 4; i++) await t.press("j");
     await t.press("enter");
     const frame = t.frame();
-    expect(frame).toContain("init.scope/cgroup.freeze");
-    expect(frame).not.toContain("--signal=TERM");
+    await t.press("j");
+    expect(t.frame()).toContain("init.scope/cgroup.freeze");
+    expect(frame).toMatch(/Freeze\s+pauses every process/);
+    expect(frame).toMatch(/Thaw\s+resumes every process/);
+    expect(frame).not.toMatch(/Stop\s+ends the scope/);
   } finally {
     await t.close();
   }
@@ -1611,5 +1614,27 @@ test("Open files reads no descriptor while the section is closed", async () => {
     linked.mockRestore();
     await t.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Actions explain each name and show only the selected command in its detail", async () => {
+  const t = await stopSelected(defaults(), []);
+  try {
+    const frame = t.frame();
+    expect(frame).toContain("Freeze  pauses every process in this agent");
+    expect(frame).toContain("Thaw    resumes every process in this agent");
+    expect(frame).toContain("Stop    ends the scope");
+    expect(frame).not.toContain("echo 1 >");
+    expect(frame).toContain("CPU · percent of one core");
+    expect(frame).not.toContain("of the machine");
+    const rows = frame.split("\n");
+    const command = rows.findIndex((row) => row.includes(stopCommand));
+    const hint = rows.findIndex((row) => row.includes("y copies the command."));
+    expect(command).toBeGreaterThan(0);
+    expect(hint).toBeGreaterThan(command);
+    expect(rows[command - 1]?.replace(/[ │]/g, "")).toBe("");
+    expect(rows[hint - 1]?.replace(/[ │]/g, "")).toBe("");
+  } finally {
+    await t.close();
   }
 });

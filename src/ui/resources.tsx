@@ -1,3 +1,5 @@
+import { ScrollBoxRenderable } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
@@ -21,10 +23,18 @@ import {
 } from "./format";
 import { useScreenKeys } from "./keys";
 import { firstRow, useSelection } from "./selection";
-import { levelColor, metric, ui } from "./theme";
+import {
+  levelStatus,
+  metric,
+  type StatusWord,
+  scrollbar,
+  statusColor,
+  ui,
+} from "./theme";
 import {
   Bar,
   Field,
+  Ink,
   List,
   nextDown,
   Reading,
@@ -118,6 +128,13 @@ export function serviceState(
     ? { kind: "busy", level: "warn", hour, threshold: c.serviceCpuPercent }
     : { kind: "clear", level: "ok", hour };
 }
+const serviceWords: Record<ServiceState["kind"], StatusWord> = {
+  unread: "unread",
+  measuring: "measuring",
+  warming: "warming",
+  busy: "Warning",
+  clear: "OK",
+};
 /** Mixed windows name their span so a warm-up reading cannot look like an hour. */
 function serviceCpuText(state: ServiceState, allHours: boolean): string {
   switch (state.kind) {
@@ -147,12 +164,12 @@ function serviceStatusText(state: ServiceState): string {
         remaining > 0
           ? `the hour average needs ${remaining} more ${remaining === 1 ? "minute" : "minutes"}`
           : "the hour average needs a checkpoint 60 to 75 minutes old";
-      return `averaged ${percent(state.average)} of a core over the last ${count(minutes, "minute")}; ${hour}`;
+      return `averaged ${percent(state.average)} of one core over the last ${count(minutes, "minute")}; ${hour}`;
     }
     case "busy":
-      return `averaged ${percent(state.hour)} of a core over the last hour, at or above ${percent(state.threshold)}`;
+      return `averaged ${percent(state.hour)} of one core over the last hour, at or above ${percent(state.threshold)}`;
     case "clear":
-      return `averaged ${percent(state.hour)} of a core over the last hour`;
+      return `averaged ${percent(state.hour)} of one core over the last hour`;
     default:
       return state satisfies never;
   }
@@ -230,7 +247,7 @@ export function treePrefixes(groups: Group[]): Map<string, string> {
       walk(parent, "   ".repeat(depth(parent)));
   return prefixes;
 }
-/** What made a group's row red or amber, with the numbers that tripped it. */
+/** What gives a group its warning or error status, with the numbers that tripped it. */
 export type GroupCause =
   | { kind: "unconfined"; level: "danger" }
   | { kind: "cap"; level: "danger"; cap: number; floor: number }
@@ -307,8 +324,7 @@ export function groupCause(
 export function groupLevel(g: Group, s: Snapshot, c: Config): Level {
   return groupCause(g, s, c)?.level ?? "ok";
 }
-function causeText(cause: GroupCause | null, c: Config): string {
-  if (cause === null) return "nothing over a threshold";
+function causeText(cause: GroupCause, c: Config): string {
   switch (cause.kind) {
     case "unconfined":
       return "agent outside the agent slice";
@@ -323,6 +339,21 @@ function causeText(cause: GroupCause | null, c: Config): string {
     default:
       return cause satisfies never;
   }
+}
+
+function quotaText(raw: string | null): string {
+  if (raw === null) return gap;
+  const [quota, period] = raw.trim().split(/\s+/);
+  if (quota === "max") return "no limit";
+  const q = Number(quota),
+    p = Number(period);
+  return quota === undefined ||
+    period === undefined ||
+    !Number.isFinite(q) ||
+    !Number.isFinite(p) ||
+    p <= 0
+    ? gap
+    : `${share((q / p) * 100)} of one core`;
 }
 
 /**
@@ -349,6 +380,7 @@ export function Resources({
 }) {
   const [selection, setSelection] = useState(firstRow);
   const [all, setAll] = useState(false);
+  const renderer = useRenderer();
   const items = resourceRows(s, all);
   const rows = groupRows(s, all);
   const services = items.filter((row) => row.kind === "service");
@@ -378,7 +410,17 @@ export function Resources({
     onTargetUsed();
   }, [target, onTargetUsed, onNotice, s, all, choose]);
   const hidden = s.groups.length - rows.length;
-  useScreenKeys((name) => {
+  useScreenKeys((name, key) => {
+    if (name === "pageup" || name === "pagedown") {
+      const fields =
+        renderer.root.findDescendantById("resource-fields") ??
+        renderer.root.findDescendantById("split-detail");
+      if (fields instanceof ScrollBoxRenderable) {
+        key.preventDefault();
+        fields.scrollBy(name === "pagedown" ? 1 : -1, "viewport");
+        return true;
+      }
+    }
     if (name === c.keys.down || name === "down") {
       move((i) => nextDown(items.length, i));
       return true;
@@ -399,7 +441,7 @@ export function Resources({
     .map((m) => meterTile(m, s, c));
   const labels = groupLabels(s.groups);
   const prefixes = treePrefixes(rows);
-  const limit = (v: number | null) => (v === null ? "none" : bytes(v, c));
+  const limit = (v: number | null) => (v === null ? "no limit" : bytes(v, c));
   const { SwapTotal, SwapFree } = s.system.memory;
   const swapUsed =
     SwapTotal === undefined || SwapFree === undefined
@@ -420,19 +462,26 @@ export function Resources({
   const topCpu = Math.max(100, ...rows.map((g) => g.cpuPercent ?? 0));
   const topMemory = Math.max(1, ...rows.map((g) => g.memory ?? 0));
   const cpuBar: Column = { label: "", width: 8 };
-  const cpuColumn: Column = { label: "CPU", width: 7, align: "right" };
+  const cpuColumn: Column = { label: "CPU %/core", width: 10, align: "right" };
   const memoryBar: Column = { label: "", width: 8 };
   const memoryColumn: Column = { label: "Memory", width: 10, align: "right" };
-  const tasksColumn: Column = { label: "Tasks", width: 14, align: "right" };
-  const fixed: Column[] = [
-    cpuBar,
-    cpuColumn,
-    memoryBar,
-    memoryColumn,
-    tasksColumn,
-  ];
   const side = current ? sideWidth(width) : 0;
   const listWidth = width - side - (side ? sideGap : 0);
+  const bars = listWidth >= 100;
+  const tasksColumn: Column = {
+    label: "Tasks",
+    width: bars ? 14 : 7,
+    align: "right",
+  };
+  const statusColumn: Column = { label: "State", width: 9 };
+  const fixed: Column[] = [
+    ...(bars ? [cpuBar] : []),
+    cpuColumn,
+    ...(bars ? [memoryBar] : []),
+    memoryColumn,
+    tasksColumn,
+    statusColumn,
+  ];
   // The screen padding and the marker take five columns, and the name is
   // joined to the fixed columns by one more gap.
   const nameColumn: Column = {
@@ -445,12 +494,17 @@ export function Resources({
   const groupColumns: Column[] = [nameColumn, ...fixed];
   const allHours = services.every((row) => row.service.cpuHourPercent !== null);
   const serviceCpuColumn: Column = {
-    label: allHours ? "Hour average" : "CPU",
+    label: allHours ? "Hour avg %/core" : "CPU %/core",
     width: 16,
     align: "right",
   };
   const serviceColumn: Column = { ...nameColumn, label: "Service" };
-  const serviceColumns: Column[] = [serviceColumn, cpuBar, serviceCpuColumn];
+  const serviceColumns: Column[] = [
+    serviceColumn,
+    cpuBar,
+    serviceCpuColumn,
+    statusColumn,
+  ];
   const topServiceCpu = Math.max(
     100,
     ...services.map((row) => serviceCpu(row.service) ?? 0),
@@ -461,8 +515,19 @@ export function Resources({
   const tileRows = Math.ceil(tileCount / tilesPerRow(tileCount, inner));
   // Each tile row is three lines and the rows sit one line apart; then the
   // blank under them, the section with its margin, the table heading, and,
-  // where the detail is not beside the list, its five fields and their margin.
-  const listHeight = height - (4 * tileRows - 1) - 1 - 2 - 1 - (side ? 0 : 6);
+  // where the detail is stacked, the scrollable fields and their margin.
+  const detailHeight = Math.min(
+    currentGroup ? 14 : 5,
+    Math.max(4, height - (4 * tileRows - 1) - s.system.zram.length - 12),
+  );
+  const listHeight =
+    height -
+    (4 * tileRows - 1) -
+    (s.system.zram.length ? s.system.zram.length : 0) -
+    1 -
+    2 -
+    1 -
+    (side ? 0 : detailHeight + 1);
   // The services table's heading, its margin and its column heading take
   // three rows. It takes the rows its list needs while the groups' list needs
   // fewer than the rest, and never under a third. A list draws one row, and
@@ -490,6 +555,86 @@ export function Resources({
       : "";
   const groupsAbove =
     !showGroups && rows.length ? ` · ${count(rows.length, "group")} above` : "";
+  const selectedDetail =
+    current?.kind === "service" && currentState ? (
+      <>
+        <Field label="Unit" value={current.service.name} wrap={side > 0} />
+        <Field
+          label="Status"
+          value={serviceWords[currentState.kind]}
+          color={statusColor(serviceWords[currentState.kind])}
+          wrap={side > 0}
+        />
+        <Field
+          label="CPU use"
+          value={serviceStatusText(currentState)}
+          wrap={side > 0}
+        />
+        <Field
+          label="Cgroup"
+          value={`${c.cgroupTop}/${current.path}`}
+          wrap={side > 0}
+        />
+      </>
+    ) : (
+      currentGroup && (
+        <>
+          <Field label="Unit" value={currentGroup.name} wrap={side > 0} />
+          <Field
+            label="Status"
+            value={levelStatus(currentCause?.level ?? "ok")}
+            color={statusColor(levelStatus(currentCause?.level ?? "ok"))}
+            wrap={side > 0}
+          />
+          {currentCause && (
+            <Field
+              label="Reason"
+              value={causeText(currentCause, c)}
+              wrap={side > 0}
+            />
+          )}
+          {[
+            [
+              "Memory high",
+              currentGroup.highRead ? limit(currentGroup.high) : gap,
+            ],
+            [
+              "Memory max",
+              currentGroup.maxRead ? limit(currentGroup.max) : gap,
+            ],
+            [
+              "Swap",
+              `${amount(currentGroup.swap, c)} used; ${currentGroup.swapMaxRead ? (currentGroup.swapMax === null ? "no limit" : `limit ${bytes(currentGroup.swapMax, c)}`) : gap}`,
+            ],
+            [
+              "Tasks max",
+              currentGroup.tasksMaxRead
+                ? String(currentGroup.tasksMax ?? "no limit")
+                : gap,
+            ],
+            ["CPU weight", String(currentGroup.weight ?? gap)],
+            ["CPU quota", quotaText(currentGroup.cpuMax)],
+            ["Page cache", amount(currentGroup.cache, c)],
+            [
+              "Written",
+              currentGroup.writeRate === null
+                ? gap
+                : `${bytes(currentGroup.writeRate, c)}/s`,
+            ],
+            ["CPU wait", percent(currentGroup.pressure.cpu?.some)],
+            ["Memory wait", percent(currentGroup.pressure.memory?.some)],
+            ["Disk wait", percent(currentGroup.pressure.io?.some)],
+          ].map(([label, value]) => (
+            <Field
+              key={label}
+              label={label ?? ""}
+              value={value ?? gap}
+              wrap={side > 0}
+            />
+          ))}
+        </>
+      )
+    );
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <Tiles width={inner}>
@@ -509,7 +654,7 @@ export function Resources({
           detail={`of ${amount(s.system.memory.SwapTotal ?? null, c)}${s.system.zram
             .map(
               (z) =>
-                ` · ${z.device} ${bytes(z.original, c)} in ${bytes(z.compressed, c)}`,
+                `\n${z.device}: ${bytes(z.original, c)} compressed to ${bytes(z.compressed, c)}`,
             )
             .join("")}`}
         />
@@ -522,60 +667,19 @@ export function Resources({
         item={current && rowKey(current)}
         below
         detail={
-          current?.kind === "service" && currentState ? (
-            <>
-              <Field
-                label="Unit"
-                value={current.service.name}
-                wrap={side > 0}
-              />
-              <Field
-                label="Status"
-                value={serviceStatusText(currentState)}
-                color={
-                  currentState.level === "ok"
-                    ? undefined
-                    : levelColor(currentState.level)
-                }
-                wrap={side > 0}
-              />
-              <Field
-                label="Cgroup"
-                value={`${c.cgroupTop}/${current.path}`}
-                wrap={side > 0}
-              />
-            </>
+          side ? (
+            selectedDetail
           ) : (
-            currentGroup && (
-              <>
-                <Field label="Unit" value={currentGroup.name} wrap={side > 0} />
-                <Field
-                  label="Status"
-                  value={causeText(currentCause, c)}
-                  color={
-                    currentCause ? levelColor(currentCause.level) : undefined
-                  }
-                  wrap={side > 0}
-                />
-                <Field
-                  label="Limits"
-                  value={`memory high ${currentGroup.highRead ? limit(currentGroup.high) : gap} · max ${currentGroup.maxRead ? limit(currentGroup.max) : gap} · swap ${amount(currentGroup.swap, c)} of ${currentGroup.swapMaxRead ? limit(currentGroup.swapMax) : gap} · tasks max ${currentGroup.tasksMaxRead ? (currentGroup.tasksMax ?? "none") : gap}`}
-                  wrap={side > 0}
-                />
-                <Field
-                  label="CPU"
-                  value={`weight ${currentGroup.weight ?? gap} · quota ${currentGroup.cpuMax ?? gap} · page cache ${amount(currentGroup.cache, c)} · written ${currentGroup.writeRate === null ? gap : `${bytes(currentGroup.writeRate, c)}/s`}`}
-                  wrap={side > 0}
-                />
-                <Field
-                  label="Waiting"
-                  value={Object.entries(currentGroup.pressure)
-                    .map(([kind, p]) => `${kind} ${percent(p?.some)}`)
-                    .join(" · ")}
-                  wrap={side > 0}
-                />
-              </>
-            )
+            <scrollbox
+              id="resource-fields"
+              key={current && rowKey(current)}
+              height={detailHeight}
+              scrollY
+              scrollbarOptions={scrollbar}
+              contentOptions={{ flexShrink: 0 }}
+            >
+              {selectedDetail}
+            </scrollbox>
           )
         }
       >
@@ -601,29 +705,36 @@ export function Resources({
                   <Row
                     key={g.path}
                     selected={isSelected}
-                    color={levelColor(groupLevel(g, s, c))}
                     onOpen={() => choose(i)}
                   >
                     {safe(cell(nameColumn, name))}
-                    {columnGap}
-                    <Bar
-                      value={g.cpuPercent}
-                      max={topCpu}
-                      width={cpuBar.width}
-                      color={metric.cpu}
-                    />
+                    {bars && (
+                      <>
+                        {columnGap}
+                        <Bar
+                          value={g.cpuPercent}
+                          max={topCpu}
+                          width={cpuBar.width}
+                          color={metric.cpu}
+                        />
+                      </>
+                    )}
                     {columnGap}
                     <Reading
                       value={g.cpuPercent}
                       text={cell(cpuColumn, share(g.cpuPercent))}
                     />
-                    {columnGap}
-                    <Bar
-                      value={g.memory}
-                      max={topMemory}
-                      width={memoryBar.width}
-                      color={metric.memory}
-                    />
+                    {bars && (
+                      <>
+                        {columnGap}
+                        <Bar
+                          value={g.memory}
+                          max={topMemory}
+                          width={memoryBar.width}
+                          color={metric.memory}
+                        />
+                      </>
+                    )}
                     {columnGap}
                     <Reading
                       value={g.memory}
@@ -631,8 +742,12 @@ export function Resources({
                     />
                     {columnGap}
                     <span attributes={ui.dim}>
-                      {cell(tasksColumn, `${g.tasks ?? gap} tasks`)}
+                      {cell(tasksColumn, String(g.tasks ?? gap))}
                     </span>
+                    {columnGap}
+                    <Ink color={statusColor(levelStatus(groupLevel(g, s, c)))}>
+                      {cell(statusColumn, levelStatus(groupLevel(g, s, c)))}
+                    </Ink>
                   </Row>
                 );
               }}
@@ -672,7 +787,6 @@ export function Resources({
                   <Row
                     key={rowKey({ kind: "service", path: service.path })}
                     selected={isSelected}
-                    color={levelColor(state.level)}
                     onOpen={() => choose(rows.length + i)}
                   >
                     {safe(cell(serviceColumn, unitLabel(service.name)))}
@@ -691,6 +805,10 @@ export function Resources({
                         serviceCpuText(state, allHours),
                       )}
                     />
+                    {columnGap}
+                    <Ink color={statusColor(serviceWords[state.kind])}>
+                      {cell(statusColumn, serviceWords[state.kind])}
+                    </Ink>
                   </Row>
                 );
               }}

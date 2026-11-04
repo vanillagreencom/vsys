@@ -10,8 +10,8 @@ import { bytes, gap, percent, spanLabel, sparkline } from "./format";
 import { useScreenKeys } from "./keys";
 import type { ChartField, Retained } from "./retained";
 import { firstRow, useSelection } from "./selection";
-import { levelColor, metric, readingWeight, ui } from "./theme";
-import { eventKey, eventParts } from "./timeline";
+import { metric, readingWeight, statusColor, ui } from "./theme";
+import { eventKey, eventParts, eventStatus } from "./timeline";
 import {
   Chart,
   Field,
@@ -237,15 +237,15 @@ export function Timeline({
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
   // Each row takes its metric's own colour, so six sparklines one under the
-  // other are six quantities rather than one wall of amber. Escaped agents and
-  // corruption are severities, not metrics, and keep the severity colours.
+  // other distinguish the quantities. Event status words carry severity;
+  // the Escaped and Corruption counts keep the default foreground.
   const rows = [
     ["CPU wait", "pressure", percent, metric.cpu],
     ["Memory wait", "memoryPressure", percent, metric.memory],
     ["Disk wait", "ioPressure", percent, metric.disk],
     ["Builds", "builds", String, metric.builds],
-    ["Escaped", "unconfined", String, ui.warn],
-    ["Corruption", "corruption", String, ui.danger],
+    ["Escaped", "unconfined", String, ui.fg],
+    ["Corruption", "corruption", String, ui.fg],
   ] as const;
   // Budget cursor readings as one line without a sample and as tiles with one.
   // Charging for absent tiles could hide sparklines while leaving their space
@@ -263,7 +263,7 @@ export function Timeline({
   const listWidth = width - side - (side ? sideGap : 0);
   // A change row less its marker, its time and its kind, so a long subject is
   // cut with its mark rather than at the edge.
-  const subjectWidth = listWidth - 4 - 1 - 13 - 13;
+  const subjectWidth = listWidth - 4 - 1 - 13 - 22;
   /**
    * The unit a change's subject was decoded from, where it differs: the
    * subject reads as a name, and the unit is the handle a reader needs to
@@ -296,7 +296,7 @@ export function Timeline({
       <box height={1} flexShrink={0} />
       <box flexDirection="column" flexShrink={0} onMouseDown={onChart}>
         <Chart
-          title={`Agents CPU  ${value("agents", percent)}  ${spanLabel(agents, windowMs)}`}
+          title={`Agents CPU · percent of one core  ${value("agents", percent)}  ${spanLabel(agents, windowMs)}`}
           values={agents}
           height={3}
           max={agentsTop}
@@ -342,7 +342,7 @@ export function Timeline({
                 run.kind === "cursor"
                   ? ui.accent
                   : run.kind === "change"
-                    ? ui.warn
+                    ? ui.fg
                     : undefined
               }
               attributes={run.kind === "quiet" ? ui.dim : ui.none}
@@ -420,11 +420,15 @@ export function Timeline({
                 <Row selected={isSelected} onOpen={() => open(at, event)}>
                   <span attributes={ui.dim}>{`${e.time.padStart(11)}  `}</span>
                   <Ink
-                    color={levelColor(e.level)}
+                    color={statusColor(eventStatus(event, e.level))}
                     attributes={e.level === "ok" ? ui.none : ui.bold}
                   >
-                    {fit(e.kind, 13)}
+                    {eventStatus(event, e.level)}
                   </Ink>
+                  {fit(
+                    eventStatus(event, e.level) === e.kind ? "" : ` ${e.kind}`,
+                    22 - eventStatus(event, e.level).length,
+                  )}
                   {fit(safe(e.text), subjectWidth)}
                 </Row>
                 {isSelected && !side && unit && (

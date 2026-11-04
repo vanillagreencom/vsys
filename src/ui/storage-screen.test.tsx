@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { defaults } from "../config/config";
@@ -10,7 +11,14 @@ import type {
 } from "../model/types";
 import type { Level } from "../model/verdict";
 import { emptySnapshot, groupSnapshot, volumeSnapshot } from "../test/fixture";
-import { cellStyle, isChildLine, mount, selectedRow } from "../test/harness";
+import {
+  cellStyle,
+  isChildLine,
+  mount,
+  onScreen,
+  selectedRow,
+  shown,
+} from "../test/harness";
 import { present } from "../test/present";
 import { osc52 } from "./clipboard";
 import { age } from "./format";
@@ -664,7 +672,7 @@ test("a damaged filesystem lists every file each damaged address may hold", asyn
     await t.press("5");
     const frame = t.frame();
     // The line itself, before anything is opened.
-    expect(frame).toContain("Damage found: 3 possibly damaged files");
+    expect(frame).toContain("Damaged: 3 possibly damaged files");
     expect(frame).toContain("last full check 1.0h ago");
     expect(frame).toContain("last new error 31.0h ago");
     // Both names of the first address and the letter, each possibly
@@ -1294,13 +1302,15 @@ test("scratch roots with no reading yet are measuring, not unconfigured", async 
   }
 });
 
-test("each scratch root says where it came from under its row", async () => {
+test("narrow Storage keeps each row's status and each scratch root's origin", async () => {
+  const c = defaults();
   const s = emptySnapshot();
   const root = (path: string, origin: ScratchOrigin | null) => ({
     path,
-    bytes: 1,
-    age: 0,
-    error: null,
+    bytes:
+      path === "/stored" ? null : path === "/typed" ? c.scratchQuota + 1 : 1,
+    age: path === "/typed" ? 12600 : path === "/shipped" ? 45 : null,
+    error: path === "/stored" ? "EPERM" : null,
     origin,
   });
   s.storage.scratch = [
@@ -1310,12 +1320,59 @@ test("each scratch root says where it came from under its row", async () => {
     // A row an older build stored, whose origin is not known.
     root("/stored", null),
   ];
-  s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 0, error: null }];
+  s.storage.sessions = [{ path: "/agent/s", bytes: 1, age: 3600, error: null }];
+  const report =
+    "/home/reader/.local/state/vsys/reports/11111111-2222-3333-4444-555555555555";
+  s.storage.scrubs = [{ path: report, text: "report failed", problem: true }];
   // The narrowest terminal the screen is drawn for: an origin after the
   // row's fixed columns would start past its last column.
-  const t = await mount(s, defaults(), { width: 80, height: 40 });
+  const t = await mount(s, c, { width: 80, height: 40 });
   try {
     await t.press("5");
+    for (const [path, status, role] of [
+      ["/typed", "Warning", 3],
+      ["/stored", "unread", 3],
+      [report.slice(0, 20), "Error", 1],
+    ] as const) {
+      const row = present(
+        t.ui.captureSpans().lines.find((line) =>
+          line.spans
+            .map((span) => span.text)
+            .join("")
+            .includes(path),
+        ),
+        `the ${path} row`,
+      );
+      expect(row.spans.map((span) => span.text).join("")).toContain(status);
+      const word = present(
+        row.spans.find((span) => span.text.includes(status)),
+        `the ${path} status`,
+      );
+      expect(onScreen(word).glyph).toBe(shown(RGBA.fromIndex(role), "fg"));
+    }
+    expect(t.frame().replace(/[\s│]/g, "")).toContain(report);
+    const sizeEdges = (
+      [
+        ["/typed", "10.0 GiB"],
+        ["/shipped", "1 B"],
+        ["/agent", "1 B"],
+        ["/stored", "not avail…"],
+        ["/agent/s", "1 B"],
+      ] as const
+    ).map(([path, reading]) => {
+      const row = present(
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes(`${path} `)),
+        `the ${path} size row`,
+      );
+      expect(row).toContain(reading);
+      return row.indexOf(reading) + reading.length;
+    });
+    expect(new Set(sizeEdges).size).toBe(1);
+    await t.press(c.keys.scratch);
+    expect(selectedRow(t.frame())).toContain("Warning");
     // Only the selected root opens its detail: with /typed selected, the
     // root under it says nothing about where it came from.
     const opened = t.frame().split("\n");
@@ -1365,7 +1422,7 @@ test("a missing scratch root's error follows its age on the row", async () => {
         .frame()
         .split("\n")
         .find((row) => row.includes("/typed ")) ?? "";
-    expect(line.trimEnd().endsWith(`ago  ${error}`)).toBe(true);
+    expect(line.trimEnd().endsWith(`ago  unread ${error}`)).toBe(true);
   } finally {
     await t.close();
   }
@@ -1856,6 +1913,50 @@ test("the Filesystems heading counts filesystems, not mounts", async () => {
       "the Filesystems heading",
     );
     expect(heading).toMatch(/Filesystems\s+1\s/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("Storage Selected preserves the scrub report's line breaks", async () => {
+  const c = defaults(),
+    s = emptySnapshot(1_000_000);
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      fsid: "report-fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/report",
+      fsid: "report-fs",
+      text: "Started: Monday\nDuration: 0:03:09\nScrubbed: 1 GiB\nRate: 5 MiB/s\nErrors: none",
+      problem: false,
+      readable: true,
+      status: "finished",
+      startedAt: 500_000,
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    },
+  ];
+  const t = await mount(s, c, { width: 180, height: 54 });
+  try {
+    await t.press("5");
+    await t.press("enter");
+    const rows = t.frame().split("\n");
+    const start = rows.findIndex((row) => row.includes("Started: Monday"));
+    expect(start).toBeGreaterThan(0);
+    expect(present(rows[start + 1], "duration row")).toContain(
+      "Duration: 0:03:09",
+    );
+    expect(present(rows[start + 2], "scrubbed row")).toContain(
+      "Scrubbed: 1 GiB",
+    );
+    expect(present(rows[start + 3], "rate row")).toContain("Rate: 5 MiB/s");
+    expect(present(rows[start + 4], "errors row")).toContain("Errors: none");
   } finally {
     await t.close();
   }

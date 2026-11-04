@@ -242,7 +242,7 @@ test("Settings lists a capability it could not read, with the reason", async () 
     // and the row says what the missing source costs rather than naming the
     // kernel interface it could not find.
     expect(settings).toMatch(
-      /○ ▸ Pressure stall information\s+every wait reading is blank rather than zero/,
+      /○ ▸ Pressure stall information\s+not available every wait reading is blank rather than zero/,
     );
     expect(settings).not.toMatch(
       /○ ▸ Pressure stall information\s+no PSI on this kernel/,
@@ -538,11 +538,9 @@ test("a missing capability wraps its reason and its source under the row", async
     // It runs onto a second line rather than being cut at the terminal edge,
     // and the whole diagnostic is there to be read across the two.
     expect(lines[source + 1]?.trim()).not.toBe("");
-    const joined = `${lines[source]} ${lines[source + 1]}`
-      // The scrollbar draws in the last column of every line.
-      .replace(/[^\x20-\x7e]/g, " ")
-      .replace(/\s+/g, " ");
-    expect(joined).toContain("ENOENT: no such file or directory");
+    expect(t.frame().replace(/\s+/g, " ")).toContain(
+      "ENOENT: no such file or directory",
+    );
   } finally {
     await t.close();
   }
@@ -972,6 +970,8 @@ test("reopening the find box keeps the query on the row it matched", async () =>
 test("a row's detail is indented under it, its wrapped lines included", async () => {
   const c = defaults();
   const s = emptySnapshot();
+  const diagnostic =
+    "ENOENT: no such file or directory while reading CPU pressure from this kernel pressure interface";
   s.capabilities = s.capabilities.map((cap) =>
     cap.id === "psi"
       ? {
@@ -979,7 +979,7 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
           available: false,
           failure: "absent" as const,
           source: "/proc/pressure/cpu",
-          detail: "ENOENT: no such file or directory",
+          detail: diagnostic,
         }
       : cap,
   );
@@ -993,40 +993,41 @@ test("a row's detail is indented under it, its wrapped lines included", async ()
     const lines = t.frame().split("\n");
     const row = lines.findIndex((line) => line.includes("▍○ ▾ Pressure"));
     expect(row).toBeGreaterThan(-1);
-    // The screen's own margin is two columns and the one indent every
-    // expansion reads adds four, so a detail line starts at column six. The
-    // second line is the one that matters: padding on a text element leaves
-    // every wrapped line at the margin, which reads as the next row rather
-    // than as part of this one. The row itself carries no rule; both of its
-    // continuation lines do, and the wrapped one is the line an indent alone
-    // never reached.
+    // The Detail rule stays beside the whole diagnostic. Its continuation
+    // keeps the value column after the Field label, not the screen margin.
     const pressure = present(lines[row], "the Pressure row");
-    const reason = present(lines[row + 1], "the reason line");
-    const wrapped = present(lines[row + 2], "the wrapped reason line");
+    const diagnosticAt = lines.findIndex((line) => line.includes("ENOENT:"));
+    expect(diagnosticAt).toBeGreaterThan(row);
+    const first = present(lines[diagnosticAt], "the diagnostic first row");
+    const wrapped = present(
+      lines[diagnosticAt + 1],
+      "the diagnostic continuation",
+    );
     expect(isChildLine(pressure)).toBe(false);
-    expect(isChildLine(reason)).toBe(true);
+    expect(isChildLine(first)).toBe(true);
     expect(isChildLine(wrapped)).toBe(true);
-    // Where the rule and the text start, not merely that a rule precedes the
-    // text: `isChildLine` takes any indent of one column or more.
-    const textAt = (line: string) => {
-      const rule = line.indexOf("│");
-      return rule + 1 + line.slice(rule + 1).search(/\S/);
-    };
-    expect(reason.indexOf("│")).toBe(4);
-    expect(textAt(reason)).toBe(6);
-    expect(textAt(wrapped)).toBe(6);
-    // And what the drill-down says in the place it names the cause.
-    expect(reason).toContain("no PSI on this kernel");
-    expect(reason).toContain("/proc/pressure/cpu");
-    expect(wrapped.trimEnd().endsWith("directory)")).toBe(true);
+    expect(first.indexOf("│")).toBe(4);
+    expect(wrapped.indexOf("│")).toBe(4);
+    expect(first.indexOf("ENOENT:")).toBe(18);
+    expect(wrapped.slice(5).search(/\S/) + 5).toBe(18);
+    expect(
+      [first, wrapped].map((line) => line.slice(18).trim()).join(" "),
+    ).toBe(diagnostic);
+    expect(t.frame()).toContain("no PSI on this kernel");
+    expect(t.frame()).toContain("/proc/pressure/cpu");
     // The cost is cut on the row with its mark, and whole in the detail.
     expect(pressure.trimEnd().endsWith("…")).toBe(true);
     // What the missing reading costs is a second idea, so a blank row of the
     // same block separates it from the reason: the rule runs down that row
     // and no word does, which is why `isChildLine` does not answer it.
-    expect(lines[row + 3]?.trim()).toBe("│");
+    const costAt = lines.findIndex(
+      (line, index) =>
+        index > row && isChildLine(line) && line.includes("every wait reading"),
+    );
+    expect(costAt).toBeGreaterThan(row);
+    expect(lines[costAt - 1]?.trim()).toBe("│");
     const cost = lines
-      .slice(row + 4, row + 6)
+      .slice(costAt, costAt + 2)
       .map((line) => line.slice(6).trim());
     expect(cost.join(" ")).toBe(
       "every wait reading is blank rather than zero, on Home, Agents, Resources and Timeline",
@@ -1067,7 +1068,11 @@ test("a source that could not be read shows why, at the end of a short list", as
     // flush against the bottom edge and this line was the one below the fold —
     // which is the whole of what the reader selected it for.
     expect(selectedRow(frame)).toContain(capabilityLabels[last.id]);
-    expect(frame).toContain("(/proc/pressure/cpu: ENOENT");
+    expect(frame).toContain(
+      "no agent slice is defined or running on this machine",
+    );
+    await t.press("\u001b[6~");
+    expect(t.frame()).toContain("ENOENT: no such file or directory");
   } finally {
     await t.close();
   }
@@ -1337,6 +1342,41 @@ test("Settings saves a key binding only under a name a keypress carries", async 
     expect(saves.map((c) => c.keys.open)).toEqual(["return"]);
     await rebindOpen("ctrl+o");
     expect(saves.map((c) => c.keys.open)).toEqual(["return", "ctrl+o"]);
+  } finally {
+    await t.close();
+  }
+});
+
+test("an opened tmux source labels its purpose before the whole wrapped probe", async () => {
+  const c = defaults(),
+    s = emptySnapshot();
+  const command =
+    "tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index}.#{pane_index} #{window_name}'";
+  s.capabilities = [
+    { id: "tmux", available: true, failure: null, source: command, detail: "" },
+  ];
+  const t = await mount(s, c, { width: 100, height: 35 });
+  try {
+    await t.press("7");
+    await t.press("enter");
+    const rows = t.frame().split("\n");
+    expect(t.frame()).toContain("Gives");
+    expect(t.frame()).toContain("Pane addresses and titles");
+    expect(t.frame()).toContain("Read from");
+    const probe = rows.findIndex((row) =>
+      row.includes("tmux list-panes -a -F"),
+    );
+    expect(probe).toBeGreaterThan(0);
+    expect(t.frame()).not.toContain("copies this source detail");
+    expect(
+      rows
+        .slice(probe, probe + 3)
+        .join("")
+        .replace(/\s/g, ""),
+    ).toContain("#{window_name}'");
+    await t.press(c.keys.copy);
+    expect(t.written).toEqual([]);
+    expect(t.frame()).toContain("This row has no command to copy");
   } finally {
     await t.close();
   }

@@ -8,34 +8,24 @@ import { type TextProps, useRenderer } from "@opentui/react";
 import {
   Children,
   cloneElement,
-  createContext,
   isValidElement,
   type ReactNode,
   type RefObject,
-  useContext,
   useEffect,
   useRef,
 } from "react";
 import { safe } from "../model/export";
 import type { Level } from "../model/verdict";
 import { type Column, fit, headerText, sortedColumns } from "./columns";
-import { levelColor, readingWeight, scrollbar, ui } from "./theme";
+import {
+  levelColor,
+  levelStatus,
+  readingWeight,
+  scrollbar,
+  statusColor,
+  ui,
+} from "./theme";
 
-/**
- * The colour of the band a selected row is drawn as, while the row is
- * selected and has a colour of its own. `Row` provides it; `Ink`, `Bar` and
- * `Sparkline` read it.
- */
-const Band = createContext<RGBA | undefined>(undefined);
-/**
- * The colour a word or a mark on a row is drawn in. On a selected row's band
- * of one colour, a word in that same colour would vanish into it, so it takes
- * the band's text colour, the one the row's own words take.
- */
-function useInk(colour: RGBA | undefined): RGBA | undefined {
-  const band = useContext(Band);
-  return band && colour?.equals(band) ? ui.fg : colour;
-}
 /** A coloured word on a row, which stays readable when the row is selected. */
 export function Ink({
   color,
@@ -47,7 +37,7 @@ export function Ink({
   children: ReactNode;
 }) {
   return (
-    <span fg={useInk(color)} attributes={attributes}>
+    <span fg={color} attributes={attributes}>
       {children}
     </span>
   );
@@ -362,7 +352,7 @@ export function Bar({
   color?: RGBA;
 }) {
   const filled = bar(value, max, width);
-  const ink = useInk(color ?? levelColor(level));
+  const ink = color ?? levelColor(level);
   return (
     <>
       <span fg={ink}>{filled}</span>
@@ -377,13 +367,12 @@ export function Bar({
  * has not filled yet reads as waiting rather than as lost data.
  */
 export function Sparkline({ marks, color }: { marks: string; color?: RGBA }) {
-  const ink = useInk(color);
   return (
     <>
       {gapRuns(marks).map((run) => (
         <span
           key={`${run.at}`}
-          fg={run.sampled ? ink : ui.fg}
+          fg={run.sampled ? color : ui.fg}
           attributes={run.sampled ? ui.none : ui.dim}
         >
           {run.text}
@@ -459,23 +448,32 @@ export function Tile({
         bg={selected ? ui.bg : undefined}
         attributes={selected ? ui.selected : ui.dim}
       >
-        {sized(label)}
+        {level === "ok" || width === undefined
+          ? sized(label)
+          : fit(label, Math.max(0, width - levelStatus(level).length - 1))}
+        {level !== "ok" && (
+          <>
+            {" "}
+            <Ink color={statusColor(levelStatus(level))}>
+              {levelStatus(level)}
+            </Ink>
+          </>
+        )}
       </Line>
       <Line height={1} width="100%" truncate>
-        <span fg={levelColor(level)} attributes={ui.bold}>
-          {sized(safe(value))}
-        </span>
+        <span attributes={ui.bold}>{sized(safe(value))}</span>
       </Line>
       {chart !== undefined && (
         <Line height={1} width="100%" truncate>
-          <Sparkline marks={chart} color={chartColor ?? levelColor(level)} />
+          <Sparkline marks={chart} color={chartColor ?? ui.fg} />
         </Line>
       )}
-      {detail !== undefined && (
-        <Line height={1} width="100%" truncate attributes={ui.dim}>
-          {sized(safe(detail))}
+      {detail?.split("\n").map((line, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: a context line is its position
+        <Line key={i} height={1} width="100%" truncate attributes={ui.dim}>
+          {sized(safe(line))}
         </Line>
-      )}
+      ))}
     </box>
   );
 }
@@ -700,42 +698,25 @@ export function CommandOffer({
       <Line flexShrink={0} wrapMode="word">
         {sentence}
       </Line>
-      <Line flexShrink={0} wrapMode="word" fg={ui.accent}>
+      <Line flexShrink={0} wrapMode="word" fg={ui.accent} marginTop={1}>
         {safe(command)}
       </Line>
-      <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
+      <Line flexShrink={0} wrapMode="word" attributes={ui.dim} marginTop={1}>
         {hint}
       </Line>
     </box>
   );
 }
 
-/**
- * One selectable line. The selected line is drawn in reverse video and keeps
- * its marker: in a list thirty rows deep a marker alone is easy to lose.
- *
- * OpenTUI trades a reversed cell's two colours in its buffer and also sends
- * reverse video, so the terminal trades them again. The terminal's two
- * default colours, which go out by slot rather than by value, come out
- * reversed, and a numbered colour comes out where it was named. A plain row
- * therefore reads as the scheme's background colour on a band of its text
- * colour, and a bar or a coloured word on it keeps its colour. A row in one
- * colour names that colour as its background, which comes out as a band of
- * that colour, and a word or a mark on it in that same colour is drawn
- * through `Ink` so it does not vanish into the band. The background must be
- * opaque: behind a transparent one OpenTUI fills a coloured word's cell with
- * the word's own colour, and the word vanishes.
- */
+/** A selectable row reverses the terminal defaults; only its status word has severity colour. */
 export function Row({
   selected,
   children,
   onOpen,
-  color,
 }: {
   selected: boolean;
   children: ReactNode;
   onOpen?: () => void;
-  color?: RGBA;
 }) {
   return (
     <Line
@@ -743,15 +724,13 @@ export function Row({
       width="100%"
       flexShrink={0}
       truncate
-      fg={selected && color ? ui.fg : color}
-      bg={selected ? (color ?? ui.bg) : undefined}
+      fg={ui.fg}
+      bg={selected ? ui.bg : undefined}
       attributes={selected ? ui.selected : ui.none}
       onMouseDown={onOpen}
     >
       <span fg={ui.accent}>{selected ? "▍" : " "}</span>
-      <Band.Provider value={selected ? color : undefined}>
-        {children}
-      </Band.Provider>
+      {children}
     </Line>
   );
 }
@@ -766,7 +745,6 @@ export function ListRow({
   id,
   lineId,
   selected,
-  color,
   indent,
   onOpen,
   children,
@@ -777,14 +755,13 @@ export function ListRow({
   /** The row's own line, for a screen that places the line and the block apart. */
   lineId?: string;
   selected: boolean;
-  color?: RGBA;
   indent?: number;
   onOpen: () => void;
   children: ReactNode;
   under?: ReactNode;
 }) {
   const row = (
-    <Row selected={selected} color={color} onOpen={onOpen}>
+    <Row selected={selected} onOpen={onOpen}>
       {children}
     </Row>
   );
@@ -1020,12 +997,14 @@ export function Toast({ text, level }: { text: string; level: Level }) {
       zIndex={10}
       border
       borderStyle="rounded"
-      borderColor={levelColor(level)}
+      borderColor={ui.fg}
       backgroundColor={ui.bg}
       paddingX={1}
       maxWidth="60%"
     >
-      <Line wrapMode="word" fg={levelColor(level)}>
+      <Line wrapMode="word">
+        <Ink color={statusColor(levelStatus(level))}>{levelStatus(level)}</Ink>
+        {": "}
         {safe(text)}
       </Line>
     </box>

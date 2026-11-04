@@ -1,8 +1,4 @@
-import {
-  CliRenderEvents,
-  type RGBA,
-  type ScrollBoxRenderable,
-} from "@opentui/core";
+import { CliRenderEvents, type ScrollBoxRenderable } from "@opentui/core";
 import { useRenderer } from "@opentui/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { type Config, choices, isKeyAction, validate } from "../config/config";
@@ -19,6 +15,7 @@ import { useScreenKeys } from "./keys";
 import { errorText } from "./refusals";
 import { rowsById } from "./selection";
 import {
+  capabilityGives,
   capabilityLabels,
   capabilityLoss,
   capabilityOffer,
@@ -31,12 +28,13 @@ import {
   settingLabel,
   settingsFileInfo,
 } from "./settings";
-import { scrollbar, textInput, ui } from "./theme";
+import { scrollbar, statusColor, textInput, ui } from "./theme";
 import {
   CommandOffer,
   Detail,
   Disclosure,
   Empty,
+  Field,
   Ink,
   Line,
   ListRow,
@@ -431,10 +429,7 @@ export function Settings({
   const settingRow = (
     item: SettingItem,
     line: (selected: boolean) => ReactNode,
-    {
-      color,
-      under,
-    }: { color?: RGBA; under?: (selected: boolean) => ReactNode } = {},
+    { under }: { under?: (selected: boolean) => ReactNode } = {},
   ) => {
     const key = settingKey(item);
     const i = placed(key);
@@ -445,7 +440,6 @@ export function Settings({
         id={`block-${i}`}
         lineId={`setting-${i}`}
         selected={chosen}
-        color={color}
         onOpen={() => openRow(i)}
         under={under?.(chosen)}
       >
@@ -609,31 +603,58 @@ export function Settings({
             { kind: "capability", id: cap.id },
             (chosen) => (
               <>
-                <Ink color={cap.available ? ui.ok : ui.warn}>
-                  {cap.available ? "● " : "○ "}
-                </Ink>
+                <span>{cap.available ? "● " : "○ "}</span>
                 <Disclosure
                   open={opened(chosen)}
                   name={fit(capabilityLabels[cap.id], 40)}
                 />
-                <span attributes={ui.dim}>
-                  {cap.available
-                    ? "available"
-                    : fit(safe(capabilityLoss(cap, c)), costWidth)}
-                </span>
+                <Ink
+                  color={statusColor(
+                    cap.available ? "available" : "not available",
+                  )}
+                >
+                  {cap.available ? "available" : "not available"}
+                </Ink>
+                {!cap.available && (
+                  <span attributes={ui.dim}>
+                    {" "}
+                    {fit(
+                      safe(capabilityLoss(cap, c)),
+                      Math.max(0, costWidth - 14),
+                    )}
+                  </span>
+                )}
               </>
             ),
             {
               under: (chosen) =>
                 opened(chosen) && (
                   <Detail>
-                    <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>
-                      {safe(
-                        cap.available
-                          ? `${cap.source}: ${cap.detail}`
-                          : `${capabilityReason(cap)} (${cap.source}: ${cap.detail})`,
-                      )}
-                    </Line>
+                    <Field label="Gives" value={capabilityGives[cap.id]} wrap />
+                    <Field
+                      label="Read from"
+                      value={cap.id === "tmux" ? "tmux list-panes" : cap.source}
+                      wrap
+                    />
+                    {!cap.available && (
+                      <Field
+                        label="Reason"
+                        value={capabilityReason(cap)}
+                        wrap
+                      />
+                    )}
+                    {cap.id === "tmux" ? (
+                      <>
+                        <Field label="Probe" value={cap.source} wrap />
+                        {cap.detail && (
+                          <Field label="Detail" value={cap.detail} wrap />
+                        )}
+                      </>
+                    ) : (
+                      cap.detail && (
+                        <Field label="Detail" value={cap.detail} wrap />
+                      )
+                    )}
                     {/* What the reading costs is a second idea, not more of
                         the reason above it, so it starts after a blank row. */}
                     {!cap.available && (
@@ -647,21 +668,11 @@ export function Settings({
                       </Line>
                     )}
                     {offer && (
-                      <>
-                        <Line
-                          flexShrink={0}
-                          wrapMode="word"
-                          marginTop={1}
-                          attributes={ui.dim}
-                        >
-                          {safe(offer.text)}
-                        </Line>
-                        <Line flexShrink={0} wrapMode="word">
-                          {safe(
-                            `${keyLabel(c.keys.copy)} copies: ${offer.command}`,
-                          )}
-                        </Line>
-                      </>
+                      <CommandOffer
+                        sentence={offer.text}
+                        command={offer.command}
+                        hint={`${keyLabel(c.keys.copy)} copies the command.`}
+                      />
                     )}
                     {install && (
                       <CommandOffer
@@ -699,11 +710,13 @@ export function Settings({
                       ? `${sources.length} failed on the last sample`
                       : undefined
                   }
-                />
+                />{" "}
+                <Ink color={statusColor(sources.length ? "unread" : "OK")}>
+                  {sources.length ? "unread" : "OK"}
+                </Ink>
               </>
             ),
             {
-              color: sources.length ? ui.warn : undefined,
               under: () =>
                 sourcesOpen && (
                   <Detail>

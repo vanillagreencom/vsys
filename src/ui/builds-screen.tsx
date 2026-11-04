@@ -21,9 +21,10 @@ import { age, bytes, count, gap, percent, share } from "./format";
 import { heldCount, heldOrder, useHeldOrder } from "./hold";
 import { useScreenKeys } from "./keys";
 import { firstRow, useSelection } from "./selection";
-import { metric, ui } from "./theme";
+import { metric, statusColor, ui } from "./theme";
 import {
   Bar,
+  Ink,
   Line,
   List,
   Nothing,
@@ -232,7 +233,9 @@ export function Builds({
         />
       </Tiles>
       {cache.bypassed.length > 0 && (
-        <Line flexShrink={0} wrapMode="word" fg={ui.warn} marginTop={1}>
+        <Line flexShrink={0} wrapMode="word" marginTop={1}>
+          <Ink color={statusColor("Warning")}>Warning</Ink>
+          {": "}
           {safe(
             `sccache is bypassed in ${cache.bypassed.join(", ")}: RUSTC_WRAPPER is empty there, so those compilations never reach the cache.`,
           )}
