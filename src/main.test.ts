@@ -231,7 +231,7 @@ def refreshes():
     except sqlite3.OperationalError:
         return 0
 try:
-    deadline = time.monotonic() + (float(sys.argv[7]) - time.time() if trigger == "refresh" else 6)
+    deadline = time.monotonic() + (float(sys.argv[7]) - time.time())
     while child.poll() is None and time.monotonic() < deadline:
         if trigger == "hangup" and sent:
             try:
