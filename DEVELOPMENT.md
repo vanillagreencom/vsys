@@ -21,7 +21,7 @@ python3 -m unittest discover -s scripts -p '*_test.py'
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s warden -p '*_test.py'
 ```
 
-`bun test` runs from the repository root, where `bunfig.toml` preloads the warning gate in `src/test/warnings.ts`; a run started elsewhere fails and says so. A UI test that reads where a screen scrolled calls `settle()` from `src/test/harness.tsx` first. A test that depends on an array element reads it through `present()` in `src/test/present.ts`.
+Run the application suites from the repository root. `bunfig.toml` bounds discovery to that repository's `src/`, so source copies under `tmp/` do not add tests. `bun test`, `bun test src/` and `bun run test` discover the same tests. The configuration also preloads the warning gate in `src/test/warnings.ts`; a run started elsewhere fails and says so. A UI test that reads where a screen scrolled calls `settle()` from `src/test/harness.tsx` first. A test that depends on an array element reads it through `present()` in `src/test/present.ts`.
 
 ## Build
 

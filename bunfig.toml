@@ -1,2 +1,4 @@
 [test]
+# Before-image source copies must not join the application test run.
+root = "src"
 preload = ["./src/test/warnings.ts"]
