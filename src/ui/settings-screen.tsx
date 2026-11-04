@@ -585,9 +585,13 @@ export function Settings({
         <Section
           title="Data sources"
           width={width}
-          count={
+          count={`${
             missing.length ? `${missing.length} not available` : "all available"
-          }
+          }${
+            sources.length
+              ? ` · ${sources.length} ${sources.length === 1 ? "read" : "reads"} failed`
+              : ""
+          }`}
           marginTop={0}
         />
         {s.capabilities.map((cap) => {
