@@ -97,6 +97,7 @@ test("account selection prefers its tool, excludes other tools and preserves con
     ["copilot", c.accountEnv, mixed, false, null],
     ["copilot", c.accountEnv, {}, true, null],
     ["copilot", c.accountEnv, { COPILOT_HOME: "" }, true, null],
+    ["", c.accountEnv, mixed, true, null],
   ];
   for (const [tool, accountEnv, env, envAvailable, expected] of rows)
     expect({

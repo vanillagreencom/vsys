@@ -1,4 +1,5 @@
 import type { Config } from "../config/config";
+import { accountSource } from "../model/naming";
 import type { Lane, Proc } from "../model/types";
 
 export function bytes(n: number | null | undefined, c: Config): string {
@@ -45,14 +46,23 @@ export function age(n: number | null | undefined): string {
 }
 /** A quantity vsys could not read says so; it never shows a question mark. */
 export const gap = "not available";
-/** The account's absence is known only when the main environment was read. */
-export function accountText(lane: Lane, main: Proc | undefined): string {
-  return (
-    lane.account ??
-    (main?.envAvailable === true
-      ? "default account"
-      : "account unknown: environment not readable")
+/** Account absence has a cause only for a confirmed agent. */
+export function accountText(
+  lane: Lane,
+  procs: ReadonlyMap<number, Proc>,
+): string {
+  if (lane.account !== null) return lane.account;
+  if (!lane.tool) return gap;
+  const source = accountSource(
+    procs.get(lane.mainPid),
+    lane.pids.flatMap((pid) => {
+      const proc = procs.get(pid);
+      return proc ? [proc] : [];
+    }),
   );
+  return source?.environment?.envAvailable === true
+    ? "default account"
+    : "account unknown: environment not readable";
 }
 export function amount(n: number | null | undefined, c: Config): string {
   return n === null || n === undefined ? gap : bytes(n, c);

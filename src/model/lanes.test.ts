@@ -133,6 +133,116 @@ test("a lane with no configured name falls back to the launched program", () => 
   expect(lane.name).toBe("copilot");
 });
 
+test("lane accounts follow the agent environment, retain unconfirmed identity and leave non-agents unnamed", () => {
+  const c = defaults();
+  const group = groupSnapshot({ pids: [40, 41] });
+  const shell = processSnapshot({
+    pid: 40,
+    ppid: 1,
+    start: 100,
+    tool: null,
+    comm: "bash",
+    command: ["/bin/bash"],
+    group: "/agents.slice/a.scope",
+    env: {},
+    envAvailable: true,
+  });
+  const agent = processSnapshot({
+    pid: 41,
+    ppid: 40,
+    start: 200,
+    tool: "copilot",
+    comm: "copilot",
+    group: shell.group,
+    env: { COPILOT_HOME: "/home/u/.1copilot" },
+    envAvailable: true,
+  });
+  const rows: [
+    string,
+    Partial<Proc>,
+    Partial<Proc> | null,
+    Group[],
+    string | null,
+    string,
+  ][] = [
+    [
+      "child owns account",
+      { env: { CLAUDE_CONFIG_DIR: "/home/u/.2claude" } },
+      {},
+      [group],
+      ".1copilot",
+      "copilot",
+    ],
+    ["escaped child", { envAvailable: false }, {}, [], ".1copilot", "copilot"],
+    [
+      "read child default",
+      { env: { COPILOT_HOME: "/x/shell" } },
+      { env: {} },
+      [group],
+      null,
+      "copilot",
+    ],
+    [
+      "unread child fallback",
+      { env: { COPILOT_HOME: "/x/shell" } },
+      { envAvailable: false },
+      [group],
+      "shell",
+      "copilot",
+    ],
+    [
+      "both unread",
+      { envAvailable: false },
+      { envAvailable: false },
+      [group],
+      null,
+      "copilot",
+    ],
+    [
+      "confirmed beats candidate",
+      {
+        unconfirmedTool: "claude",
+        env: { CLAUDE_CONFIG_DIR: "/home/u/.2claude" },
+      },
+      {},
+      [group],
+      ".1copilot",
+      "copilot",
+    ],
+    [
+      "unconfirmed Claude",
+      {
+        unconfirmedTool: "claude",
+        env: { CLAUDE_CONFIG_DIR: "/home/u/.2claude" },
+      },
+      null,
+      [group],
+      ".2claude",
+      "",
+    ],
+    [
+      "non-agent scope",
+      { env: { CLAUDE_CONFIG_DIR: "/home/u/.2claude" } },
+      null,
+      [group],
+      null,
+      "",
+    ],
+  ];
+  for (const [scenario, root, child, groups, account, tool] of rows) {
+    const path = groups.length ? shell.group : "/session-1.scope";
+    const members = [
+      { ...shell, group: path, ...root },
+      ...(child === null ? [] : [{ ...agent, group: path, ...child }]),
+    ];
+    const lane = present(lanes(groups, members, c)[0], scenario);
+    expect(
+      { main: lane.mainPid, account: lane.account, tool: lane.tool },
+      scenario,
+    ).toEqual({ main: 40, account, tool });
+  }
+});
+
 test("two agents in one worktree under different accounts get different names", () => {
   const c = defaults();
   const groups = [

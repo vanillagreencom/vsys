@@ -727,8 +727,7 @@ export function Agents({
       p,
     ]),
   );
-  const tableAccount = (lane: Lane) =>
-    accountText(lane, accountProcs.get(lane.mainPid));
+  const tableAccount = (lane: Lane) => accountText(lane, accountProcs);
   const tableCells: { name: string | null; column: Column }[] = c.columns.map(
     (name) => {
       const column = tableColumn(name);

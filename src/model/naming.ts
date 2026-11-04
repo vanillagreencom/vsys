@@ -28,6 +28,17 @@ export function firstEnv(
   }
   return null;
 }
+/** A scope root can be the agent's launcher rather than the agent itself. */
+export function accountSource(
+  main: Proc | undefined,
+  members: Proc[],
+): { agent: Proc; environment: Proc | undefined } | undefined {
+  const agent =
+    members.find((p) => p.tool) ?? members.find((p) => p.unconfirmedTool);
+  return agent
+    ? { agent, environment: agent.envAvailable === true ? agent : main }
+    : undefined;
+}
 /**
  * Two agents in one worktree differ by their account, so the configuration
  * directory basename names the lane. A process that names no configuration
@@ -39,6 +50,7 @@ export function accountName(
   c: CollectionConfig,
   tool: string,
 ): string | null {
+  if (!tool) return null;
   const prefix = `${tool.toUpperCase()}_`;
   const others = c.agentTools
     .filter((name) => name !== tool)

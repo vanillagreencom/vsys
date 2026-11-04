@@ -147,17 +147,18 @@ test("environment is collected for scope mains and agents, not other children", 
   expect(s.procs.find((p) => p.pid === 41)?.env).toEqual({});
   expect(s.procs.find((p) => p.pid === 42)?.env).toEqual({ TMPDIR: "/agent" });
 });
-test("a scope wrapper owns launch metadata even when an agent is its child", async () => {
+test("a scope wrapper keeps main identity while its agent supplies the account", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40, 41]);
   f.proc(40, "agents.slice/a.scope", {
     command: ["/bin/bash", "launch.sh"],
     comm: "bash",
-    env: "CLAUDE_CONFIG_DIR=/accounts/work\0",
+    env: "CLAUDE_CONFIG_DIR=/accounts/wrapper\0",
   });
   f.proc(41, "agents.slice/a.scope", {
     command: [claudeLink],
     parent: 40,
+    env: "CLAUDE_CONFIG_DIR=/accounts/work\0",
   });
   const s = await new Collector(f.config, 100, 4096).sample();
   expect(s.lanes[0]?.mainPid).toBe(40);

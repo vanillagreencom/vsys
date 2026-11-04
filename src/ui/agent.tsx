@@ -104,7 +104,9 @@ export function AgentIdentity({
   snapshot: Snapshot;
   config: Config;
 }) {
-  const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
+  const procs = new Map(snapshot.procs.map((p) => [p.pid, p]));
+  const proc = procs.get(lane.mainPid);
+  const account = accountText(lane, procs);
   const badge = laneBadge(lane, c);
   return (
     <>
@@ -124,9 +126,7 @@ export function AgentIdentity({
         {safe(
           [
             lane.tool || "no agent program",
-            lane.account === null
-              ? accountText(lane, proc)
-              : `account ${accountText(lane, proc)}`,
+            lane.account === null ? account : `account ${account}`,
             // The address is what a reader can act on; the raw `%N` is the
             // handle vsys acts through, and both are shown rather than one
             // standing in for the other.

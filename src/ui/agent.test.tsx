@@ -9,6 +9,7 @@ import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { defaults } from "../config/config";
 import type { LaneCommand } from "../model/actions";
+import { lanes } from "../model/lanes";
 import { History } from "../store/history";
 import { normalizeLane } from "../store/migrate";
 import {
@@ -250,7 +251,9 @@ test.each([
     const c = { ...defaults(), columns: ["name", "account", "tool"] };
     const s = emptySnapshot();
     s.lanes = [laneSnapshot({ account, tool: "copilot" })];
-    s.procs = main ? [processSnapshot({ env: {}, envAvailable })] : [];
+    s.procs = main
+      ? [processSnapshot({ tool: "copilot", env: {}, envAvailable })]
+      : [];
     const t = await mount(s, c, { width: 160, height: 40 });
     try {
       await t.press("2");
@@ -272,6 +275,135 @@ test.each([
       await t.settle();
       expect(t.frame()).toContain(expected);
       expect(overflowing(t.ui, expected)).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  },
+);
+
+test.each([
+  {
+    scenario: "child account",
+    tool: "copilot",
+    child: true,
+    read: true,
+    named: true,
+    rootRead: false,
+    expected: ".1copilot",
+  },
+  {
+    scenario: "child default",
+    tool: "copilot",
+    child: true,
+    read: true,
+    named: false,
+    rootRead: false,
+    expected: "default account",
+  },
+  {
+    scenario: "child unread",
+    tool: "copilot",
+    child: true,
+    read: false,
+    named: false,
+    rootRead: false,
+    expected: "account unknown: environment not readable",
+  },
+  {
+    scenario: "read shell fallback",
+    tool: "copilot",
+    child: true,
+    read: false,
+    named: false,
+    rootRead: true,
+    expected: "default account",
+  },
+  {
+    scenario: "non-agent",
+    tool: null,
+    child: false,
+    read: true,
+    named: false,
+    rootRead: true,
+    expected: gap,
+  },
+  {
+    scenario: "unconfirmed Claude",
+    tool: null,
+    child: false,
+    read: true,
+    named: true,
+    rootRead: true,
+    expected: ".2claude",
+  },
+])(
+  "derived account output for $scenario reaches summary, table and detail",
+  async ({ tool, child, read, named, rootRead, expected }) => {
+    const c = { ...defaults(), columns: ["name", "account", "tool"] };
+    const s = emptySnapshot();
+    const root = processSnapshot({
+      pid: 40,
+      ppid: 1,
+      start: 100,
+      tool: null,
+      comm: "bash",
+      envAvailable: child ? rootRead : read,
+      unconfirmedTool: !child && named ? "claude" : null,
+      env: !child && named ? { CLAUDE_CONFIG_DIR: "/home/u/.2claude" } : {},
+    });
+    s.procs = [root];
+    if (child)
+      s.procs.push(
+        processSnapshot({
+          pid: 41,
+          ppid: 40,
+          start: 200,
+          tool,
+          envAvailable: read,
+          env: named ? { COPILOT_HOME: "/home/u/.1copilot" } : {},
+        }),
+      );
+    s.groups = [groupSnapshot({ pids: s.procs.map((p) => p.pid) })];
+    s.lanes = lanes(s.groups, s.procs, c);
+    const t = await mount(s, c, { width: 160, height: 40 });
+    try {
+      await t.press("2");
+      for (const view of ["summary", "table", "detail"]) {
+        if (view === "table") await t.press(c.keys.details);
+        if (view === "detail") await t.press("enter");
+        const frame = t.frame();
+        const lines = frame.split("\n");
+        if (view === "table") {
+          const heading = present(
+            lines.find(
+              (line) => line.includes("Account") && line.includes("Program"),
+            ),
+            "account heading",
+          );
+          const row = present(
+            lines.find((line) => line.includes("▍")),
+            "account row",
+          );
+          expect(
+            row.slice(heading.indexOf("Account"), heading.indexOf("Program")),
+            view,
+          ).toContain(expected);
+        } else {
+          const identity = present(
+            lines.find(
+              (line) =>
+                line.includes(" · ") &&
+                line.includes(tool || "no agent program"),
+            ),
+            "agent identity line",
+          );
+          expect(identity, view).toContain(
+            named ? `account ${expected}` : expected,
+          );
+        }
+        if (!tool) expect(frame, view).not.toContain("default account");
+        expect(overflowing(t.ui, expected), view).toEqual([]);
+      }
     } finally {
       await t.close();
     }
