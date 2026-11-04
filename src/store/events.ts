@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import { escaped, lanePressure, standIn } from "../model/lanes";
+import { escaped, lanePressure, standInLane } from "../model/lanes";
 import { laneText } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import {
@@ -179,7 +179,7 @@ export class EventLog {
   private processPrevious: Snapshot | null = null;
   private laneIdentities = new Map<
     string,
-    Pick<Lane, "name" | "mainPid" | "account" | "cgroup">
+    { lane: Lane; recordStop: boolean }
   >();
   get previousTime(): number | undefined {
     return this.previous?.time;
@@ -230,53 +230,53 @@ export class EventLog {
       for (const id of this.laneIdentities.keys())
         if (!processPrevious?.lanes.some((lane) => lane.id === id))
           this.laneIdentities.delete(id);
-    // A scope can outlive its processes. Keep its last process-bearing name
-    // until it disappears, rather than naming its stop from the empty scope.
+    // Baseline and stored predecessor lanes seed their stop decision once.
+    // Later occupied samples update identity, not lifecycle admission.
     if (!readNone)
-      for (const sample of [before, s])
-        for (const lane of sample?.lanes ?? [])
-          if (lane.mainPid !== 0)
-            this.laneIdentities.set(lane.id, {
-              name: lane.name,
-              mainPid: lane.mainPid,
-              account: lane.account,
-              cgroup: lane.cgroup,
-            });
-    const standInLane = (lane: Lane, sample: Snapshot): boolean =>
-      lane.tool === "" &&
-      sample.procs.some((p) => p.pid === lane.mainPid && standIn(p, c));
-    for (const lane of s.lanes)
+      for (const sample of [before, s]) {
+        if (!sample) continue;
+        for (const lane of sample.lanes) {
+          const identity = this.laneIdentities.get(lane.id) ?? {
+            lane,
+            recordStop: !standInLane(lane, sample.procs, c),
+          };
+          if (lane.mainPid !== 0) identity.lane = lane;
+          if (
+            sample === s &&
+            before &&
+            !before.lanes.some((old) => old.id === lane.id)
+          )
+            identity.recordStop =
+              identity.recordStop &&
+              add("lane-start", laneText(lane), {
+                subjectId: lane.id,
+                // An unreadable account stays empty; the UI says it is unavailable.
+                names: {
+                  account: lane.account ?? "",
+                  slice: sliceOf(lane.cgroup),
+                  tool: lane.tool,
+                },
+                values: { pid: lane.mainPid },
+              });
+          this.laneIdentities.set(lane.id, identity);
+        }
+      }
+    for (const lane of before?.lanes ?? []) {
+      const identity = this.laneIdentities.get(lane.id);
       if (
-        before &&
-        !before.lanes.some((old) => old.id === lane.id) &&
-        !standInLane(lane, s)
-      )
-        add("lane-start", laneText(lane), {
-          subjectId: lane.id,
-          // An unreadable account stays empty; the UI says it is unavailable.
-          names: {
-            account: lane.account ?? "",
-            slice: sliceOf(lane.cgroup),
-            tool: lane.tool,
-          },
-          values: { pid: lane.mainPid },
-        });
-    for (const lane of before?.lanes ?? [])
-      if (
-        before &&
-        !s.lanes.some((live) => live.id === lane.id) &&
-        !standInLane(lane, before)
+        identity?.recordStop &&
+        !s.lanes.some((live) => live.id === lane.id)
       ) {
-        const identity = this.laneIdentities.get(lane.id) ?? lane;
-        add("lane-stop", laneText(identity), {
+        add("lane-stop", laneText(identity.lane), {
           subjectId: lane.id,
           names: {
-            account: identity.account ?? "",
-            slice: sliceOf(identity.cgroup),
+            account: identity.lane.account ?? "",
+            slice: sliceOf(identity.lane.cgroup),
           },
           values: { age: lane.age },
         });
       }
+    }
     if (!readNone)
       for (const id of this.laneIdentities.keys())
         if (!s.lanes.some((lane) => lane.id === id))

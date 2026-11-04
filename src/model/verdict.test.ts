@@ -267,6 +267,40 @@ test("a process whose name was not confirmed by install location is its own caus
   ).toBeUndefined();
 });
 
+test("unconfirmed-tool alerts use the lane's temporary identity and confirmed members", () => {
+  const c = defaults();
+  const s = healthy();
+  const candidate = processSnapshot({
+    tool: null,
+    unconfirmedTool: "pi",
+    unconfirmedPath: "/usr/local/bin/pi",
+  });
+  const rows = [
+    {
+      cwd: "/repo/tmp/v/.tmpABCD",
+      tool: "",
+      confirmed: false,
+      expected: false,
+    },
+    { cwd: "/repo/tmp/v/.tmpABCD", tool: "", confirmed: true, expected: true },
+    { cwd: "/tmp/run", tool: "claude", confirmed: false, expected: true },
+    {
+      cwd: "/home/x/dev/.worktrees/kendex/ken-4687",
+      tool: "",
+      confirmed: false,
+      expected: true,
+    },
+  ];
+  for (const { cwd, tool, confirmed, expected } of rows) {
+    s.lanes = [laneSnapshot({ cwd, tool, pids: [40, 41] })];
+    s.procs = [candidate];
+    if (confirmed) s.procs.push(processSnapshot({ pid: 41 }));
+    expect(
+      causes(s, c).find((item) => item.id === "unconfirmed-tool")?.procs ?? [],
+    ).toEqual(expected ? [candidate] : []);
+  }
+});
+
 test("slice totals sum root groups and never a nested copy", () => {
   const c = defaults();
   const groups = [
