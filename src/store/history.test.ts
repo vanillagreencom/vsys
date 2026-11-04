@@ -233,12 +233,15 @@ test("SQLite reopens full process snapshots and alert history", () => {
   expect(reopened.at(now)).toEqual(s);
   expect(reopened.alerts(now)).toEqual(s.alerts);
 });
-for (const [resume, held, gap] of [
-  ["restart", true, "none"],
-  ["foreign append", true, "none"],
-  ["restart after unread", true, "unread"],
-  ["never populated", false, "none"],
-  ["foreign reused scope", false, "absent"],
+for (const [resume, held, gap, legacy, emptySamples] of [
+  ["restart", true, "none", false, 1],
+  ["foreign append", true, "none", false, 1],
+  ["restart after unread", true, "unread", false, 1],
+  ["never populated", false, "none", false, 1],
+  ["foreign reused scope", false, "absent", false, 1],
+  ["restart with legacy populated sample", true, "none", true, 1],
+  ["restart with legacy absence", false, "absent", true, 1],
+  ["restart after two empty samples", true, "none", false, 2],
 ] as const)
   test(`an empty scope stop follows its stored process-bearing predecessor: ${resume}`, () => {
     const f = fixture();
@@ -265,14 +268,45 @@ for (const [resume, held, gap] of [
         ...emptySnapshot(time + 1),
         processRead: gap === "unread" ? "unknown" : "complete",
       });
-    first.add(empty);
+    for (let i = 0; i < emptySamples; i++) {
+      first.add({ ...empty, time: time + 2 + i });
+      expect(
+        first.events(time + 2 + i, 0).filter((e) => e.kind === "lane-stop"),
+      ).toEqual([]);
+    }
+    if (legacy) {
+      // Collector.sample before processRead existed wrote no read-state field.
+      const db = new Database(f.config.sqlitePath);
+      for (const row of db
+        .query<{ time: number; data: Uint8Array }, []>(
+          "SELECT time, data FROM samples",
+        )
+        .all()) {
+        const stored: Record<string, unknown> = JSON.parse(
+          new TextDecoder().decode(Bun.gunzipSync(row.data)),
+        );
+        delete stored.processRead;
+        db.query("UPDATE samples SET data = ? WHERE time = ?").run(
+          Bun.gzipSync(JSON.stringify(stored)),
+          row.time,
+        );
+      }
+      db.close();
+    }
     const writer = resume.startsWith("foreign")
       ? second
       : new History(f.config);
     if (writer !== second) cleanup.push(() => writer.close());
-    writer.add(emptySnapshot(time + 3));
+    const gone = time + 2 + emptySamples;
+    writer.add(emptySnapshot(gone));
+    const stops = writer
+      .events(gone, gone - time)
+      .filter((e) => e.kind === "lane-stop");
+    expect(stops.map((e) => e.time).sort((a, b) => a - b)).toEqual(
+      gap === "absent" ? [time + 1, gone] : [gone],
+    );
     const stop = present(
-      writer.events(time + 3, 0).find((e) => e.kind === "lane-stop"),
+      stops.find((e) => e.time === gone),
       "stored-predecessor stop",
     );
     expect(stop.subject).toBe(held ? "Claude lane PID 42" : "agent 42");

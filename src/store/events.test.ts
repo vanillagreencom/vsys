@@ -78,11 +78,12 @@ test("a lane stop names its last process-bearing sample across an empty scope", 
   empty.lanes = [
     laneSnapshot({ name: "agent 42", account: null, mainPid: 0, age: null }),
   ];
-  log.advance(empty, c);
-  const stop = present(
-    log.advance(emptySnapshot(3000), c).find((e) => e.kind === "lane-stop"),
-    "stop after the scope emptied",
-  );
+  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual([]);
+  const stops = log
+    .advance(emptySnapshot(3000), c)
+    .filter((e) => e.kind === "lane-stop");
+  expect(stops.map((e) => e.time)).toEqual([3000]);
+  const stop = present(stops[0], "stop after the scope emptied");
   expect(stop.subject).toBe(".claude claude vsy-255 PID 42");
   expect(stop.subjectId).toBe(present(running.lanes[0], "running lane").id);
   expect(stop.names).toEqual({ account: ".claude", slice: "agents.slice" });
@@ -113,8 +114,10 @@ test("retained lane identity updates with a process and ends with its scope", ()
   log.advance(latest, c);
   const empty = emptySnapshot(3000);
   empty.lanes = [laneSnapshot({ name: "empty", account: null, mainPid: 0 })];
-  log.advance(empty, c);
-  log.advance({ ...empty, time: 4000 }, c);
+  expect(log.advance(empty, c).filter((e) => e.kind === "lane-stop")).toEqual([]);
+  expect(
+    log.advance({ ...empty, time: 4000 }, c).filter((e) => e.kind === "lane-stop"),
+  ).toEqual([]);
   const stop = present(
     log.advance(emptySnapshot(5000), c).find((e) => e.kind === "lane-stop"),
     "stop after the latest process",

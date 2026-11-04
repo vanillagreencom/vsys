@@ -564,6 +564,10 @@ export class History {
     return this.points.recent(end, limit);
   }
   at(time: number): Snapshot | null {
+    const raw = this.rawAt(time);
+    return raw ? normalizeSnapshot(raw) : null;
+  }
+  private rawAt(time: number): Snapshot | null {
     const cutoff =
       (this.points.get(this.points.size - 1)?.time ?? Date.now()) -
       this.c.historyHours * 3600000;
@@ -575,23 +579,24 @@ export class History {
       )
       .get(time, cutoff);
     if (cached && cached.time >= cutoff && (!row || cached.time >= row.time))
-      return normalizeSnapshot(cached);
+      return cached;
     const data = row?.data;
-    // Rows an older build wrote lack the fields this build reads.
-    return data
-      ? normalizeSnapshot(JSON.parse(History.decodeRow(data)) as Snapshot)
-      : null;
+    return data ? (JSON.parse(History.decodeRow(data)) as Snapshot) : null;
   }
   private laneIdentityBefore(id: string, time: number): Lane | undefined {
     // Empty scopes carry no process identity after a restart. An absent lane
     // ends the lifetime, so a reused scope cannot inherit an earlier name.
     for (
-      let sample = this.at(time - 1);
+      let sample = this.rawAt(time - 1);
       sample;
-      sample = this.at(sample.time - 1)
+      sample = this.rawAt(sample.time - 1)
     ) {
+      // Legacy records lack processRead but did read processes. Normalize
+      // only after judging that raw evidence, as predecessor selection does.
       if (processesUnread(sample)) continue;
-      const lane = sample.lanes.find((lane) => lane.id === id);
+      const lane = normalizeSnapshot(sample).lanes.find(
+        (lane) => lane.id === id,
+      );
       if (!lane) return undefined;
       if (lane.mainPid !== 0) return lane;
     }
