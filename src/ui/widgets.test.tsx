@@ -16,8 +16,38 @@ import {
   nextDown,
   Row,
   Sparkline,
+  Tile,
+  Tiles,
   tilesPerRow,
 } from "./widgets";
+
+test("a bounded tile keeps warning and error words visible with plain values", async () => {
+  const screen = await testRender(
+    <Tiles width={62}>
+      <Tile key="cpu" label="CPU wait" value="15.0%" level="warn" />
+      <Tile key="memory" label="Memory" value="1.0 GiB" level="danger" />
+    </Tiles>,
+    { width: 62, height: 8 },
+  );
+  try {
+    await screen.renderOnce();
+    const spans = screen.captureSpans().lines.flatMap((line) => line.spans);
+    for (const [word, role] of [
+      ["Warning", ui.warn],
+      ["Error", ui.danger],
+    ] as const) {
+      const status = spans.find((span) => span.text.trim() === word);
+      expect(status, word).toBeDefined();
+      expect(status?.fg.equals(role), word).toBe(true);
+    }
+    for (const value of ["15.0%", "1.0 GiB"])
+      expect(
+        spans.find((span) => span.text.includes(value))?.fg.equals(ui.fg),
+      ).toBe(true);
+  } finally {
+    await act(async () => screen.renderer.destroy());
+  }
+});
 
 test("a bar fills in proportion, clamps at its width, and stays empty when unread", () => {
   const rows: [number | null, number, number, string][] = [

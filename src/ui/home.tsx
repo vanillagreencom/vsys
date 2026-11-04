@@ -3,12 +3,7 @@ import { type ReactNode, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Lane, Snapshot } from "../model/types";
-import {
-  type Level,
-  type Meter,
-  meters,
-  processesComplete,
-} from "../model/verdict";
+import { type Meter, meters, processesComplete } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import {
   type Attention,
@@ -237,7 +232,19 @@ export function Home({
   // drawn from these rows, because the renderer's own wrapping also breaks
   // after a full stop and would split `agents.slice` across a row these
   // never counted.
-  const verdict = wrapLines(verdictLine(items, s), width);
+  const lead = verdictItem(items);
+  const headline = verdictLine(items, s);
+  const verdictStatus = lead
+    ? levelStatus(lead.danger ? "danger" : "warn")
+    : headline === "Healthy"
+      ? "OK"
+      : undefined;
+  const verdict = wrapLines(
+    verdictStatus
+      ? `${verdictStatus}: ${lead ? headline.replace(/^[^:]+: /, "") : headline}`
+      : headline,
+    width,
+  );
   // Without every process, the lanes miss each escaped agent, so the count
   // is not a fact.
   const agentCount = processesComplete(s)
@@ -500,8 +507,6 @@ export function Home({
     }
     return false;
   });
-  const lead = verdictItem(items);
-  const level: Level = lead ? (lead.danger ? "danger" : "warn") : "ok";
   const panel = panelWidth(width);
   // A tile row shares its width between the tiles on it, two columns apart,
   // so the chart is as wide as the tile that carries it however many that is.
@@ -569,18 +574,17 @@ export function Home({
         {verdict.map((line, at) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
           <Line key={at} height={1} flexShrink={0} truncate>
-            {at === 0 && (
+            {at === 0 && verdictStatus ? (
               <>
-                <Ink
-                  color={statusColor(levelStatus(level))}
-                  attributes={ui.bold}
-                >
-                  {levelStatus(level)}
+                <Ink color={statusColor(verdictStatus)} attributes={ui.bold}>
+                  {verdictStatus}
                 </Ink>
                 {": "}
+                {line.slice(verdictStatus.length + 2)}
               </>
+            ) : (
+              line
             )}
-            {line.replace(/^(Danger|Warning|OK): /, "")}
           </Line>
         ))}
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>

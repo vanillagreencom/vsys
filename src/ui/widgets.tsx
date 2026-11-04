@@ -448,7 +448,9 @@ export function Tile({
         bg={selected ? ui.bg : undefined}
         attributes={selected ? ui.selected : ui.dim}
       >
-        {sized(label)}
+        {level === "ok" || width === undefined
+          ? sized(label)
+          : fit(label, Math.max(0, width - levelStatus(level).length - 1))}
         {level !== "ok" && (
           <>
             {" "}

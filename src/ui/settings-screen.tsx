@@ -644,11 +644,12 @@ export function Settings({
                       />
                     )}
                     {cap.id === "tmux" ? (
-                      <CommandOffer
-                        sentence="Probe command"
-                        command={`${cap.source}${cap.detail ? `: ${cap.detail}` : ""}`}
-                        hint={`${keyLabel(c.keys.copy)} copies this source detail.`}
-                      />
+                      <>
+                        <Field label="Probe" value={cap.source} wrap />
+                        {cap.detail && (
+                          <Field label="Detail" value={cap.detail} wrap />
+                        )}
+                      </>
                     ) : (
                       cap.detail && (
                         <Field label="Detail" value={cap.detail} wrap />
@@ -667,32 +668,11 @@ export function Settings({
                       </Line>
                     )}
                     {offer && (
-                      <>
-                        <Line
-                          flexShrink={0}
-                          wrapMode="word"
-                          marginTop={1}
-                          attributes={ui.dim}
-                        >
-                          {safe(offer.text)}
-                        </Line>
-                        <Line
-                          flexShrink={0}
-                          wrapMode="word"
-                          fg={ui.accent}
-                          marginTop={1}
-                        >
-                          {safe(offer.command)}
-                        </Line>
-                        <Line
-                          flexShrink={0}
-                          wrapMode="word"
-                          attributes={ui.dim}
-                          marginTop={1}
-                        >
-                          {keyLabel(c.keys.copy)} copies the command.
-                        </Line>
-                      </>
+                      <CommandOffer
+                        sentence={offer.text}
+                        command={offer.command}
+                        hint={`${keyLabel(c.keys.copy)} copies the command.`}
+                      />
                     )}
                     {install && (
                       <CommandOffer
@@ -718,9 +698,6 @@ export function Settings({
                     this row's marker lines up with theirs rather than sitting
                     two columns to their left. */}
                 {"  "}
-                <Ink color={statusColor(sources.length ? "unread" : "OK")}>
-                  {sources.length ? "unread " : "OK "}
-                </Ink>
                 <Disclosure
                   open={sourcesOpen}
                   name={
@@ -733,7 +710,10 @@ export function Settings({
                       ? `${sources.length} failed on the last sample`
                       : undefined
                   }
-                />
+                />{" "}
+                <Ink color={statusColor(sources.length ? "unread" : "OK")}>
+                  {sources.length ? "unread" : "OK"}
+                </Ink>
               </>
             ),
             {

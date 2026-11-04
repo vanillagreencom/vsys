@@ -659,7 +659,9 @@ test("a scope nested in another unit's subtree lists Freeze and Thaw but no Stop
     const frame = t.frame();
     await t.press("j");
     expect(t.frame()).toContain("init.scope/cgroup.freeze");
-    expect(frame).not.toContain("--signal=TERM");
+    expect(frame).toMatch(/Freeze\s+pauses every process/);
+    expect(frame).toMatch(/Thaw\s+resumes every process/);
+    expect(frame).not.toMatch(/Stop\s+ends the scope/);
   } finally {
     await t.close();
   }

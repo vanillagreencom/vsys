@@ -1438,7 +1438,7 @@ test("search finds a row by the address and the window it shows", async () => {
 });
 
 test("a lane row in the list and in the table keeps its text plain and opens by one rule", async () => {
-  const c = defaults();
+  const c = { ...defaults(), columns: ["name", "account", "state", "cpu"] };
   const s = emptySnapshot();
   s.lanes = [
     laneSnapshot({ id: "a", name: "lane-a", cpu: 9 }),
@@ -1480,6 +1480,19 @@ test("a lane row in the list and in the table keeps its text plain and opens by 
         view,
         colour: "other",
       });
+      const escaped = present(
+        k.ui
+          .captureSpans()
+          .lines.find((line) =>
+            line.spans.some((span) => span.text.includes("lane-z")),
+          ),
+        "escaped lane row",
+      );
+      expect(
+        escaped.spans.some(
+          (span) => span.text.trim() === "Error" && span.fg.equals(ui.danger),
+        ),
+      ).toBe(true);
       await k.press("j");
       await k.press("enter");
       keyed = k.frame();

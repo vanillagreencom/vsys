@@ -7,6 +7,7 @@ import {
 import type { Capability, CsumFailure } from "../model/types";
 import { age, count, gap } from "./format";
 import { capabilityReason } from "./settings";
+import type { StatusWord } from "./theme";
 
 /**
  * What one filesystem's integrity state says in words. Every state but
@@ -15,7 +16,10 @@ import { capabilityReason } from "./settings";
  * filesystem whose reports cannot be read at all says why, so the reader is
  * not left waiting for a report that cannot come.
  */
-export function integrityWords(item: Integrity, scrub?: Capability): string {
+export function integrityWords(
+  item: Integrity,
+  scrub?: Capability,
+): { word: StatusWord; rest: string } {
   switch (item.state) {
     case "damaged": {
       const n = damageCounts(item);
@@ -24,24 +28,31 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
       // damaged check with no current address data carries neither count, and
       // `n.files` falsy below reads it as "Damaged data found" with no count.
       const unnamed = (n.unresolved ?? 0) + (n.unnamed ?? 0);
-      return n.files
-        ? `Damage found: ${count(n.files, "possibly damaged file")}${unnamed ? `, ${count(unnamed, "block")} unnamed` : ""}`
-        : "Damaged data found";
+      return {
+        word: "Damaged",
+        rest: n.files
+          ? `: ${count(n.files, "possibly damaged file")}${unnamed ? `, ${count(unnamed, "block")} unnamed` : ""}`
+          : " data found",
+      };
     }
     case "new-errors":
-      return "New errors since last check";
+      return { word: "New errors", rest: " since last check" };
     case "never-checked":
-      return scrub && !scrub.available
-        ? `Never checked: ${capabilityReason(scrub)}`
-        : "Never checked";
+      return {
+        word: "Never checked",
+        rest: scrub && !scrub.available ? `: ${capabilityReason(scrub)}` : "",
+      };
     case "stale":
-      return `Not checked in ${age(item.checkAge ?? 0)}`;
+      return {
+        word: "Check overdue",
+        rest: `: not checked in ${age(item.checkAge ?? 0)}`,
+      };
     case "checking":
-      return "Checking now";
+      return { word: "Checking", rest: " now" };
     case "unknown":
-      return "Damage state unknown";
+      return { word: "Damage state unknown", rest: "" };
     case "healthy":
-      return "Healthy";
+      return { word: "Healthy", rest: "" };
   }
 }
 /**
@@ -52,12 +63,19 @@ export function integrityWords(item: Integrity, scrub?: Capability): string {
  * counter and the kernel log saw only the reads that happened, and a reader
  * deciding whether to trust a green line needs to know which spoke.
  */
-export function integrityLine(item: Integrity, scrub?: Capability): string {
-  return [
-    integrityWords(item, scrub),
-    `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago (scrub report)`}`,
-    `last new error ${errorTime(item)}`,
-  ].join(" · ");
+export function integrityLine(
+  item: Integrity,
+  scrub?: Capability,
+): { word: StatusWord; rest: string } {
+  const { word, rest } = integrityWords(item, scrub);
+  return {
+    word,
+    rest: [
+      rest,
+      `last full check ${item.checkAge === null ? "never" : `${age(item.checkAge)} ago (scrub report)`}`,
+      `last new error ${errorTime(item)}`,
+    ].join(" · "),
+  };
 }
 /**
  * The days the kernel logged the failures, and the day the check cleared them,

@@ -237,8 +237,8 @@ export function Timeline({
   // The header, two three-row charts with titles, the sparklines, the axis
   // and the heading come before the change list.
   // Each row takes its metric's own colour, so six sparklines one under the
-  // other are six quantities rather than one wall of amber. Escaped agents and
-  // corruption are severities, not metrics, and keep the severity colours.
+  // other distinguish the quantities. Event status words carry severity;
+  // the Escaped and Corruption counts keep the default foreground.
   const rows = [
     ["CPU wait", "pressure", percent, metric.cpu],
     ["Memory wait", "memoryPressure", percent, metric.memory],

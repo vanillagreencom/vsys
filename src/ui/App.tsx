@@ -154,6 +154,7 @@ export const hints: Record<
   AgentGone: (c) => [[c.keys.back, "back"]],
   Resources: (c) => [
     ["↑↓", "select"],
+    ["PgUp/PgDn", "fields"],
     [c.keys.details, "all groups"],
   ],
   Builds: (c) => [

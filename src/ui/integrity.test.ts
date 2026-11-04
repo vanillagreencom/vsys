@@ -8,12 +8,19 @@ import {
   blocksText,
   clearedText,
   damageAdvice,
-  integrityLine,
-  integrityWords,
+  integrityLine as lineParts,
   loggedText,
   noDamageText,
   unnamedText,
+  integrityWords as wordParts,
 } from "./integrity";
+
+const copyText = ({ word, rest }: ReturnType<typeof wordParts>) =>
+  `${word}${rest}`;
+const integrityLine = (...args: Parameters<typeof lineParts>) =>
+  copyText(lineParts(...args));
+const integrityWords = (...args: Parameters<typeof wordParts>) =>
+  copyText(wordParts(...args));
 
 const day = 86400000;
 const now = 1_760_000_000_000;
@@ -138,7 +145,7 @@ test("no words but Healthy say the filesystem was checked and found sound", () =
   expect(integrityWords(state([report()], null))).toBe("Healthy");
   expect(integrityWords(state([]))).toBe("Never checked");
   expect(integrityWords(state([report({ startedAt: now - 40 * day })]))).toBe(
-    "Not checked in 40.0d",
+    "Check overdue: not checked in 40.0d",
   );
   expect(integrityWords(state([report({ status: "running" })]))).toBe(
     "Checking now",
@@ -154,14 +161,14 @@ test("the damaged-file headline counts possibly damaged files and the blocks non
     { logical: 2, paths: ["/home/r/letter.txt"] },
   ];
   const named = state([report({ problem: true, uncorrectable: 2, addresses })]);
-  expect(integrityWords(named)).toBe("Damage found: 3 possibly damaged files");
+  expect(integrityWords(named)).toBe("Damaged: 3 possibly damaged files");
   // The check counted more blocks than the report names, so the files listed
   // are not all of the damage, and the headline says how many are not.
   const partial = state([
     report({ problem: true, uncorrectable: 26, addresses }),
   ]);
   expect(integrityWords(partial)).toBe(
-    "Damage found: 3 possibly damaged files, 24 blocks unnamed",
+    "Damaged: 3 possibly damaged files, 24 blocks unnamed",
   );
   expect(unnamedText(partial)).toBe(
     "The check counted 24 more damaged blocks than its report names, so the files above are not all of the damage.",
@@ -176,7 +183,7 @@ test("the damaged-file headline counts possibly damaged files and the blocks non
     }),
   ]);
   expect(integrityWords(unresolved)).toBe(
-    "Damage found: 3 possibly damaged files, 1 block unnamed",
+    "Damaged: 3 possibly damaged files, 1 block unnamed",
   );
   // A report naming no address under a counted block names none of them,
   // which is not a filesystem with nothing left.

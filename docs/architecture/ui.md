@@ -18,7 +18,7 @@ Review holds boundaries without a named check.
 - Render lines through `Line` in `src/ui/widgets.tsx`; OpenTUI otherwise uses a fixed foreground.
 - Feed headings and rows one `Column[]`. Mark a cut and show the whole text in detail. `src/ui/columns.test.ts` checks column arithmetic.
 - Use `pidColumn` from `src/ui/columns.ts` on every lane-name view. `src/ui/home.test.tsx` checks identity columns across views and widths.
-- Give each Selected value its own labelled `Field`; show an unset readable limit as `no limit` and keep an unread value unknown. `src/ui/resources.test.tsx` checks the fields and quota units.
+- Give each Resources Selected value its own labelled `Field`; show an unset readable limit as `no limit` and keep an unread value unknown. `src/ui/resources.test.tsx` checks the fields and quota units.
 - Leave a blank row before every displayed command and before its copy hint. `src/ui/widgets.test.tsx` checks `CommandOffer`; `src/ui/home.test.tsx` checks an open card.
 - Express CPU use as percent of one core in tiles, columns, facts, chart headings and thresholds. `src/ui/agent.test.tsx` and `src/ui/resources.test.tsx` check the displayed unit.
 - Draw every selectable row through `ListRow` and expanded content through `Detail` in `src/ui/widgets.tsx`. Preserve the rule and indent that distinguish nested content. `src/ui/App.test.tsx` checks shared nesting.

@@ -13,6 +13,8 @@ import {
   emptySnapshot,
   everyCauseSnapshot,
   laneSnapshot,
+  processSnapshot,
+  userManager,
 } from "../test/fixture";
 import { mount, onScreen, shown } from "../test/harness";
 import { App } from "./App";
@@ -86,6 +88,14 @@ test("each severity has one colour and an untroubled reading keeps the default",
   expect(levelColor("ok")).toBe(ui.fg);
   expect(levelColor("warn").equals(RGBA.fromIndex(3))).toBe(true);
   expect(levelColor("danger").equals(RGBA.fromIndex(1))).toBe(true);
+  for (const [word, expected] of [
+    ["OK", RGBA.fromIndex(2)],
+    ["Warning", RGBA.fromIndex(3)],
+    ["Error", RGBA.fromIndex(1)],
+    ["measuring", RGBA.defaultForeground()],
+    ["Stop", RGBA.fromIndex(1)],
+  ] as const)
+    expect(statusColor(word).equals(expected), word).toBe(true);
 });
 
 test("one role per colour: severity, action and metric never share an index", () => {
@@ -128,7 +138,11 @@ test("a zero reading recedes and a reading of any size keeps its weight", () => 
 
 test("every tab uses the terminal palette and reserves severity colour for status words", async () => {
   const c = defaults();
-  const screen = await mount(everyCauseSnapshot(c), c, {
+  const sample = everyCauseSnapshot(c);
+  sample.procs.push(
+    processSnapshot({ group: `${userManager}/agents.slice/a.scope` }),
+  );
+  const screen = await mount(sample, c, {
     width: 160,
     height: 44,
   });
@@ -139,6 +153,7 @@ test("every tab uses the terminal palette and reserves severity colour for statu
     colour.intent === "default" ||
     (colour.intent === "indexed" && palette.some((p) => p.equals(colour)));
   const strangers: string[] = [];
+  const visibleStatuses = new Set<string>();
   const sweep = (state: string) => {
     for (const line of screen.ui.captureSpans().lines)
       for (const span of line.spans) {
@@ -150,6 +165,16 @@ test("every tab uses the terminal palette and reserves severity colour for statu
         // Text in its own background colour is on the screen and unreadable.
         const seen = onScreen(span);
         if (seen.glyph === seen.cell) strangers.push(`${at} fg is bg`);
+        for (const [word, index] of [
+          ["Warning", 3],
+          ["Error", 1],
+          ["Stop", 1],
+        ] as const)
+          if (
+            span.text.trim() === word &&
+            seen.glyph === shown(RGBA.fromIndex(index), "fg")
+          )
+            visibleStatuses.add(word);
         const severity = [ui.ok, ui.warn, ui.danger].some(
           (colour) => seen.glyph === shown(colour, "fg"),
         );
@@ -159,7 +184,15 @@ test("every tab uses the terminal palette and reserves severity colour for statu
             ([status]) =>
               word === status &&
               seen.glyph ===
-                shown(statusColor(status as keyof typeof statusClasses), "fg"),
+                shown(
+                  {
+                    success: RGBA.fromIndex(2),
+                    warning: RGBA.fromIndex(3),
+                    error: RGBA.fromIndex(1),
+                    neutral: RGBA.defaultForeground(),
+                  }[statusClasses[status as keyof typeof statusClasses]],
+                  "fg",
+                ),
           );
           const live = word === "● live" && seen.glyph === shown(ui.ok, "fg");
           if (!knownStatus && !live)
@@ -212,6 +245,7 @@ test("every tab uses the terminal palette and reserves severity colour for statu
     await screen.ui.renderOnce();
     sweep("mouse selection");
     expect(strangers).toEqual([]);
+    expect([...visibleStatuses].sort()).toEqual(["Error", "Stop", "Warning"]);
   } finally {
     await screen.close();
   }

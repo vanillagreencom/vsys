@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { ScrollBoxRenderable } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import { collectGroups } from "../collect/cgroups";
@@ -34,7 +35,49 @@ import {
   serviceState,
   treePrefixes,
 } from "./resources";
-import { levelColor } from "./theme";
+import { levelColor, ui } from "./theme";
+
+test("an eighty-column group table keeps unselected warning and error states visible", async () => {
+  const s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({ name: "calm.slice", path: "calm.slice" }),
+    ...[
+      ["warm", 15],
+      ["busy", 40],
+    ].map(([name, some]) =>
+      groupSnapshot({
+        name: `${name}.slice`,
+        path: `${name}.slice`,
+        pressure: { cpu: { some: Number(some), full: 0, total: 0 } },
+      }),
+    ),
+  ];
+  const t = await mount(s, defaults(), { width: 80, height: 45 });
+  try {
+    await t.press("3");
+    expect(t.frame()).toContain("State");
+    for (const [name, word, role] of [
+      ["warm", "Warning", ui.warn],
+      ["busy", "Error", ui.danger],
+    ] as const) {
+      const row = present(
+        t.ui
+          .captureSpans()
+          .lines.find((line) =>
+            line.spans.some((span) => span.text.includes(name)),
+          ),
+        `${name} group`,
+      );
+      expect(
+        row.spans.some(
+          (span) => span.text.trim() === word && span.fg.equals(role),
+        ),
+      ).toBe(true);
+    }
+  } finally {
+    await t.close();
+  }
+});
 
 test.each([
   { selected: "beta", removed: "alpha", expected: "beta", moves: 1 },
@@ -432,19 +475,18 @@ test("Resources wraps its tiles at a hundred columns and draws a first sample's 
     compressed: 1 << 28,
     used: 1 << 28,
   });
-  // The first sample reads no CPU share at all. The control row gives Swap
-  // more devices than its tile holds, so the check below has a cut to find.
-  const rows: [string, (s: Snapshot) => void, boolean][] = [
-    ["first sample", () => {}, false],
+  // The first sample reads no CPU share. Each additional zram device needs
+  // its own labelled line, separate from the whole-machine swap total.
+  const rows: [string, (s: Snapshot) => void][] = [
+    ["first sample", () => {}],
     [
       "three zram devices",
       (s) => {
         s.system.zram = [zram("zram0"), zram("zram1"), zram("zram2")];
       },
-      false,
     ],
   ];
-  for (const [name, plant, cut] of rows) {
+  for (const [name, plant] of rows) {
     const s = emptySnapshot();
     plant(s);
     const t = await mount(s, c, { width: 100, height: 30 });
@@ -463,8 +505,16 @@ test("Resources wraps its tiles at a hundred columns and draws a first sample's 
       expect(
         tiles.some((line) => line.includes("…")),
         name,
-      ).toBe(cut);
-      if (cut) continue;
+      ).toBe(false);
+      if (name === "three zram devices") {
+        for (const device of ["zram0", "zram1", "zram2"])
+          expect(
+            tiles.some((line) =>
+              line.includes(`${device}: 1.0 GiB compressed to 256.0 MiB`),
+            ),
+          ).toBe(true);
+        expect(tiles.join("\n")).not.toMatch(/of .*on zram/);
+      }
       const frame = lines.join("\n");
       for (const m of meters(s, c).filter((m) => m.id !== "builds"))
         expect(frame, name).toContain(meterTile(m, s, c).detail);
@@ -704,6 +754,19 @@ test("Resources displays and orders measured service windows without grading war
     };
     const warn = shown(levelColor("warn"), "fg");
     expect(colour("hot")).toBe("default fg");
+    const hot = present(
+      t.ui
+        .captureSpans()
+        .lines.find((line) =>
+          line.spans.some((span) => span.text.includes("hot")),
+        ),
+      "hot service row",
+    );
+    expect(
+      hot.spans.some(
+        (span) => span.text.trim() === "Warning" && span.fg.equals(ui.warn),
+      ),
+    ).toBe(true);
     expect(colour("cool")).not.toBe(warn);
     expect(colour("cool")).not.toBe("missing");
     expect(colour("warming")).not.toBe(warn);
@@ -846,9 +909,44 @@ test.each([
         t.ui.renderer.root.findDescendantById("resource-fields"),
         "stacked resource fields",
       );
-      for (let i = 0; i < 8; i++)
+      expect(t.frame()).toContain("PgUp/PgDn");
+      const fieldFrame = () =>
+        t
+          .frame()
+          .split("\n")
+          .slice(fields.y, fields.y + fields.height)
+          .join("\n");
+      const reached = new Set<string>();
+      for (let i = 0; i < 4; i++) {
+        await t.press("\u001b[6~");
+        for (const label of [
+          "CPU quota",
+          "Page cache",
+          "Written",
+          "CPU wait",
+          "Memory wait",
+          "Disk wait",
+        ])
+          if (field(fieldFrame(), label)) reached.add(label);
+      }
+      expect([...reached].sort()).toEqual(
+        [
+          "CPU quota",
+          "Page cache",
+          "Written",
+          "CPU wait",
+          "Memory wait",
+          "Disk wait",
+        ].sort(),
+      );
+      expect(selectedRow(t.frame())).toMatch(/g1\b/);
+      for (let i = 0; i < 4; i++) await t.press("\u001b[5~");
+      expect(field(t.frame(), "Unit")).toBe(true);
+      if (!(fields instanceof ScrollBoxRenderable))
+        throw new Error("resource-fields is not a scroll viewport");
+      for (let i = 0; i < fields.scrollHeight; i++)
         await t.wheel(fields.x + 15, fields.y + 2, "down");
-      expect(field(t.frame(), "Disk wait")).toBe(true);
+      expect(field(fieldFrame(), "Disk wait")).toBe(true);
       // Past the last group, the busiest service.
       for (let i = 1; i < s.groups.length; i++) await t.press("down");
       frame = t.frame();
@@ -928,8 +1026,8 @@ test("Resources labels each selected value and expresses a quota in percent of o
     expect(t.frame()).toMatch(/CPU quota\s+50.0% of one core/);
     expect(t.frame()).toMatch(/Status\s+OK/);
     expect(t.frame()).toContain("desktop swap");
-    expect(t.frame()).toContain("of 61.7 GiB on zram0");
-    expect(t.frame()).toContain("2.2 GiB compressed to 856.0 MiB");
+    expect(t.frame()).toContain("of 61.7 GiB");
+    expect(t.frame()).toContain("zram0: 2.2 GiB compressed to 856.0 MiB");
     const selected = selectedRow(t.frame());
     expect(selected).toMatch(/\b42\s+OK/);
     expect(selected).not.toContain("42 tasks");

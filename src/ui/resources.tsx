@@ -1,3 +1,5 @@
+import { ScrollBoxRenderable } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
@@ -245,7 +247,7 @@ export function treePrefixes(groups: Group[]): Map<string, string> {
       walk(parent, "   ".repeat(depth(parent)));
   return prefixes;
 }
-/** What made a group's row red or amber, with the numbers that tripped it. */
+/** What gives a group its warning or error status, with the numbers that tripped it. */
 export type GroupCause =
   | { kind: "unconfined"; level: "danger" }
   | { kind: "cap"; level: "danger"; cap: number; floor: number }
@@ -379,6 +381,7 @@ export function Resources({
 }) {
   const [selection, setSelection] = useState(firstRow);
   const [all, setAll] = useState(false);
+  const renderer = useRenderer();
   const items = resourceRows(s, all);
   const rows = groupRows(s, all);
   const services = items.filter((row) => row.kind === "service");
@@ -408,7 +411,17 @@ export function Resources({
     onTargetUsed();
   }, [target, onTargetUsed, onNotice, s, all, choose]);
   const hidden = s.groups.length - rows.length;
-  useScreenKeys((name) => {
+  useScreenKeys((name, key) => {
+    if (name === "pageup" || name === "pagedown") {
+      const fields =
+        renderer.root.findDescendantById("resource-fields") ??
+        renderer.root.findDescendantById("split-detail");
+      if (fields instanceof ScrollBoxRenderable) {
+        key.preventDefault();
+        fields.scrollBy(name === "pagedown" ? 1 : -1, "viewport");
+        return true;
+      }
+    }
     if (name === c.keys.down || name === "down") {
       move((i) => nextDown(items.length, i));
       return true;
@@ -453,18 +466,23 @@ export function Resources({
   const cpuColumn: Column = { label: "CPU %/core", width: 10, align: "right" };
   const memoryBar: Column = { label: "", width: 8 };
   const memoryColumn: Column = { label: "Memory", width: 10, align: "right" };
-  const tasksColumn: Column = { label: "Tasks", width: 14, align: "right" };
+  const side = current ? sideWidth(width) : 0;
+  const listWidth = width - side - (side ? sideGap : 0);
+  const bars = listWidth >= 100;
+  const tasksColumn: Column = {
+    label: "Tasks",
+    width: bars ? 14 : 7,
+    align: "right",
+  };
   const statusColumn: Column = { label: "State", width: 9 };
   const fixed: Column[] = [
-    cpuBar,
+    ...(bars ? [cpuBar] : []),
     cpuColumn,
-    memoryBar,
+    ...(bars ? [memoryBar] : []),
     memoryColumn,
     tasksColumn,
     statusColumn,
   ];
-  const side = current ? sideWidth(width) : 0;
-  const listWidth = width - side - (side ? sideGap : 0);
   // The screen padding and the marker take five columns, and the name is
   // joined to the fixed columns by one more gap.
   const nameColumn: Column = {
@@ -637,7 +655,7 @@ export function Resources({
           detail={`of ${amount(s.system.memory.SwapTotal ?? null, c)}${s.system.zram
             .map(
               (z) =>
-                ` on ${z.device}\n${bytes(z.original, c)} compressed to ${bytes(z.compressed, c)}`,
+                `\n${z.device}: ${bytes(z.original, c)} compressed to ${bytes(z.compressed, c)}`,
             )
             .join("")}`}
         />
@@ -691,25 +709,33 @@ export function Resources({
                     onOpen={() => choose(i)}
                   >
                     {safe(cell(nameColumn, name))}
-                    {columnGap}
-                    <Bar
-                      value={g.cpuPercent}
-                      max={topCpu}
-                      width={cpuBar.width}
-                      color={metric.cpu}
-                    />
+                    {bars && (
+                      <>
+                        {columnGap}
+                        <Bar
+                          value={g.cpuPercent}
+                          max={topCpu}
+                          width={cpuBar.width}
+                          color={metric.cpu}
+                        />
+                      </>
+                    )}
                     {columnGap}
                     <Reading
                       value={g.cpuPercent}
                       text={cell(cpuColumn, share(g.cpuPercent))}
                     />
-                    {columnGap}
-                    <Bar
-                      value={g.memory}
-                      max={topMemory}
-                      width={memoryBar.width}
-                      color={metric.memory}
-                    />
+                    {bars && (
+                      <>
+                        {columnGap}
+                        <Bar
+                          value={g.memory}
+                          max={topMemory}
+                          width={memoryBar.width}
+                          color={metric.memory}
+                        />
+                      </>
+                    )}
                     {columnGap}
                     <Reading
                       value={g.memory}

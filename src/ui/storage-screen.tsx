@@ -463,27 +463,7 @@ export function Storage({
   const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
   const install = reporterOffer(s, c, "scrub");
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
-    const word =
-      item.state === "healthy"
-        ? "Healthy"
-        : item.state === "checking"
-          ? "Checking"
-          : item.state === "damaged"
-            ? "Damaged"
-            : item.state === "new-errors"
-              ? "New errors"
-              : item.state === "never-checked"
-                ? "Never checked"
-                : item.state === "stale"
-                  ? "Check overdue"
-                  : "Damage state unknown";
-    const summary = integrityLine(item, scrubSource).replace(
-      /^Damage found/,
-      "Damaged",
-    );
-    const rest = summary.startsWith(word)
-      ? summary.slice(word.length)
-      : ` · ${summary}`;
+    const { word, rest } = integrityLine(item, scrubSource);
     const counts = damageCounts(item);
     return storageRow(
       i,
@@ -731,10 +711,6 @@ export function Storage({
       first.total !== null && first.free !== null
         ? first.total - first.free
         : null;
-    // The heading's colour is the worse of what its mounts report and
-    // what the filesystem's integrity says, so damage found by a check
-    // colours the heading even while every mount reads normally.
-
     return (
       <Fragment key={`filesystem-${id}`}>
         <Line height={1} flexShrink={0} truncate>

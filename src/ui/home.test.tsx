@@ -10,6 +10,7 @@ import {
   everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
+  serviceSnapshot,
 } from "../test/fixture";
 import {
   cellStyle,
@@ -2065,5 +2066,56 @@ test("an open Home card separates the command from its step and copy hint", asyn
     expect(rows[hint - 1]?.replace(/[ │]/g, "")).toBe("");
   } finally {
     await t.close();
+  }
+});
+
+test("Home wraps its single truthful verdict status, including unknown pressure", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const missing = emptySnapshot();
+  missing.system.pressure = {};
+  const busy = emptySnapshot();
+  busy.services = [
+    serviceSnapshot({
+      name: "busy.service",
+      path: "system.slice/busy.service",
+      cpuHourPercent: 40,
+    }),
+  ];
+  const slow = emptySnapshot();
+  slow.system.pressure = { cpu: { some: 40, full: 0, total: 0 } };
+  slow.lanes = [
+    laneSnapshot({
+      name: "long-agent-worktree-name-with-enough-words-to-wrap-the-verdict",
+      cpu: 95,
+    }),
+  ];
+  for (const [sample, expected] of [
+    [missing, "Health unknown: no pressure data on this kernel"],
+    [busy, "Warning: busy used 40.0% of a core for an hour"],
+    [
+      slow,
+      "Warning: Tasks wait for CPU 40.0% of the recent window, busiest lane long-agent-worktree-name-with-enough-words-to-wrap-the-verdict PID 40",
+    ],
+  ] as const) {
+    const t = await mount(sample, c, { width: 80, height: 40 });
+    try {
+      await t.press("1");
+      const lines = t.frame().split("\n");
+      const start = lines.findIndex((row) =>
+        row.includes(expected.split(":")[0] ?? ""),
+      );
+      expect(start).toBeGreaterThan(-1);
+      const drawn = lines
+        .slice(start, start + wrapLines(expected, screenWidth(80)).length)
+        .map((row) => row.trim())
+        .join(" ");
+      expect(drawn).toBe(expected);
+      expect(t.frame()).not.toMatch(
+        /(?:Warning|Error): (?:Busy|Slow|Unknown|Unconfirmed):/,
+      );
+      if (sample === missing) expect(t.frame()).not.toContain("OK:");
+    } finally {
+      await t.close();
+    }
   }
 });
