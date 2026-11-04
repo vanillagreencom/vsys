@@ -16,7 +16,15 @@ import {
 } from "../test/fixture";
 import { mount, onScreen, shown } from "../test/harness";
 import { App } from "./App";
-import { levelColor, metric, palette, readingWeight, ui } from "./theme";
+import {
+  levelColor,
+  metric,
+  palette,
+  readingWeight,
+  statusClasses,
+  statusColor,
+  ui,
+} from "./theme";
 
 test("the screen uses the terminal's own colours and marks selection in the accent", async () => {
   const c = defaults();
@@ -58,7 +66,7 @@ test("the screen uses the terminal's own colours and marks selection in the acce
       shown(RGBA.fromIndex(6), "fg"),
     );
     expect(escaped && onScreen(escaped).glyph).toBe(
-      shown(RGBA.fromIndex(1), "fg"),
+      shown(RGBA.defaultForeground(), "fg"),
     );
     expect((heading?.attributes ?? 0) & TextAttributes.BOLD).not.toBe(0);
     // No visible span carries a colour outside the sixteen the terminal owns.
@@ -118,7 +126,7 @@ test("a zero reading recedes and a reading of any size keeps its weight", () => 
     });
 });
 
-test("every colour a screen paints is a terminal colour from the role table", async () => {
+test("every tab uses the terminal palette and reserves severity colour for status words", async () => {
   const c = defaults();
   const screen = await mount(everyCauseSnapshot(c), c, {
     width: 160,
@@ -142,6 +150,27 @@ test("every colour a screen paints is a terminal colour from the role table", as
         // Text in its own background colour is on the screen and unreadable.
         const seen = onScreen(span);
         if (seen.glyph === seen.cell) strangers.push(`${at} fg is bg`);
+        const severity = [ui.ok, ui.warn, ui.danger].some(
+          (colour) => seen.glyph === shown(colour, "fg"),
+        );
+        if (severity) {
+          const word = span.text.trim();
+          const knownStatus = Object.entries(statusClasses).some(
+            ([status]) =>
+              word === status &&
+              seen.glyph ===
+                shown(statusColor(status as keyof typeof statusClasses), "fg"),
+          );
+          const live = word === "● live" && seen.glyph === shown(ui.ok, "fg");
+          if (!knownStatus && !live)
+            strangers.push(`${at} severity outside a status word`);
+        }
+        if (
+          [ui.ok, ui.warn, ui.danger].some(
+            (colour) => seen.cell === shown(colour, "bg"),
+          )
+        )
+          strangers.push(`${at} severity background`);
       }
   };
   try {
@@ -150,6 +179,13 @@ test("every colour a screen paints is a terminal colour from the role table", as
       await screen.press(key);
       sweep(key);
     }
+    await screen.press("escape");
+    await screen.press("2");
+    await screen.press("enter");
+    for (let i = 0; i < 4; i++) await screen.press("down");
+    await screen.press("enter");
+    for (let i = 0; i < 3; i++) await screen.press("down");
+    sweep("Agent Actions Stop");
     await screen.press("escape");
     // A search box, empty and then typed into, and a setting being edited:
     // the input draws its own text, placeholder and cursor.

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { type RGBA, TextAttributes } from "@opentui/core";
+import { TextAttributes } from "@opentui/core";
 import { testRender } from "@opentui/react/test-utils";
 import { act } from "react";
 import { onScreen, shown } from "../test/harness";
@@ -39,32 +39,20 @@ test("a selected row is a band of the text colour, and a bar or a chart on it ke
   const ground = shown(ui.bg, "bg");
   const cpu = shown(metric.cpu, "fg");
   const danger = shown(ui.danger, "fg");
-  const rows: [string, boolean, RGBA | undefined, string, string, string][] = [
-    ["selected, plain", true, undefined, "name", ground, text],
-    ["selected, bar", true, undefined, "██", cpu, text],
-    ["selected, chart", true, undefined, "▁█", cpu, text],
-    ["selected, danger word", true, undefined, "ink", danger, text],
-    ["selected, danger row", true, ui.danger, "name", ground, danger],
-    // A danger word on a danger band takes the band's text colour, or it
-    // would be drawn in the band's own colour and vanish.
-    [
-      "selected, danger row, danger word",
-      true,
-      ui.danger,
-      "ink",
-      ground,
-      danger,
-    ],
-    ["plain", false, undefined, "name", text, ground],
-    ["bar", false, undefined, "██", cpu, ground],
-    ["danger word", false, undefined, "ink", danger, ground],
-    ["danger row", false, ui.danger, "name", danger, ground],
+  const rows: [string, boolean, string, string, string][] = [
+    ["selected, plain", true, "name", ground, text],
+    ["selected, bar", true, "██", cpu, text],
+    ["selected, chart", true, "▁█", cpu, text],
+    ["selected, danger word", true, "ink", danger, text],
+    ["plain", false, "name", text, ground],
+    ["bar", false, "██", cpu, ground],
+    ["danger word", false, "ink", danger, ground],
   ];
-  for (const [row, selected, colour, part, glyph, cell] of rows) {
+  for (const [row, selected, part, glyph, cell] of rows) {
     // The screen's own background sits behind every row, as it does in App.
     const screen = await testRender(
       <box backgroundColor={ui.bg}>
-        <Row selected={selected} color={colour}>
+        <Row selected={selected}>
           {"name "}
           <Bar value={50} max={100} width={4} color={metric.cpu} />{" "}
           <Sparkline marks="▁█" color={metric.cpu} />{" "}
@@ -343,5 +331,29 @@ test("a chart's gaps are painted quietly and its samples in the metric's colour"
     await act(async () => {
       ui2.renderer.destroy();
     });
+  }
+});
+
+test("a CommandOffer separates its command and copy hint with blank rows", async () => {
+  const { CommandOffer } = await import("./widgets");
+  const screen = await testRender(
+    <CommandOffer
+      sentence="Enable the report timer."
+      command="sudo systemctl enable --now vsys-smart-report.timer"
+      hint="y copies the command."
+    />,
+    { width: 80, height: 10 },
+  );
+  try {
+    await screen.renderOnce();
+    const rows = screen.captureCharFrame().split("\n");
+    const command = rows.findIndex((row) => row.includes("sudo systemctl"));
+    const hint = rows.findIndex((row) => row.includes("y copies"));
+    expect(command).toBeGreaterThan(0);
+    expect(hint).toBeGreaterThan(command);
+    expect(rows[command - 1]?.trim()).toBe("");
+    expect(rows[hint - 1]?.trim()).toBe("");
+  } finally {
+    await act(async () => screen.renderer.destroy());
   }
 });

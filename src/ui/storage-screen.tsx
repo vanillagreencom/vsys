@@ -1,4 +1,4 @@
-import type { MouseEvent, RGBA, ScrollBoxRenderable } from "@opentui/core";
+import type { MouseEvent, ScrollBoxRenderable } from "@opentui/core";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
@@ -7,7 +7,6 @@ import {
   damageCounts,
   type Integrity,
   integrity,
-  integrityLevel,
   volumesByDevice,
 } from "../model/integrity";
 import type {
@@ -51,7 +50,7 @@ import {
   lifetimeSourceText,
   reporterOffer,
 } from "./settings";
-import { levelColor, metric, scrollbar, ui } from "./theme";
+import { metric, scrollbar, statusColor, ui } from "./theme";
 import {
   Bar,
   CommandOffer,
@@ -432,7 +431,7 @@ export function Storage({
   const storageRow = (
     i: number,
     line: (open: boolean) => ReactNode,
-    { color, under }: { color?: RGBA; under?: () => ReactNode } = {},
+    { under }: { under?: () => ReactNode } = {},
   ) => {
     const open = i === selected;
     const detail = open ? under?.() : null;
@@ -442,7 +441,6 @@ export function Storage({
         key={rowIds[i]}
         id={`storage-${i}`}
         selected={open}
-        color={color}
         onOpen={() => choose(i)}
         under={!side && detail && <Detail>{detail}</Detail>}
       >
@@ -465,26 +463,47 @@ export function Storage({
   const scrubSource = s.capabilities.find((cap) => cap.id === "scrub");
   const install = reporterOffer(s, c, "scrub");
   const integrityRow = (i: number, item: Integrity, first: Volume) => {
-    const level = integrityLevel(item.state);
+    const word =
+      item.state === "healthy"
+        ? "Healthy"
+        : item.state === "checking"
+          ? "Checking"
+          : item.state === "damaged"
+            ? "Damaged"
+            : item.state === "new-errors"
+              ? "New errors"
+              : item.state === "never-checked"
+                ? "Never checked"
+                : item.state === "stale"
+                  ? "Check overdue"
+                  : "Damage state unknown";
+    const summary = integrityLine(item, scrubSource).replace(
+      /^Damage found/,
+      "Damaged",
+    );
+    const rest = summary.startsWith(word)
+      ? summary.slice(word.length)
+      : ` · ${summary}`;
     const counts = damageCounts(item);
     return storageRow(
       i,
       (open) => (
-        <Disclosure
-          open={open}
-          name={integrityLine(item, scrubSource)}
-          count={counts.files || undefined}
-        />
+        <>
+          <Disclosure open={open} name="" />
+          <Ink color={statusColor(word)}>{word}</Ink>
+          {safe(rest)}
+          {counts.files ? `  ${counts.files}` : ""}
+        </>
       ),
       {
-        color: level === "ok" ? undefined : levelColor(level),
         under: () => (
           <>
             {/* The panel is far from the row, which the lists' narrower
                 width cuts, so the panel states it whole. */}
             {wrap && (
               <Line flexShrink={0} wrapMode="word" marginBottom={1}>
-                {safe(integrityLine(item, scrubSource))}
+                <Ink color={statusColor(word)}>{word}</Ink>
+                {safe(rest)}
               </Line>
             )}
             {/* The headline reading is what the last check found. The
@@ -527,9 +546,12 @@ export function Storage({
                 <Line {...detailLine} flexShrink={0}>
                   <span attributes={ui.dim}>{fit("block", 16)}</span>
                   {`${group.logical}  `}
-                  <span fg={group.kind === "none" ? undefined : ui.danger}>
-                    {damageAdvice(group)}
-                  </span>
+                  {group.kind !== "none" && (
+                    <>
+                      <Ink color={statusColor("Error")}>Error</Ink>{" "}
+                    </>
+                  )}
+                  {damageAdvice(group)}
                 </Line>
                 {group.paths.map((path) => (
                   <Line key={path} flexShrink={0} wrapMode="word">
@@ -574,14 +596,14 @@ export function Storage({
             {/* The report's own words are a third idea under the counter and
                 the sentence explaining it, so they start after a blank row. */}
             {item.scrub && (
-              <Line
-                flexShrink={0}
-                wrapMode="word"
-                marginTop={1}
-                attributes={ui.dim}
-              >
-                {safe(item.scrub.text)}
-              </Line>
+              <box flexDirection="column" flexShrink={0} marginTop={1}>
+                {item.scrub.text.split("\n").map((line, i) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a report line is its position
+                  <Line key={i} flexShrink={0} wrapMode="word">
+                    {safe(line)}
+                  </Line>
+                ))}
+              </box>
             )}
           </>
         ),
@@ -599,18 +621,20 @@ export function Storage({
               below holds the whole cause. The marker, the disclosure and the
               mount take the first 43 cells. */}
           {cause && (
-            <Ink color={ui.danger}>
-              {safe(fit(volumeCauseText(cause, c), listWidth - 43))}
-            </Ink>
+            <>
+              <Ink color={statusColor("Error")}>Error</Ink>{" "}
+              {safe(fit(volumeCauseText(cause, c), listWidth - 49))}
+            </>
           )}
         </>
       ),
       {
-        color: levelColor(volumeLevel(v, c.freeFloor)),
         under: () => (
           <>
             {cause && (
-              <Line flexShrink={0} wrapMode="word" fg={ui.danger}>
+              <Line flexShrink={0} wrapMode="word">
+                <Ink color={statusColor("Error")}>Error</Ink>
+                {": "}
                 {safe(volumeCauseText(cause, c))}
               </Line>
             )}
@@ -640,12 +664,7 @@ export function Storage({
         <>
           {safe(fit(x.path, 40))}
           {columnGap}
-          <Bar
-            value={x.bytes}
-            max={scratchTop}
-            width={12}
-            level={over ? "warn" : "ok"}
-          />
+          <Bar value={x.bytes} max={scratchTop} width={12} />
           {columnGap}
           <Reading
             value={x.bytes}
@@ -654,11 +673,18 @@ export function Storage({
           {modified != null && (
             <span attributes={ui.dim}>{`  ${modified} ago`}</span>
           )}
-          {x.error && <Ink color={ui.warn}>{`  ${safe(x.error)}`}</Ink>}
+          {(over || x.error) && (
+            <>
+              {"  "}
+              <Ink color={statusColor(x.error ? "unread" : "Warning")}>
+                {x.error ? "unread" : "Warning"}
+              </Ink>
+              {x.error && ` ${safe(x.error)}`}
+            </>
+          )}
         </>
       ),
       {
-        color: over ? ui.warn : undefined,
         // The origin sits under the row rather than after its columns, where
         // a narrow terminal cuts it and pushes the error out. The panel's
         // narrower lists cut the error too, so the panel states it whole.
@@ -669,7 +695,9 @@ export function Storage({
           return (
             <>
               {error !== null && (
-                <Line flexShrink={0} wrapMode="word" fg={ui.warn}>
+                <Line flexShrink={0} wrapMode="word">
+                  <Ink color={statusColor("unread")}>unread</Ink>
+                  {": "}
                   {safe(error)}
                 </Line>
               )}
@@ -706,19 +734,13 @@ export function Storage({
     // The heading's colour is the worse of what its mounts report and
     // what the filesystem's integrity says, so damage found by a check
     // colours the heading even while every mount reads normally.
-    const worst: Level =
-      volumes.some((v) => volumeLevel(v, c.freeFloor) === "danger") ||
-      integrityLevel(state.state) === "danger"
-        ? "danger"
-        : integrityLevel(state.state) === "warn"
-          ? "warn"
-          : "ok";
+
     return (
       <Fragment key={`filesystem-${id}`}>
         <Line height={1} flexShrink={0} truncate>
-          <span fg={levelColor(worst)}>{safe(fit(device, 42))}</span>
+          <span>{safe(fit(device, 42))}</span>
           {columnGap}
-          <Bar value={used} max={first.total ?? 1} width={12} level={worst} />
+          <Bar value={used} max={first.total ?? 1} width={12} />
           {`${columnGap}${fit(amount(first.free, c), 10, "right")} free of ${amount(first.total, c)}`}
           <span attributes={ui.dim}>
             {`  ${volumes.length} ${volumes.length === 1 ? "mount" : "mounts"}`}
@@ -736,17 +758,26 @@ export function Storage({
           {safe(scrub.path)}
           {/* A file vsys could not read reported nothing at all, and
               saying it reported a problem puts words in it. */}
-          <span attributes={scrub.problem ? ui.none : ui.dim}>
+          {"  "}
+          <Ink
+            color={statusColor(
+              scrub.readable === false
+                ? "unread"
+                : scrub.problem
+                  ? "Error"
+                  : "clean",
+            )}
+          >
             {scrub.readable === false
-              ? "  could not be read"
+              ? "unread"
               : scrub.problem
-                ? "  problem reported"
-                : "  clean"}
-          </span>
+                ? "Error"
+                : "clean"}
+          </Ink>
+          {scrub.problem && scrub.readable !== false ? " problem reported" : ""}
         </>
       ),
       {
-        color: scrub.problem ? ui.danger : undefined,
         under: () => (
           <>
             <Line flexShrink={0} wrapMode="word" attributes={ui.dim}>

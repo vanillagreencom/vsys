@@ -375,7 +375,7 @@ export function Confirm({
       zIndex={20}
       border
       borderStyle="rounded"
-      borderColor={ui.danger}
+      borderColor={ui.fg}
       title=" Confirm "
       paddingX={2}
       paddingY={1}
@@ -386,7 +386,7 @@ export function Confirm({
         <span attributes={ui.bold}>{`${command.action} `}</span>
         <span>{`${safe(command.scope)}?`}</span>
       </Line>
-      <Line wrapMode="word" attributes={ui.dim}>
+      <Line wrapMode="word" attributes={ui.dim} marginTop={1}>
         {safe(command.text)}
       </Line>
       <Line height={1} truncate marginTop={1}>

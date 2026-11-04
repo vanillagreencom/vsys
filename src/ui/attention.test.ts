@@ -674,7 +674,7 @@ test("the memory meter names the largest scope and only then the swap holder", (
   const tile = (snapshot: Snapshot) =>
     meterTile(present(meters(snapshot, c)[1], "the memory meter"), snapshot, c);
   expect(tile(s).value).toBe("500 B");
-  expect(tile(s).detail).toBe("of 1000 B · swap 0 B");
+  expect(tile(s).detail).toBe("of 1000 B · desktop swap 0 B");
   expect(tile(s).facts).toEqual([
     ["Used", "500 B of 1000 B"],
     ["Agent page cache", "not available"],
@@ -692,7 +692,7 @@ test("the memory meter names the largest scope and only then the swap holder", (
   // Swap vsys could not read is a warning, never an untroubled reading.
   desktop.swap = null;
   expect(present(meters(s, c)[1], "the memory meter").level).toBe("warn");
-  expect(tile(s).detail).toBe("of 1000 B · swap not available");
+  expect(tile(s).detail).toBe("of 1000 B · desktop swap not available");
 });
 
 test("the disk meter reports free space and says when mounts are unreadable", () => {
@@ -726,9 +726,12 @@ test("the CPU meter says once that no share is read, and names the share it did 
     [[], "in use: not available"],
     [
       [slice(c.agentSlice, 12.5)],
-      "in use: agents 12.5% · desktop not available",
+      "agents 12.5% · desktop not available of one core",
     ],
-    [[slice(c.desktopSlice, 3)], "in use: agents not available · desktop 3.0%"],
+    [
+      [slice(c.desktopSlice, 3)],
+      "agents not available · desktop 3.0% of one core",
+    ],
   ];
   for (const [groups, detail] of rows) {
     const s = emptySnapshot();
@@ -759,15 +762,15 @@ test("a meter names the interface behind a missing reading", () => {
   s.system.pressure.cpu = null;
   expect(cpu()).toEqual({
     "Time tasks waited": "not available",
-    "Cores agents use": "not available",
-    "Cores desktop uses": "not available",
+    Agents: "not available",
+    Desktop: "not available",
     "Busiest agent": "not available",
   });
   drop("psi");
   expect(cpu()["Time tasks waited"]).toBe(
     "not available: no PSI on this kernel",
   );
-  expect(cpu()["Cores agents use"]).toBe("not available");
+  expect(cpu().Agents).toBe("not available");
   expect(disk()["Tasks waiting"]).toBe(
     "not available: no PSI on this kernel · nothing runnable not available: no PSI on this kernel",
   );
@@ -794,7 +797,7 @@ test("a meter names the interface behind a missing reading", () => {
     "Desktop swap": delegated,
     Largest: delegated,
   });
-  expect(cpu()["Cores agents use"]).toBe(delegated);
+  expect(cpu().Agents).toBe(delegated);
 });
 
 test("a snapshot stored before the probe reads plainly and never claims a cause", () => {
@@ -807,8 +810,8 @@ test("a snapshot stored before the probe reads plainly and never claims a cause"
     meterTile(present(meters(s, c)[0], "the cpu meter"), s, c).facts,
   ).toEqual([
     ["Time tasks waited", "not available"],
-    ["Cores agents use", "not available"],
-    ["Cores desktop uses", "not available"],
+    ["Agents", "not available"],
+    ["Desktop", "not available"],
     ["Busiest agent", "not available"],
   ]);
   expect(unread(s, "psi")).toBe("not available");

@@ -101,31 +101,25 @@ test("Resources shows an unknown limit for each unread limit file", async () => 
       { width: 220, height: 40 },
     );
     await t.press("3");
-    const limits = () => {
-      const lines = present(t, "the mounted Resources screen")
-        .frame()
-        .split("\n");
-      const start = lines.findIndex((line) => line.includes("Limits"));
-      const heading = present(
-        lines[start],
-        "the selected group's Limits field",
-      );
-      const labelColumn = heading.indexOf("Limits");
-      const valueColumn = heading.indexOf("memory high", labelColumn);
-      const end = lines.findIndex(
-        (line, index) =>
-          index > start && line.slice(labelColumn).startsWith("CPU "),
-      );
-      expect(valueColumn).toBeGreaterThan(labelColumn);
-      expect(end).toBeGreaterThan(start);
-      return lines
-        .slice(start, end)
-        .map((line) => line.slice(valueColumn).trim())
-        .join(" ");
+    const field = (label: string) => {
+      const frame = present(t, "Resources").frame().split("\n");
+      const col = present(
+        frame.find((line) => line.includes("Selected")),
+        "Selected heading",
+      ).indexOf("Selected");
+      return present(
+        frame.find((line) => line.slice(col).startsWith(label)),
+        label,
+      )
+        .slice(col + 12, -2)
+        .trim();
     };
-    expect(limits()).toContain(
-      "memory high none · max none · swap 0 B of none · tasks max none",
-    );
+    expect(field("Memory high")).toBe("no limit");
+    expect(field("Memory max")).toBe("no limit");
+    expect(field("Swap")).toBe("0 B used; no limit");
+    expect(field("Tasks max")).toBe("no limit");
+    expect(field("CPU quota")).toBe("no limit");
+    expect(field("Status")).toBe("OK");
     writeFileSync(join(root, "memory.high"), "1048576");
     writeFileSync(join(root, "memory.swap.max"), "0");
     writeFileSync(join(root, "pids.max"), "512");
@@ -140,8 +134,15 @@ test("Resources shows an unknown limit for each unread limit file", async () => 
         tasksMaxRead: !denied.includes("pids.max"),
       });
       await t.update({ ...s, groups, errors: r.errors });
-      expect(limits()).toContain(
-        `memory high ${denied.includes("memory.high") ? gap : "1.0 MiB"} · max none · swap 0 B of ${denied.includes("memory.swap.max") ? gap : "0 B"} · tasks max ${denied.includes("pids.max") ? gap : "512"}`,
+      expect(field("Memory high")).toBe(
+        denied.includes("memory.high") ? gap : "1.0 MiB",
+      );
+      expect(field("Memory max")).toBe("no limit");
+      expect(field("Swap")).toBe(
+        `0 B used; ${denied.includes("memory.swap.max") ? gap : "limit 0 B"}`,
+      );
+      expect(field("Tasks max")).toBe(
+        denied.includes("pids.max") ? gap : "512",
       );
     }
   } finally {
@@ -440,7 +441,7 @@ test("Resources wraps its tiles at a hundred columns and draws a first sample's 
       (s) => {
         s.system.zram = [zram("zram0"), zram("zram1"), zram("zram2")];
       },
-      true,
+      false,
     ],
   ];
   for (const [name, plant, cut] of rows) {
@@ -592,12 +593,7 @@ test("a group with an unread threshold input is graded a warning, not clear", as
   const t = await mount(s, c, { width: 100, height: 40 });
   try {
     await t.press(c.keys.resources);
-    const status =
-      t
-        .frame()
-        .split("\n")
-        .find((line) => line.includes("Status")) ?? "";
-    expect(status).toContain(gap);
+    expect(t.frame()).toContain("a threshold reading is not available");
   } finally {
     await t.close();
   }
@@ -691,7 +687,7 @@ test("Resources displays and orders measured service windows without grading war
     expect(
       lines.find((line) => line.includes("Service") && line.includes("CPU")),
     ).toBeDefined();
-    expect(t.frame()).not.toContain("Hour average");
+    expect(t.frame()).not.toContain("Hour avg %/core");
     for (const name of ["unread", "young"])
       expect(row(name)).not.toMatch(/\d%/);
     // A unit vsys has watched for under an hour may have run for days, so
@@ -707,7 +703,7 @@ test("Resources displays and orders measured service windows without grading war
       return "missing";
     };
     const warn = shown(levelColor("warn"), "fg");
-    expect(colour("hot")).toBe(warn);
+    expect(colour("hot")).toBe("default fg");
     expect(colour("cool")).not.toBe(warn);
     expect(colour("cool")).not.toBe("missing");
     expect(colour("warming")).not.toBe(warn);
@@ -726,14 +722,14 @@ test("Resources displays and orders measured service windows without grading war
       .join(" ")
       .replace(/\s+/g, " ");
     expect(detail).toContain(
-      "averaged 30.0% of a core over the last 12 minutes;",
+      "averaged 30.0% of one core over the last 12 minutes;",
     );
     expect(detail).toContain("the hour average needs 48 more minutes");
     await t.update({
       ...s,
       services: s.services.filter((service) => service.cpuHourPercent !== null),
     });
-    expect(t.frame()).toContain("Hour average");
+    expect(t.frame()).toContain("Hour avg %/core");
     expect(t.frame()).not.toContain("· 1h");
   } finally {
     await t.close();
@@ -841,11 +837,18 @@ test.each([
         ),
         services: !alone,
       });
-      for (const label of ["Unit", "Status", "Waiting"])
+      for (const label of ["Unit", "Status", "Memory high"])
         expect({ label, drawn: field(frame, label) }).toEqual({
           label,
           drawn: true,
         });
+      const fields = present(
+        t.ui.renderer.root.findDescendantById("resource-fields"),
+        "stacked resource fields",
+      );
+      for (let i = 0; i < 8; i++)
+        await t.wheel(fields.x + 15, fields.y + 2, "down");
+      expect(field(t.frame(), "Disk wait")).toBe(true);
       // Past the last group, the busiest service.
       for (let i = 1; i < s.groups.length; i++) await t.press("down");
       frame = t.frame();
@@ -871,3 +874,77 @@ test.each([
     }
   },
 );
+
+test("Resources labels each selected value and expresses a quota in percent of one core", async () => {
+  const c = defaults(),
+    s = emptySnapshot();
+  s.groups = [
+    groupSnapshot({
+      name: "agents.slice",
+      cpuMax: "50000 100000",
+      tasks: 42,
+      cpuPercent: 25,
+      cache: 4096,
+      writeRate: 1024,
+      pressure: {
+        cpu: { some: 1, full: 0, total: 0 },
+        memory: { some: 2, full: 0, total: 0 },
+        io: { some: 3, full: 0, total: 0 },
+      },
+    }),
+  ];
+  s.system.memory = {
+    MemTotal: 1024,
+    MemAvailable: 512,
+    SwapTotal: 66249867264,
+    SwapFree: 63800000000,
+  };
+  s.system.zram = [
+    {
+      device: "zram0",
+      original: 2362232013,
+      compressed: 897581056,
+      used: 897581056,
+    },
+  ];
+  const t = await mount(s, c, { width: 180, height: 54 });
+  try {
+    await t.press("3");
+    const rows = t.frame().split("\n");
+    for (const label of [
+      "Memory high",
+      "Memory max",
+      "Swap",
+      "Tasks max",
+      "CPU weight",
+      "CPU quota",
+      "Page cache",
+      "Written",
+      "CPU wait",
+      "Memory wait",
+      "Disk wait",
+    ])
+      expect(rows.some((row) => row.includes(label))).toBe(true);
+    expect(t.frame()).toMatch(/CPU quota\s+50.0% of one core/);
+    expect(t.frame()).toMatch(/Status\s+OK/);
+    expect(t.frame()).toContain("desktop swap");
+    expect(t.frame()).toContain("of 61.7 GiB on zram0");
+    expect(t.frame()).toContain("2.2 GiB compressed to 856.0 MiB");
+    const selected = selectedRow(t.frame());
+    expect(selected).toMatch(/\b42\s+OK/);
+    expect(selected).not.toContain("42 tasks");
+    await t.update({
+      ...s,
+      groups: [
+        groupSnapshot({
+          name: "agents.slice",
+          cpuMax: "250000 100000",
+          cpuPercent: 25,
+        }),
+      ],
+    });
+    expect(t.frame()).toMatch(/CPU quota\s+250.0% of one core/);
+  } finally {
+    await t.close();
+  }
+});

@@ -283,7 +283,7 @@ function copy(
             ? laneSentence(laneNames, width, processHead)
             : every,
         next: launcher
-          ? `Stop each process and start it again through the launcher that places it in ${c.agentSlice}.`
+          ? `Stop each process, then restart it through the agent launcher.`
           : `Stop each process and start it again inside ${c.agentSlice}.`,
         command: shellLine([
           "systemd-run",
@@ -827,12 +827,22 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
       value: pc(v.system, "psi"),
       detail: [v.agents, v.desktop].every((n) => n === null || n === undefined)
         ? `in use: ${unread(s, "delegation")}`
-        : `in use: agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")}`,
+        : `agents ${pc(v.agents, "delegation")} · desktop ${pc(v.desktop, "delegation")} of one core`,
       level,
       facts: [
         ["Time tasks waited", pc(v.system, "psi")],
-        ["Cores agents use", pc(v.agents, "delegation")],
-        ["Cores desktop uses", pc(v.desktop, "delegation")],
+        [
+          "Agents",
+          v.agents == null
+            ? pc(v.agents, "delegation")
+            : `${pc(v.agents, "delegation")} of one core`,
+        ],
+        [
+          "Desktop",
+          v.desktop == null
+            ? pc(v.desktop, "delegation")
+            : `${pc(v.desktop, "delegation")} of one core`,
+        ],
         ["Busiest agent", who(pc(v.top, "delegation"), "delegation")],
       ],
     };
@@ -840,7 +850,7 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
     return {
       label: "Memory",
       value: b(v.used),
-      detail: `of ${b(v.total)} · swap ${b(v.swap, "delegation")}`,
+      detail: `of ${b(v.total)} · desktop swap ${b(v.swap, "delegation")}`,
       level,
       facts: [
         ["Used", `${b(v.used)} of ${b(v.total)}`],

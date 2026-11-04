@@ -1290,14 +1290,14 @@ test("Busiest agents sorts from its own headings, and the heading says which", a
     // top. lane-a has the higher CPU and the lower memory, and a tie on state
     // falls to the lane id.
     const steps: [string | null, string, string][] = [
-      [null, "↓ CPU", "lane-a"],
-      [c.keys.reverse, "↑ CPU", "lane-b"],
+      [null, "↓ CPU %/core", "lane-a"],
+      [c.keys.reverse, "↑ CPU %/core", "lane-b"],
       [c.keys.sort, "↑ Memory", "lane-a"],
       [c.keys.reverse, "↓ Memory", "lane-b"],
       [c.keys.reverse, "↑ Memory", "lane-a"],
       [c.keys.sort, "Agent ↑", "lane-a"],
       [c.keys.sort, "State ↑", "lane-a"],
-      [c.keys.sort, "↑ CPU", "lane-b"],
+      [c.keys.sort, "↑ CPU %/core", "lane-b"],
     ];
     for (const [key, heading, top] of steps) {
       if (key) await t.press(key);
@@ -1321,7 +1321,7 @@ test("Busiest agents sorts from its own headings, and the heading says which", a
       await shed.press(c.keys.sort);
       marks.push(sortMarks(shed.frame()));
     }
-    expect(marks).toEqual([["↓ Memory"], ["Agent ↓"], ["↓ CPU"]]);
+    expect(marks).toEqual([["↓ Memory"], ["Agent ↓"], ["↓ CPU %/core"]]);
   } finally {
     await shed.close();
   }
@@ -1485,7 +1485,14 @@ test("moving back to the tiles brings the tiles back on screen", async () => {
   const t = await mount(s, c, { width: 120, height: 22 }, { history: h });
   try {
     // A tile draws this under its number and nothing else on Home does.
-    const tilesShown = () => t.frame().includes("in use: agents");
+    const tilesShown = () =>
+      t
+        .frame()
+        .split("\n")
+        .some(
+          (row) =>
+            row.trimStart().startsWith("agents ") && row.includes("desktop"),
+        );
     await t.press("1");
     await t.settle();
     // Walk to the bottom of the last list, which scrolls the tiles away.
@@ -1545,7 +1552,7 @@ test("an open card writes what its room holds, and every action line shows", asy
   ]) {
     const t = await mount(s, c, size);
     try {
-      await t.ui.renderOnce();
+      await t.settle();
       const rows = t.frame().split("\n");
       const card = rows.findIndex((row) => row.includes("▾"));
       const next = rows.findIndex((row) => row.includes("Next "));
@@ -1615,7 +1622,7 @@ test("an open card breaks its detail into paragraphs, one per idea", async () =>
   ]) {
     const t = await mount(s, c, size);
     try {
-      await t.ui.renderOnce();
+      await t.settle();
       const rows = t.frame().split("\n");
       const card = rows.findIndex((row) => row.includes("▾"));
       const next = rows.findIndex((row) => row.includes("Next "));
@@ -1651,7 +1658,7 @@ test("a screen too short for every fact counts what the card gave up", async () 
   const open = async (size: { width: number; height: number }) => {
     const t = await mount(s, c, size);
     try {
-      await t.ui.renderOnce();
+      await t.settle();
       const rows = t.frame().split("\n");
       const card = rows.findIndex((row) => row.includes("▾"));
       const next = rows.findIndex((row) => row.includes("Next "));
@@ -1763,7 +1770,7 @@ test("an open card on a narrow terminal draws every row whole or cut with its ma
     // draws is the copy it holds.
     const t = await mount(s, c, { width, height: 120 });
     try {
-      await t.ui.renderOnce();
+      await t.settle();
       const rows = t.frame().split("\n");
       const panel = screenPad + panelWidth(screenWidth(width));
       const words = (row: string) =>
@@ -1798,7 +1805,10 @@ test("an open card on a narrow terminal draws every row whole or cut with its ma
       const keyLine = `${keyLabel(c.keys.open)} opens Agents · ${keyLabel(c.keys.copy)} copies the command`;
       const titleRow = present(rows[title], "card title row");
       for (const [row, whole] of [
-        [titleRow.slice(titleRow.indexOf("▾") + 2, panel).trim(), item.title],
+        [
+          titleRow.slice(titleRow.indexOf("Error ") + 6, panel).trim(),
+          item.title,
+        ],
         [words(present(rows[keys], "key line")), keyLine],
       ] as const) {
         expect(row.endsWith("…")).toBe(true);
@@ -2033,3 +2043,27 @@ test.each(["complete", "incomplete", "unknown"] as const)(
     }
   },
 );
+
+test("an open Home card separates the command from its step and copy hint", async () => {
+  const c = defaults(),
+    s = escapedSnapshot({ lanes: 1, perLane: 1 });
+  const cards = attention(s, c);
+  const at = cards.findIndex((card) => card.command !== undefined);
+  const command = present(cards[at], "card with command").command;
+  const t = await mount(s, c, { width: 180, height: 54 });
+  try {
+    for (let i = 0; i < at; i++) await t.press("down");
+    await t.settle();
+    const rows = t.frame().split("\n");
+    const line = rows.findIndex((row) => row.includes(`Copy ${command}`));
+    const hint = rows.findIndex(
+      (row, i) => i > line && row.includes("copies the command"),
+    );
+    expect(line).toBeGreaterThan(0);
+    expect(hint).toBeGreaterThan(line);
+    expect(rows[line - 1]?.replace(/[ │]/g, "")).toBe("");
+    expect(rows[hint - 1]?.replace(/[ │]/g, "")).toBe("");
+  } finally {
+    await t.close();
+  }
+});

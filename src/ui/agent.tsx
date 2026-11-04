@@ -1,4 +1,4 @@
-import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { OpenFiles } from "../collect/procs";
 import { agentScratchDirs, scratchRoots } from "../collect/scratch";
@@ -33,7 +33,7 @@ import {
 import { useScreenKeys } from "./keys";
 import { errorText } from "./refusals";
 import { firstRow, useSelection } from "./selection";
-import { levelColor, metric, scrollbar, ui } from "./theme";
+import { levelStatus, metric, scrollbar, statusColor, ui } from "./theme";
 import {
   Chart,
   Detail,
@@ -41,6 +41,7 @@ import {
   Empty,
   Field,
   gutter,
+  Ink,
   Line,
   ListRow,
   nextDown,
@@ -111,14 +112,16 @@ export function AgentIdentity({
   return (
     <>
       <Line height={1} flexShrink={0} truncate>
-        <span attributes={ui.bold} fg={levelColor(laneLevel(lane, c))}>
-          {safe(lane.name)}
-        </span>
+        <span attributes={ui.bold}>{safe(lane.name)}</span>
       </Line>
       {/* Its own line, wrapping: the cause names the threshold it crossed, and
           a long lane name beside it would cut that number off. */}
       {badge && (
-        <Line flexShrink={0} wrapMode="word" fg={levelColor(badge.level)}>
+        <Line flexShrink={0} wrapMode="word">
+          <Ink color={statusColor(levelStatus(badge.level))}>
+            {levelStatus(badge.level)}
+          </Ink>
+          {": "}
           {safe(badgeText(badge, lane, c))}
         </Line>
       )}
@@ -164,7 +167,7 @@ export function AgentTiles({
         label="CPU"
         value={share(lane.cpu)}
         level={laneLevel(lane, c)}
-        detail={`of one core · ${share(lane.cpuShare)} of the machine`}
+        detail="percent of one core"
       />
       <Tile
         key="Memory"
@@ -213,7 +216,6 @@ export function AgentSummary({
       <Field
         label="Limits"
         value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap}`}
-        color={lowCap(lane, c) ? ui.danger : undefined}
       />
       <Field
         label="Builds"
@@ -518,17 +520,12 @@ export function Agent({
     row: DetailRow,
     i: number,
     line: ReactNode,
-    {
-      color,
-      indent,
-      under,
-    }: { color?: RGBA; indent?: number; under?: ReactNode } = {},
+    { indent, under }: { indent?: number; under?: ReactNode } = {},
   ) => (
     <ListRow
       key={detailKey(row)}
       id={`detail-${i}`}
       selected={selected === i}
-      color={color}
       indent={indent}
       onOpen={() => openRow(i)}
       under={under}
@@ -584,14 +581,19 @@ export function Agent({
         <Field
           label="Limits"
           value={`memory ${capText(lane, c)} · CPU weight ${lane.cpuWeight ?? gap} · make jobs ${lane.jobsKnown ? (lane.jobs ?? "not set") : gap} · jobserver ${lane.jobsKnown ? (lane.jobserver ?? "not set") : gap}`}
-          color={lowCap(lane, c) ? ui.danger : undefined}
         />
         <Field
           label="Builds"
           value={`${kinds || "none"} · ${lane.linkers ?? gap} linking · ${lane.sccache ?? gap} sccache clients`}
         />
         <box height={1} flexShrink={0} />
-        {seriesError && <Line fg={ui.danger}>{safe(seriesError)}</Line>}
+        {seriesError && (
+          <Line>
+            <Ink color={statusColor("Error")}>Error</Ink>
+            {": "}
+            {safe(seriesError)}
+          </Line>
+        )}
         {loading && !samples.length && (
           <Line attributes={ui.dim}>Loading history</Line>
         )}
@@ -600,7 +602,7 @@ export function Agent({
         {!seriesError && (
           <>
             <Chart
-              title={`CPU · ${spanLabel(cpuPeaks, windowMs)}`}
+              title={`CPU · percent of one core · ${spanLabel(cpuPeaks, windowMs)}`}
               values={cpuPeaks}
               height={3}
               max={cpuTop}
@@ -659,12 +661,39 @@ export function Agent({
                   row,
                   i,
                   <>
-                    {fit(row.intent.action, 8)}
-                    <span attributes={ui.dim}>{safe(row.intent.text)}</span>
+                    <Ink color={statusColor(row.intent.action)}>
+                      {fit(row.intent.action, 8)}
+                    </Ink>
+                    <span>
+                      {row.intent.action === "Freeze"
+                        ? "pauses every process in this agent"
+                        : row.intent.action === "Thaw"
+                          ? "resumes every process in this agent"
+                          : "ends the scope"}
+                    </span>
                   </>,
                   {
                     indent: 3,
-                    color: row.intent.action === "Stop" ? ui.danger : undefined,
+                    under: selected === i && (
+                      <Detail>
+                        <Line
+                          marginTop={1}
+                          flexShrink={0}
+                          wrapMode="word"
+                          fg={ui.accent}
+                        >
+                          {safe(row.intent.text)}
+                        </Line>
+                        <Line
+                          marginTop={1}
+                          flexShrink={0}
+                          wrapMode="word"
+                          attributes={ui.dim}
+                        >
+                          {keyLabel(c.keys.copy)} copies the command.
+                        </Line>
+                      </Detail>
+                    ),
                   },
                 )
               : detailRow(
@@ -831,7 +860,7 @@ export function Agent({
                             <Line height={1} truncate attributes={ui.dim}>
                               {c.writeMode
                                 ? `${keyLabel(c.keys.open)} runs the selected action after a confirmation`
-                                : `Write mode is off · ${keyLabel(c.keys.copy)} copies the selected command`}
+                                : `Write mode is off`}
                             </Line>
                           ))}
                       </Detail>

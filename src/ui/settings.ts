@@ -127,7 +127,7 @@ export const settingInfo: Record<string, SettingInfo> = {
     unit: "seconds",
   },
   serviceCpuPercent: {
-    label: "Busy system service",
+    label: "Busy service (%/core)",
     help: "A system service whose average CPU over the last hour reaches this share of one core raises a card.",
     unit: "percent",
   },
@@ -311,6 +311,18 @@ export const capabilityLabels: Record<CapabilityId, string> = {
   smart: "Drive lifetime reports",
   tmux: "Terminal panes (tmux)",
   "agent-slice": "Agent slice",
+};
+/** The value each existing source supplies, before its raw probe detail. */
+export const capabilityGives: Record<CapabilityId, string> = {
+  cgroup2: "Resource groups and their limits",
+  delegation: "Resource use in this login session",
+  psi: "Time tasks spend waiting for resources",
+  "io-stat": "Bytes read and written by each group",
+  scrub: "Filesystem check results",
+  "kernel-log": "Checksum read failures",
+  smart: "Drive lifetime writes",
+  tmux: "Pane addresses and titles",
+  "agent-slice": "The shared group for agent processes",
 };
 /** What the interface never existing means, per capability. */
 const absentReasons: Record<CapabilityId, string> = {

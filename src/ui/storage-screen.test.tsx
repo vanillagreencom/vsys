@@ -664,7 +664,7 @@ test("a damaged filesystem lists every file each damaged address may hold", asyn
     await t.press("5");
     const frame = t.frame();
     // The line itself, before anything is opened.
-    expect(frame).toContain("Damage found: 3 possibly damaged files");
+    expect(frame).toContain("Damaged: 3 possibly damaged files");
     expect(frame).toContain("last full check 1.0h ago");
     expect(frame).toContain("last new error 31.0h ago");
     // Both names of the first address and the letter, each possibly
@@ -1365,7 +1365,7 @@ test("a missing scratch root's error follows its age on the row", async () => {
         .frame()
         .split("\n")
         .find((row) => row.includes("/typed ")) ?? "";
-    expect(line.trimEnd().endsWith(`ago  ${error}`)).toBe(true);
+    expect(line.trimEnd().endsWith(`ago  unread ${error}`)).toBe(true);
   } finally {
     await t.close();
   }
@@ -1856,6 +1856,50 @@ test("the Filesystems heading counts filesystems, not mounts", async () => {
       "the Filesystems heading",
     );
     expect(heading).toMatch(/Filesystems\s+1\s/);
+  } finally {
+    await t.close();
+  }
+});
+
+test("Storage Selected preserves the scrub report's line breaks", async () => {
+  const c = defaults(),
+    s = emptySnapshot(1_000_000);
+  s.storage.volumes = [
+    volumeSnapshot("/data", {
+      fsid: "report-fs",
+      errors: { "1/corruption_errs": 0 },
+      countersAvailable: true,
+    }),
+  ];
+  s.storage.scrubs = [
+    {
+      path: "/report",
+      fsid: "report-fs",
+      text: "Started: Monday\nDuration: 0:03:09\nScrubbed: 1 GiB\nRate: 5 MiB/s\nErrors: none",
+      problem: false,
+      readable: true,
+      status: "finished",
+      startedAt: 500_000,
+      uncorrectable: 0,
+      corrected: 0,
+      addresses: [],
+    },
+  ];
+  const t = await mount(s, c, { width: 180, height: 54 });
+  try {
+    await t.press("5");
+    await t.press("enter");
+    const rows = t.frame().split("\n");
+    const start = rows.findIndex((row) => row.includes("Started: Monday"));
+    expect(start).toBeGreaterThan(0);
+    expect(present(rows[start + 1], "duration row")).toContain(
+      "Duration: 0:03:09",
+    );
+    expect(present(rows[start + 2], "scrubbed row")).toContain(
+      "Scrubbed: 1 GiB",
+    );
+    expect(present(rows[start + 3], "rate row")).toContain("Rate: 5 MiB/s");
+    expect(present(rows[start + 4], "errors row")).toContain("Errors: none");
   } finally {
     await t.close();
   }
