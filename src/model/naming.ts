@@ -3,6 +3,16 @@ import type { CollectionConfig } from "../collect/settings";
 import { serverPart } from "../collect/tmux";
 import type { Proc } from "./types";
 
+/** argv names the launched program; comm may name a runtime's main thread. */
+export function programName(proc: Proc): string {
+  const command = proc.command[0];
+  return command
+    ? basename(command)
+        .replace(/[ :].*$/, "")
+        .replace(/^-/, "")
+    : proc.comm;
+}
+
 /**
  * The first of the named variables that carries a value. An unreadable
  * environment is not an unset variable, so it stays unknown.
