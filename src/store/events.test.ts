@@ -228,7 +228,8 @@ test("test scopes omit lane rows from baseline or start through disappearance", 
         });
         running.lanes = lanes([group], running.procs, config);
         expect(running.lanes, name).toHaveLength(1);
-        const log = started(atBaseline ? running : undefined);
+        const log = new EventLog();
+        log.advance(atBaseline ? running : emptySnapshot(1000), config);
         const events = atBaseline ? [] : log.advance(running, config);
         if (emptyBeforeStop) {
           const empty = emptySnapshot(3000);
