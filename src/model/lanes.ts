@@ -60,25 +60,43 @@ export function escaped(
 }
 /** Temporary unconfirmed names cannot use a durable install-location entry. */
 export function standIn(p: Proc, c: CollectionConfig): boolean {
-  if (p.tool !== null || !p.unconfirmedTool) return false;
+  return p.tool === null && !!p.unconfirmedTool && temporaryProcess(p, c);
+}
+/** Home and Timeline judge the scope, not just its leading process. */
+export function standInLane(
+  lane: Lane,
+  procs: Proc[],
+  c: CollectionConfig,
+): boolean {
+  const members = procs.filter((p) => lane.pids.includes(p.pid));
+  if (lane.tool !== "" || members.some((p) => p.tool !== null)) return false;
+  return (
+    temporaryPath(lane.cwd, c) || members.some((p) => temporaryProcess(p, c))
+  );
+}
+function temporaryProcess(p: Proc, c: CollectionConfig): boolean {
   return [
     p.cwd,
     p.command[0],
     scriptArgument(p.command),
     p.unconfirmedPath,
-  ].some((path) => {
-    if (path === undefined || path === null || !isAbsolute(path)) return false;
-    const absolute = resolve(path);
-    return (
-      absolute.split("/").includes("tmp") ||
-      c.scratchDirs.some((root) => {
-        const dir = resolve(root);
-        return (
-          absolute === dir || absolute.startsWith(dir === "/" ? dir : `${dir}/`)
-        );
-      })
-    );
-  });
+  ].some((path) => temporaryPath(path, c));
+}
+function temporaryPath(
+  path: string | null | undefined,
+  c: CollectionConfig,
+): boolean {
+  if (path === undefined || path === null || !isAbsolute(path)) return false;
+  const absolute = resolve(path);
+  return (
+    absolute.split("/").includes("tmp") ||
+    c.scratchDirs.some((root) => {
+      const dir = resolve(root);
+      return (
+        absolute === dir || absolute.startsWith(dir === "/" ? dir : `${dir}/`)
+      );
+    })
+  );
 }
 /** An ancestor cgroup cap also limits a lane. */
 export function dangerousCap(

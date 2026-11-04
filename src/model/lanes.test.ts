@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { Collector } from "../collect/collector";
 import { type PaneAddress, serverPart } from "../collect/tmux";
 import { defaults } from "../config/config";
-import { fixture, groupSnapshot, processSnapshot } from "../test/fixture";
+import {
+  fixture,
+  groupSnapshot,
+  laneSnapshot,
+  processSnapshot,
+} from "../test/fixture";
 import { present } from "../test/present";
 import { laneBuilds } from "./builds";
 import {
@@ -15,6 +20,7 @@ import {
   processTree,
   sliceCompared,
   standIn,
+  standInLane,
 } from "./lanes";
 import type { Capability, Group, Lane, Proc, ProcessRead } from "./types";
 import { buildLoad } from "./verdict";
@@ -77,6 +83,111 @@ test("only an unconfirmed name with an absolute temporary path is a stand-in", (
   ];
   for (const [name, override, expected] of rows)
     expect(standIn({ ...candidate, ...override }, c), name).toBe(expected);
+});
+
+test("stand-in lanes use temporary identity and all owned members, never names", () => {
+  const c = { ...defaults(), scratchDirs: ["/home/x/dev/.scratch/agents/"] };
+  const rows: [string, Partial<Lane>, Partial<Proc>[], boolean][] = [
+    [
+      "script",
+      {},
+      [{ command: ["bash", "/tmp/run/harness-bin/claude"] }],
+      true,
+    ],
+    [
+      "sleep",
+      { cwd: "/repo/tmp/v/.tmpABCD" },
+      [{ command: ["/bin/sleep"] }],
+      true,
+    ],
+    [
+      "stub",
+      { cwd: "/repo/tmp/v/wt.ABCD" },
+      [{ command: ["/repo/tests/stub/claude"] }],
+      true,
+    ],
+    [
+      "tmux",
+      {},
+      [{ command: ["tmux", "new-session"], cwd: "/var/tmp/run" }],
+      true,
+    ],
+    [
+      "symlink argv",
+      {},
+      [{ command: ["/tmp/run/claude"], executable: "/usr/bin/sleep" }],
+      true,
+    ],
+    ["tested path", {}, [{ unconfirmedPath: "/tmp/run/claude" }], true],
+    [
+      "scratch script",
+      {},
+      [{ command: ["sh", "/home/x/dev/.scratch/agents/wt.ABCD/stub"] }],
+      true,
+    ],
+    ["scratch root", { cwd: "/home/x/dev/.scratch/agents" }, [], true],
+    [
+      "missing main",
+      { pids: [40, 41] },
+      [{ pid: 41, cwd: "/repo/tmp/v/.tmpABCD" }],
+      true,
+    ],
+    [
+      "empty temporary identity",
+      { cwd: "/repo/tmp/v/.tmpABCD", mainPid: 0, pids: [] },
+      [],
+      true,
+    ],
+    ["confirmed lane", { tool: "claude", cwd: "/tmp/run" }, [], false],
+    [
+      "confirmed child",
+      { cwd: "/tmp/run", pids: [40, 41] },
+      [{}, { pid: 41, tool: "claude" }],
+      false,
+    ],
+    [
+      "other lane's confirmed process",
+      { cwd: "/tmp/run" },
+      [{ pid: 41, tool: "claude" }],
+      true,
+    ],
+    [
+      "other lane's temporary process",
+      {},
+      [{ pid: 41, cwd: "/tmp/run" }],
+      false,
+    ],
+    [
+      "worktree",
+      { cwd: "/home/x/dev/.worktrees/kendex/ken-4687" },
+      [{}],
+      false,
+    ],
+    ["unread lane", { cwd: "", mainPid: 0, pids: [] }, [], false],
+    ["name only", { name: ".tmpABCD tmux 9300" }, [], false],
+    [
+      "scratch sibling",
+      { cwd: "/home/x/dev/.scratch/agents-old/run" },
+      [],
+      false,
+    ],
+    ["relative command", {}, [{ command: ["tmp/claude"] }], false],
+    [
+      "prompt argument",
+      {},
+      [{ command: ["/usr/bin/other", "/tmp/claude"] }],
+      false,
+    ],
+  ];
+  for (const [name, lane, procs, expected] of rows)
+    expect(
+      standInLane(
+        laneSnapshot({ tool: "", ...lane }),
+        procs.map((p) => processSnapshot({ tool: null, ...p })),
+        c,
+      ),
+      name,
+    ).toBe(expected);
 });
 
 test("process trees keep children under their own parent despite PID order", () => {

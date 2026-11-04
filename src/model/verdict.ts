@@ -8,6 +8,7 @@ import {
   lanePressure,
   sliceCompared,
   standIn,
+  standInLane,
 } from "./lanes";
 import { laneText, unitLabel } from "./naming";
 import type {
@@ -772,9 +773,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     });
   // A rejected install location stays actionable unless it changes with
   // each temporary stand-in.
-  const unconfirmed = s.procs.filter(
-    (proc) => proc.unconfirmedTool && !standIn(proc, c),
-  );
+  const unconfirmed = s.procs.filter((proc) => {
+    if (!proc.unconfirmedTool) return false;
+    const lane = s.lanes.find((lane) => lane.pids.includes(proc.pid));
+    return lane ? !standInLane(lane, s.procs, c) : !standIn(proc, c);
+  });
   const [firstUnconfirmed] = unconfirmed;
   if (firstUnconfirmed)
     add("unconfirmed-tool", "warn", {

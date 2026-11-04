@@ -1,5 +1,5 @@
 import type { Config } from "../config/config";
-import { escaped, lanePressure, standIn } from "../model/lanes";
+import { escaped, lanePressure, standInLane } from "../model/lanes";
 import { laneText } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import {
@@ -179,7 +179,7 @@ export class EventLog {
   private processPrevious: Snapshot | null = null;
   private laneIdentities = new Map<
     string,
-    Pick<Lane, "name" | "mainPid" | "account" | "cgroup">
+    { lane: Lane; procs: Snapshot["procs"] }
   >();
   get previousTime(): number | undefined {
     return this.previous?.time;
@@ -233,23 +233,20 @@ export class EventLog {
     // A scope can outlive its processes. Keep its last process-bearing name
     // until it disappears, rather than naming its stop from the empty scope.
     if (!readNone)
-      for (const sample of [before, s])
-        for (const lane of sample?.lanes ?? [])
+      for (const sample of [before, s]) {
+        if (!sample) continue;
+        for (const lane of sample.lanes)
           if (lane.mainPid !== 0)
             this.laneIdentities.set(lane.id, {
-              name: lane.name,
-              mainPid: lane.mainPid,
-              account: lane.account,
-              cgroup: lane.cgroup,
+              lane,
+              procs: sample.procs.filter((p) => lane.pids.includes(p.pid)),
             });
-    const standInLane = (lane: Lane, sample: Snapshot): boolean =>
-      lane.tool === "" &&
-      sample.procs.some((p) => p.pid === lane.mainPid && standIn(p, c));
+      }
     for (const lane of s.lanes)
       if (
         before &&
         !before.lanes.some((old) => old.id === lane.id) &&
-        !standInLane(lane, s)
+        !standInLane(lane, s.procs, c)
       )
         add("lane-start", laneText(lane), {
           subjectId: lane.id,
@@ -261,13 +258,14 @@ export class EventLog {
           },
           values: { pid: lane.mainPid },
         });
-    for (const lane of before?.lanes ?? [])
+    for (const lane of before?.lanes ?? []) {
+      const occupied = this.laneIdentities.get(lane.id);
+      const identity = occupied?.lane ?? lane;
       if (
         before &&
         !s.lanes.some((live) => live.id === lane.id) &&
-        !standInLane(lane, before)
+        !standInLane(identity, occupied?.procs ?? before.procs, c)
       ) {
-        const identity = this.laneIdentities.get(lane.id) ?? lane;
         add("lane-stop", laneText(identity), {
           subjectId: lane.id,
           names: {
@@ -277,6 +275,7 @@ export class EventLog {
           values: { age: lane.age },
         });
       }
+    }
     if (!readNone)
       for (const id of this.laneIdentities.keys())
         if (!s.lanes.some((lane) => lane.id === id))
