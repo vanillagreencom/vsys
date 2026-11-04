@@ -1,0 +1,1 @@
+- Copilot lanes show their own account without inheriting another tool's account. Agents explains when a lane uses its default account or its environment cannot be read.

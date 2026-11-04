@@ -18,7 +18,13 @@ import {
   processSnapshot,
   userManager,
 } from "../test/fixture";
-import { isChildLine, mount, selectedRow, underMarked } from "../test/harness";
+import {
+  isChildLine,
+  mount,
+  overflowing,
+  selectedRow,
+  underMarked,
+} from "../test/harness";
 import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
@@ -204,6 +210,73 @@ test("agent detail names the account, the charged resources, the limits and the 
     await t.close();
   }
 });
+
+// The account column and identity line are product output: these words explain
+// which account the lane spends, or why vsys cannot name it.
+test.each([
+  {
+    account: ".1copilot",
+    envAvailable: false,
+    main: true,
+    expected: ".1copilot",
+  },
+  {
+    account: null,
+    envAvailable: true,
+    main: true,
+    expected: "default account",
+  },
+  {
+    account: null,
+    envAvailable: false,
+    main: true,
+    expected: "account unknown: environment not readable",
+  },
+  {
+    account: null,
+    envAvailable: undefined,
+    main: true,
+    expected: "account unknown: environment not readable",
+  },
+  {
+    account: null,
+    envAvailable: true,
+    main: false,
+    expected: "account unknown: environment not readable",
+  },
+])(
+  "account output names $account with environment $envAvailable and main $main",
+  async ({ account, envAvailable, main, expected }) => {
+    const c = { ...defaults(), columns: ["name", "account", "tool"] };
+    const s = emptySnapshot();
+    s.lanes = [laneSnapshot({ account, tool: "copilot" })];
+    s.procs = main ? [processSnapshot({ env: {}, envAvailable })] : [];
+    const t = await mount(s, c, { width: 160, height: 40 });
+    try {
+      await t.press("2");
+      expect(t.frame()).toContain(expected);
+      await t.press(c.keys.details);
+      const row = present(
+        t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes("▍")),
+        "account table row",
+      );
+      expect(row).toContain(expected);
+      expect(overflowing(t.ui, expected)).toEqual([]);
+      await t.press("enter");
+      expect(t.frame()).toContain(expected);
+      expect(overflowing(t.ui, expected)).toEqual([]);
+      await act(async () => t.ui.resize(60, 40));
+      await t.settle();
+      expect(t.frame()).toContain(expected);
+      expect(overflowing(t.ui, expected)).toEqual([]);
+    } finally {
+      await t.close();
+    }
+  },
+);
 
 async function limitsLine(jobsKnown: boolean): Promise<string> {
   const s = emptySnapshot();

@@ -129,6 +129,7 @@ test("every host-specific name ships a systemd user-session default", () => {
   expect(c.linkerNames).toContain("mold");
   expect(c.compilerNames).toContain("rustc");
   expect(c.jobserverEnv).toContain("MAKEFLAGS");
+  expect(c.accountEnv).toContain("COPILOT_HOME");
   // No host-specific list ships empty, which would silently match nothing.
   for (const list of [
     c.agentTools,

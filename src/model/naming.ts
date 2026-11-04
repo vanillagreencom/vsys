@@ -37,8 +37,21 @@ export function firstEnv(
 export function accountName(
   main: Proc | undefined,
   c: CollectionConfig,
+  tool: string,
 ): string | null {
-  const dir = firstEnv(main, c.accountEnv);
+  const prefix = `${tool.toUpperCase()}_`;
+  const others = c.agentTools
+    .filter((name) => name !== tool)
+    .map((name) => `${name.toUpperCase()}_`);
+  const own = c.accountEnv.filter((name) => name.startsWith(prefix));
+  // A launcher can inherit another tool's account. Only neutral names may
+  // supply the fallback when this tool exports no account directory.
+  const rest = c.accountEnv.filter(
+    (name) =>
+      !name.startsWith(prefix) &&
+      !others.some((other) => name.startsWith(other)),
+  );
+  const dir = firstEnv(main, [...own, ...rest]);
   return dir ? basename(dir) : null;
 }
 /**

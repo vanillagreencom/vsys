@@ -308,7 +308,7 @@ export function lanes(
         : c.laneNaming === "env"
           ? main?.env[c.laneEnv]
           : basename(cwd);
-    const account = accountName(main, c);
+    const account = accountName(main, c, tool);
     const pane = paneName(main, c);
     const mine = paneSocket(main);
     /**
