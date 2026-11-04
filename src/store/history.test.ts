@@ -283,7 +283,7 @@ for (const [resume, held, gap, legacy, emptySamples] of [
         )
         .all()) {
         const stored: Record<string, unknown> = JSON.parse(
-          new TextDecoder().decode(Bun.gunzipSync(row.data)),
+          new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(row.data))),
         );
         delete stored.processRead;
         db.query("UPDATE samples SET data = ? WHERE time = ?").run(
