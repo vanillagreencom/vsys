@@ -302,7 +302,17 @@ for (const predecessor of ["populated", "empty", "absent"] as const)
     ];
     second.add(
       predecessor === "populated"
-        ? { ...original, time: time + 1 }
+        ? {
+            ...original,
+            time: time + 1,
+            lanes: [
+              laneSnapshot({
+                name: "Foreign Claude lane",
+                account: "personal",
+                mainPid: 84,
+              }),
+            ],
+          }
         : predecessor === "empty"
           ? empty
           : emptySnapshot(time + 1),
@@ -323,10 +333,19 @@ for (const predecessor of ["populated", "empty", "absent"] as const)
       );
       expect(stop.time).toBe(time + 3);
       expect(stop.subject).toBe(
-        predecessor === "absent" ? "agent 42" : "Claude lane PID 42",
+        predecessor === "populated"
+          ? "Foreign Claude lane PID 84"
+          : predecessor === "absent"
+            ? "agent 42"
+            : "Claude lane PID 42",
       );
       expect(stop.names).toEqual({
-        account: predecessor === "absent" ? "" : "work",
+        account:
+          predecessor === "populated"
+            ? "personal"
+            : predecessor === "absent"
+              ? ""
+              : "work",
         slice: "agents.slice",
       });
       expect(stop.values).toEqual({ age: null });
