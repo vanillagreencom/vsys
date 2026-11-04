@@ -7,7 +7,7 @@ const hourMs = 60 * minuteMs;
 /**
  * How far past an hour the oldest checkpoint may be and still give an hour's
  * average: the average comes from a checkpoint 60 to 75 minutes old. A unit
- * with no such checkpoint has no average and raises nothing at any threshold.
+ * with no such checkpoint has no hour average and raises nothing at any threshold.
  */
 const slackMs = 15 * minuteMs;
 interface Checkpoint {
@@ -80,7 +80,15 @@ export class ServiceCpu {
         r.error(join(top, path, "cpu.stat"), e);
       }
     if (identity === null || cpuUsec === undefined)
-      return { path, name, identity, read: false, cpuHourPercent: null };
+      return {
+        path,
+        name,
+        identity,
+        read: false,
+        cpuHourPercent: null,
+        cpuSoFarPercent: null,
+        cpuSoFarMs: null,
+      };
     let points = this.units.get(path) ?? [];
     const newest = points.at(-1);
     // A new cgroup is a restarted unit, and a counter that went back is not
@@ -91,6 +99,8 @@ export class ServiceCpu {
     const base = points.findLast((p) => now - p.at >= hourMs);
     if (base) points = points.slice(points.indexOf(base));
     this.units.set(path, points);
+    const oldest = points[0];
+    const spanMs = oldest && now > oldest.at ? now - oldest.at : null;
     return {
       path,
       name,
@@ -100,6 +110,11 @@ export class ServiceCpu {
         base && now - base.at <= hourMs + slackMs
           ? (cpuUsec - base.cpuUsec) / ((now - base.at) * 10)
           : null,
+      cpuSoFarPercent:
+        oldest && spanMs !== null
+          ? (cpuUsec - oldest.cpuUsec) / (spanMs * 10)
+          : null,
+      cpuSoFarMs: spanMs,
     };
   }
 }

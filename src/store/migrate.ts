@@ -111,7 +111,12 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
     capabilities: s.capabilities ?? [],
     processRead: s.processRead ?? "unknown",
     // A build older than the service read measured no unit.
-    services: s.services ?? null,
+    services:
+      s.services?.map((service) => ({
+        ...service,
+        cpuSoFarPercent: service.cpuSoFarPercent ?? null,
+        cpuSoFarMs: service.cpuSoFarMs ?? null,
+      })) ?? null,
     groups: s.groups.map((group) => ({
       ...group,
       identity: group.identity ?? null,

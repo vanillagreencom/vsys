@@ -262,6 +262,8 @@ export function serviceSnapshot(overrides: Partial<Service> = {}): Service {
     identity: "1:2",
     read: true,
     cpuHourPercent: null,
+    cpuSoFarPercent: null,
+    cpuSoFarMs: null,
     ...overrides,
   };
 }
