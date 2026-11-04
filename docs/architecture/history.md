@@ -27,6 +27,7 @@ Review holds boundaries without a named check.
 - An unread subject is not absent. Use `unjudged()` in `src/model/verdict.ts` to keep its alert open. A subject no longer present closes after the normal hold. Compare process-derived changes against the last accepted sample that read processes; a missed process deadline establishes no lane start, stop or move. Persist that predecessor atomically with its sample so restarts and other writers see the same evidence. `src/store/events.unread.test.ts` and `src/collect/process-thread.audit6.test.ts` check this rule.
 - Store the thresholds and the subject's own numbers with each event. Keep identity separate from display name. Host causes use the empty identity so a changing busiest lane cannot split an episode.
 - Identify a cgroup move by pid and start time. Judge both ends against the later sample's slice probe; pid reuse is not a move.
+- Omit a lane's start and stop only when it holds no agent tool and its main process is a stand-in under [lanes.md](lanes.md). Judge the process from the sample that holds the lane. An unread main process keeps both events. Keep earlier stored events unchanged. `src/store/events.test.ts` checks this boundary.
 - Never rewrite a stored event's subject as a unit unless the record proves that association.
 - Never compress more than an append's new lines and its one open run, or inflate a sealed segment more than once per walk. `src/store/archive.test.ts` checks the work.
 - Never open another application's database. `src/store/history.test.ts` checks refusal.

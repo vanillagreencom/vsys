@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
 import { lanes } from "../model/lanes";
-import type { Lane, Snapshot } from "../model/types";
+import type { Lane, Proc, Snapshot } from "../model/types";
 import { type Cause, type CauseId, causes } from "../model/verdict";
 import {
   emptySnapshot,
@@ -63,6 +63,50 @@ test("a lane start and stop name the account and the slice", () => {
   expect(stop[0]?.subject).toBe("lane-a PID 40");
   expect(stop[0]?.names.slice).toBe("agents.slice");
   expect(stop[0]?.values.age).toBe(30);
+});
+test("stand-in lanes omit starts and stops while real and unread lanes keep both", () => {
+  const rows: [string, string, Partial<Proc> | null, boolean][] = [
+    ["stand-in main", "", {}, false],
+    ["agent lane", "claude", {}, true],
+    ["unread main", "", null, true],
+    ["stand-in child only", "", { pid: 41 }, true],
+    ["stable unknown", "", { cwd: "/repo/kendex" }, true],
+    ["confirmed main", "", { tool: "claude", unconfirmedTool: null }, true],
+  ];
+  for (const [name, tool, override, expected] of rows) {
+    const log = started();
+    const running = emptySnapshot(2000);
+    running.lanes = [laneSnapshot({ mainPid: 40, tool })];
+    running.procs =
+      override === null
+        ? []
+        : [
+            processSnapshot({
+              pid: 40,
+              tool: null,
+              unconfirmedTool: "claude",
+              unconfirmedPath: "/usr/local/bin/claude",
+              cwd: "/repo/kendex/tmp/v/.tmpABCD",
+              command: ["claude"],
+              ...override,
+            }),
+          ];
+    const start = log
+      .advance(running, c)
+      .filter((e) => e.kind === "lane-start");
+    const stop = log
+      .advance(emptySnapshot(3000), c)
+      .filter((e) => e.kind === "lane-stop");
+    const expectedIds = expected ? [present(running.lanes[0], name).id] : [];
+    expect(
+      start.map((e) => e.subjectId),
+      name,
+    ).toEqual(expectedIds);
+    expect(
+      stop.map((e) => e.subjectId),
+      name,
+    ).toEqual(expectedIds);
+  }
 });
 test("a lane with no readable member stops with no age", () => {
   const log = started();
