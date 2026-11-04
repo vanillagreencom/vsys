@@ -57,7 +57,7 @@ import {
   lifetimeSourceText,
   reporterOffer,
 } from "./settings";
-import { metric, scrollbar, statusColor, ui } from "./theme";
+import { metric, type StatusWord, scrollbar, statusColor, ui } from "./theme";
 import {
   Bar,
   CommandOffer,
@@ -255,9 +255,10 @@ export function Storage({
       x.modifiedAt == null
         ? x.age
         : Math.max(0, (s.time - x.modifiedAt) / 1000);
+    const status: StatusWord | "" = x.error ? "unread" : over ? "Warning" : "";
     return {
       ...item,
-      status: x.error ? "unread" : over ? "Warning" : "",
+      status,
       modifiedText:
         modifiedSeconds == null ? "" : `${age(modifiedSeconds)} ago`,
     };
@@ -718,7 +719,7 @@ export function Storage({
           {statusColumn.width > 0 && (
             <>
               {columnGap}
-              <Ink color={statusColor(status)}>
+              <Ink color={status ? statusColor(status) : ui.fg}>
                 {cell(statusColumn, status)}
               </Ink>
               {x.error && ` ${safe(x.error)}`}
