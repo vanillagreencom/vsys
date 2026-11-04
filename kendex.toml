@@ -12,6 +12,9 @@ harnesses = [
 ]
 method = "symlink"
 
+[model-bindings.copilot]
+standard = "gpt-6.1-sol"
+
 [agents.frontend]
 source = "kendex"
 
