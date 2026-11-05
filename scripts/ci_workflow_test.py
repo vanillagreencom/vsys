@@ -22,25 +22,24 @@ NEITHER = "lane_application=false\nlane_package=false"
 # What the change-class action answers for each diff, and what the workflow
 # must do with it. Columns: name, change_class, lanes (None: the classify step
 # published nothing), lane_verdicts, changed_paths, the changes job's result,
-# then the expected application run, arch-package run, package_readme and CI
-# acceptance.
+# then the expected application run, arch-package run and CI acceptance.
 # Expected results are independent of the expressions under test.
 ROWS = (
-    ("claimed render refresh", "render", "true", BOTH, ".codex/config.toml", "success", True, True, "false", True),
-    ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, "false", True),
-    ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, "false", True),
-    ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, True, "true", True),
-    ("docs-only docs/README.md", "small", "false", NEITHER, "docs/README.md", "success", False, False, "false", True),
-    ("other docs-only", "trivial", "false", NEITHER, "docs/architecture/ui.md", "success", False, False, "false", True),
+    ("claimed render refresh", "render", "true", BOTH, ".codex/config.toml", "success", True, True, True),
+    ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, True),
+    ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, True),
+    ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, False, True),
+    ("docs-only docs/README.md", "small", "false", NEITHER, "docs/README.md", "success", False, False, True),
+    ("other docs-only", "trivial", "false", NEITHER, "docs/architecture/ui.md", "success", False, False, True),
     # A declaration-only change selects the lane whose claims changed.
-    ("package declaration change", "standard", "true", "lane_application=false\nlane_package=true", ".github/ci-lanes.conf", "success", False, True, "false", True),
+    ("package declaration change", "standard", "true", "lane_application=false\nlane_package=true", ".github/ci-lanes.conf", "success", False, True, True),
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
-    ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, "false", True),
-    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, "false", True),
-    ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, "false", True),
-    ("failed classifier", "render", "false", NEITHER, ".codex/config.toml", "failure", True, True, "false", False),
-    ("cancelled classifier", "", None, "", "", "cancelled", True, True, "", False),
+    ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, True),
+    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, True),
+    ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, True),
+    ("failed classifier", "render", "false", NEITHER, ".codex/config.toml", "failure", True, True, False),
+    ("cancelled classifier", "", None, "", "", "cancelled", True, True, False),
 )
 
 
@@ -157,7 +156,7 @@ class CiWorkflow(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, (job, failure, outputs))
 
     def check_row(self, workflow, row):
-        name, kind, lanes, verdicts, paths, status, application, package, readme, accepted = row
+        _, kind, lanes, verdicts, paths, status, application, package, accepted = row
         changes = block(workflow, "  changes:", 2)
         steps = {}
         if lanes is not None:
@@ -170,7 +169,6 @@ class CiWorkflow(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             steps["lanes"] = step_outputs(output)
         outputs = mapping(block(changes, "    outputs:", 4), steps)
-        self.assertEqual(outputs["package_readme"], readme, name)
         self.assert_jobs_and_aggregate(outputs, status, application, package, accepted, workflow)
 
     def test_lane_conditions_and_aggregate_accept_only_authorized_skips(self):
@@ -180,18 +178,14 @@ class CiWorkflow(unittest.TestCase):
         self.assertTrue(expression(scalar(self.aggregate, "if"), {}))
 
         # These copies prove that the assertions reject broken output
-        # forwarding, lane conditions, README matching and waivers.
+        # forwarding, lane conditions and waivers.
         controls = (
             ("output-lanes", "lanes: ${{ steps.classify.outputs.lanes }}", "lanes: 'true'"),
             ("output-lane-package", "lane_package: ${{ steps.lanes.outputs.lane_package }}", "lane_package: ${{ steps.lanes.outputs.lane_application }}"),
-            ("readme-substring", "*$'\\n'README.md$'\\n'*) readme=true ;;", "*README.md*) readme=true ;;"),
             ("application-no-verdict", " && needs.changes.outputs.lane_application != 'false'", ""),
             ("application-no-status", "needs.changes.result != 'success' || (needs.changes.outputs.lanes != 'false' && needs.changes.outputs.lane_application", "(needs.changes.outputs.lanes != 'false' && needs.changes.outputs.lane_application"),
-            ("package-no-readme", " || needs.changes.outputs.package_readme == 'true'", ""),
             ("waiver-success", "WAIVER: ${{ needs.changes.outputs.lanes == 'false' }}", "WAIVER: ${{ needs.changes.result == 'success' }}"),
             ("waiver-true", '--waiver "$WAIVER"', "--waiver true"),
-            ("readme-waived", 'if [ "$PACKAGE_README" = true ]; then package=(); fi', ""),
-            ("readme-not-forwarded", "PACKAGE_README: ${{ needs.changes.outputs.package_readme == 'true' }}", "PACKAGE_README: ${{ needs.changes.outputs.lanes == 'true' }}"),
         )
         for control, old, new in controls:
             with self.subTest(control=control):
@@ -273,7 +267,7 @@ class CiWorkflow(unittest.TestCase):
         self.assertEqual(scalar(classify, "uses"), ACTION)
         # The lane declaration comes from the default branch's checkout.
         inputs = dict(re.findall(r"^ {10}([a-z-]+): (.+)$", block(classify, "        with:", 8), re.M))
-        self.assertEqual(inputs, {"repo": "subject", "lanes-from": "classifier", "event": "${{ env.EVENT }}", "base": "${{ env.BASE }}", "head": "${{ env.HEAD }}"})
+        self.assertEqual(inputs, {"repo": "subject", "lanes-from": "classifier", "queue-only-default": "true", "event": "${{ env.EVENT }}", "base": "${{ env.BASE }}", "head": "${{ env.HEAD }}"})
 
     def test_classifier_and_render_prerequisites_use_the_trusted_checkout(self):
         self.check_wiring(self.text)
