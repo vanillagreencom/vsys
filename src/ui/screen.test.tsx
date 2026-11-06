@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { PerformanceObserver } from "node:perf_hooks";
 import { ScrollBoxRenderable } from "@opentui/core";
 import { createTestRenderer } from "@opentui/core/testing";
 import { act } from "react";
@@ -16,6 +17,24 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
   environment.IS_REACT_ACT_ENVIRONMENT = true;
   const h = new History(c);
   const ui = await createTestRenderer({ width: 120, height: 28 });
+  let measured = 0;
+  let largestTimingBatch = 0;
+  let retainedTimingPeak = 0;
+  const recordTimings = (count: number) => {
+    measured += count;
+    largestTimingBatch = Math.max(largestTimingBatch, count);
+  };
+  const timings = new PerformanceObserver((batch) => {
+    recordTimings(batch.getEntries().length);
+  });
+  timings.observe({ entryTypes: ["measure"] });
+  const readTimings = () => {
+    recordTimings(timings.takeRecords().length);
+    retainedTimingPeak = Math.max(
+      retainedTimingPeak,
+      performance.getEntriesByType("measure").length,
+    );
+  };
   const before = [
     ui.renderer.keyInput.listenerCount("keypress"),
     ui.renderer.listenerCount("resize"),
@@ -47,6 +66,7 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
       await act(async () => {
         screen.update(s, h, c, "/home/test/.config/vsys/config.toml");
       });
+      readTimings();
       await ui.renderOnce();
     };
     await update(1000);
@@ -82,6 +102,12 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
     // Fifty-nine presses on forty rows leave the last row selected, and the
     // selection paged the list rather than the viewport.
     expect(ui.captureCharFrame()).toContain("▍work-00");
+    for (let commit = 0; commit < 60; commit++) {
+      await act(async () => {
+        ui.mockInput.pressArrow(commit % 2 === 0 ? "up" : "down");
+      });
+      readTimings();
+    }
     await act(async () => {
       ui.mockInput.pressKey("d");
     });
@@ -109,7 +135,11 @@ test("live refresh keeps one screen, stable listeners and the selected view", as
       ui.mockInput.pressKey("q");
     });
     expect(quits).toBe(1);
+    expect(measured).toBeGreaterThan(0);
+    // Delayed passive timings may await the next commit, never a growing history.
+    expect(retainedTimingPeak).toBeLessThanOrEqual(largestTimingBatch);
   } finally {
+    timings.disconnect();
     await act(async () => {
       screen.close();
     });

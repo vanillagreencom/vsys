@@ -1,6 +1,6 @@
 import type { CliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
-import { useSyncExternalStore } from "react";
+import { Profiler, useSyncExternalStore } from "react";
 import type { Config } from "../config/config";
 import type { Snapshot } from "../model/types";
 import type { History } from "../store/history";
@@ -46,7 +46,17 @@ export function mountScreen(
     );
   }
   const root = createRoot(renderer);
-  root.render(<Screen />);
+  root.render(
+    <Profiler
+      id="screen"
+      onRender={() => {
+        // React's development timing measures retain cloned props across commits.
+        queueMicrotask(() => performance.clearMeasures());
+      }}
+    >
+      <Screen />
+    </Profiler>,
+  );
   return {
     update(
       snapshot: Snapshot,
