@@ -154,13 +154,13 @@ Create Options:
   Under the same key, create, update --description/--description-file,
   and bulk-update --description refuse a Post-merge Done-when box whose
   release trigger names no repository or whose Deadline is invalid. They
-  advise, without refusing, when the body does not open with nonempty quoted
-  blocks starting with `> **Story:**` then `> **Why this matters:**`, after
-  any optional owner action line (`**Name, what you do:** ...`), with an
-  unquoted blank line between the blocks and before the first heading, if
-  any, or when a header line is over 500 characters: one
-  `linear: advisory=RULE line=N length=N` line on stderr per miss, and the
-  write proceeds. Unfilled placeholders count as empty. Authors and reviewers
+  also refuse when the body does not open with nonempty quoted blocks starting
+  with `> **Story:**` then `> **Why this matters:**`, after any optional owner
+  action line (`**Name, what you do:** ...`), with an unquoted blank line
+  between the blocks and before the first heading, if any. A header line over
+  500 characters prints one `linear: advisory=issue-header-length line=N
+  length=N` line on stderr, and the write proceeds.
+  Unfilled placeholders count as empty. Authors and reviewers
   judge the prose. Update judges the body after it reads the issue: a body
   equal to the stored one apart from a leading owner action line, which it
   places, replaces or removes, is judged on that line's length alone.
@@ -274,6 +274,8 @@ Complete Options:
                          number past the section's last box refuses before
                          any write. The section runs from its "## Done when"
                          line to the next "## " heading. The result's
+                         Refuses before any write if no checklist boxes are
+                         recognized; normalize the heading to "## Done when".
                          "done_when_checked" counts the boxes this call ticked.
   --evidence-file <path>  Evidence for --done-when-met, one N: text line per box.
                          Writes each Evidence: line with the tick and state.
@@ -3498,11 +3500,19 @@ complete_issue() {
     local completion_state
     local update_args=()
     local done_when_checked=""
-    local issue_result description tick missing_count
+    local issue_result description tick missing_count box_count
     issue_result=$(get_issue "$issue_id" --format=raw) || return 1
     # The sentinel keeps a trailing newline the substitution would strip.
     description=$(jq -r '(.issue.description // "") + "."' <<<"$issue_result") || return 1
     tick=$(done_when_parse "${description%.}" "${met_json:-[]}" "$post_merge_at" "$evidence_json") || return 1
+    # An explicit selection cannot authorize completion without a recognized
+    # box: callers also file noncanonical Done-when headings in Linear.
+    box_count=$(jq '.boxes | length' <<<"$tick") || return 1
+    if [[ -n "$met_json" && "$box_count" -eq 0 ]]; then
+        jq -cn --arg id "$issue_id" \
+            '{error: "done-when-checklist-missing", issue: $id, fix: "Provide checklist boxes under ## Done when. Issue state unchanged."}' >&2
+        return 1
+    fi
     missing_count=$(jq '.missing | length' <<<"$tick") || return 1
     if [ "$missing_count" -ne 0 ]; then
         jq -c --arg id "$issue_id" \
