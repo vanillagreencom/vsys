@@ -209,6 +209,11 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             ("inactive cache under writeback, past the headroom guard", 75,
              {"inactive_file": 12, "file_dirty": 0, "file_writeback": 12}, 75, ["memory-full", "near-limit"],
              (False, 75 * gib, 80 * gib), [75, 64]),
+            # Under MGLRU recent writes sit in the young generations memory.stat reports as
+            # active_file, so file_dirty can exceed inactive_file.
+            ("dirty cache past inactive_file, past the headroom guard", 75,
+             {"inactive_file": 1, "file_dirty": 3, "file_writeback": 0}, 75, ["memory-full", "near-limit"],
+             (False, 75 * gib, 80 * gib), [75, 64]),
             ("memory.stat unread", 70, None, None, ["memory-unread"], (False, -1, -1), None),
             ("memory.stat without file_writeback", 70, {"inactive_file": 60, "file_dirty": 0}, None,
              ["memory-unread"], (False, -1, -1), None),
