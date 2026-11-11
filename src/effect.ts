@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn as spawnProcess } from "node:child_process";
 import { writeFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { attachArgv, switchClientArgv } from "./collect/tmux";
 import type { LaneEffect } from "./model/actions";
 
@@ -71,24 +72,25 @@ export async function openTerminal(
   const terminal =
     (env.TERMINAL ? which(env.TERMINAL) : null) ?? which("xdg-terminal-exec");
   if (!terminal) return "unavailable";
+  // GNOME's -e consumes one command string; -- preserves the attach argv.
+  // https://manpages.ubuntu.com/manpages/noble/man1/gnome-terminal.1.html
+  const execute = basename(terminal) === "gnome-terminal" ? "--" : "-e";
   // Inherit the desktop and PATH, but not a pane identity: a terminal opened
   // from another server must not look like a nested tmux client.
   const inherited = { ...env };
   delete inherited.TMUX;
   delete inherited.TMUX_PANE;
   return new Promise((resolve, reject) => {
-    const child = spawn(terminal, ["-e", ...attachArgv(target, server)], {
+    const child = spawn(terminal, [execute, ...attachArgv(target, server)], {
       detached: true,
       stdio: "ignore",
       env: inherited,
     });
     child.once("error", reject);
-    // IPC launchers exit immediately; standalone terminals exit when closed.
-    // Do not wait on either in the UI, but keep a refused launch visible.
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve("opened");
-      else reject(new Error(`${terminal} exited ${code ?? signal}`));
-    });
+    // https://nodejs.org/api/child_process.html#event-spawn confirms executable
+    // launch, not a window or tmux attachment. Later exit belongs to the
+    // terminal's independent lifetime, not this operation.
+    child.once("spawn", () => resolve("opened"));
     child.unref();
   });
 }

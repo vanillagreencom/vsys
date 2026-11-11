@@ -101,23 +101,31 @@ test("the switch asks tmux for the target and reports what it refuses", async ()
   expect(asked.length).toBe(before);
 });
 
-test("a detached terminal uses the preferred available opener and reports launch refusals", async () => {
+test("a detached terminal settles at executable launch, independent of its later lifetime", async () => {
   type Row = [
     string | undefined,
     string[],
     string | null,
-    "ok" | "error" | "nonzero",
+    "-e" | "--",
+    "ok" | "error" | "nonzero" | "signal",
   ];
   const rows: Row[] = [
-    ["ghostty", ["ghostty", "xdg-terminal-exec"], "ghostty", "ok"],
-    [undefined, ["xdg-terminal-exec"], "xdg-terminal-exec", "ok"],
-    ["missing", ["xdg-terminal-exec"], "xdg-terminal-exec", "ok"],
-    ["ghostty --flag", ["xdg-terminal-exec"], "xdg-terminal-exec", "ok"],
-    ["missing", [], null, "ok"],
-    ["ghostty", ["ghostty"], "ghostty", "error"],
-    ["ghostty", ["ghostty"], "ghostty", "nonzero"],
+    ["ghostty", ["ghostty", "xdg-terminal-exec"], "ghostty", "-e", "ok"],
+    [
+      "gnome-terminal",
+      ["gnome-terminal", "xdg-terminal-exec"],
+      "gnome-terminal",
+      "--",
+      "ok",
+    ],
+    [undefined, ["xdg-terminal-exec"], "xdg-terminal-exec", "-e", "signal"],
+    ["missing", ["xdg-terminal-exec"], "xdg-terminal-exec", "-e", "ok"],
+    ["ghostty --flag", ["xdg-terminal-exec"], "xdg-terminal-exec", "-e", "ok"],
+    ["missing", [], null, "-e", "ok"],
+    ["ghostty", ["ghostty"], "ghostty", "-e", "error"],
+    ["ghostty", ["ghostty"], "ghostty", "-e", "nonzero"],
   ];
-  for (const [terminal, available, opener, end] of rows) {
+  for (const [terminal, available, opener, execute, end] of rows) {
     const calls: unknown[] = [];
     let unreferenced = false;
     class Terminal extends ChildProcess {
@@ -125,6 +133,8 @@ test("a detached terminal uses the preferred available opener and reports launch
         unreferenced = true;
       }
     }
+    const child = new Terminal();
+    const spawnError = new Error("ENOENT");
     const env = {
       PATH: "/launch/bin",
       DISPLAY: ":fixture",
@@ -140,26 +150,44 @@ test("a detached terminal uses the preferred available opener and reports launch
         available.includes(command) ? `/launch/bin/${command}` : null,
       (command, args, options) => {
         calls.push({ command, args, options });
-        const child = new Terminal();
         queueMicrotask(() => {
-          if (end === "error") child.emit("error", new Error("ENOENT"));
-          else child.emit("exit", end === "nonzero" ? 1 : 0, null);
+          if (end === "error") child.emit("error", spawnError);
+          else child.emit("spawn");
         });
         return child;
       },
     );
-    if (end === "error" || end === "nonzero")
-      await expect(result).rejects.toThrow(
-        end === "error" ? "ENOENT" : "exited 1",
+    let outcome: unknown = "pending";
+    void result.then(
+      (value) => {
+        outcome = value;
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    // A next-turn acknowledgement drains launch callbacks without closing the
+    // terminal. Awaiting result itself would hide dependence on window exit.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const expected =
+      end === "error" ? spawnError : opener === null ? "unavailable" : "opened";
+    expect(outcome).toBe(expected);
+    if (opener !== null && end !== "error") {
+      child.emit(
+        "exit",
+        end === "signal" ? null : end === "nonzero" ? 1 : 0,
+        end === "signal" ? "SIGHUP" : null,
       );
-    else expect(await result).toBe(opener === null ? "unavailable" : "opened");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(outcome).toBe(expected);
+    }
     expect(calls).toEqual(
       opener === null
         ? []
         : [
             {
               command: `/launch/bin/${opener}`,
-              args: ["-e", "tmux", "-S", "/run/agent", "attach", "-t", "%9"],
+              args: [execute, "tmux", "-S", "/run/agent", "attach", "-t", "%9"],
               options: {
                 detached: true,
                 stdio: "ignore",
