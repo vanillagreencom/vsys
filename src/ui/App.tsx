@@ -23,7 +23,7 @@ import {
 } from "../model/actions";
 import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
-import type { Level } from "../model/verdict";
+import { type Level, processesUnread } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agents } from "./agents";
 import { attention, type Target, verdictItem } from "./attention";
@@ -355,12 +355,15 @@ export function App({
     if (!actionAllowed(intent, onRow)) return;
     setConfirming(intent);
   };
-  // The command line's lane opens on the first sample alone, so a later sample
-  // never pulls the reader back to it. A Stop goes through `act`, the door a
-  // keypress takes, so write mode and the confirmation still stand before it.
+  // The command line's lane opens on the first sample that read the
+  // processes, and on that sample alone, so a later sample never pulls the
+  // reader back to it. A sample whose process read missed its deadline lists
+  // no main process and no escaped lane, so it can say neither that the lane
+  // is absent nor that it offers no Stop. A Stop goes through `act`, the door
+  // a keypress takes, so write mode and the confirmation still stand before it.
   const started = useRef(false);
   useEffect(() => {
-    if (started.current || !start) return;
+    if (started.current || !start || processesUnread(snapshot)) return;
     started.current = true;
     const lane = snapshot.lanes.find(
       (l) => l.cgroup.split("/").at(-1) === start.scope,

@@ -67,29 +67,70 @@ test("disabling Agent actions through Settings refuses a pending Stop", async ()
   }
 });
 
-// What the command line's lane opens on the first sample. Write mode off must
-// leave Stop's confirmation shut, and each refusal must name what it refused.
+// What the command line's lane opens on the first sample that read the
+// processes. Write mode off must leave Stop's confirmation shut, and each
+// refusal must name what it refused.
 test.each([
-  { scope: "a.scope", stop: false, writeMode: false, reachable: true },
-  { scope: "a.scope", stop: true, writeMode: true, reachable: true },
-  { scope: "a.scope", stop: true, writeMode: false, reachable: true },
-  { scope: "gone.scope", stop: false, writeMode: true, reachable: true },
-  { scope: "a.scope", stop: true, writeMode: true, reachable: false },
+  {
+    scope: "a.scope",
+    stop: false,
+    writeMode: false,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: true,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: false,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "gone.scope",
+    stop: false,
+    writeMode: true,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: true,
+    nested: true,
+    unread: false,
+  },
+  // The collector's first process read can miss its deadline. That sample
+  // lists no main process, so it must neither refuse nor use up the start.
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: true,
+    nested: false,
+    unread: true,
+  },
 ] as const)("the command line opens %o", async (row) => {
+  // A scope inside a container's unit is readable but belongs to another
+  // manager, so it keeps Freeze and Thaw and offers no Stop.
+  const cgroup = row.nested
+    ? "agents.slice/libpod-x.scope/a.scope"
+    : "agents.slice/a.scope";
   const s = emptySnapshot();
-  s.lanes = [laneSnapshot()];
+  s.lanes = [laneSnapshot({ id: cgroup, cgroup })];
   s.groups = [groupSnapshot()];
-  // Without the lane's leading process vsys cannot place its manager, so
-  // the lane offers no Stop.
-  s.procs = row.reachable
-    ? [processSnapshot({ group: `${userManager}/agents.slice/a.scope` })]
-    : [];
+  s.procs = [processSnapshot({ group: `${userManager}/${cgroup}` })];
   const calls: LaneCommand[] = [];
   // The lane opens in an effect after the first commit, and the detail it
-  // opens reads its history asynchronously, so the mount waits inside act.
+  // opens reads its history asynchronously, so each sample lands inside act.
   const t = await act(() =>
     mount(
-      s,
+      row.unread ? { ...s, procs: [], processRead: "unknown" } : s,
       { ...defaults(), writeMode: row.writeMode },
       { width: 160, height: 45 },
       {
@@ -100,18 +141,31 @@ test.each([
       },
     ),
   );
-  try {
-    await t.ui.renderOnce();
+  const read = () => {
     const frame = t.frame();
     const warning = frame
       .split("\n")
       .find((line) => line.includes(`${levelStatus("warn")}:`));
-    const confirming = row.stop && row.writeMode && row.reachable;
-    expect({
-      agents: frame.includes("sorted by CPU") || frame.includes("Processes"),
-      open: row.scope === "a.scope" && frame.includes("Processes"),
+    return {
+      open: frame.includes("Processes"),
       confirming: frame.includes("Stop a.scope?"),
       refusal: warning?.includes(row.scope) ?? false,
+    };
+  };
+  try {
+    await t.ui.renderOnce();
+    if (row.unread) {
+      expect(read()).toEqual({
+        open: false,
+        confirming: false,
+        refusal: false,
+      });
+      await act(() => t.update(s));
+    }
+    const confirming = row.stop && row.writeMode && !row.nested;
+    expect({
+      ...read(),
+      agents: t.frame().includes("sorted by CPU") || read().open,
     }).toEqual({
       agents: true,
       open: row.scope === "a.scope",
