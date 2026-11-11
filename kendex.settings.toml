@@ -130,7 +130,7 @@ ORCH_TMUX_VERIFY_SECS = "15"
 ORCH_LANE_SSH_PROMPT_SECS = "60"
 
 # Max concurrent lanes the overseer keeps in flight.
-ORCH_OVERSEER_LANES = "12"
+ORCH_OVERSEER_LANES = "8"
 
 # The models a new or successor overseer tries, in order, as
 # harness:model:effort. A succession's walk then ends in the caller's own
