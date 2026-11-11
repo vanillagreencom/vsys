@@ -743,7 +743,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (firstNear)
     add("memory-high", "warn", {
       groups: near,
-      consumer: firstNear.name,
+      consumer: consumerOf(firstNear, s),
       verdictWorthy: false,
     });
   // A report the damage card already speaks for is not a second card: it names

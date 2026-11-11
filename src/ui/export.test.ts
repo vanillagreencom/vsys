@@ -263,3 +263,54 @@ test("each raised cause carries its card's title and the processes it names", ()
     ]),
   );
 });
+
+test("a memory-high group that is a lane is named by the lane and lists its main process", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  // The bar widget's reader (VGS-2321) reads the summary title and must find
+  // no process id in it; the Home card writes each lane with its id. The
+  // second lane is reached only through the cause's groups: the first near
+  // group is the cause's consumer.
+  const lanes = [
+    laneSnapshot({
+      id: "agents.slice/agent-confine-2853033-5727.scope",
+      name: "lane-a",
+      mainPid: 2853033,
+    }),
+    laneSnapshot({
+      id: "agents.slice/agent-confine-2853100-5730.scope",
+      name: "lane-b",
+      mainPid: 2853100,
+    }),
+  ];
+  s.lanes = lanes;
+  s.groups = [
+    ...lanes.map((lane) =>
+      groupSnapshot({
+        path: lane.id,
+        name: present(lane.id.split("/")[1], "the scope name"),
+        memory: 100,
+        high: 100,
+      }),
+    ),
+    groupSnapshot({
+      path: "system.slice/tmux.service",
+      name: "tmux.service",
+      memory: 100,
+      high: 100,
+    }),
+  ];
+  const entry = summarySnapshot(s, c).verdict.find(
+    (item) => item.cause === "memory-high",
+  );
+  expect(entry).toMatchObject({
+    title: "3 groups are near the memory threshold: lane-a, lane-b, tmux",
+    processes: [
+      { pid: 2853033, name: "lane-a" },
+      { pid: 2853100, name: "lane-b" },
+    ],
+  });
+  expect(attention(s, c).find((card) => card.id === "memory-high")?.title).toBe(
+    "3 groups are near the memory threshold: lane-a PID 2853033, lane-b PID 2853100, tmux",
+  );
+});
