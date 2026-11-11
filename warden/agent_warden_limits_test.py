@@ -161,6 +161,7 @@ class AgentWardenLimitRules(WardenRulesCase):
                 slice_dir = self.w.CG_ROOT / self.w.SLICE
                 slice_dir.mkdir(parents=True)
                 (slice_dir / "memory.max").write_text("100")
+                (slice_dir / "memory.stat").write_text("inactive_file 0\n")
                 rows.append(("missing current", self.w.headroom(), (False, -1, -1)))
                 (slice_dir / "memory.current").write_text("89")
                 rows.append(("below headroom", self.w.headroom(), (True, 89, 100)))

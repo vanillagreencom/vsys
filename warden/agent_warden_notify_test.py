@@ -343,6 +343,7 @@ class AgentWardenNotifyRules(WardenMutantMixin, unittest.TestCase):
         (scope / "pids.current").write_text(str(tasks) if tasks is not None else "bad")
         (scope / "pids.max").write_text(str(self.w.SCOPE_TASKS_MAX))
         (scope / "memory.current").write_text(str(memory) if memory is not None else "0")
+        (scope / "memory.stat").write_text("inactive_file 0\n")
         return scope
 
     def test_near_cap_unknown_keeps_episode_rows(self):
