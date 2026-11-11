@@ -20,6 +20,7 @@ export function mountScreen(
     | "onOpenFiles"
     | "onSwitch"
     | "output"
+    | "start"
   >,
 ) {
   type Frame = {

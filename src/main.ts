@@ -19,7 +19,10 @@ import { dispatchWarden } from "./warden";
  * The refusals a caller or a test tells apart. `errorText()` in
  * `src/ui/refusals.ts` writes what the reader sees.
  */
-export type ArgumentRefusal = { kind: "needs-once" };
+export type ArgumentRefusal =
+  | { kind: "needs-once" }
+  | { kind: "stop-needs-lane" }
+  | { kind: "lane-needs-terminal" };
 
 export class ArgumentError extends Error {
   constructor(readonly refusal: ArgumentRefusal) {
@@ -49,13 +52,15 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       summary: { type: "boolean" },
       markdown: { type: "boolean" },
       config: { type: "string" },
+      lane: { type: "string" },
+      stop: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
   });
   if (values.help) {
     console.log(
-      "vsys [--once] [--summary] [--markdown] [--config PATH]\nvsys warden install|uninstall|status\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--summary   With --once, print a cheap verdict JSON and skip scratch collection.\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
+      "vsys [--once] [--summary] [--markdown] [--config PATH]\nvsys [--lane SCOPE [--stop]] [--config PATH]\nvsys warden install|uninstall|status\n\nObserve Linux agent processes and system health.\n--once      Print a JSON snapshot and exit (status 2 for source errors).\n--summary   With --once, print a cheap verdict JSON and skip scratch collection.\n--markdown  Print the snapshot as Markdown; requires --once.\n--config    Use another TOML settings file.\n--lane      Open Agents on the lane running in this .scope.\n--stop      With --lane, open that lane's Stop confirmation.\n\nInteractive exports write to the current directory. Settings and optional\nSQLite history write only to their configured application paths. The agent\nactions that freeze, thaw or stop a scope run only with writeMode on in the\nsettings file, and only after a confirmation.",
     );
     return;
   }
@@ -65,6 +70,10 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     throw new Error("--markdown requires --once");
   if (values.summary && !values.once)
     throw new ArgumentError({ kind: "needs-once" });
+  if (values.stop && values.lane === undefined)
+    throw new ArgumentError({ kind: "stop-needs-lane" });
+  if (values.lane !== undefined && values.once)
+    throw new ArgumentError({ kind: "lane-needs-terminal" });
   if (values.summary && values.markdown)
     throw new Error("--summary and --markdown cannot be combined");
   if (values.config === "") throw new Error("Config path cannot be empty");
@@ -163,6 +172,11 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     onCapture: capturePane,
     // Read on the process thread, which a keystroke never waits behind.
     onOpenFiles: (pids, dirs) => session.openFiles(pids, dirs),
+    // Only the first view: a Stop it asks for opens the same confirmation a
+    // keypress does, which still refuses while write mode is off.
+    ...(values.lane !== undefined
+      ? { start: { scope: values.lane, stop: values.stop === true } }
+      : {}),
     ...(insideTmux(process.env) ? { onSwitch: switchToPane } : {}),
     output: process.stdout,
   });

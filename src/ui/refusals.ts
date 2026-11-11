@@ -76,5 +76,9 @@ function argumentText(refusal: ArgumentRefusal): string {
   switch (refusal.kind) {
     case "needs-once":
       return "--summary requires --once";
+    case "stop-needs-lane":
+      return "--stop requires --lane SCOPE";
+    case "lane-needs-terminal":
+      return "--lane opens the interactive dashboard and cannot be combined with --once";
   }
 }

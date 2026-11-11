@@ -17,8 +17,11 @@ import {
   type LaneCommand,
   type LaneIntent,
   type LaneResolution,
+  laneIntent,
+  laneTarget,
   resolveIntent,
 } from "../model/actions";
+import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import type { Level } from "../model/verdict";
 import type { History } from "../store/history";
@@ -99,6 +102,11 @@ export interface AppProps {
   onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
   /** Where the clipboard escape goes: the process output stream. */
   output: Output;
+  /**
+   * The lane the command line asked to open, by its systemd scope, and
+   * whether to open its Stop confirmation. It sets the first view only.
+   */
+  start?: { scope: string; stop: boolean };
 }
 /** The views that show a past sample while one is pinned. */
 const pinnable: View[] = ["Agents", "Resources", "Builds", "Storage"];
@@ -200,6 +208,7 @@ export function App({
   onSwitch,
   onOpenFiles,
   output,
+  start,
 }: AppProps) {
   const renderer = useRenderer();
   const [view, setView] = useState<View>("Home");
@@ -321,7 +330,9 @@ export function App({
   // action always addresses the live machine. Both refusals sit above the one
   // call that reaches an effect, so no screen arrives at it by another route,
   // and the confirmation stands between it and the effect.
-  const actionAllowed = (intent: LaneIntent) => {
+  // `onRow` says the reader is on the action's own row, whose copy key takes
+  // the command. A command line opens no row, so the notice shows the command.
+  const actionAllowed = (intent: LaneIntent, onRow = true) => {
     if (pinned) {
       notice(
         `Pinned sample · ${intent.scope} may be gone or its name reused · ${keyLabel(c.keys.pin)} shows live data`,
@@ -331,17 +342,43 @@ export function App({
     }
     if (!c.writeMode) {
       notice(
-        `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`,
+        onRow
+          ? `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`
+          : `Write mode is off · run ${intent.text} yourself`,
         "warn",
       );
       return false;
     }
     return true;
   };
-  const act = (intent: LaneIntent) => {
-    if (!actionAllowed(intent)) return;
+  const act = (intent: LaneIntent, onRow = true) => {
+    if (!actionAllowed(intent, onRow)) return;
     setConfirming(intent);
   };
+  // The command line's lane opens on the first sample alone, so a later sample
+  // never pulls the reader back to it. A Stop goes through `act`, the door a
+  // keypress takes, so write mode and the confirmation still stand before it.
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current || !start) return;
+    started.current = true;
+    const lane = snapshot.lanes.find(
+      (l) => l.cgroup.split("/").at(-1) === start.scope,
+    );
+    if (lane === undefined) {
+      navigate("Agents");
+      notice(`No lane runs in ${start.scope}`, "warn");
+      return;
+    }
+    openLane(lane.id);
+    if (!start.stop) return;
+    const target = laneTarget(lane, c, snapshot.procs);
+    if (target === null || !target.actions.includes("Stop")) {
+      notice(`${laneText(lane)} in ${start.scope} offers no Stop`, "warn");
+      return;
+    }
+    act(laneIntent("Stop", target), false);
+  });
   useKeyboard((key) => {
     const name = keyName(key);
     if (name === "ctrl+c") {

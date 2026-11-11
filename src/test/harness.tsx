@@ -41,6 +41,7 @@ export async function mount(
     onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
     history: History;
     settingsPath: string;
+    start: { scope: string; stop: boolean };
   }> = {},
 ) {
   const h = hooks.history ?? new History(c);
@@ -83,6 +84,7 @@ export async function mount(
             new ProcessCollector(config, 100, 4096).files(pids, dirs))
         }
         output={{ write: (chunk: string) => written.push(chunk) }}
+        start={hooks.start}
       />
     );
   }

@@ -74,6 +74,8 @@ const rows: [
     ["/a", "/b"],
   ],
   [new ArgumentError({ kind: "needs-once" }), []],
+  [new ArgumentError({ kind: "stop-needs-lane" }), []],
+  [new ArgumentError({ kind: "lane-needs-terminal" }), []],
 ];
 
 test.each(
