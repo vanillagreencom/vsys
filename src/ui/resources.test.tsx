@@ -353,7 +353,7 @@ test("a coloured group row carries its cause, and a low cap is a cause only on a
         }),
       ],
       [],
-      null,
+      { kind: "warden", level: "warn" },
       [{ kernelPath: "/user.slice/agents.slice/a.scope", near: ["memory"] }],
     ],
   ];
@@ -1020,7 +1020,9 @@ test("Resources labels each selected value and expresses a quota in percent of o
       cpuMax: "50000 100000",
       tasks: 42,
       cpuPercent: 25,
+      memory: 8192,
       cache: 4096,
+      fileStat: { inactiveFile: 4096, fileDirty: 1024, fileWriteback: 0 },
       writeRate: 1024,
       pressure: {
         cpu: { some: 1, full: 0, total: 0 },
@@ -1048,6 +1050,7 @@ test("Resources labels each selected value and expresses a quota in percent of o
     await t.press("3");
     const rows = t.frame().split("\n");
     for (const label of [
+      "Working memory",
       "Memory high",
       "Memory max",
       "Swap",
@@ -1062,6 +1065,8 @@ test("Resources labels each selected value and expresses a quota in percent of o
     ])
       expect(rows.some((row) => row.includes(label))).toBe(true);
     expect(t.frame()).toMatch(/CPU quota\s+50.0% of one core/);
+    // memory.current less the clean inactive file cache, 4096 less 1024 dirty.
+    expect(t.frame()).toMatch(/Working memory\s+5.0 KiB/);
     expect(t.frame()).toMatch(/Status\s+OK/);
     expect(t.frame()).toContain("desktop swap");
     expect(t.frame()).toContain("of 61.7 GiB");
@@ -1076,10 +1081,12 @@ test("Resources labels each selected value and expresses a quota in percent of o
           name: "agents.slice",
           cpuMax: "250000 100000",
           cpuPercent: 25,
+          fileStat: null,
         }),
       ],
     });
     expect(t.frame()).toMatch(/CPU quota\s+250.0% of one core/);
+    expect(t.frame()).toMatch(new RegExp(`Working memory\\s+${gap}`));
   } finally {
     await t.close();
   }

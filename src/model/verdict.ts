@@ -383,7 +383,7 @@ interface Judgment<T> {
  * cache, which the kernel drops before it throttles a group past
  * `memory.high`.
  */
-function workingMemory(group: Group): number | null {
+export function workingMemory(group: Group): number | null {
   const stat = group.fileStat;
   if (group.memory === null || stat === null) return null;
   // memory.current and memory.stat are read at different moments.
@@ -393,21 +393,27 @@ function workingMemory(group: Group): number | null {
       Math.max(0, stat.inactiveFile - stat.fileDirty - stat.fileWriteback),
   );
 }
-/** How memory-high stands on one group, with the figures it fired on. */
+/**
+ * How memory-high stands on one group, with the figures it fired on, or
+ * `warden` where the warden's own warning stands in for vsys's judgment.
+ */
 export type MemoryHigh =
   | { judged: "fired"; working: number; high: number }
-  | { judged: "absent" | "unjudged" };
+  | { judged: "absent" | "unjudged" }
+  | { judged: "warden" };
 /**
  * An unread limit cannot clear an alert; a measured unlimited limit can. A
  * lane scope the warden's fresh status warns is near its memory limit has the
- * warden's warning, so vsys leaves it out, null here, and one agent near its
- * limit is one warning. vsys judges every other group, the agent slice
- * included, since the warden decides when it warns and vsys copies none of it.
+ * warden's warning, so vsys judges nothing there and raises no cause, event
+ * or notification of its own: one agent near its limit is one warning.
+ * Resources still shows that warning, credited to the warden. vsys judges
+ * every other group, the agent slice included, since the warden decides when
+ * it warns and vsys copies none of it.
  */
 export function memoryHighJudgment(
   group: Group,
   s: Pick<Snapshot, "wardenNearLimits">,
-): MemoryHigh | null {
+): MemoryHigh {
   if (
     s.wardenNearLimits?.some(
       (warning) =>
@@ -415,7 +421,7 @@ export function memoryHighJudgment(
         warning.near.includes("memory"),
     )
   )
-    return null;
+    return { judged: "warden" };
   const high = group.high;
   if (!group.highRead) return { judged: "unjudged" };
   if (high === null) return { judged: "absent" };
@@ -425,13 +431,13 @@ export function memoryHighJudgment(
     ? { judged: "fired", working, high }
     : { judged: "absent" };
 }
-/** `memoryHighJudgment()` for every group vsys judges. */
+/** `memoryHighJudgment()` for every group vsys judges itself. */
 export function memoryHighJudgments(
   s: Pick<Snapshot, "groups" | "wardenNearLimits">,
 ): Judgment<Group>[] {
   return s.groups.flatMap((group) => {
-    const memoryHigh = memoryHighJudgment(group, s);
-    return memoryHigh ? [{ subject: group, judged: memoryHigh.judged }] : [];
+    const { judged } = memoryHighJudgment(group, s);
+    return judged === "warden" ? [] : [{ subject: group, judged }];
   });
 }
 /** A partial subtotal can prove a crossing, but cannot prove recovery. */
