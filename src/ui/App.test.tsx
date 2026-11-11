@@ -17,6 +17,7 @@ import { mount } from "../test/harness";
 import { present } from "../test/present";
 import { hints, Waiting } from "./App";
 import { headerRowWidth, keyLabel, viewKey, views } from "./chrome";
+import { osc52 } from "./clipboard";
 import { homeRegions, type NamedRegion, storageRegions } from "./regions";
 import { levelStatus } from "./theme";
 
@@ -116,6 +117,7 @@ test.each([
     unread: true,
   },
 ] as const)("the command line opens %o", async (row) => {
+  const stopCommand = "systemctl --user kill --signal=TERM a.scope";
   // A scope inside a container's unit is readable but belongs to another
   // manager, so it keeps Freeze and Thaw and offers no Stop.
   const cgroup = row.nested
@@ -149,12 +151,16 @@ test.each([
     return {
       open: frame.includes("Processes"),
       confirming: frame.includes("Stop a.scope?"),
+      offer: frame.includes(stopCommand),
       refusal: warning?.includes(row.scope) ?? false,
     };
   };
   try {
     await t.ui.renderOnce();
-    const confirming = row.stop && row.writeMode && !row.nested && !row.unread;
+    // A Stop the lane offers lands on its row, so the command is on screen
+    // with its copy hint whether write mode lets the confirmation open or not.
+    const offer = row.stop && !row.nested && !row.unread;
+    const confirming = offer && row.writeMode;
     expect({
       ...read(),
       agents: t.frame().includes("sorted by CPU") || read().open,
@@ -162,12 +168,17 @@ test.each([
       agents: !row.unread,
       open: row.scope === "a.scope" && !row.unread,
       confirming,
+      offer,
       refusal:
-        row.scope === "gone.scope" || (row.stop && !confirming) || row.unread,
+        row.scope === "gone.scope" || (row.stop && row.nested) || row.unread,
     });
+    if (offer && !confirming) {
+      await t.press("y");
+      expect(t.written).toEqual([osc52(stopCommand)]);
+    }
     await t.press("enter");
     expect(calls.map((command) => command.text)).toEqual(
-      confirming ? ["systemctl --user kill --signal=TERM a.scope"] : [],
+      confirming ? [stopCommand] : [],
     );
   } finally {
     await t.close();

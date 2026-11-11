@@ -14,6 +14,7 @@ import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
 import {
+  type LaneAction,
   type LaneCommand,
   type LaneIntent,
   type LaneResolution,
@@ -229,6 +230,9 @@ export function App({
   const [help, setHelp] = useState(false);
   const [target, setTarget] = useState<Target | null>(null);
   const [confirming, setConfirming] = useState<LaneIntent | null>(null);
+  // The action row the command line's lane lands on. The reader's own
+  // navigation clears it, so a detail they open later starts at its top.
+  const [landing, setLanding] = useState<LaneAction | null>(null);
   const [toast, setToast] = useState<{ text: string; level: Level } | null>(
     null,
   );
@@ -288,6 +292,7 @@ export function App({
   }, [issues, renderer]);
   const report = (error: unknown) => notice(errorText(error), "danger");
   const navigate = (next: View) => {
+    setLanding(null);
     setView(next);
     setHelp(false);
   };
@@ -330,9 +335,7 @@ export function App({
   // action always addresses the live machine. Both refusals sit above the one
   // call that reaches an effect, so no screen arrives at it by another route,
   // and the confirmation stands between it and the effect.
-  // `onRow` says the reader is on the action's own row, whose copy key takes
-  // the command. A command line opens no row, so the notice shows the command.
-  const actionAllowed = (intent: LaneIntent, onRow = true) => {
+  const actionAllowed = (intent: LaneIntent) => {
     if (pinned) {
       notice(
         `Pinned sample · ${intent.scope} may be gone or its name reused · ${keyLabel(c.keys.pin)} shows live data`,
@@ -342,17 +345,15 @@ export function App({
     }
     if (!c.writeMode) {
       notice(
-        onRow
-          ? `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`
-          : `Write mode is off · run ${intent.text} yourself`,
+        `Write mode is off · ${keyLabel(c.keys.copy)} copies the command to run yourself`,
         "warn",
       );
       return false;
     }
     return true;
   };
-  const act = (intent: LaneIntent, onRow = true) => {
-    if (!actionAllowed(intent, onRow)) return;
+  const act = (intent: LaneIntent) => {
+    if (!actionAllowed(intent)) return;
     setConfirming(intent);
   };
   // The command line's lane opens on the first sample alone, before the reader
@@ -388,7 +389,10 @@ export function App({
       notice(`${laneText(lane)} in ${start.scope} offers no Stop`, "warn");
       return;
     }
-    act(laneIntent("Stop", target), false);
+    // The detail lands on the Stop row, so its command and copy hint are on
+    // screen whether the confirmation opens or write mode refuses it.
+    setLanding("Stop");
+    act(laneIntent("Stop", target));
   });
   useKeyboard((key) => {
     const name = keyName(key);
@@ -512,12 +516,16 @@ export function App({
         height={contentHeight}
         onSave={onSave}
         onError={report}
-        onOpen={setLaneId}
+        onOpen={(id) => {
+          setLanding(null);
+          setLaneId(id);
+        }}
         onCopy={copy}
         onAct={act}
         onCapture={pinned ? undefined : onCapture}
         onSwitch={pinned ? undefined : onSwitch}
         onOpenFiles={pinned ? undefined : onOpenFiles}
+        landing={landing ?? undefined}
       />
     );
   else if (view === "Resources")

@@ -4,7 +4,12 @@ import type { OpenFiles } from "../collect/procs";
 import { agentScratchDirs, scratchRoots } from "../collect/scratch";
 import { switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
-import { type LaneIntent, laneIntent, laneTarget } from "../model/actions";
+import {
+  type LaneAction,
+  type LaneIntent,
+  laneIntent,
+  laneTarget,
+} from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
 import { programName } from "../model/naming";
@@ -79,6 +84,10 @@ export type DetailRow =
   | { kind: "section"; name: SectionName }
   | { kind: "terminal" }
   | { kind: "action"; intent: LaneIntent };
+/** The identity of an action's row, which a landing selects before any row is drawn. */
+function actionKey(action: LaneAction): string {
+  return `action:${action}`;
+}
 /** What tells one detail row from another, whichever kind it is. */
 function detailKey(row: DetailRow): string {
   switch (row.kind) {
@@ -87,7 +96,7 @@ function detailKey(row: DetailRow): string {
     case "terminal":
       return "terminal";
     case "action":
-      return `action:${row.intent.action}`;
+      return actionKey(row.intent.action);
     default: {
       const unknown: never = row;
       throw new Error(`Unknown detail row: ${String(unknown)}`);
@@ -254,6 +263,7 @@ export function Agent({
   onCapture,
   onSwitch,
   onOpenFiles,
+  landing,
 }: {
   lane: Lane;
   snapshot: Snapshot;
@@ -262,6 +272,12 @@ export function Agent({
   live: boolean;
   width: number;
   windowMs: number;
+  /**
+   * The action row the detail opens on, with Actions open: the command line's
+   * Stop lands here, so its command shows with its copy hint. It sets the
+   * first state only.
+   */
+  landing?: LaneAction;
   /** Undefined when the selected row carries no command, which the shell says. */
   onCopy: (command: string | undefined) => void;
   /** Asks the shell for an action; the shell alone decides whether it runs. */
@@ -297,8 +313,12 @@ export function Agent({
   } | null>(null);
   const [loading, setLoading] = useState(false);
   const [seriesError, setSeriesError] = useState<string | null>(null);
-  const [selection, setSelection] = useState(firstRow);
-  const [open, setOpen] = useState<Set<SectionName>>(new Set());
+  const [selection, setSelection] = useState(
+    landing ? { index: 0, id: actionKey(landing) } : firstRow,
+  );
+  const [open, setOpen] = useState<Set<SectionName>>(
+    new Set(landing ? ["Actions"] : []),
+  );
   const [captured, setCaptured] = useState<
     { lines: string[] } | { error: string } | null
   >(null);
