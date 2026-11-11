@@ -59,6 +59,9 @@ function unconfirmed(e: TimelineEvent): string {
     e.processes == null
       ? parts(e.subject, "processes unknown")
       : e.processes.map((p) => `${p.comm} PID ${p.pid}`).join(", "),
+    e.processesOmitted != null && e.processesOmitted > 0
+      ? `+${e.processesOmitted} more`
+      : "",
     `start ${date(e.values.startTime)}`,
     e.kind === "alert-close" ? `end ${date(e.values.endTime)}` : "",
     e.kind === "alert-close" &&

@@ -236,8 +236,12 @@ export function normalizePoint(p: Point): Point {
             names: { ...e.names, unit: e.subject },
           }
         : e;
-      return event.cause === "unconfirmed-tool" && event.processes === undefined
-        ? { ...event, processes: null }
+      return event.cause === "unconfirmed-tool"
+        ? {
+            ...event,
+            processes: event.processes ?? null,
+            processesOmitted: event.processesOmitted ?? null,
+          }
         : event;
     }),
   };

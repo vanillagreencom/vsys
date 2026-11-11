@@ -21,6 +21,8 @@ export type EventKind =
   | "alert-open"
   | "alert-close"
   | "verdict";
+/** Bound each warning record's participant payload and its rendered detail. */
+export const MAX_EVENT_PROCESSES = 64;
 /** One change between two samples. Every word and every unit belongs to the UI. */
 export interface TimelineEvent {
   time: number;
@@ -37,6 +39,8 @@ export interface TimelineEvent {
   values: Record<string, number | null>;
   /** Observed warning participants, not command lines; null in older records. */
   processes?: Pick<Proc, "pid" | "start" | "comm">[] | null;
+  /** Distinct pid/start identities beyond the list; null in older records. */
+  processesOmitted?: number | null;
 }
 /** The slice a cgroup path sits in, which is what a lane event must name. */
 export function sliceOf(path: string): string {
@@ -56,7 +60,12 @@ interface Watch {
   level: Level;
   verdictWorthy: boolean;
   values: Record<string, number | null>;
-  processes?: Map<string, Pick<Proc, "pid" | "start" | "comm">>;
+  participants?: {
+    processes: Map<string, Pick<Proc, "pid" | "start" | "comm">>;
+    // Exact distinct counts need these keys until the watch ends, including
+    // omitted identities that disappear and return. Only the capped map ships.
+    identities: Set<string>;
+  };
   firstSeen: number;
   lastSeen: number;
   /**
@@ -357,9 +366,20 @@ export class EventLog {
         // not to the settings the reader happens to hold when it is drawn.
         watch.values = subjectValues(cause, subject.id, s, c);
         if (cause.id === "unconfirmed-tool") {
-          watch.processes ??= new Map();
-          for (const { pid, start, comm } of cause.procs)
-            watch.processes.set(`${pid}:${start}`, { pid, start, comm });
+          watch.participants ??= {
+            processes: new Map(),
+            identities: new Set(),
+          };
+          const participants = watch.participants;
+          for (const { pid, start, comm } of cause.procs) {
+            const identity = `${pid}:${start}`;
+            participants.identities.add(identity);
+            if (
+              participants.processes.has(identity) ||
+              participants.processes.size < MAX_EVENT_PROCESSES
+            )
+              participants.processes.set(identity, { pid, start, comm });
+          }
         }
         this.watching.set(key, watch);
         // An alert that was never recorded as open cannot be recorded as closed.
@@ -378,8 +398,11 @@ export class EventLog {
           // reader who needs the raw name can still reach it.
           names: { level: cause.level, unit: watch.unit },
           values: { ...watch.values },
-          ...(watch.processes && {
-            processes: [...watch.processes.values()],
+          ...(watch.participants && {
+            processes: [...watch.participants.processes.values()],
+            processesOmitted:
+              watch.participants.identities.size -
+              watch.participants.processes.size,
             values: { ...watch.values, startTime: watch.firstSeen },
           }),
         });
@@ -411,8 +434,11 @@ export class EventLog {
         cause: watch.cause,
         names: { level: watch.level, unit: watch.unit },
         values: { durationMs: watch.lastSeen - watch.firstSeen },
-        ...(watch.processes && {
-          processes: [...watch.processes.values()],
+        ...(watch.participants && {
+          processes: [...watch.participants.processes.values()],
+          processesOmitted:
+            watch.participants.identities.size -
+            watch.participants.processes.size,
           values: {
             durationMs: watch.lastSeen - watch.firstSeen,
             startTime: watch.firstSeen,

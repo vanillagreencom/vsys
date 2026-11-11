@@ -20,6 +20,7 @@ import {
 } from "../test/fixture";
 import { present } from "../test/present";
 import { Archive } from "./archive";
+import { MAX_EVENT_PROCESSES, type TimelineEvent } from "./events";
 import { History, Ring } from "./history";
 import { normalizePoint, normalizeSnapshot } from "./migrate";
 import { point } from "./point";
@@ -89,6 +90,7 @@ test("unconfirmed warning identities and observed interval survive retained repl
     ...closed,
     time: now + 4000,
     processes: undefined,
+    processesOmitted: undefined,
     values: { durationMs: 2000 },
   };
   const stored = point(emptySnapshot(legacy.time), c, [legacy]);
@@ -108,9 +110,98 @@ test("unconfirmed warning identities and observed interval survive retained repl
     "legacy warning",
   );
   expect(old.processes).toBeNull();
+  expect(old.processesOmitted).toBeNull();
   expect(old.values.startTime).toBeUndefined();
   const normalized = normalizePoint(stored);
   expect(normalizePoint(normalized)).toEqual(normalized);
+});
+
+test("stored unconfirmed participant lists are capped and omissions count distinct pid/start identities", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const c = { ...f.config, persistence: true, pressureHoldSeconds: 1 };
+  const now = Date.now();
+  const writer = new History(c);
+  const procs = Array.from({ length: MAX_EVENT_PROCESSES + 2 }, (_, i) =>
+    processSnapshot({
+      pid: 10000 + i,
+      start: 100,
+      comm: "node",
+      tool: null,
+      unconfirmedTool: "codex",
+    }),
+  );
+  writer.add(emptySnapshot(now - 1000));
+  writer.add({ ...emptySnapshot(now), procs });
+  writer.add({ ...emptySnapshot(now + 1000), procs });
+  // Both a retained PID and an omitted PID can be reused by new processes.
+  writer.add({
+    ...emptySnapshot(now + 2000),
+    procs: [10000, 10000 + MAX_EVENT_PROCESSES].map((pid) =>
+      processSnapshot({
+        pid,
+        start: 200,
+        comm: "node",
+        tool: null,
+        unconfirmedTool: "codex",
+      }),
+    ),
+  });
+  writer.add({ ...emptySnapshot(now + 3000), procs });
+  writer.add(emptySnapshot(now + 4000));
+  writer.close();
+  const reader = new History(c);
+  cleanup.push(() => reader.close());
+  const events = reader.events(now + 4000, 10000);
+  for (const [kind, omitted] of [
+    ["alert-open", 2],
+    ["alert-close", 4],
+  ] as const) {
+    const stored = present(
+      events.find((e) => e.kind === kind && e.cause === "unconfirmed-tool"),
+      `stored ${kind}`,
+    );
+    expect(stored.processes).toHaveLength(MAX_EVENT_PROCESSES);
+    expect(stored.processes).toEqual(
+      procs.slice(0, MAX_EVENT_PROCESSES).map(({ pid, start, comm }) => ({
+        pid,
+        start,
+        comm,
+      })),
+    );
+    expect(stored.processesOmitted).toBe(omitted);
+  }
+});
+
+test("an old open unconfirmed record preserves known values and leaves process fields unknown", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const c = { ...f.config, persistence: true };
+  const now = Date.now();
+  const writer = new History(c);
+  writer.close();
+  const legacy: TimelineEvent = {
+    time: now,
+    kind: "alert-open",
+    subject: "codex",
+    subjectId: "",
+    cause: "unconfirmed-tool",
+    names: { level: "warn" },
+    values: { processes: 2 },
+  };
+  const stored = point(emptySnapshot(now), c, [legacy]);
+  const db = new Database(c.sqlitePath);
+  db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
+    now,
+    Bun.gzipSync(JSON.stringify(emptySnapshot(now))),
+    JSON.stringify(stored),
+  );
+  db.close();
+  const reader = new History(c);
+  cleanup.push(() => reader.close());
+  expect(reader.events(now, 0)).toEqual([
+    { ...legacy, processes: null, processesOmitted: null },
+  ]);
 });
 
 test("legacy replay and both chart paths share reading evidence and retain measured values", async () => {

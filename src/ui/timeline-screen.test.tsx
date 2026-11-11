@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ScrollBoxRenderable } from "@opentui/core";
 import { defaults } from "../config/config";
+import { MAX_EVENT_PROCESSES } from "../store/events";
 import { History } from "../store/history";
 import type { Point } from "../store/point";
 import {
@@ -69,7 +70,7 @@ test("Timeline lists what changed with a cause instead of raw samples", async ()
   }
 });
 
-test("a cleared unconfirmed warning names every observed process and its interval on Timeline", async () => {
+test("a cleared unconfirmed warning names retained processes, omissions and its interval on Timeline", async () => {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
   const start = Date.UTC(2026, 10, 10, 18, 30);
   for (const width of [100, 140, 180]) {
@@ -81,7 +82,7 @@ test("a cleared unconfirmed warning names every observed process and its interva
       [0, 410],
       [90000, 510],
     ] as const) {
-      const procs = Array.from({ length: 40 }, (_, i) =>
+      const procs = Array.from({ length: MAX_EVENT_PROCESSES + 3 }, (_, i) =>
         processSnapshot({
           pid: firstPid + i,
           comm: "node",
@@ -167,7 +168,7 @@ test("a cleared unconfirmed warning names every observed process and its interva
       if (!(other instanceof ScrollBoxRenderable))
         throw new Error("Other Timeline detail is not a scroll viewport");
       // The product delivers this text as its result. A joined set of visible
-      // pages must include every identity and the stored, not confirmation, time.
+      // pages must include retained identities and the stored, not confirmation, time.
       expect({
         width,
         advertised,
@@ -185,13 +186,16 @@ test("a cleared unconfirmed warning names every observed process and its interva
         otherScrollTop: 0,
         otherFirstParticipant: true,
       });
-      for (let pid = 510; pid < 550; pid++)
+      for (let pid = 510; pid < 510 + MAX_EVENT_PROCESSES; pid++)
         expect(pagedText).toContain(`node PID ${pid}`);
-      expect(pagedText).toContain(
-        `start ${new Date(start + 90000).toLocaleString()}`,
+      expect(pagedText).toContain("+3 more");
+      // Physical wrapping can split a timestamp between any two glyphs.
+      const intervalText = pagedText.replace(/\s+/g, "");
+      expect(intervalText).toContain(
+        `start ${new Date(start + 90000).toLocaleString()}`.replace(/\s+/g, ""),
       );
-      expect(pagedText).toContain(
-        `end ${new Date(start + 120000).toLocaleString()}`,
+      expect(intervalText).toContain(
+        `end ${new Date(start + 120000).toLocaleString()}`.replace(/\s+/g, ""),
       );
       expect(initialSelection).toContain("Alert closed");
       expect(selectedRow(t.frame())).toContain("Alert closed");
