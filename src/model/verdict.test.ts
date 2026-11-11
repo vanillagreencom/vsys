@@ -24,7 +24,7 @@ import { buildsSummary } from "./builds";
 import { summarySnapshot } from "./export";
 import { type IntegrityState, integrities } from "./integrity";
 import { lanes } from "./lanes";
-import type { Group, Lane, Scrub, Snapshot, Volume } from "./types";
+import type { Group, Lane, Proc, Scrub, Snapshot, Volume } from "./types";
 import {
   agentTotal,
   buildLoad,
@@ -246,12 +246,6 @@ test("a process whose name was not confirmed by install location is its own caus
       unconfirmedPath: "/usr/bin/sleep",
       expected: false,
     },
-    {
-      command: ["/usr/local/bin/pi"],
-      unconfirmedPath: "/usr/local/bin/pi",
-      cwd: "/home/x/dev/.worktrees/kendex/ken-4687",
-      expected: true,
-    },
   ];
   for (const { expected, ...override } of rows) {
     const proc = { ...unconfirmed, ...override };
@@ -267,7 +261,7 @@ test("a process whose name was not confirmed by install location is its own caus
   ).toBeUndefined();
 });
 
-test("unconfirmed-tool alerts use the lane's temporary identity and confirmed members", () => {
+test("unconfirmed-tool alerts keep temporary children distinct from their real agent lane", () => {
   const c = defaults();
   const s = healthy();
   const candidate = processSnapshot({
@@ -275,7 +269,13 @@ test("unconfirmed-tool alerts use the lane's temporary identity and confirmed me
     unconfirmedTool: "pi",
     unconfirmedPath: "/usr/local/bin/pi",
   });
-  const rows = [
+  const rows: {
+    cwd: string;
+    tool: string;
+    confirmed: boolean;
+    expected: boolean;
+    proc?: Partial<Proc>;
+  }[] = [
     {
       cwd: "/repo/tmp/v/.tmpABCD",
       tool: "",
@@ -290,14 +290,54 @@ test("unconfirmed-tool alerts use the lane's temporary identity and confirmed me
       confirmed: false,
       expected: true,
     },
+    ...["codex", "pi", "opencode", "claude"].map((name) => {
+      const path = `/repo/kendex/tmp/v/capture/bin/${name}`;
+      return {
+        cwd: "/repo/kendex",
+        tool: "claude",
+        confirmed: true,
+        expected: false,
+        proc: {
+          comm: name,
+          command:
+            name === "claude"
+              ? ["claude", "", "90"]
+              : [path, "-c", "read hold"],
+          executable: path,
+          cwd: "/repo/kendex",
+          unconfirmedTool: name,
+          unconfirmedPath: path,
+        },
+      };
+    }),
+    {
+      cwd: "/repo/kendex",
+      tool: "claude",
+      confirmed: true,
+      expected: false,
+      proc: {
+        comm: "bash",
+        command: [
+          "bash",
+          "/repo/kendex/tmp/v/capture/pkg-bin/copilot",
+          "-p",
+          "prompt",
+        ],
+        executable: "/usr/bin/bash",
+        cwd: "/repo/kendex",
+        unconfirmedTool: "copilot",
+        unconfirmedPath: "/repo/kendex/tmp/v/capture/pkg-bin/copilot",
+      },
+    },
   ];
-  for (const { cwd, tool, confirmed, expected } of rows) {
+  for (const { cwd, tool, confirmed, expected, proc: override } of rows) {
+    const proc = { ...candidate, ...override };
     s.lanes = [laneSnapshot({ cwd, tool, pids: [40, 41] })];
-    s.procs = [candidate];
+    s.procs = [proc];
     if (confirmed) s.procs.push(processSnapshot({ pid: 41 }));
     expect(
       causes(s, c).find((item) => item.id === "unconfirmed-tool")?.procs ?? [],
-    ).toEqual(expected ? [candidate] : []);
+    ).toEqual(expected ? [proc] : []);
   }
 });
 
