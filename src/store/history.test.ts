@@ -20,11 +20,189 @@ import {
 } from "../test/fixture";
 import { present } from "../test/present";
 import { Archive } from "./archive";
+import { MAX_EVENT_PROCESSES, type TimelineEvent } from "./events";
 import { History, Ring } from "./history";
-import { normalizeSnapshot } from "./migrate";
+import { normalizePoint, normalizeSnapshot } from "./migrate";
 import { point } from "./point";
 
 const cleanup: (() => void)[] = [];
+
+test("unconfirmed warning identities and observed interval survive retained replay and restart", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const c = { ...f.config, persistence: true, pressureHoldSeconds: 1 };
+  const now = Date.now();
+  const writer = new History(c);
+  const sample = (
+    time: number,
+    procs = [
+      processSnapshot({
+        pid: 410,
+        start: 100,
+        comm: "claude",
+        tool: null,
+        unconfirmedTool: "claude",
+        command: ["/private/command"],
+        env: { SECRET: "not event data" },
+      }),
+    ],
+  ) => ({ ...emptySnapshot(time), procs });
+  writer.add(emptySnapshot(now - 1000));
+  writer.add(sample(now));
+  writer.add(sample(now + 1000));
+  writer.add(
+    sample(now + 2000, [
+      processSnapshot({
+        pid: 410,
+        start: 200,
+        comm: "node",
+        tool: null,
+        unconfirmedTool: "codex",
+      }),
+      processSnapshot({
+        pid: 412,
+        start: 300,
+        comm: "pi",
+        tool: null,
+        unconfirmedTool: "pi",
+      }),
+    ]),
+  );
+  writer.add(emptySnapshot(now + 3000));
+  const closed = present(
+    writer.events(now + 3000, 10000).find((e) => e.kind === "alert-close"),
+    "closed unconfirmed warning",
+  );
+  expect(closed.processes).toEqual([
+    { pid: 410, start: 100, comm: "claude" },
+    { pid: 410, start: 200, comm: "node" },
+    { pid: 412, start: 300, comm: "pi" },
+  ]);
+  expect(closed.values).toEqual({
+    durationMs: 2000,
+    startTime: now,
+    endTime: now + 2000,
+  });
+  writer.close();
+  // An old point is a real on-disk producer of the missing list, not an empty observation.
+  const db = new Database(c.sqlitePath);
+  const legacy = {
+    ...closed,
+    time: now + 4000,
+    processes: undefined,
+    processesOmitted: undefined,
+    values: { durationMs: 2000 },
+  };
+  const stored = point(emptySnapshot(legacy.time), c, [legacy]);
+  db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
+    legacy.time,
+    Bun.gzipSync(JSON.stringify(emptySnapshot(legacy.time))),
+    JSON.stringify(stored),
+  );
+  db.close();
+  const reader = new History(c);
+  cleanup.push(() => reader.close());
+  expect(reader.events(now + 3000, 0)).toEqual([closed]);
+  const replayed = reader.window(now + 4000, 10000).flatMap((p) => p.events);
+  expect(replayed.find((e) => e.time === closed.time)).toEqual(closed);
+  const old = present(
+    replayed.find((e) => e.time === legacy.time),
+    "legacy warning",
+  );
+  expect(old.processes).toBeNull();
+  expect(old.processesOmitted).toBeNull();
+  expect(old.values.startTime).toBeUndefined();
+  const normalized = normalizePoint(stored);
+  expect(normalizePoint(normalized)).toEqual(normalized);
+});
+
+test("stored unconfirmed participant lists are capped and omissions count distinct pid/start identities", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const c = { ...f.config, persistence: true, pressureHoldSeconds: 1 };
+  const now = Date.now();
+  const writer = new History(c);
+  const procs = Array.from({ length: MAX_EVENT_PROCESSES + 2 }, (_, i) =>
+    processSnapshot({
+      pid: 10000 + i,
+      start: 100,
+      comm: "node",
+      tool: null,
+      unconfirmedTool: "codex",
+    }),
+  );
+  writer.add(emptySnapshot(now - 1000));
+  writer.add({ ...emptySnapshot(now), procs });
+  writer.add({ ...emptySnapshot(now + 1000), procs });
+  // Both a retained PID and an omitted PID can be reused by new processes.
+  writer.add({
+    ...emptySnapshot(now + 2000),
+    procs: [10000, 10000 + MAX_EVENT_PROCESSES].map((pid) =>
+      processSnapshot({
+        pid,
+        start: 200,
+        comm: "node",
+        tool: null,
+        unconfirmedTool: "codex",
+      }),
+    ),
+  });
+  writer.add({ ...emptySnapshot(now + 3000), procs });
+  writer.add(emptySnapshot(now + 4000));
+  writer.close();
+  const reader = new History(c);
+  cleanup.push(() => reader.close());
+  const events = reader.events(now + 4000, 10000);
+  for (const [kind, omitted] of [
+    ["alert-open", 2],
+    ["alert-close", 4],
+  ] as const) {
+    const stored = present(
+      events.find((e) => e.kind === kind && e.cause === "unconfirmed-tool"),
+      `stored ${kind}`,
+    );
+    expect(stored.processes).toHaveLength(MAX_EVENT_PROCESSES);
+    expect(stored.processes).toEqual(
+      procs.slice(0, MAX_EVENT_PROCESSES).map(({ pid, start, comm }) => ({
+        pid,
+        start,
+        comm,
+      })),
+    );
+    expect(stored.processesOmitted).toBe(omitted);
+  }
+});
+
+test("an old open unconfirmed record preserves known values and leaves process fields unknown", () => {
+  const f = fixture();
+  cleanup.push(f.cleanup);
+  const c = { ...f.config, persistence: true };
+  const now = Date.now();
+  const writer = new History(c);
+  writer.close();
+  const legacy: TimelineEvent = {
+    time: now,
+    kind: "alert-open",
+    subject: "codex",
+    subjectId: "",
+    cause: "unconfirmed-tool",
+    names: { level: "warn" },
+    values: { processes: 2 },
+  };
+  const stored = point(emptySnapshot(now), c, [legacy]);
+  const db = new Database(c.sqlitePath);
+  db.query("INSERT INTO samples VALUES (?, ?, ?)").run(
+    now,
+    Bun.gzipSync(JSON.stringify(emptySnapshot(now))),
+    JSON.stringify(stored),
+  );
+  db.close();
+  const reader = new History(c);
+  cleanup.push(() => reader.close());
+  expect(reader.events(now, 0)).toEqual([
+    { ...legacy, processes: null, processesOmitted: null },
+  ]);
+});
 
 test("legacy replay and both chart paths share reading evidence and retain measured values", async () => {
   const f = fixture();

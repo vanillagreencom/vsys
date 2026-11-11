@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
+import { ScrollBoxRenderable } from "@opentui/core";
 import { defaults } from "../config/config";
+import { MAX_EVENT_PROCESSES } from "../store/events";
 import { History } from "../store/history";
 import type { Point } from "../store/point";
 import {
   emptySnapshot,
   everyCauseSnapshot,
   laneSnapshot,
+  processSnapshot,
 } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
@@ -64,6 +67,141 @@ test("Timeline lists what changed with a cause instead of raw samples", async ()
     expect(frame).toMatch(/Alert opened\s+an agent ran outside/);
   } finally {
     await t.close();
+  }
+});
+
+test("a cleared unconfirmed warning names retained processes, omissions and its interval on Timeline", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const start = Date.UTC(2026, 10, 10, 18, 30);
+  for (const width of [100, 140, 180]) {
+    const h = new History(c);
+    h.add(emptySnapshot(start - 1000));
+    // Two completed warnings force both paging and an identity change while
+    // scrolled. The history suite owns membership accumulation and replay.
+    for (const [offset, firstPid] of [
+      [0, 410],
+      [90000, 510],
+    ] as const) {
+      const procs = Array.from({ length: MAX_EVENT_PROCESSES + 3 }, (_, i) =>
+        processSnapshot({
+          pid: firstPid + i,
+          comm: "node",
+          tool: null,
+          unconfirmedTool: "codex",
+        }),
+      );
+      h.add({ ...emptySnapshot(start + offset), procs });
+      h.add({ ...emptySnapshot(start + offset + 30000), procs });
+      h.add(emptySnapshot(start + offset + 60000));
+    }
+    const cleared = emptySnapshot(start + 150000);
+    const t = await mount(cleared, c, { width, height: 35 }, { history: h });
+    try {
+      await t.press("6");
+      await t.settle();
+      const detail = present(
+        t.ui.renderer.root.findDescendantById("timeline-detail") ??
+          t.ui.renderer.root.findDescendantById("split-detail"),
+        "selected Timeline detail",
+      );
+      if (!(detail instanceof ScrollBoxRenderable))
+        throw new Error("Timeline detail is not a scroll viewport");
+      const detailFrame = () =>
+        t
+          .frame()
+          .split("\n")
+          .slice(detail.viewport.y, detail.viewport.y + detail.viewport.height)
+          .map((line) =>
+            line.slice(
+              detail.viewport.x,
+              detail.viewport.x + detail.viewport.width,
+            ),
+          )
+          .join(" ");
+      const list = present(
+        t.ui.renderer.root.findDescendantById("split-list"),
+        "Timeline change list",
+      );
+      const marked = () =>
+        selectedRow(
+          t
+            .frame()
+            .split("\n")
+            .map((line) => line.slice(list.x, list.x + list.width))
+            .join("\n"),
+        );
+      const initialSelection = marked();
+      const advertised = t.frame().includes("PgUp/PgDn");
+      const frames = [detailFrame()];
+      // Stop at the actual bound, not an assumed amount of wrapping.
+      for (let page = 0; page < detail.scrollHeight; page++) {
+        const before = detail.scrollTop;
+        await t.press("\u001b[6~");
+        await t.settle();
+        frames.push(detailFrame());
+        if (detail.scrollTop === before) break;
+      }
+      const paged = detail.scrollTop > 0;
+      const selectionAfterPaging = marked();
+      const pagedText = frames.join(" ").replace(/\s+/g, " ");
+      for (let page = 0; page < detail.scrollHeight; page++) {
+        await t.press("\u001b[5~");
+        await t.settle();
+        if (detail.scrollTop === 0) break;
+      }
+      const returnedToStart = detail.scrollTop === 0;
+      for (let page = 0; page < detail.scrollHeight; page++) {
+        const before = detail.scrollTop;
+        await t.press("\u001b[6~");
+        await t.settle();
+        if (detail.scrollTop === before) break;
+      }
+      await t.settle();
+      await t.press("j");
+      await t.press("j");
+      await t.settle();
+      const other = present(
+        t.ui.renderer.root.findDescendantById("timeline-detail") ??
+          t.ui.renderer.root.findDescendantById("split-detail"),
+        "other warning detail",
+      );
+      if (!(other instanceof ScrollBoxRenderable))
+        throw new Error("Other Timeline detail is not a scroll viewport");
+      // The product delivers this text as its result. A joined set of visible
+      // pages must include retained identities and the stored, not confirmation, time.
+      expect({
+        width,
+        advertised,
+        paged,
+        returnedToStart,
+        selectionAfterPaging,
+        otherScrollTop: other.scrollTop,
+        otherFirstParticipant: t.frame().includes("node PID 410"),
+      }).toEqual({
+        width,
+        advertised: true,
+        paged: true,
+        returnedToStart: true,
+        selectionAfterPaging: initialSelection,
+        otherScrollTop: 0,
+        otherFirstParticipant: true,
+      });
+      for (let pid = 510; pid < 510 + MAX_EVENT_PROCESSES; pid++)
+        expect(pagedText).toContain(`node PID ${pid}`);
+      expect(pagedText).toContain("+3 more");
+      // Physical wrapping can split a timestamp between any two glyphs.
+      const intervalText = pagedText.replace(/\s+/g, "");
+      expect(intervalText).toContain(
+        `start ${new Date(start + 90000).toLocaleString()}`.replace(/\s+/g, ""),
+      );
+      expect(intervalText).toContain(
+        `end ${new Date(start + 120000).toLocaleString()}`.replace(/\s+/g, ""),
+      );
+      expect(initialSelection).toContain("Alert closed");
+      expect(selectedRow(t.frame())).toContain("Alert closed");
+    } finally {
+      await t.close();
+    }
   }
 });
 

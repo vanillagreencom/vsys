@@ -1,19 +1,23 @@
+import { ScrollBoxRenderable } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import type { TimelineEvent } from "../store/events";
 import type { Point } from "../store/point";
-import { screenPad, sideWidth } from "./chrome";
+import { screenPad, screenWidth, sideWidth } from "./chrome";
 import { fit } from "./columns";
 import { bytes, gap, percent, spanLabel, sparkline } from "./format";
 import { useScreenKeys } from "./keys";
 import type { ChartField, Retained } from "./retained";
 import { firstRow, useSelection } from "./selection";
-import { metric, readingWeight, statusColor, ui } from "./theme";
+import { metric, readingWeight, scrollbar, statusColor, ui } from "./theme";
 import { eventKey, eventParts, eventStatus } from "./timeline";
 import {
   Chart,
+  Detail,
+  detailIndent,
   Field,
   gutter,
   Ink,
@@ -111,6 +115,7 @@ export function Timeline({
   onTargetUsed: () => void;
 }) {
   const windowMs = windowAt(windowIndex);
+  const renderer = useRenderer();
   const { points, events: changes } = retained;
   // What the reader chose, followed by identity: the window key can swap a
   // long list for a shorter one and a new sample prepends to it, so a row
@@ -130,6 +135,16 @@ export function Timeline({
       ? undefined
       : Math.min(chartWidth - 1, Math.max(0, column(at)));
   useScreenKeys((name, key) => {
+    if (name === "pageup" || name === "pagedown") {
+      const detail =
+        renderer.root.findDescendantById("timeline-detail") ??
+        renderer.root.findDescendantById("split-detail");
+      if (detail instanceof ScrollBoxRenderable) {
+        key.preventDefault();
+        detail.scrollBy(name === "pagedown" ? 1 : -1, "viewport");
+        return true;
+      }
+    }
     if (name === c.keys.down || name === "down") {
       move((from) => nextDown(changes.length, from));
       return true;
@@ -260,6 +275,8 @@ export function Timeline({
   const current = changes[row];
   // On a wide terminal the selected change's detail sits beside the list.
   const side = current ? sideWidth(width) : 0;
+  const below = !side && current?.cause === "unconfirmed-tool";
+  const detailHeight = Math.max(1, Math.floor((listHeight - 2) / 2));
   const listWidth = width - side - (side ? sideGap : 0);
   // A change row less its marker, its time and its kind, so a long subject is
   // cut with its mark rather than at the edge.
@@ -273,6 +290,20 @@ export function Timeline({
     event.names.unit && event.names.unit !== event.subject
       ? event.names.unit
       : undefined;
+  const detail = current && (
+    <>
+      <Line
+        width={Math.max(1, (side || screenWidth(width) - detailIndent) - 1)}
+        flexShrink={0}
+        wrapMode="word"
+      >
+        {safe(eventParts(current, c).text)}
+      </Line>
+      {unitOf(current) && (
+        <Field label="Unit" value={unitOf(current) ?? ""} width={14} wrap />
+      )}
+    </>
+  );
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <box flexDirection="row" height={1} flexShrink={0}>
@@ -374,22 +405,23 @@ export function Timeline({
       <SplitPane
         side={side}
         item={current && eventKey(current)}
+        below={below}
         detail={
-          current && (
-            <>
-              {/* Whole here, where the row cuts it at the list's edge. */}
-              <Line flexShrink={0} wrapMode="word">
-                {safe(eventParts(current, c).text)}
-              </Line>
-              {unitOf(current) && (
-                <Field
-                  label="Unit"
-                  value={unitOf(current) ?? ""}
-                  width={14}
-                  wrap
-                />
-              )}
-            </>
+          below ? (
+            <Detail>
+              <scrollbox
+                id="timeline-detail"
+                key={current && eventKey(current)}
+                height={detailHeight}
+                scrollY
+                scrollbarOptions={scrollbar}
+                contentOptions={{ flexShrink: 0 }}
+              >
+                {detail}
+              </scrollbox>
+            </Detail>
+          ) : (
+            detail
           )
         }
       >
@@ -403,7 +435,7 @@ export function Timeline({
         <List
           items={changes}
           selected={row}
-          height={listHeight}
+          height={below ? listHeight - detailHeight - 1 : listHeight}
           onSelect={choose}
           empty="Nothing changed in this window: no lane, cgroup or cause moved."
           render={(event, at, isSelected) => {
