@@ -2624,8 +2624,7 @@ def _near_items(doc):
             "memory" in near and memory is not None and memory_high is not None
             and f"Memory: {_gb(memory)} of {_gb(memory_high)} GB; past it the system slows this agent.",
             "tasks" in near and tasks is not None and tasks_max is not None
-            and _counted(tasks_max, "Tasks: {tasks} of {n} task; past it the agent cannot start processes.",
-                         "Tasks: {tasks} of {n} tasks; past it the agent cannot start processes.", tasks=tasks))
+            and f"Tasks: {tasks} of {tasks_max} tasks; past it the agent cannot start processes.")
         where = f"{tool} in {worktree}" if worktree is not None else tool
         items.append(_item("near-limit", "warn", f"{where} is near its {limits}.", detail,
                            [_show(scope), _stop(scope)], scope))
