@@ -6,7 +6,12 @@ import { safe } from "../model/export";
 import { coveringGroup, dangerousCap, effectiveMax } from "../model/lanes";
 import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Service, Snapshot } from "../model/types";
-import { causes, type Level, meters } from "../model/verdict";
+import {
+  causes,
+  type Level,
+  memoryHighJudgment,
+  meters,
+} from "../model/verdict";
 import { meterTile, type Target } from "./attention";
 import { screenPad, sideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
@@ -258,7 +263,7 @@ export type GroupCause =
       some: number;
       threshold: number;
     }
-  | { kind: "high"; level: "warn"; memory: number; high: number }
+  | { kind: "high"; level: "warn"; working: number; high: number }
   | { kind: "unread"; level: "warn" };
 /**
  * Whether a group is a lane or holds one. A group-less lane carries its
@@ -312,11 +317,17 @@ export function groupCause(
       ...worst,
       threshold: c.pressureAmber,
     };
-  if (g.memory !== null && g.high !== null && g.memory >= g.high * 0.9)
-    return { kind: "high", level: "warn", memory: g.memory, high: g.high };
+  const memoryHigh = memoryHighJudgment(g, s);
+  if (memoryHigh?.judged === "fired")
+    return {
+      kind: "high",
+      level: "warn",
+      working: memoryHigh.working,
+      high: memoryHigh.high,
+    };
   if (
     Object.values(g.pressure).some((p) => p === null) ||
-    (g.memory === null && g.high !== null)
+    memoryHigh?.judged === "unjudged"
   )
     return { kind: "unread", level: "warn" };
   return null;
@@ -333,7 +344,7 @@ function causeText(cause: GroupCause, c: Config): string {
     case "pressure":
       return waitText(cause.resource, cause.some, cause.threshold);
     case "high":
-      return `memory ${bytes(cause.memory, c)} past 90% of memory high ${bytes(cause.high, c)}`;
+      return `working memory ${bytes(cause.working, c)} past 90% of memory high ${bytes(cause.high, c)}`;
     case "unread":
       return `a threshold reading is ${gap}`;
     default:

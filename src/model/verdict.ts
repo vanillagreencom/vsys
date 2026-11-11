@@ -393,31 +393,41 @@ function workingMemory(group: Group): number | null {
       Math.max(0, stat.inactiveFile - stat.fileDirty - stat.fileWriteback),
   );
 }
+/** How memory-high stands on one group, with the figures it fired on. */
+export type MemoryHigh =
+  | { judged: "fired"; working: number; high: number }
+  | { judged: "absent" | "unjudged" };
 /**
- * An unread limit cannot clear an alert; a measured unlimited limit can. The
- * groups a fresh warden status judged are the warden's to warn about, so
- * vsys leaves them out and one group near its limit is one warning.
+ * An unread limit cannot clear an alert; a measured unlimited limit can. A
+ * group a fresh warden status judged is the warden's to warn about, so vsys
+ * leaves it out, null here, and one group near its limit is one warning.
  */
+export function memoryHighJudgment(
+  group: Group,
+  s: Pick<Snapshot, "wardenGroups">,
+): MemoryHigh | null {
+  if (
+    group.kernelPath !== undefined &&
+    s.wardenGroups?.includes(group.kernelPath)
+  )
+    return null;
+  const high = group.high;
+  if (!group.highRead) return { judged: "unjudged" };
+  if (high === null) return { judged: "absent" };
+  const working = workingMemory(group);
+  if (working === null) return { judged: "unjudged" };
+  return working >= high * 0.9
+    ? { judged: "fired", working, high }
+    : { judged: "absent" };
+}
+/** `memoryHighJudgment()` for every group vsys judges. */
 export function memoryHighJudgments(
   s: Pick<Snapshot, "groups" | "wardenGroups">,
 ): Judgment<Group>[] {
-  const warden = new Set(s.wardenGroups);
-  return s.groups
-    .filter(
-      (group) =>
-        group.kernelPath === undefined || !warden.has(group.kernelPath),
-    )
-    .map((group) => {
-      const high = group.high;
-      return {
-        subject: group,
-        judged: !group.highRead
-          ? "unjudged"
-          : high === null
-            ? "absent"
-            : judge([workingMemory(group)], (n) => n >= high * 0.9),
-      };
-    });
+  return s.groups.flatMap((group) => {
+    const memoryHigh = memoryHighJudgment(group, s);
+    return memoryHigh ? [{ subject: group, judged: memoryHigh.judged }] : [];
+  });
 }
 /** A partial subtotal can prove a crossing, but cannot prove recovery. */
 export function scratchJudgments(

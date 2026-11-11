@@ -314,10 +314,28 @@ test("a coloured group row carries its cause, and a low cap is a cause only on a
       },
     ],
     [
-      "memory near memory high",
-      [groupSnapshot({ memory: 95, high: 100 })],
+      "working memory near memory high",
+      [
+        groupSnapshot({
+          memory: 150,
+          high: 100,
+          fileStat: { inactiveFile: 60, fileDirty: 3, fileWriteback: 2 },
+        }),
+      ],
       [],
-      { kind: "high", level: "warn", memory: 95, high: 100 },
+      { kind: "high", level: "warn", working: 95, high: 100 },
+    ],
+    [
+      "file cache over memory high with working memory under it",
+      [
+        groupSnapshot({
+          memory: 150,
+          high: 100,
+          fileStat: { inactiveFile: 100, fileDirty: 0, fileWriteback: 0 },
+        }),
+      ],
+      [],
+      null,
     ],
   ];
   for (const [name, groups, lanes, cause] of rows) {
