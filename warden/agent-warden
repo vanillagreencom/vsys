@@ -1660,9 +1660,14 @@ def warn_near_cap():
 
 def reap(unit):
     """Stop one orphaned scope. systemd kills its members and removes the unit.
-    Precise (one unit by exact name), so it never touches another session."""
-    r = subprocess.run(["systemctl", "--user", "stop", unit],
-                       capture_output=True, text=True, timeout=15)
+    Precise (one unit by exact name), so it never touches another session.
+    A stop that does not complete fails like a refused one, so the caller marks
+    its row and goes on to the next scope."""
+    try:
+        r = subprocess.run(["systemctl", "--user", "stop", unit],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"systemctl stop did not complete: {e}"
     return r.returncode == 0, (r.stderr or "").strip()
 
 
