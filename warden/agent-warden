@@ -2584,14 +2584,26 @@ def _agents(events):
     return {event["pid"] for event in events if event["pid"] is not None}
 
 
+def _latest_moves(doc):
+    """Each agent's latest recent move outcome, {pid: "moved" | "partial" |
+    "failed"}, and whether a failed event with no pid, the unreachable bus, is
+    the latest outcome of all. A move is retried every tick, so a later outcome
+    replaces an earlier one; once the bus is back, every agent still failing has
+    its own failed event. Event ids rise in the order the warden emits them."""
+    events = sorted((event for kind in ("moved", "partial", "failed") for event in _recent(doc, kind)),
+                    key=lambda event: event["id"])
+    latest = {event["pid"]: event["kind"] for event in events if event["pid"] is not None}
+    bus_down = bool(events) and events[-1]["kind"] == "failed" and events[-1]["pid"] is None
+    return latest, bus_down
+
+
 def _move_items(doc):
     items = []
-    failed = _recent(doc, "failed")
-    if failed:
-        # The count is the distinct agents the failed events name. A failed event with
-        # no pid, the unreachable bus, names none; `outside` is this tick's plan, not
-        # that tick's, so it adds none either.
-        pids = _agents(failed)
+    latest, bus_down = _latest_moves(doc)
+    pids = {pid for pid, kind in latest.items() if kind == "failed"}
+    if pids or bus_down:
+        # The count is the agents whose latest outcome failed. The unreachable bus
+        # names none; `outside` is this tick's plan, not that tick's, so it adds none either.
         tools = []
         for row in doc["outside"] or []:
             tool = _name(row["tool"]) if row["pid"] in pids else None
@@ -2604,10 +2616,10 @@ def _move_items(doc):
             tools and _counted(len(tools), "{tools} still runs outside them.", "{tools} still run outside them.",
                                tools=", ".join(tools)),
             "It tries again on its next check."), [_show()]))
-    partial = _recent(doc, "partial")
+    partial = {pid for pid, kind in latest.items() if kind == "partial"}
     if partial:
         items.append(_item("move-partial", "warn",
-                           _counted(len(_agents(partial)), "The warden moved only part of {n} agent into its limits.",
+                           _counted(len(partial), "The warden moved only part of {n} agent into its limits.",
                                     "The warden moved only part of {n} agents into their limits."),
                            "The rest still runs outside them. It tries again on its next check.", [_show()]))
     return items

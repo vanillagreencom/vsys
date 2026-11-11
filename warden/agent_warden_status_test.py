@@ -1107,8 +1107,8 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
              doc(slice_reading=full, moves=[("escaped launch", tree), ("escaped launch", codex)],
                  waiting=[("escaped launch", tree), ("escaped launch", codex)],
                  events=[*[("failed", at, {"pid": pid}) for pid in (321, 900) for at in (-60, -30, 0)],
-                         *[(kind, at, {"pid": pid}) for kind in ("partial", "moved") for pid in (777, 779)
-                           for at in (-30, 0)]]),
+                         *[(kind, at, {"pid": pid}) for kind, pids in (("partial", (777, 779)), ("moved", (781, 783)))
+                           for pid in pids for at in (-30, 0)]]),
              [("memory-full", "memory-full", "danger", "Agents are close to their memory limit.",
                "73 of 80 GB in use. The warden holds back 2 agents until memory frees.", [show]),
               ("move-failed", "move-failed", "warn", "The warden could not move 2 agents into their limits.",
@@ -1116,6 +1116,10 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
               ("move-partial", "move-partial", "warn", "The warden moved only part of 2 agents into their limits.",
                "The rest still runs outside them. It tries again on its next check.", [show]),
               ("moved", "moved", "info", "The warden moved 2 agents into their limits.", None, [])]),
+            ("failed and partial moves retried with success",
+             doc(events=[("failed", -90, {}), ("failed", -60, {"pid": 321}), ("partial", -60, {"pid": 777}),
+                         ("moved", -30, {"pid": 321}), ("moved", 0, {"pid": 777})]),
+             [("moved", "moved", "info", "The warden moved 2 agents into their limits.", None, [])]),
             ("partial move", fixtures["partial"],
              [("move-partial", "move-partial", "warn", "The warden moved only part of 1 agent into its limits.",
                "The rest still runs outside them. It tries again on its next check.", [show])]),
