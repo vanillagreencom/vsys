@@ -137,9 +137,8 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         with scratch() as tmp:
             old = self.point_status_state(self.w, Path(tmp))
             try:
-                lane = self.write_status_cgroup(self.w, lane_memory=str(48 * 1024**3))
-                for raw, expected in ((str(128 * 1024**3), [48, 128]), ("max", [48]),
-                                      ("invalid", [48]), (None, [48])):
+                lane = self.write_status_cgroup(self.w, lane_memory=str(100 * 1024**3))
+                for raw, expected in ((str(128 * 1024**3), [100, 128]), ("invalid", [100]), (None, [100])):
                     with self.subTest(raw=raw):
                         limit = lane / "memory.high"
                         if raw is None:
@@ -157,7 +156,9 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
 
     def test_lane_near_judges_each_scope_against_its_own_limit(self):
         # agent-confine sets each scope's limits from the launching shell; AGENT_SCOPE_MEM_HIGH=infinity
-        # and a raw systemd-run scope leave a limit at max.
+        # and a raw systemd-run scope leave a limit at max. vsys sends no notice of its own for a lane
+        # the status warns is near its memory limit, so the near-cap notice warns for memory exactly
+        # where near lists it.
         w, gib = self.w, 1024**3
         rows = [
             # name, tasks, pids.max, memory, memory.high, near
@@ -179,6 +180,9 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                                             ("memory.current", memory), ("memory.high", memory_high)):
                             (lane / file).write_text(str(value))
                         self.assertEqual([row["near"] for row in w.lane_statuses()], [expected])
+                        near, _, _ = w.warn_near_cap()
+                        self.assertEqual([kind for _, kind, _ in near if kind == "memory"],
+                                         [kind for kind in expected if kind == "memory"])
             finally:
                 self.restore_status_state(w, old)
 
