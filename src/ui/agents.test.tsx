@@ -20,6 +20,7 @@ import {
   type LaneBadge,
   laneBadge,
   laneLevel,
+  laneState,
   tableColumn,
   trendEnd,
   trendMarks,
@@ -58,6 +59,40 @@ test("search matches every naming field, case-insensitively, in the sort order",
   ];
   for (const [query, ids] of rows)
     expect(findLanes(lanes, query, c).map((l) => l.id)).toEqual(ids);
+});
+
+test("a State sort groups the word the State cell shows, in both directions", () => {
+  const c = { ...defaults(), sort: "state" };
+  const lanes = [
+    laneSnapshot({ id: "a", state: "sleeping", unconfined: true }),
+    laneSnapshot({ id: "b", state: "sleeping" }),
+    laneSnapshot({ id: "c", state: "running", unconfined: true }),
+    laneSnapshot({
+      id: "d",
+      state: "running",
+      ioPressure: c.pressureAmber + 1,
+    }),
+    laneSnapshot({ id: "e", state: "running" }),
+  ];
+  const sorted = (descending: boolean) =>
+    findLanes(lanes, "", { ...c, descending }).map(
+      (lane) => `${lane.id} ${laneState(lane, c).word}`,
+    );
+  expect(sorted(false)).toEqual([
+    "a Error",
+    "c Error",
+    "d Warning",
+    "e running",
+    "b sleeping",
+  ]);
+  // Ties keep the id order either way.
+  expect(sorted(true)).toEqual([
+    "b sleeping",
+    "e running",
+    "d Warning",
+    "a Error",
+    "c Error",
+  ]);
 });
 
 test("every coloured lane row carries a badge naming its cause, worst first", () => {

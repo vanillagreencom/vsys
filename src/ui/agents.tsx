@@ -343,6 +343,7 @@ export function findLanes(lanes: Lane[], query: string, c: Config): Lane[] {
     ),
     c.sort,
     c.descending,
+    c.sort === "state" ? (lane) => laneState(lane, c).key : undefined,
   );
 }
 /**
@@ -411,6 +412,22 @@ export function badgeText(badge: LaneBadge, lane: Lane, c: Config): string {
     default:
       return badge satisfies never;
   }
+}
+/**
+ * The word a lane's State cell shows and the key a State sort orders it by:
+ * Error, then Warning, then the lifecycle word, so the sort groups what the
+ * column shows.
+ */
+export function laneState(
+  lane: Lane,
+  c: Config,
+): { word: string; key: string } {
+  const badge = laneBadge(lane, c);
+  if (!badge) return { word: lane.state, key: `2 ${lane.state}` };
+  return {
+    word: levelStatus(badge.level),
+    key: badge.level === "danger" ? "0" : "1",
+  };
 }
 /** A blocked lane is badged without colouring its row. */
 export function laneLevel(lane: Lane, c: Config): Level {
@@ -966,10 +983,7 @@ export function Agents({
                               levelStatus(laneBadge(lane, c)?.level ?? "ok"),
                             )}
                           >
-                            {cell(
-                              column,
-                              levelStatus(laneBadge(lane, c)?.level ?? "ok"),
-                            )}
+                            {cell(column, laneState(lane, c).word)}
                           </Ink>
                         ) : name === null ? (
                           pidCell(lane.mainPid)
@@ -979,7 +993,9 @@ export function Agents({
                             safe(
                               name === "account"
                                 ? tableAccount(lane)
-                                : laneValue(lane, name, c),
+                                : name === "state"
+                                  ? laneState(lane, c).word
+                                  : laneValue(lane, name, c),
                             ),
                           )
                         )}
@@ -1073,11 +1089,11 @@ export function Agents({
                     {columnGap}
                     {badge ? (
                       <Ink color={statusColor(levelStatus(badge.level))}>
-                        {cell(laneColumn("State"), levelStatus(badge.level))}
+                        {cell(laneColumn("State"), laneState(lane, c).word)}
                       </Ink>
                     ) : (
                       <span attributes={ui.dim}>
-                        {cell(laneColumn("State"), lane.state)}
+                        {cell(laneColumn("State"), laneState(lane, c).word)}
                       </span>
                     )}
                   </>,
