@@ -21,8 +21,9 @@ export interface SummaryProcess {
 }
 /**
  * A cause the ladder raised carries its Home card's title, so the summary and
- * the card say the same words, and the processes the cause names. A cause
- * that could not be measured has no card and no level.
+ * the card say the same words, with each lane the cause names written by name
+ * alone, and the processes the cause names. A cause that could not be
+ * measured has no card and no level.
  */
 export type SummaryCause =
   | {
@@ -112,8 +113,10 @@ export function summarySnapshot(
   c: Config,
   options: SummaryOptions = {},
 ): Summary {
-  // One card per cause, keyed by the cause it was written for.
-  const titles = new Map(attention(s, c).map((card) => [card.id, card.title]));
+  // One card per cause, keyed by the cause it was written for. The widget
+  // draws no process id, so a lane is its name; the ids are in `processes`.
+  const cards = attention(s, c, { laneName: (lane) => lane.name });
+  const titles = new Map(cards.map((card) => [card.id, card.title]));
   const verdict: SummaryCause[] = causes(s, c).map((cause) => {
     const title = titles.get(cause.id);
     if (title === undefined)

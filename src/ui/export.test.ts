@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { defaults } from "../config/config";
-import { causeOrder } from "../model/verdict";
+import { laneText } from "../model/naming";
+import { causeOrder, causes } from "../model/verdict";
 import {
   emptySnapshot,
   everyCauseSnapshot,
@@ -171,6 +172,11 @@ test("summary keeps service-cpu unmeasured until a unit has an hour average", ()
   ).toBe(false);
 });
 
+// These titles name a lane through the cause's `consumer`, which
+// `src/model/verdict.ts` writes through `laneText()`, so the summary still
+// carries that lane's process id. Reported on VSY-268 for a decision.
+const consumerTitles = new Set(["disk", "system-cpu"]);
+
 test("each raised cause carries its card's title and the processes it names", () => {
   const c = defaults();
   // The every-cause snapshot fires every host pressure, so a host card owns
@@ -184,8 +190,11 @@ test("each raised cause carries its card's title and the processes it names", ()
   };
   quiet.lanes = [laneSnapshot({ pressure: c.pressureRed + 1 })];
   const seen = new Set<string>();
+  // The causes whose Home card names a lane with its process id.
+  const named = new Set<string>();
   for (const s of [everyCauseSnapshot(c), quiet]) {
     const cards = attention(s, c);
+    const raised = causes(s, c);
     for (const entry of summarySnapshot(s, c).verdict) {
       if (entry.level === null) continue;
       seen.add(entry.cause);
@@ -193,10 +202,27 @@ test("each raised cause carries its card's title and the processes it names", ()
         cards.find((item) => item.id === entry.cause),
         `the ${entry.cause} card`,
       );
+      const cause = present(
+        raised.find((item) => item.id === entry.cause),
+        `the ${entry.cause} cause`,
+      );
+      // The card's own words, with each lane it names by its name alone.
+      const title = consumerTitles.has(entry.cause)
+        ? card.title
+        : cause.lanes.reduce(
+            (text, lane) => text.replaceAll(laneText(lane), lane.name),
+            card.title,
+          );
+      if (title !== card.title) named.add(entry.cause);
       expect({ cause: entry.cause, title: entry.title }).toEqual({
         cause: entry.cause,
-        title: card.title,
+        title,
       });
+      if (!consumerTitles.has(entry.cause))
+        expect({ cause: entry.cause, title: entry.title }).not.toEqual({
+          cause: entry.cause,
+          title: expect.stringMatching(/PID \d/),
+        });
       expect({ cause: entry.cause, open: entry.open }).toEqual({
         cause: entry.cause,
         open: [],
@@ -210,4 +236,9 @@ test("each raised cause carries its card's title and the processes it names", ()
     }
   }
   expect([...seen].sort()).toEqual(Object.keys(causeOrder).sort());
+  // The fixture reaches every card that lists lanes, so the rows above
+  // compare a card that carries a process id with a summary that does not.
+  expect([...named]).toEqual(
+    expect.arrayContaining(["memory-cap", "stalls", "unconfined"]),
+  );
 });

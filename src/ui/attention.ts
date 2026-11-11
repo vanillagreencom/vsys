@@ -4,7 +4,7 @@ import { sliceCompared } from "../model/lanes";
 import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
 import { laneText, programName, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
-import type { CapabilityId, Snapshot } from "../model/types";
+import type { CapabilityId, Lane, Snapshot } from "../model/types";
 import {
   agentLanes,
   type Cause,
@@ -209,6 +209,8 @@ function laneSentence(names: string[], width: number, head: string): string {
   return named(room);
 }
 
+/** How a card writes a lane it names: `laneText()` unless the caller says. */
+type LaneName = (lane: Lane) => string;
 /** Every word and every formatted number the Overview shows lives here. */
 function copy(
   cause: Cause,
@@ -216,11 +218,12 @@ function copy(
   c: Config,
   basePath: string[],
   width: number,
+  laneName: LaneName,
 ): Copy {
   const b = (n: number | null | undefined) => bytes(n, c);
   const v = cause.values;
   const n = cause.lanes.length;
-  const laneNames = cause.lanes.map(laneText);
+  const laneNames = cause.lanes.map(laneName);
   const names = list(laneNames);
   const every = laneSentence(laneNames, width, `${p(n, "Lane", "Lanes")}: `);
   const mounts = list(cause.paths);
@@ -522,7 +525,7 @@ function copy(
       // the agent lanes holding the swap are what the reader has instead.
       const compared = sliceCompared(s.capabilities);
       const swapping = agentLanes(s.lanes);
-      const agentNames = list(swapping.map(laneText));
+      const agentNames = list(swapping.map(laneName));
       return {
         word: "Slow",
         headline: `Slow: desktop swapped out, agents hold ${b(v.cache)} of page cache`,
@@ -745,15 +748,18 @@ function copy(
 }
 /**
  * Cards are grouped by cause, never by lane. Nine lanes stalling on one
- * saturated disk produce one card that names all nine.
+ * saturated disk produce one card that names all nine. `laneName` writes each
+ * lane the cards name from the cause's own lanes; a reader that draws no
+ * process id, such as the summary, passes the bare name.
  */
 export function attention(
   s: Snapshot,
   c: Config,
-  o: { basePath?: string[]; width?: number } = {},
+  o: { basePath?: string[]; width?: number; laneName?: LaneName } = {},
 ): Attention[] {
   const basePath = o.basePath ?? (process.env.PATH ?? "").split(":");
   const width = o.width ?? defaultDetailWidth;
+  const laneName = o.laneName ?? laneText;
   return causes(s, c).map((cause) => {
     const { word, headline, ways, keep, ...card } = copy(
       cause,
@@ -761,6 +767,7 @@ export function attention(
       c,
       basePath,
       width,
+      laneName,
     );
     return {
       id: cause.id,
