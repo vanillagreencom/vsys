@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
   type Ask,
+  attachArgv,
+  attachCommand,
   capturePane,
   capturePaneArgv,
   insideTmux,
@@ -191,11 +193,10 @@ test("only the last lines are kept, so a long scrollback cannot fill the screen"
   expect(lines[0]).toBe("line 490");
 });
 
-test("a pane id is tmux's own grammar, and the copied line names that pane", () => {
+test("a pane id is tmux's own grammar", () => {
   for (const id of ["%0", "%9", "%1234"]) expect(isPaneId(id)).toBe(true);
   for (const id of ["", "9", "%", "%9x", "%9; rm -rf /", "$1", "@2"])
     expect(isPaneId(id)).toBe(false);
-  expect(switchCommand("%9")).toBe("tmux switch-client -t %9");
 });
 
 test("vsys can move the reader's view only from inside a tmux client", () => {
@@ -271,18 +272,29 @@ test("a configured address is a target tmux accepts, not one vsys refuses", asyn
   expect(asked.length).toBe(before);
 });
 
-test("the copied line quotes its target, and the arguments do not", () => {
-  // A session named with a space pastes as two words: the command then runs
-  // against something else, or fails.
-  expect(switchCommand("my work:1.1")).toBe(
-    "tmux switch-client -t 'my work:1.1'",
-  );
-  // The argv path hands tmux separate arguments, so a quote there would be
-  // part of the target rather than around it.
-  expect(switchClientArgv("my work:1.1")).toEqual([
-    "tmux",
-    "switch-client",
-    "-t",
-    "my work:1.1",
-  ]);
+test("tmux commands preserve target and socket as argv words and shell-quoted copy text", () => {
+  // The clipboard consumer is a plain shell; execution consumes unquoted argv.
+  for (const [argv, command, expectedArgv, expectedCommand] of [
+    [
+      switchClientArgv("my work:1.1"),
+      switchCommand("my work:1.1"),
+      ["tmux", "switch-client", "-t", "my work:1.1"],
+      "tmux switch-client -t 'my work:1.1'",
+    ],
+    [
+      attachArgv("%9"),
+      attachCommand("%9"),
+      ["tmux", "attach", "-t", "%9"],
+      "tmux attach -t %9",
+    ],
+    [
+      attachArgv("work's shell:1.1", "/run/agent socket,4242"),
+      attachCommand("work's shell:1.1", "/run/agent socket,4242"),
+      ["tmux", "-S", "/run/agent socket", "attach", "-t", "work's shell:1.1"],
+      "tmux -S '/run/agent socket' attach -t 'work'\\''s shell:1.1'",
+    ],
+  ] as const) {
+    expect(argv).toEqual([...expectedArgv]);
+    expect(command).toBe(expectedCommand);
+  }
 });

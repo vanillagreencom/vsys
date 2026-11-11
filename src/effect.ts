@@ -1,5 +1,6 @@
+import { type ChildProcess, spawn as spawnProcess } from "node:child_process";
 import { writeFile } from "node:fs/promises";
-import { switchClientArgv } from "./collect/tmux";
+import { attachArgv, switchClientArgv } from "./collect/tmux";
 import type { LaneEffect } from "./model/actions";
 
 /**
@@ -47,4 +48,47 @@ export async function switchToPane(
       (child.stderr ? await new Response(child.stderr).text() : "").trim() ||
         `tmux switch-client exited ${status}`,
     );
+}
+
+export type TerminalOpen = (
+  target: string,
+  server: string,
+) => Promise<"opened" | "unavailable">;
+type TerminalSpawn = (
+  command: string,
+  args: string[],
+  options: { detached: true; stdio: "ignore"; env: NodeJS.ProcessEnv },
+) => Pick<ChildProcess, "once" | "unref">;
+
+/** A separate session and ignored stdio let the terminal outlive vsys. */
+export async function openTerminal(
+  target: string,
+  server: string,
+  env: NodeJS.ProcessEnv = process.env,
+  which: (command: string) => string | null = Bun.which,
+  spawn: TerminalSpawn = spawnProcess,
+): ReturnType<TerminalOpen> {
+  const terminal =
+    (env.TERMINAL ? which(env.TERMINAL) : null) ?? which("xdg-terminal-exec");
+  if (!terminal) return "unavailable";
+  // Inherit the desktop and PATH, but not a pane identity: a terminal opened
+  // from another server must not look like a nested tmux client.
+  const inherited = { ...env };
+  delete inherited.TMUX;
+  delete inherited.TMUX_PANE;
+  return new Promise((resolve, reject) => {
+    const child = spawn(terminal, ["-e", ...attachArgv(target, server)], {
+      detached: true,
+      stdio: "ignore",
+      env: inherited,
+    });
+    child.once("error", reject);
+    // IPC launchers exit immediately; standalone terminals exit when closed.
+    // Do not wait on either in the UI, but keep a refused launch visible.
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve("opened");
+      else reject(new Error(`${terminal} exited ${code ?? signal}`));
+    });
+    child.unref();
+  });
 }

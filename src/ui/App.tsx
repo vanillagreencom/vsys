@@ -13,6 +13,7 @@ import {
 import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
+import type { TerminalOpen } from "../effect";
 import {
   type LaneAction,
   type LaneCommand,
@@ -92,10 +93,11 @@ export interface AppProps {
    * Reads what an agent's tmux pane last drew, and moves the reader's own view
    * to it. Both read or move a view rather than touching a process, so neither
    * waits on write mode. `onSwitch` is absent when vsys runs outside the tmux
-   * server holding the pane, and then the row hands over the command instead.
+   * server holding the pane; onTerminal opens a separate terminal there.
    */
   onCapture?: (paneId: string) => Promise<string[]>;
   onSwitch?: (paneId: string) => Promise<void>;
+  onTerminal?: TerminalOpen;
   /**
    * Reads the scratch files a lane's processes hold open, off the thread
    * that draws. The agent detail asks only on a live sample.
@@ -207,6 +209,7 @@ export function App({
   onAction,
   onCapture,
   onSwitch,
+  onTerminal,
   onOpenFiles,
   output,
   start,
@@ -524,6 +527,7 @@ export function App({
         onAct={act}
         onCapture={pinned ? undefined : onCapture}
         onSwitch={pinned ? undefined : onSwitch}
+        onTerminal={pinned ? undefined : onTerminal}
         onOpenFiles={pinned ? undefined : onOpenFiles}
         landing={landing ?? undefined}
       />

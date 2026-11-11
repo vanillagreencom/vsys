@@ -2,8 +2,9 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { OpenFiles } from "../collect/procs";
 import { agentScratchDirs, scratchRoots } from "../collect/scratch";
-import { switchCommand } from "../collect/tmux";
+import { attachCommand, switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
+import type { TerminalOpen } from "../effect";
 import {
   type LaneAction,
   type LaneIntent,
@@ -12,7 +13,7 @@ import {
 } from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
-import { programName } from "../model/naming";
+import { paneSocket, programName } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
@@ -262,6 +263,7 @@ export function Agent({
   onError,
   onCapture,
   onSwitch,
+  onTerminal,
   onOpenFiles,
   landing,
 }: {
@@ -291,10 +293,11 @@ export function Agent({
   onCapture?: (paneId: string) => Promise<string[]>;
   /**
    * Moves the reader's own tmux view to that pane. Present only when vsys is
-   * itself a client of the server holding it; absent, the row hands over the
-   * command as text instead. Moving a view touches no process either way.
+   * itself a tmux client. A lane on another server opens a terminal instead.
    */
   onSwitch?: (paneId: string) => Promise<void>;
+  /** Opens a separate terminal without changing the agent's processes. */
+  onTerminal?: TerminalOpen;
   /**
    * Reads the scratch files the lane's processes hold open. The read runs on
    * the process thread, so this view reads no process file itself.
@@ -322,8 +325,19 @@ export function Agent({
   const [captured, setCaptured] = useState<
     { lines: string[] } | { error: string } | null
   >(null);
+  const [terminalError, setTerminalError] = useState<{
+    command: string;
+    reason: string;
+  } | null>(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
+  const switches = onSwitch !== undefined && !lane.elsewhere;
+  const server = paneSocket(proc);
+  const terminalCommand = switches
+    ? switchCommand(lane.pane)
+    : attachCommand(lane.pane, server);
+  const terminalReason =
+    terminalError?.command === terminalCommand ? terminalError.reason : null;
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   const filesOpen = open.has("Open files");
   useEffect(() => {
@@ -427,11 +441,7 @@ export function Agent({
   const target = laneTarget(lane, c, snapshot.procs);
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
-      name === "Terminal" &&
-      terminalOpen &&
-      lane.pane &&
-      live &&
-      !lane.elsewhere
+      name === "Terminal" && terminalOpen && lane.pane && live
         ? [{ kind: "section", name }, { kind: "terminal" }]
         : [{ kind: "section", name }],
     ),
@@ -474,7 +484,7 @@ export function Agent({
             // a pane that may be it is a move vsys cannot promise, so neither
             // gets a command to hand them.
             row?.kind === "terminal" && lane.self === "no"
-            ? switchCommand(lane.pane)
+            ? terminalCommand
             : undefined,
       );
       return true;
@@ -483,10 +493,9 @@ export function Agent({
   });
   /**
    * One row, two answers. Inside the server that holds the pane vsys moves the
-   * reader's own view; outside it there is no client to move, so the line goes
-   * to the clipboard and the row says why. No terminal is ever launched: the
-   * program that would open one differs on every desktop and does not exist on
-   * macOS, while a switch behaves the same wherever tmux runs.
+   * reader's own view; outside it a new terminal attaches to the pane. Neither
+   * changes the agent's process or cgroup, so both bypass write mode. Without
+   * a terminal opener, copy the attach command and explain in the row.
    */
   const goToTerminal = () => {
     // tmux moves a client to the pane it is already in by doing nothing, so
@@ -497,8 +506,30 @@ export function Agent({
     // A switch rejects when the pane has gone, the server stopped or the
     // target is not one it holds. Dropped, the reader pressed a key, nothing
     // moved, and nothing said why.
-    if (onSwitch) void onSwitch(lane.pane).catch(onError);
-    else onCopy(switchCommand(lane.pane));
+    if (switches) {
+      void onSwitch(lane.pane).catch(onError);
+      return;
+    }
+    setTerminalError(null);
+    const unavailable = () => {
+      setTerminalError({
+        command: terminalCommand,
+        reason: "No terminal opener on PATH; command copied",
+      });
+      onCopy(terminalCommand);
+    };
+    if (!onTerminal) unavailable();
+    else
+      void onTerminal(lane.pane, server)
+        .then((result) => {
+          if (result === "unavailable") unavailable();
+        })
+        .catch((error: unknown) =>
+          setTerminalError({
+            command: terminalCommand,
+            reason: `Terminal could not open: ${errorText(error)}`,
+          }),
+        );
   };
   const toggle = (name: SectionName) =>
     setOpen((current) => {
@@ -668,13 +699,22 @@ export function Agent({
                         ? "this is the terminal you are reading in"
                         : lane.self === "unknown"
                           ? "vsys cannot tell whether this is the terminal you are reading in"
-                          : onSwitch
+                          : switches
                             ? `moves this terminal to ${lane.address || lane.pane}`
-                            : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
+                            : `opens a new terminal on ${lane.address || lane.pane}`,
                     )}
                   </span>
                 </>,
-                { indent: 3 },
+                {
+                  indent: 3,
+                  under: terminalReason && (
+                    <Detail>
+                      <Line marginTop={1} flexShrink={0} wrapMode="word">
+                        {safe(`${terminalReason} · run: ${terminalCommand}`)}
+                      </Line>
+                    </Detail>
+                  ),
+                },
               )
             : row.kind === "action"
               ? detailRow(

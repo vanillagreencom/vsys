@@ -36,13 +36,21 @@ export const switchClientArgv = (paneId: string) => [
   paneId,
 ];
 /**
- * The line a reader copies when vsys cannot switch to the pane itself. This
- * one goes to a shell, so its target is quoted: a session named with a space
+ * A line copied to a shell must quote its target: a session named with a space
  * pastes as two words and runs against something else. The argv above is
  * handed to `Bun.spawn` as separate arguments and must not be quoted.
  */
 export const switchCommand = (target: string) =>
   shellLine(switchClientArgv(target));
+
+/** Use the socket already read from the pane's TMUX, without its server pid. */
+export const attachArgv = (target: string, server = "") => {
+  const socket = server.split(",")[0];
+  return ["tmux", ...(socket ? ["-S", socket] : []), "attach", "-t", target];
+};
+/** A plain terminal needs an attachment, not an already-attached client. */
+export const attachCommand = (target: string, server = "") =>
+  shellLine(attachArgv(target, server));
 
 /** This checks map keys only: a handle is % followed by digits. tmux -t also accepts session:window.pane, so this predicate must not restrict capture or switch targets. */
 export const isPaneId = (value: string): boolean => /^%\d+$/.test(value);
@@ -219,7 +227,7 @@ export function paneLines(text: string, limit = 200): string[] {
  * True when vsys is itself a client of a tmux server, which is what lets it
  * move the reader's view. `TMUX` is set by tmux inside every pane it owns, so
  * its presence is the question answered here; a vsys running outside tmux has
- * no client to move and offers the command as text instead.
+ * no client to move and needs a new terminal to attach instead.
  */
 export const insideTmux = (env: Record<string, string | undefined>): boolean =>
   Boolean(env.TMUX);

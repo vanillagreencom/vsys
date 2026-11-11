@@ -7,7 +7,7 @@ import { packagedScrubUnits } from "./collect/scrub-timers";
 import { capturePane, insideTmux } from "./collect/tmux";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
-import { runEffect, switchToPane } from "./effect";
+import { openTerminal, runEffect, switchToPane } from "./effect";
 import { Session } from "./runtime";
 import { History } from "./store/history";
 import { exportSnapshot, exportSummary } from "./ui/export";
@@ -177,6 +177,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       ? { start: { scope: values.lane, stop: values.stop === true } }
       : {}),
     ...(insideTmux(process.env) ? { onSwitch: switchToPane } : {}),
+    onTerminal: openTerminal,
     output: process.stdout,
   });
   const session = new Session(

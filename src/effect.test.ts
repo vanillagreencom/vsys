@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaults } from "./config/config";
-import { runEffect, switchToPane } from "./effect";
+import { openTerminal, runEffect, switchToPane } from "./effect";
 import { laneIntent, laneTarget, resolveIntent } from "./model/actions";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "./test/fixture";
 
@@ -98,4 +99,79 @@ test("the switch asks tmux for the target and reports what it refuses", async ()
   const before = asked.length;
   await expect(switchToPane("", fake(0, ""))).rejects.toThrow();
   expect(asked.length).toBe(before);
+});
+
+test("a detached terminal uses the preferred available opener and reports launch refusals", async () => {
+  type Row = [
+    string | undefined,
+    string[],
+    string | null,
+    "ok" | "error" | "nonzero",
+  ];
+  const rows: Row[] = [
+    ["ghostty", ["ghostty", "xdg-terminal-exec"], "ghostty", "ok"],
+    [undefined, ["xdg-terminal-exec"], "xdg-terminal-exec", "ok"],
+    ["missing", ["xdg-terminal-exec"], "xdg-terminal-exec", "ok"],
+    ["ghostty --flag", ["xdg-terminal-exec"], "xdg-terminal-exec", "ok"],
+    ["missing", [], null, "ok"],
+    ["ghostty", ["ghostty"], "ghostty", "error"],
+    ["ghostty", ["ghostty"], "ghostty", "nonzero"],
+  ];
+  for (const [terminal, available, opener, end] of rows) {
+    const calls: unknown[] = [];
+    let unreferenced = false;
+    class Terminal extends ChildProcess {
+      override unref() {
+        unreferenced = true;
+      }
+    }
+    const env = {
+      PATH: "/launch/bin",
+      DISPLAY: ":fixture",
+      TMUX: "/old/socket,111,0",
+      TMUX_PANE: "%3",
+      TERMINAL: terminal,
+    };
+    const result = openTerminal(
+      "%9",
+      "/run/agent,4242",
+      env,
+      (command) =>
+        available.includes(command) ? `/launch/bin/${command}` : null,
+      (command, args, options) => {
+        calls.push({ command, args, options });
+        const child = new Terminal();
+        queueMicrotask(() => {
+          if (end === "error") child.emit("error", new Error("ENOENT"));
+          else child.emit("exit", end === "nonzero" ? 1 : 0, null);
+        });
+        return child;
+      },
+    );
+    if (end === "error" || end === "nonzero")
+      await expect(result).rejects.toThrow(
+        end === "error" ? "ENOENT" : "exited 1",
+      );
+    else expect(await result).toBe(opener === null ? "unavailable" : "opened");
+    expect(calls).toEqual(
+      opener === null
+        ? []
+        : [
+            {
+              command: `/launch/bin/${opener}`,
+              args: ["-e", "tmux", "-S", "/run/agent", "attach", "-t", "%9"],
+              options: {
+                detached: true,
+                stdio: "ignore",
+                env: {
+                  PATH: env.PATH,
+                  DISPLAY: env.DISPLAY,
+                  TERMINAL: env.TERMINAL,
+                },
+              },
+            },
+          ],
+    );
+    expect(unreferenced).toBe(opener !== null);
+  }
 });

@@ -20,6 +20,7 @@ import {
   userManager,
 } from "../test/fixture";
 import {
+  cellStyle,
   isChildLine,
   mount,
   overflowing,
@@ -30,6 +31,7 @@ import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 import { gap } from "./format";
+import { ui } from "./theme";
 
 test("process readings keep whole PIDs and indent program names at four tree levels", async () => {
   const s = emptySnapshot();
@@ -850,7 +852,7 @@ test("what a pane drew is shown as text, never obeyed", async () => {
   }
 });
 
-test("the switch is offered only when vsys shares the tmux server", async () => {
+test("the same-server terminal row switches the reader's view", async () => {
   const switched: string[] = [];
   const inside = await paned({
     onCapture: async () => ["output"],
@@ -869,18 +871,73 @@ test("the switch is offered only when vsys shares the tmux server", async () => 
   } finally {
     await inside.close();
   }
-  // Outside that server there is no view to move, so the line is handed over
-  // instead and the row says why.
-  const outside = await paned({ onCapture: async () => ["output"] });
-  try {
-    await outside.press("enter");
-    expect(outside.frame()).toContain("not inside that tmux server");
-    await outside.press("j");
-    await outside.press("enter");
-    expect(outside.frame()).toContain("tmux switch-client -t %9");
-    expect(osc52("tmux switch-client -t %9")).toBe(outside.written.join(""));
-  } finally {
-    await outside.close();
+});
+
+test("outside-server terminal navigation opens or explains its fallback in the row", async () => {
+  // The row is product output: a refusal must leave the manual command visible
+  // and plain, not hide it in a transient notice.
+  for (const state of ["opened", "foreign", "unavailable", "failed"] as const) {
+    const calls: string[][] = [];
+    const t = await paned(
+      {
+        onCapture: async () => ["output"],
+        ...(state === "foreign"
+          ? {
+              onSwitch: async () => {
+                throw new Error("must not switch another server's client");
+              },
+            }
+          : {}),
+        onTerminal: async (target, server) => {
+          calls.push([target, server]);
+          if (state === "failed") throw new Error("terminal exited 1");
+          return state === "unavailable" ? "unavailable" : "opened";
+        },
+      },
+      { elsewhere: state === "foreign" },
+      state === "failed" ? 30 : 45,
+      state === "failed" ? { width: 60 } : {},
+    );
+    const server = state === "foreign" ? "/run/foreign,4242" : "";
+    const command =
+      state === "foreign"
+        ? "tmux -S /run/foreign attach -t %9"
+        : "tmux attach -t %9";
+    try {
+      if (server)
+        await t.update({
+          ...t.snapshot,
+          procs: t.snapshot.procs.map((p) => ({
+            ...p,
+            env: { TMUX: `${server},0` },
+            envAvailable: true,
+          })),
+        });
+      await t.press("enter");
+      await t.press("j");
+      expect(selectedRow(t.frame())).toContain("Go to terminal");
+      await t.press("enter");
+      await t.settle();
+      expect(calls).toEqual([["%9", server]]);
+      if (state === "unavailable" || state === "failed") {
+        const row = t
+          .frame()
+          .split("\n")
+          .find((line) => line.includes(command));
+        expect(row).toBeDefined();
+        expect(cellStyle(t.ui, command, ui.dim)).toBe("plain");
+        expect(t.frame()).not.toContain("Confirm");
+      }
+      if (state === "failed") expect(t.frame()).toContain("terminal exited 1");
+      expect(t.written).toEqual(
+        state === "unavailable" ? [osc52(command)] : [],
+      );
+      t.written.length = 0;
+      await t.press(t.config.keys.copy);
+      expect(t.written).toEqual([osc52(command)]);
+    } finally {
+      await t.close();
+    }
   }
 });
 
@@ -1333,8 +1390,9 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
     const t = await paned(
       {
         onCapture: async () => ["output"],
-        onSwitch: async (paneId) => {
+        onTerminal: async (paneId) => {
           switched.push(paneId);
+          return "opened";
         },
       },
       {},

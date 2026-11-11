@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { OpenFiles } from "../collect/procs";
 import { type Config, columns, validate } from "../config/config";
+import type { TerminalOpen } from "../effect";
 import type { LaneAction, LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
 import { worstPressure } from "../model/lanes";
@@ -437,6 +438,7 @@ export function Agents({
   onAct,
   onCapture,
   onSwitch,
+  onTerminal,
   onOpenFiles,
   landing,
 }: {
@@ -457,6 +459,7 @@ export function Agents({
   onCapture?: (paneId: string) => Promise<string[]>;
   /** Moves the reader's tmux view; absent when vsys is outside that server. */
   onSwitch?: (paneId: string) => Promise<void>;
+  onTerminal?: TerminalOpen;
   /** Reads a lane's open scratch files; the agent detail alone uses it. */
   onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
   /** The action row the open agent's detail lands on; see `Agent`. */
@@ -802,6 +805,7 @@ export function Agents({
         onError={onError}
         onCapture={onCapture}
         onSwitch={onSwitch}
+        onTerminal={onTerminal}
         onOpenFiles={onOpenFiles}
         landing={landing}
       />
