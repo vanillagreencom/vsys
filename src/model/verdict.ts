@@ -771,12 +771,11 @@ export function causes(s: Snapshot, c: Config): Cause[] {
         quota: c.scratchQuota,
       },
     });
-  // A rejected install location stays actionable unless it changes with
-  // each temporary stand-in.
+  // A real agent can run temporary stand-ins without making them installs.
   const unconfirmed = s.procs.filter((proc) => {
-    if (!proc.unconfirmedTool) return false;
+    if (!proc.unconfirmedTool || standIn(proc, c)) return false;
     const lane = s.lanes.find((lane) => lane.pids.includes(proc.pid));
-    return lane ? !standInLane(lane, s.procs, c) : !standIn(proc, c);
+    return lane ? !standInLane(lane, s.procs, c) : true;
   });
   const [firstUnconfirmed] = unconfirmed;
   if (firstUnconfirmed)
