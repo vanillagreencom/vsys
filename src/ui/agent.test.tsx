@@ -874,9 +874,10 @@ test("the same-server terminal row switches the reader's view", async () => {
 });
 
 test("outside-server terminal navigation opens or explains its fallback in the row", async () => {
-  // The row is product output: a refusal must leave the manual command visible
-  // and plain, not hide it in a transient notice.
+  // The row is product output: a refusal or a missing opener must leave the
+  // manual command whole, visible and plain, not cut or in a transient notice.
   for (const state of ["opened", "foreign", "unavailable", "failed"] as const) {
+    const narrow = state === "unavailable" || state === "failed";
     const calls: string[][] = [];
     const t = await paned(
       {
@@ -899,8 +900,8 @@ test("outside-server terminal navigation opens or explains its fallback in the r
             }),
       },
       { elsewhere: state === "foreign" },
-      state === "failed" ? 30 : 45,
-      state === "failed" ? { width: 60 } : {},
+      narrow ? 30 : 45,
+      narrow ? { width: 60 } : {},
     );
     const server = state === "foreign" ? "/run/foreign,4242" : "";
     const command =
@@ -920,23 +921,16 @@ test("outside-server terminal navigation opens or explains its fallback in the r
       await t.press("enter");
       await t.press("j");
       expect(selectedRow(t.frame())).toContain("Go to terminal");
-      // Copying is what Enter will do, so the row hands over the command
-      // before the press rather than after it.
+      // Copying is what Enter will do, so the command is on screen before the
+      // press as well as after it.
       if (state === "unavailable")
-        expect(selectedRow(t.frame())).toContain(command);
+        expect(cellStyle(t.ui, command, ui.dim)).toBe("plain");
       await t.press("enter");
       await t.settle();
       expect(calls).toEqual(state === "unavailable" ? [] : [["%9", server]]);
       expect(t.frame()).not.toContain("Confirm");
-      if (state === "failed") {
-        const row = t
-          .frame()
-          .split("\n")
-          .find((line) => line.includes(command));
-        expect(row).toBeDefined();
-        expect(cellStyle(t.ui, command, ui.dim)).toBe("plain");
-        expect(t.frame()).toContain("terminal exited 1");
-      }
+      if (narrow) expect(cellStyle(t.ui, command, ui.dim)).toBe("plain");
+      if (state === "failed") expect(t.frame()).toContain("terminal exited 1");
       expect(t.written).toEqual(
         state === "unavailable" ? [osc52(command)] : [],
       );

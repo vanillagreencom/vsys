@@ -339,8 +339,15 @@ export function Agent({
   const terminalCommand = switches
     ? switchCommand(lane.pane)
     : attachCommand(lane.pane, server);
+  // Without an opener the command is the row's whole answer, so it is drawn
+  // where it can wrap, as a failed launch draws it: a truncated row would cut
+  // it, and the copy notice says the command stays on screen.
   const terminalReason =
-    terminalError?.command === terminalCommand ? terminalError.reason : null;
+    lane.self === "no" && !switches && !onTerminal
+      ? `${keyLabel(c.keys.open)} copies the command`
+      : terminalError?.command === terminalCommand
+        ? terminalError.reason
+        : null;
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   const filesOpen = open.has("Open files");
   useEffect(() => {
@@ -698,7 +705,7 @@ export function Agent({
                             ? `moves this terminal to ${lane.address || lane.pane}`
                             : onTerminal
                               ? `opens a new terminal on ${lane.address || lane.pane}`
-                              : `xdg-terminal-exec is not on PATH · ${keyLabel(c.keys.open)} copies ${terminalCommand}`,
+                              : "xdg-terminal-exec is not on PATH",
                     )}
                   </span>
                 </>,
