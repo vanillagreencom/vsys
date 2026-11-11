@@ -2164,34 +2164,38 @@ test("a new-errors card tells only the errors newer than the last check", () => 
 
 test.each([
   {
-    name: "vsys's own threshold names the threshold",
+    name: "vsys's own threshold counts the groups and names them under the title",
     warden: [] as number[],
-    groups: 1,
-    title: "1 group is near the memory threshold: lane-1 PID 1",
-    way: "Memory reclaim can slow every task in this group.",
+    groups: 3,
+    title: "3 groups are near the memory threshold",
+    way: "Memory reclaim can slow every task in these groups.",
+    keep: "Groups: lane-1 PID 1, lane-2 PID 2, lane-3 PID 3.",
   },
   {
-    name: "one lane the warden warns for takes the warden's term and one naming",
+    name: "one lane the warden warns for takes the warden's term",
     warden: [1],
     groups: 1,
-    title: "1 group is near its memory limit: lane-1 PID 1",
+    title: "1 group is near its memory limit",
     way: "The agent warden gave this warning. Memory reclaim can slow every task in this group.",
+    keep: "Group: lane-1 PID 1.",
   },
   {
     name: "two lanes the warden warns for read in the plural",
     warden: [1, 2],
     groups: 2,
-    title: "2 groups are near their memory limits: lane-1 PID 1, lane-2 PID 2",
+    title: "2 groups are near their memory limits",
     way: "The agent warden gave this warning. Memory reclaim can slow every task in these groups.",
+    keep: "Groups: lane-1 PID 1, lane-2 PID 2.",
   },
   {
-    name: "a mixed card names the lanes the warden warns for",
+    name: "a mixed card names each lane once, by who warned for it",
     warden: [1],
     groups: 2,
-    title: "2 groups are near the memory threshold: lane-1 PID 1, lane-2 PID 2",
+    title: "2 groups are near the memory threshold",
     way: "The agent warden warns lane-1 PID 1 is near its memory limit. Memory reclaim can slow every task in these groups.",
+    keep: "Near the memory threshold: lane-2 PID 2.",
   },
-])("memory-high card: $name", ({ warden, groups, title, way }) => {
+])("memory-high card: $name", ({ warden, groups, title, way, keep }) => {
   const c = defaults();
   const s = emptySnapshot();
   const ids = Array.from({ length: groups }, (_, i) => i + 1);
@@ -2217,8 +2221,9 @@ test.each([
   const card = attention(s, c, { basePath: base }).find(
     (item) => item.id === "memory-high",
   );
-  expect({ title: card?.title, ways: card?.ways }).toEqual({
+  expect({ title: card?.title, ways: card?.ways, keep: card?.keep }).toEqual({
     title,
     ways: [[way]],
+    keep,
   });
 });
