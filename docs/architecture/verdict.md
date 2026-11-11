@@ -4,7 +4,7 @@ Read before adding a cause, changing its rank, changing a meter or changing summ
 
 ## The approach
 
-`causes()` in `src/model/verdict.ts` detects each problem once. Severity and `causeOrder` rank it. One cause supplies one Home card, and the first verdict-worthy cause supplies the verdict. Meters consume the same readings. `summarySnapshot()` in `src/model/export.ts` supplies `vsys --once --summary`.
+`causes()` in `src/model/verdict.ts` detects each problem once. Severity and `causeOrder` rank it. One cause supplies one Home card, and the first verdict-worthy cause supplies the verdict. Meters consume the same readings. `summarySnapshot()` in `src/ui/export.ts` supplies `vsys --once --summary`.
 
 ## Why
 
@@ -24,7 +24,8 @@ Review holds boundaries without a named check.
 - Raise integrity cards from `integrities()` in `src/model/integrity.ts` for every state except `healthy` and `checking`. Home and Storage must use one judgment; `src/model/verdict.test.ts` checks it.
 - End every card with a next step. Offer no command with an unresolved value. `src/ui/attention.test.ts` checks card actions.
 - Never make housekeeping the verdict or raise a card solely for a source-read failure or stored event. `src/model/verdict.test.ts` and `src/ui/attention.test.ts` check these exclusions.
-- Keep cause and meter values in the summary as ids and raw numbers under `summarySchema` in `src/model/export.ts`. Null means not measured. A skipped scratch scan and unavailable service average retain their cause with a null level, never healthy. `src/main.test.ts` checks the summary contract.
+- Keep cause and meter values in the summary as ids and raw numbers under `summarySchema` in `src/ui/export.ts`, `vsys.summary.v2`. A cause's `title` is the one exception. Null means not measured. A skipped scratch scan and unavailable service average retain their cause with a null level, never healthy. `src/main.test.ts` checks the summary contract.
+- Give each `warn` or `danger` summary entry `title`, `processes` and `open`. `title` is the Home card's title from `attention()`, never a second copy, so the bar widget's flyout and vsys say the same words. `processes` lists `{pid, name}` for each process in the cause's `procs`. `open` holds vsys arguments that open vsys at the cause, and stays empty until such an argument exists. The owner's delegate decided that the summary carries the card title (Jarvis decision 1793915537-2115019-27970). `src/ui/export.test.ts` checks every cause.
 - Keep CPU utilization in percent of one logical core and pressure in the recent share of time tasks stalled. They measure different quantities.
 
 ## The canonical example
@@ -33,7 +34,7 @@ Copy `free-space` in `causes()`: one configured threshold, one subject per affec
 
 ## Revisit when
 
-A consumer needs prose in the summary, or a cause's rank must depend on another cause's presence.
+A summary consumer needs words other than a card's title, or a cause's rank must depend on another cause's presence.
 
 ## Not governed
 

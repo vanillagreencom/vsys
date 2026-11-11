@@ -20,8 +20,8 @@ import {
   volumeSnapshot,
 } from "../test/fixture";
 import { present } from "../test/present";
+import { summarySnapshot } from "../ui/export";
 import { buildsSummary } from "./builds";
-import { summarySnapshot } from "./export";
 import { type IntegrityState, integrities } from "./integrity";
 import { lanes } from "./lanes";
 import type { Group, Lane, Proc, Scrub, Snapshot, Volume } from "./types";
