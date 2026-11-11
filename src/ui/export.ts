@@ -146,9 +146,12 @@ export function summarySnapshot(
 ): Summary {
   // One card per cause, keyed by the cause it was written for. The widget
   // draws no process id, so a lane is its name; the ids are in `processes`.
-  const cards = attention(s, c, { laneName: (lane) => lane.name });
+  // It draws the warden's own items beside this summary, so a warning the
+  // warden gives is its item there, not a second one here.
+  const ladder = { besideWarden: true };
+  const cards = attention(s, c, { laneName: (lane) => lane.name, ...ladder });
   const titles = new Map(cards.map((card) => [card.id, card.title]));
-  const verdict: SummaryCause[] = causes(s, c).map((cause) => {
+  const verdict: SummaryCause[] = causes(s, c, ladder).map((cause) => {
     const title = titles.get(cause.id);
     if (title === undefined)
       throw new Error(`Cause ${cause.id} has no attention card`);

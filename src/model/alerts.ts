@@ -5,7 +5,8 @@ import { escaped } from "./lanes";
 import { laneText } from "./naming";
 import type { Alert, Rule, Snapshot } from "./types";
 import {
-  memoryHighJudgments,
+  consumerName,
+  memoryHighJudgment,
   processesUnread,
   scratchJudgments,
 } from "./verdict";
@@ -52,16 +53,17 @@ export class AlertEngine {
         `${laneText(l)} has a memory cap below ${c.memoryFloor} bytes`,
       );
     }
-    for (const { subject: g, judged } of memoryHighJudgments(s)) {
+    for (const g of s.groups) {
+      const { judged } = memoryHighJudgment(g, s);
       keep(`memory-high:${g.path}`, judged === "unjudged");
       hit(
         "memory-high",
         g.path,
-        judged === "fired",
-        `${g.name} is near memory.high`,
+        judged === "fired" || judged === "warden",
+        judged === "warden"
+          ? `The agent warden warns ${consumerName(g, s)} is near its memory limit`
+          : `${g.name} is near memory.high`,
       );
-    }
-    for (const g of s.groups) {
       for (const [kind, p] of Object.entries(g.pressure)) {
         const key = `${g.path}/${kind}`;
         if (p === null) {

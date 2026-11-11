@@ -78,6 +78,26 @@ test("memory-high alerts survive failed reads and rearm only after measured reco
   }
 });
 
+test("a lane the warden warns for notifies once, crediting the warden, below vsys's own line", () => {
+  const engine = new AlertEngine();
+  const kernelPath = "/user.slice/agents.slice/a.scope";
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ mainPid: 4071 })];
+  // Working memory half of memory.high: vsys alone would raise nothing.
+  s.groups = [groupSnapshot({ kernelPath, memory: 50, high: 100 })];
+  s.wardenNearLimits = [{ kernelPath, near: ["tasks", "memory"] }];
+  // notify-send delivers this message to the desktop as its body.
+  expect(engine.evaluate(s, defaults())).toEqual([
+    {
+      time: s.time,
+      rule: "memory-high",
+      subject: "agents.slice/a.scope",
+      message:
+        "The agent warden warns lane-a PID 4071 is near its memory limit",
+    },
+  ]);
+  expect(engine.evaluate(s, defaults())).toEqual([]);
+});
 test("each alert condition emits its own rule and clears before rearming", () => {
   const cases: [Rule, (s: ReturnType<typeof emptySnapshot>) => void][] = [
     [
@@ -181,21 +201,15 @@ test("each alert condition emits its own rule and clears before rearming", () =>
     "ken PID 9152",
   ]);
 });
-test("pressure holds for elapsed seconds and resets when samples recover, warden warning or not", () => {
+test("pressure holds for elapsed seconds and resets when samples recover", () => {
   const engine = new AlertEngine();
   const c = defaults();
   c.pressureHoldSeconds = 5;
   const s = emptySnapshot(1000);
-  // The warden warns for this scope's memory, which leaves its pressure to vsys.
-  const kernelPath = "/user.slice/agents.slice/a.scope";
   const group = groupSnapshot({
-    kernelPath,
-    memory: 95,
-    high: 100,
     pressure: { cpu: { some: 15, full: 0, total: 1 } },
   });
   s.groups = [group];
-  s.wardenNearLimits = [{ kernelPath, near: ["memory"] }];
   expect(engine.evaluate(s, c)).toEqual([]);
   s.time = 5999;
   expect(engine.evaluate(s, c)).toEqual([]);

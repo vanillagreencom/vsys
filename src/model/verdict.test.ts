@@ -183,9 +183,11 @@ test.each([
     want: "unread",
   },
   {
-    name: "a lane scope the warden warns is near its memory limit is left out",
+    // Under vsys's own line, so only the warden's warning can raise it.
+    name: "a lane scope the warden warns for carries that warning, left out of the summary",
+    memory: 50,
     warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
-    want: "clear",
+    want: "warden",
   },
   {
     // The warden gives no item for a lane it could not read or could not
@@ -212,7 +214,7 @@ test.each([
   stat?: Group["fileStat"];
   at?: string;
   warden?: { scope: string; near: string[] }[];
-  want: "fired" | "clear" | "unread";
+  want: "fired" | "clear" | "unread" | "warden";
 }[])(
   "memory-high: $name",
   ({ memory = 79, stat, at = "agents.slice/a.scope", warden, want }) => {
@@ -247,9 +249,13 @@ test.each([
     expect({
       fired: fired?.groups.map((group) => group.path) ?? [],
       unread: unread === "all" ? "all" : [...(unread ?? [])],
+      summary: summarySnapshot(s, c)
+        .verdict.filter((entry) => entry.cause === "memory-high")
+        .map((entry) => entry.subject),
     }).toEqual({
-      fired: want === "fired" ? [at] : [],
+      fired: want === "fired" || want === "warden" ? [at] : [],
       unread: want === "unread" ? [at] : [],
+      summary: want === "fired" ? [at] : [],
     });
   },
 );
