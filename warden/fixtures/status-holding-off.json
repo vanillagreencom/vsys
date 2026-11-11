@@ -21,6 +21,22 @@
     }
   ],
   "interval": 30,
+  "items": [
+    {
+      "actions": [
+        {
+          "args": [],
+          "id": "show",
+          "label": "Show in vsys"
+        }
+      ],
+      "detail": "73 of 80 GB in use. The warden holds back 1 agent until memory frees.",
+      "key": "memory-full",
+      "kind": "memory-full",
+      "level": "danger",
+      "title": "Agents are close to their memory limit."
+    }
+  ],
   "lanes": [
     {
       "label": {
@@ -52,7 +68,7 @@
       "tool": "claude"
     }
   ],
-  "schema": "1.2",
+  "schema": "1.3",
   "slice": {
     "headroomOk": false,
     "high": 68719476736,

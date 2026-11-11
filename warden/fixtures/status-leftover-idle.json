@@ -1,0 +1,170 @@
+{
+  "contained": [],
+  "counters": {
+    "moveFailures": 0,
+    "moves": 0,
+    "partial": 0,
+    "reaped": 0,
+    "scanFailures": 0,
+    "skips": 0
+  },
+  "error": null,
+  "events": [],
+  "interval": 30,
+  "items": [
+    {
+      "actions": [
+        {
+          "args": [],
+          "id": "show",
+          "label": "Show in vsys"
+        }
+      ],
+      "detail": "5 processes. The warden stops it if it gets busy.",
+      "key": "leftover",
+      "kind": "leftover",
+      "level": "info",
+      "title": "Leftover work from 5 finished agents is still running."
+    }
+  ],
+  "lanes": [
+    {
+      "label": {
+        "tool": null,
+        "worktree": null
+      },
+      "memory": 50331648,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-confine-501-1.scope",
+      "tasks": 1,
+      "tasksMax": 8192
+    },
+    {
+      "label": {
+        "tool": null,
+        "worktree": null
+      },
+      "memory": 50331648,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-confine-502-1.scope",
+      "tasks": 1,
+      "tasksMax": 8192
+    },
+    {
+      "label": {
+        "tool": null,
+        "worktree": null
+      },
+      "memory": 50331648,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-confine-503-1.scope",
+      "tasks": 1,
+      "tasksMax": 8192
+    },
+    {
+      "label": {
+        "tool": null,
+        "worktree": null
+      },
+      "memory": 50331648,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-confine-504-1.scope",
+      "tasks": 1,
+      "tasksMax": 8192
+    },
+    {
+      "label": {
+        "tool": null,
+        "worktree": null
+      },
+      "memory": 50331648,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-confine-505-1.scope",
+      "tasks": 1,
+      "tasksMax": 8192
+    },
+    {
+      "label": {
+        "tool": "claude",
+        "worktree": "vsy-52"
+      },
+      "memory": 25769803776,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-warden-100-200.scope",
+      "tasks": 120,
+      "tasksMax": 8192
+    }
+  ],
+  "leftovers": {
+    "failedUnits": 0,
+    "testProcessRepos": [],
+    "testProcesses": 0,
+    "testWorlds": 0
+  },
+  "mode": "correct",
+  "orphans": [
+    {
+      "cores": 0.0,
+      "harmful": false,
+      "memory": 50331648,
+      "processes": 1,
+      "reapFailed": false,
+      "scope": "agent-confine-501-1.scope",
+      "since": 1699996400
+    },
+    {
+      "cores": 0.0,
+      "harmful": false,
+      "memory": 50331648,
+      "processes": 1,
+      "reapFailed": false,
+      "scope": "agent-confine-502-1.scope",
+      "since": 1699996400
+    },
+    {
+      "cores": 0.0,
+      "harmful": false,
+      "memory": 50331648,
+      "processes": 1,
+      "reapFailed": false,
+      "scope": "agent-confine-503-1.scope",
+      "since": 1699996400
+    },
+    {
+      "cores": 0.0,
+      "harmful": false,
+      "memory": 50331648,
+      "processes": 1,
+      "reapFailed": false,
+      "scope": "agent-confine-504-1.scope",
+      "since": 1699996400
+    },
+    {
+      "cores": 0.0,
+      "harmful": false,
+      "memory": 50331648,
+      "processes": 1,
+      "reapFailed": false,
+      "scope": "agent-confine-505-1.scope",
+      "since": 1699996400
+    }
+  ],
+  "outside": [],
+  "schema": "1.3",
+  "slice": {
+    "headroomOk": true,
+    "high": 68719476736,
+    "max": 85899345920,
+    "memory": 40802189312,
+    "tasks": 300,
+    "tasksMax": 16384
+  },
+  "time": 1700000210,
+  "waiting": []
+}

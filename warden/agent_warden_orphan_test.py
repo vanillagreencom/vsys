@@ -358,7 +358,7 @@ class AgentWardenOrphanRules(WardenRulesCase):
                 self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan = old_root, old_reap, old_still
         self.assertEqual(len(reaped), 1)
         self.assertIn(reaped_unit, reaped[0])
-        self.assertEqual([row["scope"] for row in rows], [quiet_unit])
+        self.assertEqual([(row["scope"], row["reapFailed"]) for row in rows], [(quiet_unit, False)])
         self.assertIsNone(rows[0]["cores"])
         self.assertNotIn(reaped_unit, st["orphans"])
         events = [event for event in st["events"] if event["kind"] == "reaped"]
@@ -436,43 +436,61 @@ class AgentWardenOrphanRules(WardenRulesCase):
         self.assertEqual(stopped, [])
 
     def test_failed_reap_is_not_a_move_failure(self):
-        with scratch() as tmp:
-            old_root, old_reap, old_still = self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan
-            self.w.CG_ROOT = Path(tmp) / "cg"
-            try:
-                mgr = 4000
-                unit = "agent-confine-stuck.scope"
-                cg = self._cg(unit)
-                recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")}
-                for i in range(self.w.ORPHAN_PROC_MAX):
-                    recs[5000 + i] = self.P(5000 + i, mgr, "bun", ["bun"], cg, exe="/usr/bin/bun")
-                d = self.w.CG_ROOT / self.w.SLICE / unit
-                d.mkdir(parents=True)
-                (d / "cpu.stat").write_text("")
-                now = self.w.time.time()
-                st = {
-                    "reaped": 0,
-                    "move_failures": 0,
-                    "event_seq": 0,
-                    "events": [],
-                    "orphans": {unit: {"identity": [d.stat().st_dev, d.stat().st_ino], "first": now - self.w.ORPHAN_GRACE - 10, "usage": None, "usage_ts": now - 1, "harmful": True}},
-                }
-                self.w.reap = lambda unit: (False, "stop refused")
-                self.w.scope_still_orphan = lambda unit, managers: True
-                reaped, rows = self.w.reap_orphans(recs, st, True)
-            finally:
-                self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan = old_root, old_reap, old_still
-        checks = [
-            ("nothing reaped", reaped, []),
-            ("move failures unchanged", st["move_failures"], 0),
-            ("reaped unchanged", st["reaped"], 0),
-            ("no event", st["events"], []),
-            ("scope still listed", [row["scope"] for row in rows], [unit]),
-            ("scope still tracked", unit in st["orphans"], True),
-        ]
-        for name, actual, expected in checks:
-            with self.subTest(name=name):
-                self.assertEqual(actual, expected)
+        # Each way `systemctl --user stop` can fail to stop a scope; a stop of thousands of processes can time out.
+        def exits_nonzero(args):
+            return self.w.subprocess.CompletedProcess(args, 1, "", "stop refused")
+
+        def times_out(args):
+            raise self.w.subprocess.TimeoutExpired(args, 15)
+
+        def cannot_run(args):
+            raise FileNotFoundError(2, "No such file or directory", "systemctl")
+
+        units = ["agent-confine-stuck-1.scope", "agent-confine-stuck-2.scope"]
+        for name, stop in (("stop exits nonzero", exits_nonzero), ("stop times out", times_out),
+                           ("systemctl cannot run", cannot_run)):
+            stopped = []
+
+            def run(args, **kwargs):
+                stopped.append(args[-1])
+                return stop(args)
+
+            with scratch() as tmp:
+                old_root, old_still = self.w.CG_ROOT, self.w.scope_still_orphan
+                self.w.CG_ROOT = Path(tmp) / "cg"
+                try:
+                    mgr = 4000
+                    recs = {mgr: self.P(mgr, 1, "systemd", ["/usr/lib/systemd/systemd", "--user"], "/user.slice")}
+                    now = self.w.time.time()
+                    st = {"reaped": 0, "move_failures": 0, "event_seq": 0, "events": [], "orphans": {}}
+                    for u, unit in enumerate(units):
+                        for i in range(self.w.ORPHAN_PROC_MAX):
+                            pid = 5000 + u * 1000 + i
+                            recs[pid] = self.P(pid, mgr, "bun", ["bun"], self._cg(unit), exe="/usr/bin/bun")
+                        d = self.w.CG_ROOT / self.w.SLICE / unit
+                        d.mkdir(parents=True)
+                        (d / "cpu.stat").write_text("")
+                        st["orphans"][unit] = {"identity": [d.stat().st_dev, d.stat().st_ino],
+                                               "first": now - self.w.ORPHAN_GRACE - 10, "usage": None,
+                                               "usage_ts": now - 1, "harmful": True}
+                    self.w.scope_still_orphan = lambda unit, managers: True
+                    with patch.object(self.w.subprocess, "run", run):
+                        reaped, rows = self.w.reap_orphans(recs, st, True)
+                finally:
+                    self.w.CG_ROOT, self.w.scope_still_orphan = old_root, old_still
+            checks = [
+                ("every scope's stop tried", sorted(stopped), units),
+                ("nothing reaped", reaped, []),
+                ("move failures unchanged", st["move_failures"], 0),
+                ("reaped unchanged", st["reaped"], 0),
+                ("no event", st["events"], []),
+                ("scopes still listed, each failed stop marked",
+                 sorted((row["scope"], row["reapFailed"]) for row in rows), [(unit, True) for unit in units]),
+                ("scopes still tracked", sorted(st["orphans"]), units),
+            ]
+            for check, actual, expected in checks:
+                with self.subTest(name=name, check=check):
+                    self.assertEqual(actual, expected)
 
     def test_scope_still_orphan_refuses_incomplete_membership(self):
         with scratch() as tmp:

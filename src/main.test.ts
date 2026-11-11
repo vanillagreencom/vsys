@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Collector } from "./collect/collector";
 import { ConfigError, saveConfig } from "./config/config";
@@ -140,14 +140,51 @@ test("once summary exports verdict schema and skips scratch collection", async (
     f.cleanup();
   }
 });
+/** The action arguments every warden status fixture names, and the fixtures with no items list. */
+function wardenActionArgs(): { missing: string[]; args: string[][] } {
+  const dir = join("warden", "fixtures");
+  const missing: string[] = [];
+  const args: string[][] = [];
+  for (const name of readdirSync(dir)) {
+    if (!/^status-.*\.json$/.test(name)) continue;
+    const doc: { items?: { actions: { args: string[] }[] }[] } = JSON.parse(
+      readFileSync(join(dir, name), "utf8"),
+    );
+    if (!Array.isArray(doc.items)) missing.push(name);
+    for (const item of doc.items ?? [])
+      for (const action of item.actions) args.push(action.args);
+  }
+  return { missing, args };
+}
+const warden = wardenActionArgs();
+/** An action's arguments with its scope replaced, since vsys parses any scope string alike. */
+function actionShape(args: string[]): string {
+  return args.map((arg, i) => (i === 1 ? "SCOPE" : arg)).join(" ");
+}
+test("the warden's status fixtures name a lane and a lane's Stop", () => {
+  expect(warden.missing).toEqual([]);
+  expect(warden.args.map(actionShape)).toEqual(
+    expect.arrayContaining(["--lane SCOPE", "--lane SCOPE --stop"]),
+  );
+});
 // The lane flags set the dashboard's first view, so no run without it takes
-// them. Each row is refused before any settings or system read.
-test.each([
+// them. Each row is refused before any settings or system read. The lane rows
+// are the warden's status actions, which the widget runs as vsys arguments:
+// the parser is strict, so an argument vsys does not take throws before this
+// refusal, and reaching lane-needs-terminal proves vsys parsed the action and
+// that its --stop came with --lane. One row runs per action shape. An empty
+// action is vsys with no arguments.
+const laneRows = new Map<string, string[]>();
+for (const args of warden.args)
+  if (args.length > 0) laneRows.set(actionShape(args), [...args, "--once"]);
+test.each<[string[], string]>([
   [["--stop"], "stop-needs-lane"],
-  [["--lane", "a.scope", "--once"], "lane-needs-terminal"],
-  [["--lane", "a.scope", "--stop", "--once"], "lane-needs-terminal"],
-] as const)("%p is refused as %s", async (args, kind) => {
-  await expect(main([...args])).rejects.toMatchObject({ refusal: { kind } });
+  ...[...laneRows.values()].map((args): [string[], string] => [
+    args,
+    "lane-needs-terminal",
+  ]),
+])("%p is refused as %s", async (args, kind) => {
+  await expect(main(args)).rejects.toMatchObject({ refusal: { kind } });
 });
 test("summary sampling gives rate-backed activity a baseline", async () => {
   const f = fixture();

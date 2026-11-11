@@ -1,0 +1,98 @@
+{
+  "contained": [],
+  "counters": {
+    "moveFailures": 0,
+    "moves": 0,
+    "partial": 0,
+    "reaped": 0,
+    "scanFailures": 0,
+    "skips": 0
+  },
+  "error": null,
+  "events": [],
+  "interval": 30,
+  "items": [
+    {
+      "actions": [
+        {
+          "args": [
+            "--lane",
+            "agent-confine-leak.scope",
+            "--stop"
+          ],
+          "id": "stop",
+          "label": "Stop"
+        },
+        {
+          "args": [
+            "--lane",
+            "agent-confine-leak.scope"
+          ],
+          "id": "show",
+          "label": "Show in vsys"
+        }
+      ],
+      "detail": "42 processes, 1.5 cores, 2 GB. The warden is set not to stop it.",
+      "key": "leftover-busy:agent-confine-leak.scope",
+      "kind": "leftover-busy",
+      "level": "warn",
+      "title": "Leftover work from a finished agent is busy."
+    }
+  ],
+  "lanes": [
+    {
+      "label": {
+        "tool": null,
+        "worktree": null
+      },
+      "memory": 2147483648,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-confine-leak.scope",
+      "tasks": 42,
+      "tasksMax": 8192
+    },
+    {
+      "label": {
+        "tool": "claude",
+        "worktree": "vsy-52"
+      },
+      "memory": 25769803776,
+      "memoryHigh": 68719476736,
+      "near": [],
+      "scope": "agent-warden-100-200.scope",
+      "tasks": 120,
+      "tasksMax": 8192
+    }
+  ],
+  "leftovers": {
+    "failedUnits": 0,
+    "testProcessRepos": [],
+    "testProcesses": 0,
+    "testWorlds": 0
+  },
+  "mode": "report",
+  "orphans": [
+    {
+      "cores": 1.5,
+      "harmful": true,
+      "memory": 2147483648,
+      "processes": 42,
+      "reapFailed": false,
+      "scope": "agent-confine-leak.scope",
+      "since": 1699996400
+    }
+  ],
+  "outside": [],
+  "schema": "1.3",
+  "slice": {
+    "headroomOk": true,
+    "high": 68719476736,
+    "max": 85899345920,
+    "memory": 40802189312,
+    "tasks": 300,
+    "tasksMax": 16384
+  },
+  "time": 1700000240,
+  "waiting": []
+}
