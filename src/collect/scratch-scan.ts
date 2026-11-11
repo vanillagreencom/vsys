@@ -131,13 +131,22 @@ async function scanRoot(
     root: { ...record(path, null, undefined, error), origin },
     sessions: [],
   });
+  const unreadable: string[] = [];
+  const partial = (from = 0) =>
+    unreadable.length > from
+      ? `Partial scratch reading; unreadable entries:\n${unreadable.slice(from).join("\n")}`
+      : null;
+  const skipped = (at: string, error: unknown) => {
+    unreadable.push(
+      `${at}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  };
   // Only a root on a list other than the shipped one is a problem for not
   // existing. A default, omitted or pinned unchanged, or an agent's temporary
   // directory that is not there has no row rather than one that fails for
   // ever. Absence is the root's own status read failing with ENOENT, or with
   // ENOTDIR where a parent on its path is a file, so the root cannot exist:
-  // a directory that leaves deeper in the walk fails the root as any other
-  // unreadable entry does, and never hides it.
+  // an unreadable entry deeper in the walk marks a partial reading instead.
   let top: Stats;
   try {
     top = lstatSync(path);
@@ -170,16 +179,31 @@ async function scanRoot(
       local.add(id);
       let rootBytes = rootSeen ? 0 : stat.size;
       let sessionBytes = sessionSeen ? 0 : stat.size;
-      if (stat.isDirectory())
-        for (const entry of readdirSync(current)) {
+      if (stat.isDirectory()) {
+        let entries: string[];
+        try {
+          entries = readdirSync(current);
+        } catch (error) {
+          if (depth === 0) throw error;
+          skipped(current, error);
+          return [rootBytes, sessionBytes];
+        }
+        for (const entry of entries) {
           if (pace.due()) await pace.rest();
           const child = join(current, entry);
           // An entry that left between the listing and the read is gone, not
           // a failure. `throwIfNoEntry` separates that from a directory this
-          // process may not read, which still fails the whole root it sits in.
-          const info = lstatSync(child, { throwIfNoEntry: false });
+          // process may not read, which marks its containing total partial.
+          let info: Stats | undefined;
+          try {
+            info = lstatSync(child, { throwIfNoEntry: false });
+          } catch (error) {
+            skipped(child, error);
+            continue;
+          }
           if (info === undefined) continue;
           const session = depth === 0 && info.isDirectory();
+          const before = unreadable.length;
           const totals = await walk(
             child,
             info,
@@ -188,22 +212,26 @@ async function scanRoot(
           );
           rootBytes += totals[0];
           sessionBytes += totals[1];
-          if (session) sessions.push(record(child, totals[1], info));
+          if (session)
+            sessions.push(record(child, totals[1], info, partial(before)));
         }
+      }
       return [rootBytes, sessionBytes];
     }
     const [bytes] = await walk(path, top, global, 0);
-    return { root: { ...record(path, bytes, top), origin }, sessions };
+    return {
+      root: { ...record(path, bytes, top, partial()), origin },
+      sessions,
+    };
   } catch (error) {
     return failed(error);
   }
 }
 
 /**
- * One pass over every scratch root. It returns a complete reading for every
- * root or it throws, so no partial total is published as a complete one. A
- * root that could not be read carries a null size and its own error rather
- * than a zero.
+ * One pass over every scratch root. An unreadable entry marks its root and
+ * session subtotal partial in their error fields, including every skipped
+ * path. Only an unreadable root has a null size and a source error.
  */
 export async function scanScratch(
   roots: ScanRoot[],
@@ -228,7 +256,7 @@ export async function scanScratch(
     }
     result.scratch.push(scanned.root);
     result.sessions.push(...scanned.sessions);
-    if (scanned.root.error)
+    if (scanned.root.bytes === null && scanned.root.error)
       result.errors.push({ source: root.path, message: scanned.root.error });
   }
   return { scan: result, rests: pace.rests };

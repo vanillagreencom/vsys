@@ -99,9 +99,9 @@ test("only a root on a list other than the shipped one fails for not existing", 
     f.write(file, "");
     const at = (name: string) => join(f.root, name);
     const me = lstatSync(present).uid;
-    const nested = join(f.root, "nested");
-    f.write(join(nested, "locked/file"), "1234");
-    chmodSync(join(nested, "locked"), 0o000);
+    const locked = at("locked");
+    f.write(join(locked, "file"), "1234");
+    chmodSync(locked, 0o000);
     // Each row is one root scanned alone: whether it has a row, the error on
     // that row, whether it counts as a missing default, and the source error.
     const rows: [
@@ -154,16 +154,13 @@ test("only a root on a list other than the shipped one fails for not existing", 
         { path: present, origin: "agent", owner: me + 1 },
         { row: false, error: false, absent: false },
       ],
-      // A directory deeper in the walk that cannot be read fails the root
-      // whatever its origin; only the root's own lookup can find it absent.
-      // No fixture removes a directory between its status read and its
-      // listing, so the vanished case is held by that lookup alone.
+      // An existing root that cannot be listed is failed, never absent.
       [
-        { path: nested, origin: "default" },
+        { path: locked, origin: "default" },
         { row: true, error: true, absent: false },
       ],
       [
-        { path: nested, origin: "agent", owner: me },
+        { path: locked, origin: "agent", owner: me },
         { row: true, error: true, absent: false },
       ],
       // A default that exists and cannot be measured still fails: only
@@ -187,7 +184,60 @@ test("only a root on a list other than the shipped one fails for not existing", 
       );
     }
   } finally {
-    chmodSync(join(f.root, "nested/locked"), 0o700);
+    chmodSync(join(f.root, "locked"), 0o700);
+    f.cleanup();
+  }
+});
+
+test("mode-000 leftovers mark readable root and session subtotals without a source failure", async () => {
+  const f = fixture();
+  const path = join(f.root, "agents");
+  const session = join(path, "agent-confine-123-456");
+  const locked = join(session, "state/S2");
+  const listed = join(session, "listed");
+  const other = join(path, "agent-confine-789-012");
+  try {
+    f.write(join(locked, "hidden"), "not counted");
+    f.write(join(listed, "hidden"), "not counted either");
+    f.write(join(session, "readable"), "1234");
+    f.write(join(other, "readable"), "123456");
+    chmodSync(locked, 0o000);
+    // The directory can be listed, but its child's status cannot be read.
+    chmodSync(listed, 0o400);
+    const { scan } = await scanScratch(
+      [{ path, origin: "configured" }],
+      Date.now(),
+      full,
+    );
+    const root = present(scan.scratch[0], "root");
+    const affected = present(
+      scan.sessions.find((row) => row.path === session),
+      "affected session",
+    );
+    const readable =
+      lstatSync(session).size +
+      lstatSync(join(session, "state")).size +
+      lstatSync(locked).size +
+      lstatSync(listed).size +
+      4;
+    expect(affected.bytes).toBe(readable);
+    expect(root.bytes).toBe(
+      lstatSync(path).size + readable + lstatSync(other).size + 6,
+    );
+    for (const skipped of [locked, join(listed, "hidden")]) {
+      expect(root.error).toContain(skipped);
+      expect(affected.error).toContain(skipped);
+    }
+    expect(
+      present(
+        scan.sessions.find((row) => row.path === other),
+        "readable session",
+      ).error,
+    ).toBeNull();
+    expect(scan.errors).toEqual([]);
+  } finally {
+    chmodSync(locked, 0o700);
+    chmodSync(listed, 0o700);
     f.cleanup();
   }
 });
