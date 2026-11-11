@@ -2366,20 +2366,22 @@ def lane_statuses(procs=None):
             continue
         if state == "unknown":
             return None
-        tasks = _read_int(d / "pids.current")
-        memory = _read_int(d / "memory.current")
+        tasks, tasks_max = _read_int(d / "pids.current"), _read_limit(d / "pids.max")
+        memory, memory_high = _read_int(d / "memory.current"), _read_limit(d / "memory.high")
+        # The thresholds are global, but a scope whose own limit reads max has
+        # no limit on that dimension to be near.
         near = []
-        if tasks is not None and tasks >= SCOPE_TASKS_WARN:
+        if tasks is not None and tasks_max != "max" and tasks >= SCOPE_TASKS_WARN:
             near.append("tasks")
-        if memory is not None and memory >= SCOPE_MEM_WARN:
+        if memory is not None and memory_high != "max" and memory >= SCOPE_MEM_WARN:
             near.append("memory")
         lanes.append({
             "scope": d.name,
             "label": lane_label(d.name, procs),
             "tasks": tasks,
-            "tasksMax": _read_limit(d / "pids.max"),
+            "tasksMax": tasks_max,
             "memory": memory,
-            "memoryHigh": _read_limit(d / "memory.high"),
+            "memoryHigh": memory_high,
             "near": near,
         })
     return lanes

@@ -153,6 +153,32 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             finally:
                 self.restore_status_state(self.w, old)
 
+    def test_lane_near_counts_only_a_limited_dimension(self):
+        # agent-confine's AGENT_SCOPE_MEM_HIGH=infinity and a raw systemd-run scope both leave a limit at max.
+        w = self.w
+        rows = [
+            ("both limited", "8192", str(64 * 1024**3), ["tasks", "memory"]),
+            ("tasks unlimited", "max", str(64 * 1024**3), ["memory"]),
+            ("both unlimited", "max", "max", []),
+        ]
+        with scratch() as tmp:
+            old = self.point_status_state(w, Path(tmp))
+            try:
+                lane = self.write_status_cgroup(w, lane_memory=str(w.SCOPE_MEM_WARN))
+                (lane / "pids.current").write_text(str(w.SCOPE_TASKS_WARN))
+                for name, tasks_max, memory_high, expected in rows:
+                    with self.subTest(name=name):
+                        (lane / "pids.max").write_text(tasks_max)
+                        (lane / "memory.high").write_text(memory_high)
+                        lanes = [{**row, "label": {"tool": "claude", "worktree": "vsy-52"}}
+                                 for row in w.lane_statuses()]
+                        self.assertEqual([row["near"] for row in lanes], [expected])
+                        doc = w._fixture_doc("report", w._fixture_state(), now=w.FIXTURE_NOW, reap=False, lanes=lanes)
+                        self.assertEqual([item["key"] for item in doc["items"] if item["kind"] == "near-limit"],
+                                         [f"near-limit:{lane.name}"] if expected else [])
+            finally:
+                self.restore_status_state(w, old)
+
     def test_text_status_preserves_counter_knowledge(self):
         with scratch() as tmp:
             old = self.point_status_state(self.w, Path(tmp))
