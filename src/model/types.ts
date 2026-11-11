@@ -374,11 +374,12 @@ export interface Lane {
    * Whether the tmux server the lane's `TMUX` names is still running, which
    * is what an attach to its socket needs: a stopped server's path may be
    * served by a newer one, where the same `%N` is a stranger's pane.
-   * `running` when it is vsys's own server, or when its pid is a process that
-   * started no later than the lane's main process. `stopped` when vsys's own
-   * server answers on that path under another pid, or when a complete process
-   * read holds no such process. `unknown` when the lane names no server or an
-   * incomplete read cannot settle it.
+   * `running` when it is vsys's own server, or when its pid is a tmux server
+   * that started no later than the lane's main process. `stopped` when vsys's
+   * own server answers on that path under another pid, when any other process
+   * holds the pid, or when a complete process read holds no such process.
+   * `unknown` when the lane names no server, or when an incomplete read holds
+   * no process with the pid.
    */
   server: "running" | "stopped" | "unknown";
   /**

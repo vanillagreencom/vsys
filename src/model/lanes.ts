@@ -5,6 +5,7 @@ import {
   isPaneId,
   type PaneAddress,
   type PaneSet,
+  serverComm,
   serverFields,
   targetPanes,
 } from "../collect/tmux";
@@ -351,11 +352,13 @@ export function lanes(
           : "other";
     const theirs = serverFields(mine);
     // tmux keeps the `TMUX` it exported, so a process that outlived its
-    // server still names it. One server listens on a path, so a path vsys's
-    // own server holds under another pid names a server that has stopped.
-    // Elsewhere the pid must be a process, and one that started no later than
-    // this one, which inherited the server's `TMUX` from a pane it opened: a
-    // later start is the pid reused. Only a complete read can show it absent.
+    // server still names it, and so does a child it starts after the server
+    // stopped. One server listens on a path, so a path vsys's own server
+    // holds under another pid names a server that has stopped. Elsewhere the
+    // pid's holder decides, whatever else the read missed: it is the server
+    // only if it is a tmux server that started no later than this process,
+    // which inherited the `TMUX`; any other holder is the pid reused. Only a
+    // complete read can show the pid held by nothing.
     const holder = byPid.get(theirs.pid);
     const server: Lane["server"] =
       mine === ""
@@ -365,8 +368,10 @@ export function lanes(
           : relation === "other" &&
               theirs.socket === serverFields(socket).socket
             ? "stopped"
-            : holder && main && holder.start <= main.start
-              ? "running"
+            : holder
+              ? holder.comm === serverComm && main && holder.start <= main.start
+                ? "running"
+                : "stopped"
               : processRead === "complete"
                 ? "stopped"
                 : "unknown";

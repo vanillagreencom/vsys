@@ -1082,13 +1082,35 @@ test("a lane's tmux server is judged running, stopped or unknown, and only its o
       unresolved,
     ],
     // A process that started after the agent cannot be the server whose
-    // `TMUX` it inherited: the pid was reused.
+    // `TMUX` it inherited: the pid was reused, which the holder shows
+    // whatever else the read missed.
     [
-      "outside, pid reused",
+      "outside, pid reused, read incomplete",
       "",
       `${path},777,0`,
       [tmuxServer(777, 300)],
-      "complete",
+      "incomplete",
+      "stopped",
+      true,
+      unresolved,
+    ],
+    // An agent that outlived its server starts this one with the stale
+    // `TMUX`, after the pid went to a process that is no tmux server.
+    [
+      "outside, inherited stale, pid held by another process",
+      "",
+      `${path},777,0`,
+      [
+        processSnapshot({
+          pid: 777,
+          start: 100,
+          comm: "sleep",
+          command: ["sleep", "600"],
+          group: "/user.slice/other.scope",
+          tool: null,
+        }),
+      ],
+      "incomplete",
       "stopped",
       true,
       unresolved,

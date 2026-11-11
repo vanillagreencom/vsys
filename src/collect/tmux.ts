@@ -280,6 +280,12 @@ export const serverFields = (
   const [socket = "", pid = ""] = server.split(",");
   return { socket, pid: Number(pid) || 0 };
 };
+/**
+ * The kernel `comm` a tmux server gives itself on Linux, whatever argv it was
+ * started with. Measured on tmux 3.8, for a server started as `tmux -D` and
+ * one started as `tmux -L name new-session`; their argv differ, this does not.
+ */
+export const serverComm = "tmux: server";
 /** Every pane one server holds, which server that was, and which pane is ours. */
 export interface PaneSet {
   /** Empty when vsys is outside tmux, which is not the same as knowing. */
