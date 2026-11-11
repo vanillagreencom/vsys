@@ -50,42 +50,42 @@ export async function switchToPane(
     );
 }
 
-export type TerminalOpen = (
-  target: string,
-  server: string,
-) => Promise<"opened" | "unavailable">;
+export type TerminalOpen = (target: string, server: string) => Promise<void>;
 type TerminalSpawn = (
   command: string,
   args: string[],
   options: { detached: true; stdio: "ignore"; env: NodeJS.ProcessEnv },
 ) => Pick<ChildProcess, "once" | "unref">;
 
-/** A separate session and ignored stdio let the terminal outlive vsys. */
-export async function openTerminal(
-  target: string,
-  server: string,
+/**
+ * Opens a terminal on a pane through xdg-terminal-exec, or is undefined when
+ * it is not on PATH. A separate session and ignored stdio let the terminal
+ * outlive vsys.
+ */
+export function terminalOpener(
   env: NodeJS.ProcessEnv = process.env,
   which: (command: string) => string | null = Bun.which,
   spawn: TerminalSpawn = spawnProcess,
-): ReturnType<TerminalOpen> {
+): TerminalOpen | undefined {
   const terminal = which("xdg-terminal-exec");
-  if (!terminal) return "unavailable";
+  if (!terminal) return undefined;
   // Inherit the desktop and PATH, but not a pane identity: a terminal opened
   // from another server must not look like a nested tmux client.
   const inherited = { ...env };
   delete inherited.TMUX;
   delete inherited.TMUX_PANE;
-  return new Promise((resolve, reject) => {
-    const child = spawn(terminal, attachArgv(target, server), {
-      detached: true,
-      stdio: "ignore",
-      env: inherited,
+  return (target, server) =>
+    new Promise((resolve, reject) => {
+      const child = spawn(terminal, attachArgv(target, server), {
+        detached: true,
+        stdio: "ignore",
+        env: inherited,
+      });
+      child.once("error", reject);
+      // https://nodejs.org/api/child_process.html#event-spawn confirms
+      // executable launch, not a window or tmux attachment. Later exit belongs
+      // to the terminal's independent lifetime, not this operation.
+      child.once("spawn", () => resolve());
+      child.unref();
     });
-    child.once("error", reject);
-    // https://nodejs.org/api/child_process.html#event-spawn confirms executable
-    // launch, not a window or tmux attachment. Later exit belongs to the
-    // terminal's independent lifetime, not this operation.
-    child.once("spawn", () => resolve("opened"));
-    child.unref();
-  });
 }

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaults } from "./config/config";
-import { openTerminal, runEffect, switchToPane } from "./effect";
+import { runEffect, switchToPane, terminalOpener } from "./effect";
 import { laneIntent, laneTarget, resolveIntent } from "./model/actions";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "./test/fixture";
 
@@ -101,7 +101,7 @@ test("the switch asks tmux for the target and reports what it refuses", async ()
   expect(asked.length).toBe(before);
 });
 
-test("a detached terminal settles at executable launch, independent of its later lifetime", async () => {
+test("an opener exists only with xdg-terminal-exec and settles at executable launch, not window exit", async () => {
   const rows = [
     { available: true, end: "ok" },
     { available: false, end: "ok" },
@@ -124,9 +124,7 @@ test("a detached terminal settles at executable launch, independent of its later
       TMUX_PANE: "%3",
       TERMINAL: "preferred-terminal",
     };
-    const result = openTerminal(
-      "%9",
-      "/run/agent,4242",
+    const open = terminalOpener(
       env,
       (command) =>
         command === "xdg-terminal-exec" && !available
@@ -141,20 +139,21 @@ test("a detached terminal settles at executable launch, independent of its later
         return child;
       },
     );
+    expect(open === undefined).toBe(!available);
     let outcome: unknown = "pending";
-    void result.then(
-      (value) => {
-        outcome = value;
+    void open?.("%9", "/run/agent,4242").then(
+      () => {
+        outcome = "opened";
       },
       (error: unknown) => {
         outcome = error;
       },
     );
     // A next-turn acknowledgement drains launch callbacks without closing the
-    // terminal. Awaiting result itself would hide dependence on window exit.
+    // terminal. Awaiting the open itself would hide dependence on window exit.
     await new Promise<void>((resolve) => setImmediate(resolve));
     const expected =
-      end === "error" ? spawnError : available ? "opened" : "unavailable";
+      end === "error" ? spawnError : available ? "opened" : "pending";
     expect(outcome).toBe(expected);
     if (available && end !== "error") {
       for (const [code, signal] of [

@@ -7,7 +7,7 @@ import { packagedScrubUnits } from "./collect/scrub-timers";
 import { capturePane, insideTmux } from "./collect/tmux";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
-import { openTerminal, runEffect, switchToPane } from "./effect";
+import { runEffect, switchToPane, terminalOpener } from "./effect";
 import { Session } from "./runtime";
 import { History } from "./store/history";
 import { exportSnapshot, exportSummary } from "./ui/export";
@@ -148,6 +148,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       process.exitCode = 1;
     }
   }
+  const onTerminal = terminalOpener();
   const screen = mountScreen(renderer, config, {
     onQuit: stop,
     onSave: (next) => session.configure(next),
@@ -167,7 +168,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     onAction: ({ effect }) => runEffect(effect),
     // Reading a pane and moving the reader's view touch no process, so neither
     // is an action. The switch is offered only from inside a tmux client,
-    // because outside one there is no view to move.
+    // because outside one there is no view to move, and a new terminal only
+    // where xdg-terminal-exec is on PATH to open one.
     onCapture: capturePane,
     // Read on the process thread, which a keystroke never waits behind.
     onOpenFiles: (pids, dirs) => session.openFiles(pids, dirs),
@@ -177,7 +179,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       ? { start: { scope: values.lane, stop: values.stop === true } }
       : {}),
     ...(insideTmux(process.env) ? { onSwitch: switchToPane } : {}),
-    onTerminal: openTerminal,
+    ...(onTerminal ? { onTerminal } : {}),
     output: process.stdout,
   });
   const session = new Session(

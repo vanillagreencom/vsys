@@ -296,7 +296,10 @@ export function Agent({
    * itself a tmux client. A lane on another server opens a terminal instead.
    */
   onSwitch?: (paneId: string) => Promise<void>;
-  /** Opens a separate terminal without changing the agent's processes. */
+  /**
+   * Opens a separate terminal without changing the agent's processes. Absent
+   * when xdg-terminal-exec is not on PATH, and then the row copies instead.
+   */
   onTerminal?: TerminalOpen;
   /**
    * Reads the scratch files the lane's processes hold open. The read runs on
@@ -495,7 +498,8 @@ export function Agent({
    * One row, two answers. Inside the server that holds the pane vsys moves the
    * reader's own view; outside it xdg-terminal-exec opens a terminal attached
    * to the pane. Neither changes the agent's process or cgroup, so both bypass
-   * write mode. Without xdg-terminal-exec, copy the command and explain in the row.
+   * write mode. Without xdg-terminal-exec the row says so and Enter copies the
+   * command.
    */
   const goToTerminal = () => {
     // tmux moves a client to the pane it is already in by doing nothing, so
@@ -510,26 +514,17 @@ export function Agent({
       void onSwitch(lane.pane).catch(onError);
       return;
     }
+    if (!onTerminal) {
+      onCopy(terminalCommand);
+      return;
+    }
     setTerminalError(null);
-    const unavailable = () => {
+    void onTerminal(lane.pane, server).catch((error: unknown) =>
       setTerminalError({
         command: terminalCommand,
-        reason: "No terminal opener on PATH; command copied",
-      });
-      onCopy(terminalCommand);
-    };
-    if (!onTerminal) unavailable();
-    else
-      void onTerminal(lane.pane, server)
-        .then((result) => {
-          if (result === "unavailable") unavailable();
-        })
-        .catch((error: unknown) =>
-          setTerminalError({
-            command: terminalCommand,
-            reason: `Terminal could not open: ${errorText(error)}`,
-          }),
-        );
+        reason: `Terminal could not open: ${errorText(error)}`,
+      }),
+    );
   };
   const toggle = (name: SectionName) =>
     setOpen((current) => {
@@ -701,7 +696,9 @@ export function Agent({
                           ? "vsys cannot tell whether this is the terminal you are reading in"
                           : switches
                             ? `moves this terminal to ${lane.address || lane.pane}`
-                            : `opens a new terminal on ${lane.address || lane.pane}`,
+                            : onTerminal
+                              ? `opens a new terminal on ${lane.address || lane.pane}`
+                              : `xdg-terminal-exec is not on PATH · ${keyLabel(c.keys.open)} copies ${terminalCommand}`,
                     )}
                   </span>
                 </>,

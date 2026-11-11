@@ -93,7 +93,8 @@ export interface AppProps {
    * Reads what an agent's tmux pane last drew, and moves the reader's own view
    * to it. Both read or move a view rather than touching a process, so neither
    * waits on write mode. `onSwitch` is absent when vsys runs outside the tmux
-   * server holding the pane; onTerminal opens a separate terminal there.
+   * server holding the pane; onTerminal opens a separate terminal there, and
+   * is absent when xdg-terminal-exec is not on PATH.
    */
   onCapture?: (paneId: string) => Promise<string[]>;
   onSwitch?: (paneId: string) => Promise<void>;

@@ -888,11 +888,15 @@ test("outside-server terminal navigation opens or explains its fallback in the r
               },
             }
           : {}),
-        onTerminal: async (target, server) => {
-          calls.push([target, server]);
-          if (state === "failed") throw new Error("terminal exited 1");
-          return state === "unavailable" ? "unavailable" : "opened";
-        },
+        // Without xdg-terminal-exec on PATH the program wires no opener.
+        ...(state === "unavailable"
+          ? {}
+          : {
+              onTerminal: async (target: string, server: string) => {
+                calls.push([target, server]);
+                if (state === "failed") throw new Error("terminal exited 1");
+              },
+            }),
       },
       { elsewhere: state === "foreign" },
       state === "failed" ? 30 : 45,
@@ -916,19 +920,23 @@ test("outside-server terminal navigation opens or explains its fallback in the r
       await t.press("enter");
       await t.press("j");
       expect(selectedRow(t.frame())).toContain("Go to terminal");
+      // Copying is what Enter will do, so the row hands over the command
+      // before the press rather than after it.
+      if (state === "unavailable")
+        expect(selectedRow(t.frame())).toContain(command);
       await t.press("enter");
       await t.settle();
-      expect(calls).toEqual([["%9", server]]);
-      if (state === "unavailable" || state === "failed") {
+      expect(calls).toEqual(state === "unavailable" ? [] : [["%9", server]]);
+      expect(t.frame()).not.toContain("Confirm");
+      if (state === "failed") {
         const row = t
           .frame()
           .split("\n")
           .find((line) => line.includes(command));
         expect(row).toBeDefined();
         expect(cellStyle(t.ui, command, ui.dim)).toBe("plain");
-        expect(t.frame()).not.toContain("Confirm");
+        expect(t.frame()).toContain("terminal exited 1");
       }
-      if (state === "failed") expect(t.frame()).toContain("terminal exited 1");
       expect(t.written).toEqual(
         state === "unavailable" ? [osc52(command)] : [],
       );
@@ -1392,7 +1400,6 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
         onCapture: async () => ["output"],
         onTerminal: async (paneId) => {
           switched.push(paneId);
-          return "opened";
         },
       },
       {},
