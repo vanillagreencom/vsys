@@ -45,6 +45,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         values = {
             slice_dir: {
                 "memory.current": "38",
+                "memory.stat": "inactive_file 0\nfile_dirty 0\nfile_writeback 0\n",
                 "memory.high": "64",
                 "memory.max": "80",
                 "pids.current": "300",
@@ -52,6 +53,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             },
             lane: {
                 "memory.current": lane_memory,
+                "memory.stat": "inactive_file 0\nfile_dirty 0\nfile_writeback 0\n",
                 "memory.high": "64",
                 "pids.current": "120",
                 "pids.max": "8192",
@@ -177,6 +179,77 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                                             ("memory.current", memory), ("memory.high", memory_high)):
                             (lane / file).write_text(str(value))
                         self.assertEqual([row["near"] for row in w.lane_statuses()], [expected])
+            finally:
+                self.restore_status_state(w, old)
+
+    def test_memory_judgments_count_working_memory(self):
+        # Past memory.high the kernel reclaims clean inactive file cache before it throttles, so
+        # every memory judgment counts memory.current less inactive_file, file_dirty and
+        # file_writeback kept. Each row writes one reading to the slice and to the lane; the
+        # slice's slowdown point and the lane's memory.high are 64 GiB, the slice's memory.max
+        # 80 GiB. The items table in test_status_items_rows holds each item's wording and actions.
+        w, gib = self.w, 1024**3
+        scope = "agent-warden-100-200.scope"
+        rows = [
+            # name, memory.current GiB, memory.stat counters GiB or None for an unread file,
+            # working memory GiB or None, item kinds, headroom(), near-cap notice numbers or None for unread
+            ("cache past the slowdown point and the lane's three quarters", 70,
+             {"inactive_file": 60, "file_dirty": 0, "file_writeback": 0}, 10, [], (True, 10 * gib, 80 * gib), []),
+            ("working memory past the slowdown point and the lane's three quarters", 70,
+             {"inactive_file": 1, "file_dirty": 0, "file_writeback": 0}, 69, ["slowdown", "near-limit"],
+             (True, 69 * gib, 80 * gib), [69, 64]),
+            ("cache past the headroom guard", 75,
+             {"inactive_file": 70, "file_dirty": 0, "file_writeback": 0}, 5, [], (True, 5 * gib, 80 * gib), []),
+            ("working memory past the headroom guard", 75,
+             {"inactive_file": 1, "file_dirty": 0, "file_writeback": 0}, 74, ["memory-full", "near-limit"],
+             (False, 74 * gib, 80 * gib), [74, 64]),
+            ("inactive cache dirty, past the headroom guard", 75,
+             {"inactive_file": 12, "file_dirty": 12, "file_writeback": 0}, 75, ["memory-full", "near-limit"],
+             (False, 75 * gib, 80 * gib), [75, 64]),
+            ("inactive cache under writeback, past the headroom guard", 75,
+             {"inactive_file": 12, "file_dirty": 0, "file_writeback": 12}, 75, ["memory-full", "near-limit"],
+             (False, 75 * gib, 80 * gib), [75, 64]),
+            # Under MGLRU recent writes sit in the young generations memory.stat reports as
+            # active_file, so file_dirty can exceed inactive_file.
+            ("dirty cache past inactive_file, past the headroom guard", 75,
+             {"inactive_file": 1, "file_dirty": 3, "file_writeback": 0}, 75, ["memory-full", "near-limit"],
+             (False, 75 * gib, 80 * gib), [75, 64]),
+            ("memory.stat unread", 70, None, None, ["memory-unread"], (False, -1, -1), None),
+            ("memory.stat without file_writeback", 70, {"inactive_file": 60, "file_dirty": 0}, None,
+             ["memory-unread"], (False, -1, -1), None),
+        ]
+        agent = self.P(100, 1, "claude", ["claude"], self._cg(scope), start=200)
+        with scratch() as tmp, patch.object(w, "_worktree_label", return_value="vsy-276"):
+            old = self.point_status_state(w, Path(tmp))
+            try:
+                lane = self.write_status_cgroup(w, scope=scope)
+                slice_dir = lane.parent
+                for d in (slice_dir, lane):
+                    (d / "memory.high").write_text(str(64 * gib))
+                (slice_dir / "memory.max").write_text(str(80 * gib))
+                for name, current, stat, working, kinds, headroom, notice in rows:
+                    with self.subTest(name=name):
+                        for d in (slice_dir, lane):
+                            (d / "memory.current").write_text(str(current * gib))
+                            (d / "memory.stat").unlink(missing_ok=True)
+                            if stat is not None:
+                                (d / "memory.stat").write_text(
+                                    f"anon {gib}\nfile {(current - 1) * gib}\n"
+                                    + "".join(f"{key} {value * gib}\n" for key, value in stat.items()))
+                        doc = w.status_document("correct", {"_state_readable": True}, slice_reading=w.slice_status(),
+                                                lanes=w.lane_statuses({agent.pid: agent}), reap=True, moves=[],
+                                                waiting=[], orphans_status=[], contained=[], now=1)
+                        self.assertEqual(w.status_errors(doc), [])
+                        figure = None if working is None else working * gib
+                        self.assertEqual((doc["slice"]["memory"], doc["lanes"][0]["memory"]), (figure, figure))
+                        self.assertEqual([item["kind"] for item in doc["items"]], kinds)
+                        self.assertEqual(w.headroom(), headroom)
+                        near, unknown, complete = w.warn_near_cap()
+                        self.assertTrue(complete)
+                        self.assertEqual(unknown, set() if notice is not None else {(scope, "memory")})
+                        self.assertEqual([[int(value) for value in re.findall(r"\b\d+\b", text)]
+                                          for unit, kind, text in near if kind == "memory"],
+                                         [notice] if notice else [])
             finally:
                 self.restore_status_state(w, old)
 

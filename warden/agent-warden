@@ -73,8 +73,9 @@ Rules, per process, never per pane
 
 Memory: moving a process moves its future charges only. Pages it already owns
 stay charged to the old cgroup (cgroup v2). The headroom guard skips moves when
-agents.slice is above 90% of memory.max, or when the counters cannot be read,
-and alerts; it promises nothing about OOM safety.
+agents.slice's working memory (memory.current less clean inactive file cache)
+is above 90% of memory.max, or when the counters cannot be read, and alerts; it
+promises nothing about OOM safety.
 
 Runs from background.slice with its own small MemoryMax and a runtime cap so
 it does not stall with the workload it corrects. State under
@@ -1645,10 +1646,8 @@ def warn_near_cap():
         else:
             if n >= SCOPE_TASKS_WARN:
                 near.append((d.name, "tasks", f"{n} of {(read(d / 'pids.max', '') or '').strip()}"))
-        txt = read(d / "memory.current")
-        try:
-            mem = int((txt or "").strip())
-        except ValueError:
+        mem = working_memory(d)
+        if mem is None:
             unknown.add((d.name, "memory"))
         else:
             if mem >= SCOPE_MEM_WARN:
@@ -1680,14 +1679,40 @@ def scope_usage_usec(unit):
     return int(m.group(1)) if m else None
 
 
-def scope_anon_bytes(unit):
-    """Anonymous memory the scope and its nested cgroups hold, from its
-    memory.stat, or None. memory.current would also count page cache."""
-    txt = read(CG_ROOT / SLICE / unit / "memory.stat")
+def memory_stat(d, *keys):
+    """The KEYS counters, in order, from one read of the memory.stat of the
+    cgroup at D, which covers its nested cgroups too, or None when the file or
+    any of the counters cannot be read."""
+    txt = read(d / "memory.stat")
     if not txt:
         return None
-    m = re.search(r"^anon\s+(\d+)$", txt, re.M)
-    return int(m.group(1)) if m else None
+    counters = dict(re.findall(r"^(\w+)\s+(\d+)$", txt, re.M))
+    if any(key not in counters for key in keys):
+        return None
+    return tuple(int(counters[key]) for key in keys)
+
+
+def working_memory(d):
+    """Memory the cgroup at D holds that the kernel cannot simply drop:
+    memory.current less its clean inactive file cache, inactive_file less
+    file_dirty and file_writeback from its memory.stat, or None when any of
+    them cannot be read. Past memory.high the kernel reclaims clean inactive
+    file cache before it throttles, so that cache never slows an agent. Dirty
+    and writeback pages stay counted: inactive_file includes them, and reclaim
+    must wait for their I/O while they stay charged against the limits."""
+    current, stat = _read_int(d / "memory.current"), memory_stat(d, "inactive_file", "file_dirty", "file_writeback")
+    if current is None or stat is None:
+        return None
+    inactive, dirty, writeback = stat
+    # The two files are read at different moments.
+    return max(0, current - max(0, inactive - dirty - writeback))
+
+
+def scope_anon_bytes(unit):
+    """Anonymous memory the scope and its nested cgroups hold, or None.
+    working_memory() would also count file cache."""
+    stat = memory_stat(CG_ROOT / SLICE / unit, "anon")
+    return stat[0] if stat else None
 
 
 def scope_identity(unit):
@@ -1937,15 +1962,14 @@ def headroom():
         return True, 0, 0
     if state == "unknown":
         return False, -1, -1
-    cur = read(slice_dir / "memory.current")
+    current = working_memory(slice_dir)
     mx = read(slice_dir / "memory.max")
-    if cur is None or mx is None:
+    if current is None or mx is None:
         return False, -1, -1
-    cur, mx = cur.strip(), mx.strip()
+    mx = mx.strip()
+    if mx == "max":
+        return True, current, 0
     try:
-        current = int(cur)
-        if mx == "max":
-            return True, current, 0
         maximum = int(mx)
     except ValueError:
         return False, -1, -1
@@ -2313,7 +2337,7 @@ def slice_status():
             "tasksMax": None,
             "headroomOk": None,
         }
-    memory = _read_int(base / "memory.current")
+    memory = working_memory(base)
     maximum = _read_limit(base / "memory.max")
     return {
         "memory": memory,
@@ -2387,7 +2411,7 @@ def lane_statuses(procs=None):
         if state == "unknown":
             return None
         tasks, tasks_max = _read_int(d / "pids.current"), _read_limit(d / "pids.max")
-        memory, memory_high = _read_int(d / "memory.current"), _read_limit(d / "memory.high")
+        memory, memory_high = working_memory(d), _read_limit(d / "memory.high")
         near = [kind for kind, value, limit, warn in (("tasks", tasks, tasks_max, SCOPE_TASKS_WARN),
                                                       ("memory", memory, memory_high, SCOPE_MEM_WARN))
                 if _near_limit(value, limit, warn)]
