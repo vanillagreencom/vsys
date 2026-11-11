@@ -54,8 +54,7 @@ export interface SampleOptions {
 /**
  * Reading the tmux server: the probe that decides the capability, and the one
  * call per sample that resolves every lane's pane. A collector given none
- * reads no tmux at all, which keeps tmux out of a collector a test builds;
- * the program always supplies one, so a test that spawns it reads tmux.
+ * reads no tmux at all; `createCollector()` always supplies the real one.
  */
 export interface TmuxReader {
   probe: () => Outcome;
@@ -68,9 +67,8 @@ const noTmux: Outcome = {
 /**
  * Searching the kernel log: the probe that decides the capability, and the
  * log each sample searches from the cursor the last search ended on. A
- * collector given none reads no journal, which keeps the machine's own log
- * out of a collector a test builds; the program always supplies one, so a
- * test that spawns it can read the log.
+ * collector given none reads no journal; `createCollector()` always supplies
+ * one, with the probe it was given.
  */
 export interface KernelLogReader {
   probe: () => Outcome;
@@ -134,11 +132,11 @@ export class Collector {
     pageSize: number,
     private live = false,
     /**
-     * Absent unless a caller supplies one, so a test's collector spawns no
-     * build cache.
+     * A collector given none spawns no build cache; `createCollector()`
+     * passes the predecessor's, or a new one.
      */
     readonly sccache?: SccacheCollector,
-    /** Absent unless a caller supplies one: a test's collector runs no tmux. */
+    /** A collector given none runs no tmux. */
     private tmux?: TmuxReader,
     /**
      * The program reads processes on a thread of its own; a collector given
@@ -146,19 +144,16 @@ export class Collector {
      */
     processes?: ProcessSource,
     /**
-     * Where the agent slice's unit file is looked for. Empty unless a caller
-     * supplies them, so a test's collector reads none of the host's systemd
-     * configuration.
+     * Where the agent slice's unit file is looked for. A collector given none
+     * reads no systemd configuration; `createCollector()` passes the host's
+     * unit directories.
      */
     private units: string[] = [],
-    /**
-     * Absent unless a caller supplies one, so a test's collector reads no
-     * journal.
-     */
+    /** A collector given none reads no journal. */
     kernelLog?: KernelLogReader,
     /**
-     * Absent unless a caller supplies one, so a test's collector asks no
-     * system bus.
+     * A collector given none asks no system bus; `createCollector()` always
+     * passes a new one.
      */
     udisks?: Udisks,
     /**
@@ -170,18 +165,13 @@ export class Collector {
      * memory.
      */
     sharedFinishedScrub?: FinishedScrubMemory,
-    /**
-     * Absent unless a caller supplies them, so a test's collector reads no
-     * systemd unit.
-     */
+    /** A collector given none reads no scrub unit. */
     scrubUnits?: ScrubUnits,
     /** A predecessor's checkpoints, so a settings change keeps each window. */
     readonly serviceCpu = new ServiceCpu(),
     /**
-     * The warden's status file. With none the sample carries no leftovers
-     * reading. Only the program supplies one, so a collector a test builds
-     * reads no warden, while a test that spawns the program reads the status
-     * at the program's path.
+     * The warden's status file. A collector given none reads no warden, and
+     * its sample carries no leftovers reading.
      */
     private wardenStatus?: string,
   ) {
@@ -496,18 +486,16 @@ export async function createCollector(
     serviceCpu?: ServiceCpu;
   },
   toolsPath = agentToolsPath,
-  /** Injected so a test that builds a collector reads no journal. */
+  /** Injectable so a caller can stub the journal probe. */
   kernelLogProbe: () => Outcome = probeKernelLog,
   /**
-   * Absent unless the program supplies them, so a collector a test builds
-   * reads none of this machine's systemd units: the program passes
-   * `packagedScrubUnits`, and a test that spawns the program reads them.
+   * With none the collector reads no scrub unit. The program passes
+   * `packagedScrubUnits`.
    */
   scrubUnits?: ScrubUnits,
   /**
-   * Absent unless the program supplies it, so a collector a test builds reads
-   * no warden: the program passes `wardenStatusPath()`, and a test that spawns
-   * the program reads the status at that path.
+   * With none the collector reads no warden. The program passes
+   * `wardenStatusPath()`.
    */
   wardenStatus?: string,
 ): Promise<Collector> {
@@ -532,8 +520,8 @@ export async function createCollector(
     loadAgentTools(toolsPath),
   ]);
   const sccache = previous?.sccache ?? new SccacheCollector();
-  // The program reads the real tmux server, and so does a test that spawns
-  // it; a collector built any other way reads none.
+  // Every collector built here gets the real tmux reader, the kernel log
+  // with the probe given, a Udisks reader and a build cache.
   return new Collector(
     c,
     ticks,
