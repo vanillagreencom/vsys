@@ -25,12 +25,19 @@ export class AlertEngine {
       condition: boolean,
       message: string,
       repeat = false,
+      source?: Alert["source"],
     ) => {
       if (!condition) return;
       const key = `${rule}:${subject}`;
       next.add(key);
       if (repeat || !this.active.has(key))
-        alerts.push({ time: s.time, rule, subject, message });
+        alerts.push({
+          time: s.time,
+          rule,
+          subject,
+          message,
+          ...(source ? { source } : {}),
+        });
     };
     for (const p of s.procs) {
       hit(
@@ -63,6 +70,8 @@ export class AlertEngine {
         judged === "warden"
           ? `The agent warden warns ${consumerName(g, s)} is near its memory limit`
           : `${g.name} is near memory.high`,
+        false,
+        judged === "warden" ? "warden" : undefined,
       );
       for (const [kind, p] of Object.entries(g.pressure)) {
         const key = `${g.path}/${kind}`;
@@ -133,9 +142,15 @@ export class AlertEngine {
 /** How long one notify-send call may run before it is killed as a failure. */
 export const notifyTimeoutMs = 5000;
 
-/** The alerts whose rule the reader chose to receive as desktop notifications. */
+/**
+ * The alerts whose rule the reader chose to receive as desktop notifications.
+ * A warning the warden raised is left out: the warden's own handoff delivers
+ * its desktop notice, so sending it here too would show it twice.
+ */
 export function notifiable(alerts: Alert[], c: Config): Alert[] {
-  return alerts.filter((a) => c.notifications.includes(a.rule));
+  return alerts.filter(
+    (a) => a.source !== "warden" && c.notifications.includes(a.rule),
+  );
 }
 
 /**

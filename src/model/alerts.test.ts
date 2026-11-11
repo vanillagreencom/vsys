@@ -7,7 +7,7 @@ import {
   laneSnapshot,
   processSnapshot,
 } from "../test/fixture";
-import { AlertEngine } from "./alerts";
+import { AlertEngine, notifiable } from "./alerts";
 import type { Rule } from "./types";
 import { causes, unjudged } from "./verdict";
 
@@ -78,7 +78,7 @@ test("memory-high alerts survive failed reads and rearm only after measured reco
   }
 });
 
-test("a lane the warden warns for notifies once, crediting the warden, below vsys's own line", () => {
+test("a lane the warden warns for alerts once, crediting the warden, below vsys's own line", () => {
   const engine = new AlertEngine();
   const kernelPath = "/user.slice/agents.slice/a.scope";
   const s = emptySnapshot();
@@ -86,17 +86,21 @@ test("a lane the warden warns for notifies once, crediting the warden, below vsy
   // Working memory half of memory.high: vsys alone would raise nothing.
   s.groups = [groupSnapshot({ kernelPath, memory: 50, high: 100 })];
   s.wardenNearLimits = [{ kernelPath, near: ["tasks", "memory"] }];
-  // notify-send delivers this message to the desktop as its body.
-  expect(engine.evaluate(s, defaults())).toEqual([
+  const c = { ...defaults(), notifications: ["memory-high"] };
+  const alerts = engine.evaluate(s, c);
+  expect(alerts).toEqual([
     {
       time: s.time,
       rule: "memory-high",
       subject: "agents.slice/a.scope",
       message:
         "The agent warden warns lane-a PID 4071 is near its memory limit",
+      source: "warden",
     },
   ]);
-  expect(engine.evaluate(s, defaults())).toEqual([]);
+  // The warden's own handoff sends its desktop notice; vsys sends none.
+  expect(notifiable(alerts, c)).toEqual([]);
+  expect(engine.evaluate(s, c)).toEqual([]);
 });
 test("each alert condition emits its own rule and clears before rearming", () => {
   const cases: [Rule, (s: ReturnType<typeof emptySnapshot>) => void][] = [

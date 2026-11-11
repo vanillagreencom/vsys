@@ -476,6 +476,11 @@ export interface Alert {
   rule: Rule;
   subject: string;
   message: string;
+  /**
+   * `warden` on a memory-high alert the agent warden's warning raised, whose
+   * desktop notice the warden delivers itself; absent where vsys judged.
+   */
+  source?: "warden";
 }
 /** A kernel or system interface the dashboard needs to fill a reading. */
 export type CapabilityId =
