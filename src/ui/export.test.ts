@@ -240,7 +240,7 @@ test("each raised cause carries its card's title and the processes it names", ()
         cause: entry.cause,
         open: [],
       });
-      // Only an unconfirmed tool is about processes that joined no lane.
+      // Only an unconfirmed tool names processes of its own in `procs`.
       expect({ cause: entry.cause, processes: entry.processes }).toEqual({
         cause: entry.cause,
         processes:

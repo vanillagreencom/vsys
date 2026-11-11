@@ -73,8 +73,8 @@ function namedLanes(cause: Cause): Lane[] {
 }
 
 /**
- * The processes a cause names: those that joined no lane, then each named
- * lane's main process. A lane leading no process has none to list.
+ * The processes a cause names: its own `procs`, then each named lane's main
+ * process. A lane leading no process has none to list.
  */
 function processes(cause: Cause): SummaryProcess[] {
   return [

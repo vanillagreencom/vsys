@@ -127,9 +127,17 @@ export interface DamageFigures {
  * reader writes it in its own form, or the text naming anything else.
  */
 export type Consumer = Lane | string;
-/** A consumer in the form the Home cards and the stored events write. */
-export function consumerText(consumer: Consumer): string {
-  return typeof consumer === "string" ? consumer : laneText(consumer);
+/** How a reader writes a lane it names. */
+export type LaneName = (lane: Lane) => string;
+/**
+ * A consumer written as text: a lane through `laneName`, `laneText()` unless
+ * the caller writes lanes another way, and anything else as it is.
+ */
+export function consumerText(
+  consumer: Consumer,
+  laneName: LaneName = laneText,
+): string {
+  return typeof consumer === "string" ? consumer : laneName(consumer);
 }
 export interface Cause {
   id: CauseId;
@@ -336,12 +344,13 @@ export function consumerOf(
   if (!group) return "";
   return s.lanes.find((l) => l.id === group.path) ?? unitLabel(group.name);
 }
-/** `consumerOf()` written as text. */
+/** `consumerOf()` written as text by `consumerText()`. */
 export function consumerName(
   group: Pick<Group, "path" | "name"> | undefined,
   s: Snapshot,
+  laneName?: LaneName,
 ): string {
-  return consumerText(consumerOf(group, s));
+  return consumerText(consumerOf(group, s), laneName);
 }
 function busiest(lanes: Lane[]): Lane | undefined {
   return [...lanes].sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0))[0];

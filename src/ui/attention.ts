@@ -4,14 +4,14 @@ import { sliceCompared } from "../model/lanes";
 import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
 import { laneText, programName, unitLabel } from "../model/naming";
 import { shellLine } from "../model/shell";
-import type { CapabilityId, Lane, Snapshot } from "../model/types";
+import type { CapabilityId, Snapshot } from "../model/types";
 import {
   agentLanes,
   type Cause,
-  type Consumer,
   causes,
-  consumerOf,
+  consumerName,
   consumerText,
+  type LaneName,
   type Level,
   type Meter,
 } from "../model/verdict";
@@ -211,8 +211,6 @@ function laneSentence(names: string[], width: number, head: string): string {
   return named(room);
 }
 
-/** How a card writes a lane it names: `laneText()` unless the caller says. */
-type LaneName = (lane: Lane) => string;
 /** Every word and every formatted number the Overview shows lives here. */
 function copy(
   cause: Cause,
@@ -225,9 +223,7 @@ function copy(
   const b = (n: number | null | undefined) => bytes(n, c);
   const v = cause.values;
   const n = cause.lanes.length;
-  const named = (who: Consumer) =>
-    typeof who === "string" ? who : laneName(who);
-  const consumer = named(cause.consumer);
+  const consumer = consumerText(cause.consumer, laneName);
   const laneNames = cause.lanes.map(laneName);
   const names = list(laneNames);
   const every = laneSentence(laneNames, width, `${p(n, "Lane", "Lanes")}: `);
@@ -627,7 +623,7 @@ function copy(
         word: "Busy",
         title:
           units > 1
-            ? `${units} system services used CPU for an hour: ${list(cause.groups.map((g) => named(consumerOf(g, s))))}`
+            ? `${units} system services used CPU for an hour: ${list(cause.groups.map((g) => consumerName(g, s, laneName)))}`
             : `${consumer} used ${percent(v.hour)} of a core for an hour`,
         ways: [
           `${consumer} averaged ${percent(v.hour)} of one core over the last hour, at or above the threshold of ${percent(v.threshold)}. A service stuck in a loop looks like this.`,
