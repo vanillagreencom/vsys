@@ -11,6 +11,7 @@ import {
   consumerName,
   consumerText,
   type Level,
+  memoryHighJudgment,
   processesUnread,
   unjudged,
 } from "../model/verdict";
@@ -34,7 +35,10 @@ export interface TimelineEvent {
   subjectId: string;
   /** The cause behind the change, empty when the ladder holds none. */
   cause: CauseId | "";
-  /** Identifiers the line needs: account, slice, tool, from, to, level. */
+  /**
+   * Identifiers the line needs: account, slice, tool, from, to, level, and
+   * `source` "warden" on a memory-high alert the agent warden's warning raised.
+   */
   names: Record<string, string>;
   /** The numbers behind the change, unformatted. */
   values: Record<string, number | null>;
@@ -58,6 +62,8 @@ interface Watch {
   subjectId: string;
   /** The systemd unit the subject name decoded from, empty when it is not one. */
   unit: string;
+  /** `warden` where the warden's warning raised it, empty where vsys judged. */
+  source: string;
   level: Level;
   verdictWorthy: boolean;
   values: Record<string, number | null>;
@@ -116,6 +122,19 @@ function subjectValues(
   }
   return { ...cause.values };
 }
+/**
+ * Who raised a memory-high alert on one group: `warden` where the warden's
+ * warning stands in for vsys's threshold, so the row credits the warden.
+ */
+function source(cause: Cause, id: string, s: Snapshot): string {
+  if (cause.id !== "memory-high") return "";
+  const group = s.groups.find((g) => g.path === id);
+  return group && memoryHighJudgment(group, s).judged === "warden"
+    ? "warden"
+    : "";
+}
+const sourced = (names: Record<string, string>, source: string) =>
+  source ? { ...names, source } : names;
 /**
  * A cause groups every subject it affects. Each of them is its own alert with
  * its own duration, so two escaped lanes are two alerts rather than one.
@@ -345,6 +364,7 @@ export class EventLog {
           subject: subject.name,
           subjectId: subject.id,
           unit: subject.unit ?? "",
+          source: "",
           level: cause.level,
           verdictWorthy: cause.verdictWorthy,
           values: {},
@@ -362,6 +382,7 @@ export class EventLog {
         if (!watch.opened) {
           watch.subject = subject.name;
           watch.unit = subject.unit ?? "";
+          watch.source = source(cause, subject.id, s);
         }
         // The thresholds and the subject's own numbers belong to the event,
         // not to the settings the reader happens to hold when it is drawn.
@@ -397,7 +418,10 @@ export class EventLog {
           cause: cause.id,
           // The unit name the subject decoded from, for the drill-down; a
           // reader who needs the raw name can still reach it.
-          names: { level: cause.level, unit: watch.unit },
+          names: sourced(
+            { level: cause.level, unit: watch.unit },
+            watch.source,
+          ),
           values: { ...watch.values },
           ...(watch.participants && {
             processes: [...watch.participants.processes.values()],
@@ -433,7 +457,7 @@ export class EventLog {
       add("alert-close", watch.subject, {
         subjectId: watch.subjectId,
         cause: watch.cause,
-        names: { level: watch.level, unit: watch.unit },
+        names: sourced({ level: watch.level, unit: watch.unit }, watch.source),
         values: { durationMs: watch.lastSeen - watch.firstSeen },
         ...(watch.participants && {
           processes: [...watch.participants.processes.values()],

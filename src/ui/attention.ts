@@ -645,14 +645,22 @@ function copy(
           cause.groups.includes(g) &&
           memoryHighJudgment(g, s).judged === "warden",
       );
-      const reclaim = "Memory reclaim can slow every task in these groups.";
+      const names = list(cause.groups.map((g) => consumerName(g, s, laneName)));
+      const reclaim = `Memory reclaim can slow every task in ${p(groups, "this group", "these groups")}.`;
+      // A card the warden's warnings alone raised states the warden's
+      // condition, not vsys's threshold; a mixed card names which are its.
+      const wardens = warned.length === groups;
       return {
         word: "Busy",
-        title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => consumerName(g, s, laneName)))}`,
+        title: wardens
+          ? `${groups} ${p(groups, "group is near its memory limit", "groups are near their memory limits")}: ${names}`
+          : `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${names}`,
         ways: [
-          warned.length
-            ? `The agent warden warns ${list(warned.map((g) => consumerName(g, s, laneName)))} ${p(warned.length, "is near its", "are near their")} memory limit. ${reclaim}`
-            : reclaim,
+          wardens
+            ? `The agent warden gave this warning. ${reclaim}`
+            : warned.length
+              ? `The agent warden warns ${list(warned.map((g) => consumerName(g, s, laneName)))} ${p(warned.length, "is near its memory limit", "are near their memory limits")}. ${reclaim}`
+              : reclaim,
         ],
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",

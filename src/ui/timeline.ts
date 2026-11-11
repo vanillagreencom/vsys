@@ -32,6 +32,15 @@ export function causePhrase(cause: CauseId | ""): string {
   return cause ? phrases[cause] : "nothing needs attention";
 }
 /**
+ * An alert's clause. A memory-high alert the warden's warning raised is the
+ * warden's, which warns below vsys's own threshold, so it is credited there.
+ */
+function alertPhrase(e: TimelineEvent): string {
+  return e.cause === "memory-high" && e.names.source === "warden"
+    ? "the agent warden warned a group is near its memory limit"
+    : causePhrase(e.cause);
+}
+/**
  * The number that made the cause fire, for the causes that measure one. Every
  * threshold comes from the event, so a later settings change cannot restate
  * what an older line crossed.
@@ -143,7 +152,7 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
       text:
         e.cause === "unconfirmed-tool"
           ? unconfirmed(e)
-          : parts(causePhrase(e.cause), e.subject, measurement(e, c)),
+          : parts(alertPhrase(e), e.subject, measurement(e, c)),
       level: n.level === "danger" ? "danger" : "warn",
     };
   if (e.kind === "alert-close")
@@ -154,7 +163,7 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
         e.cause === "unconfirmed-tool"
           ? unconfirmed(e)
           : parts(
-              causePhrase(e.cause),
+              alertPhrase(e),
               e.subject,
               `open for ${age((e.values.durationMs ?? 0) / 1000)}`,
             ),

@@ -1552,3 +1552,41 @@ test("an unread lane holds its own alert and closes another lane's on time", () 
     for (const e of at(t, null, 0)) seen.push(`${t - last} ${e}`);
   expect(seen).toEqual([`${hold} alert-close ${b}`]);
 });
+test("a memory-high alert the warden's warning raised keeps that source from open to close", () => {
+  const log = started();
+  const warned = "agents.slice/w.scope";
+  const own = "agents.slice/v.scope";
+  const firing = emptySnapshot(2000);
+  firing.groups = [
+    // Under vsys's own line: only the warden's warning raises this one.
+    groupSnapshot({
+      path: warned,
+      kernelPath: `/${warned}`,
+      memory: 50,
+      high: 100,
+    }),
+    groupSnapshot({ path: own, kernelPath: `/${own}`, memory: 95, high: 100 }),
+  ];
+  firing.wardenNearLimits = [{ kernelPath: `/${warned}`, near: ["memory"] }];
+  // A later sample past vsys's line too must not restate who raised it.
+  const later = structuredClone(firing);
+  later.time = 3000;
+  const w = present(later.groups[0], "the warned group");
+  w.memory = 95;
+  later.wardenNearLimits = [];
+  const quiet = emptySnapshot(4000);
+  const events = [firing, later, quiet].flatMap((s) => log.advance(s, c));
+  const alert = (kind: string, subjectId: string) =>
+    events.find(
+      (e) =>
+        e.kind === kind &&
+        e.cause === "memory-high" &&
+        e.subjectId === subjectId,
+    )?.names.source;
+  expect([
+    alert("alert-open", warned),
+    alert("alert-close", warned),
+    alert("alert-open", own),
+    alert("alert-close", own),
+  ]).toEqual(["warden", "warden", undefined, undefined]);
+});

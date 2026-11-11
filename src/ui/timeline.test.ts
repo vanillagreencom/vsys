@@ -76,6 +76,24 @@ test("every event is one line that states its cause", () => {
   expect(lines[3]).toContain("Alert closed: storage stalled tasks");
   expect(lines[3]).toContain("open for 1m");
   expect(causePhrase("scrub")).toBe("a scrub reported a problem");
+  // A memory-high alert the warden's warning raised credits the warden; one
+  // vsys judged, or a record from before the source existed, is vsys's own.
+  const memory = (names: Record<string, string>) =>
+    eventLine(
+      event({
+        kind: "alert-open",
+        cause: "memory-high",
+        subject: "lane-a",
+        names,
+      }),
+      c,
+    );
+  expect(memory({ source: "warden" })).toContain(
+    "Alert opened: the agent warden warned a group is near its memory limit | lane-a",
+  );
+  expect(memory({})).toContain(
+    "Alert opened: a group neared its memory threshold | lane-a",
+  );
   expect(lines[4]).toContain("previously nothing needs attention");
   // The shipped EventLog wrote subject and duration before participant and
   // interval fields existed. Timeline must keep that known result on upgrade.
