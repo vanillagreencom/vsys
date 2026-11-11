@@ -1430,7 +1430,9 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
           switched.push(paneId);
         },
       },
-      {},
+      // A running server, so the terminal row reaches `onTerminal` and the
+      // two paths are compared on a dispatch rather than on its absence.
+      { server: "running" },
       60,
     );
     await t.press("enter");
