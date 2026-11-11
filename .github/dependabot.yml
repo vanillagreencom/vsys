@@ -7,3 +7,8 @@ updates:
     # kendex-refresh.yml is a kendex render: only the kendex refresh route moves its kendex refs.
     ignore:
       - dependency-name: "vanillagreencom/kendex*"
+    # CodeQL refuses to run when init and analyze differ, so both move in one pull request.
+    groups:
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
