@@ -2553,23 +2553,33 @@ def _scan_items(doc):
                   f"It tries again in {doc['interval']:g} seconds.")]
 
 
+def _agents(events):
+    """The root pids EVENTS name. A move is retried every tick, so one agent
+    can have many events in the recent window; an item counts agents, not events."""
+    return {event["pid"] for event in events if event["pid"] is not None}
+
+
 def _move_items(doc):
     items = []
     failed = _recent(doc, "failed")
     if failed:
-        pids = {event["pid"] for event in failed}
+        pids = _agents(failed)
+        # A failed event with no pid is the unreachable bus, which fails every tree the tick planned.
+        if any(event["pid"] is None for event in failed):
+            pids |= {row["pid"] for row in doc["outside"] or []}
         tools = []
         for row in doc["outside"] or []:
             tool = _name(row["tool"]) if row["pid"] in pids else None
             if tool is not None and tool not in tools:
                 tools.append(tool)
-        items.append(_item("move-failed", "warn", f"The warden could not move {len(failed)} agents into their limits.",
+        counted = f"{len(pids)} agents" if pids else "agents"
+        items.append(_item("move-failed", "warn", f"The warden could not move {counted} into their limits.",
                            _sentences(tools and f"{', '.join(tools)} still run outside them.",
                                       "It tries again on its next check."), [_show()]))
     partial = _recent(doc, "partial")
     if partial:
         items.append(_item("move-partial", "warn",
-                           f"The warden moved only part of {len(partial)} agents into their limits.",
+                           f"The warden moved only part of {len(_agents(partial))} agents into their limits.",
                            "The rest still runs outside them. It tries again on its next check.", [_show()]))
     return items
 
@@ -2631,7 +2641,7 @@ def _done_items(doc):
                            None if None in counts else f"{sum(counts)} processes had become busy."))
     moved = _recent(doc, "moved")
     if moved:
-        items.append(_item("moved", "info", f"The warden moved {len(moved)} agents into their limits."))
+        items.append(_item("moved", "info", f"The warden moved {len(_agents(moved))} agents into their limits."))
     if doc["mode"] == "report" and doc["outside"]:
         items.append(_item("outside-report", "info", f"{len(doc['outside'])} agents run outside their limits.",
                            "The warden is set to report only, so it moves nothing.", [_show()]))

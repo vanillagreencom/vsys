@@ -1026,11 +1026,11 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
         def orphans(*rows):
             return {"orphans_status": list(rows), "lanes": w._fixture_orphan_lanes(rows)}
 
-        def without_reap_setting(mode, **kw):
-            # The real tick's route: the reap answer comes from reaps(), here with AGENT_WARDEN_REAP=0.
+        def from_tick(mode, reap_setting, **kw):
+            # The real tick's route: the reap answer comes from reaps(), here with AGENT_WARDEN_REAP=REAP_SETTING.
             tick = {"moves": [], "waiting": [], "contained": [], "error": None, "procs": {},
                     "orphans": kw["orphans_status"], "leftovers": w._fixture_leftovers()}
-            with patch.object(w, "REAP", False):
+            with patch.object(w, "REAP", reap_setting):
                 return w.status_from_tick(mode, w._fixture_state(), tick, slice_reading=w._fixture_slice(),
                                           lanes=kw["lanes"])
 
@@ -1061,15 +1061,22 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             ("past the slowdown point", doc(slice_reading=w._fixture_slice(memory=gib(70))),
              [("slowdown", "slowdown", "warn", "Agents use more memory than the slowdown point.",
                "70 of 64 GB. The system slows every agent until use falls.", [show])]),
-            ("failed check", w.status_failed_scan_fixture(),
-             [("scan-failed", "scan-failed", "warn", "The warden's last check failed.",
-               "Agents are not checked or moved until a check succeeds. It tries again in 30 seconds.", [])]),
-            ("failed move, tool known", doc(moves=[("escaped launch", tree)], events=[("failed", 0, {"pid": 321})]),
+            ("failed move with the bus unreachable, tool known",
+             doc(moves=[("escaped launch", tree)], events=[("failed", 0, {})]),
              [("move-failed", "move-failed", "warn", "The warden could not move 1 agents into their limits.",
                "claude still run outside them. It tries again on its next check.", [show])]),
-            ("failed move, tool unknown", doc(events=[("failed", 0, {})]),
-             [("move-failed", "move-failed", "warn", "The warden could not move 1 agents into their limits.",
+            ("failed move, agents unknown", doc(events=[("failed", 0, {})]),
+             [("move-failed", "move-failed", "warn", "The warden could not move agents into their limits.",
                "It tries again on its next check.", [show])]),
+            ("one agent's events on every tick count once",
+             doc(moves=[("escaped launch", tree)],
+                 events=[*[("failed", at, {"pid": 321}) for at in (-60, -30, 0)],
+                         *[(kind, at, {"pid": 777}) for kind in ("partial", "moved") for at in (-30, 0)]]),
+             [("move-failed", "move-failed", "warn", "The warden could not move 1 agents into their limits.",
+               "claude still run outside them. It tries again on its next check.", [show]),
+              ("move-partial", "move-partial", "warn", "The warden moved only part of 1 agents into their limits.",
+               "The rest still runs outside them. It tries again on its next check.", [show]),
+              ("moved", "moved", "info", "The warden moved 1 agents into their limits.", None, [])]),
             ("partial move", fixtures["partial"],
              [("move-partial", "move-partial", "warn", "The warden moved only part of 1 agents into their limits.",
                "The rest still runs outside them. It tries again on its next check.", [show])]),
@@ -1085,13 +1092,13 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             ("near the task limit", doc(lanes=w._fixture_lanes(tasks=6200, near=["tasks"])),
              [("near-limit", f"near-limit:{lane}", "warn", "claude in vsy-52 is near its task limit.",
                "Tasks: 6200 of 8192 tasks; past it the agent cannot start processes.", [show_lane, stop_lane])]),
-            ("busy leftover work in report mode", fixtures["leftover-busy"],
+            ("busy leftover work in report mode", from_tick("report", True, **orphans(harmful)),
              [("leftover-busy", "leftover-busy:agent-confine-leak.scope", "warn",
                "Leftover work from a finished agent is busy.",
                "42 processes, 1.5 cores, 2 GB. The warden is set not to stop it.",
                [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]])]),
             ("busy leftover work with reaping off, cores unread",
-             without_reap_setting("correct", **orphans({**harmful, "cores": None}, idle)),
+             from_tick("correct", False, **orphans({**harmful, "cores": None}, idle)),
              [("leftover-busy", "leftover-busy:agent-confine-leak.scope", "warn",
                "Leftover work from a finished agent is busy.", "42 processes, 2 GB. The warden is set not to stop it.",
                [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]]),

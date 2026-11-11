@@ -157,12 +157,13 @@ function wardenActionArgs(): { missing: string[]; args: string[][] } {
   return { missing, args };
 }
 const warden = wardenActionArgs();
+/** An action's arguments with its scope replaced, since vsys parses any scope string alike. */
+function actionShape(args: string[]): string {
+  return args.map((arg, i) => (i === 1 ? "SCOPE" : arg)).join(" ");
+}
 test("the warden's status fixtures name a lane and a lane's Stop", () => {
   expect(warden.missing).toEqual([]);
-  const shapes = warden.args.map((args) =>
-    args.map((arg, i) => (i === 1 ? "SCOPE" : arg)).join(" "),
-  );
-  expect(shapes).toEqual(
+  expect(warden.args.map(actionShape)).toEqual(
     expect.arrayContaining(["--lane SCOPE", "--lane SCOPE --stop"]),
   );
 });
@@ -171,10 +172,11 @@ test("the warden's status fixtures name a lane and a lane's Stop", () => {
 // are the warden's status actions, which the widget runs as vsys arguments:
 // the parser is strict, so an argument vsys does not take throws before this
 // refusal, and reaching lane-needs-terminal proves vsys parsed the action and
-// that its --stop came with --lane. An empty action is vsys with no arguments.
+// that its --stop came with --lane. One row runs per action shape. An empty
+// action is vsys with no arguments.
 const laneRows = new Map<string, string[]>();
 for (const args of warden.args)
-  if (args.length > 0) laneRows.set(args.join("\0"), [...args, "--once"]);
+  if (args.length > 0) laneRows.set(actionShape(args), [...args, "--once"]);
 test.each<[string[], string]>([
   [["--stop"], "stop-needs-lane"],
   ...[...laneRows.values()].map((args): [string[], string] => [
