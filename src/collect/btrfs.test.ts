@@ -8,7 +8,6 @@ import {
   unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { summarySnapshot } from "../model/export";
 import {
   damageCounts,
   type IntegrityState,
@@ -20,6 +19,7 @@ import {
 import { point } from "../store/point";
 import { emptySnapshot, fixture } from "../test/fixture";
 import { present } from "../test/present";
+import { summarySnapshot } from "../ui/export";
 import { btrfsMounts, StorageCollector, scrubProblem } from "./btrfs";
 import { Reader } from "./io";
 import { parseMounts } from "./mounts";

@@ -1,5 +1,191 @@
+import type { Config } from "../config/config";
 import { exportedSnapshot, exportJson, safe } from "../model/export";
-import type { Snapshot } from "../model/types";
+import { programName } from "../model/naming";
+import type { Lane, Snapshot, SourceError } from "../model/types";
+import {
+  type Cause,
+  type CauseId,
+  causes,
+  type Level,
+  type Meter,
+  meters,
+} from "../model/verdict";
+import { attention } from "./attention";
+
+/** The name the bar widget's reader (VGS-2321) checks exactly. */
+export const summarySchema = "vsys.summary.v2";
+
+export interface SummaryProcess {
+  pid: number;
+  name: string;
+}
+/**
+ * A cause the ladder raised carries its Home card's title, so the summary and
+ * the card say the same words, with each lane the cause names written by name
+ * alone, and the processes the cause names. A cause that could not be
+ * measured has no card and no level.
+ */
+export type SummaryCause =
+  | {
+      cause: CauseId;
+      level: Level;
+      subject: string | null;
+      title: string;
+      processes: SummaryProcess[];
+      /** vsys arguments that open vsys at this cause; empty when none exists. */
+      open: string[];
+    }
+  | { cause: CauseId; level: null; subject: null };
+export interface SummaryMeter {
+  id: Meter["id"];
+  value: number | null;
+  max: number | null;
+  level: Level;
+}
+export interface Summary {
+  schema: typeof summarySchema;
+  time: number;
+  verdict: SummaryCause[];
+  meters: SummaryMeter[];
+  errors: SourceError[];
+}
+export interface SummaryOptions {
+  errors?: SourceError[];
+  scratchMeasured?: boolean;
+}
+
+function subject(cause: Cause): string | null {
+  if (cause.lanes[0]) return cause.lanes[0].id;
+  if (cause.groups[0]) return cause.groups[0].path;
+  if (cause.paths[0]) return cause.paths[0];
+  return null;
+}
+
+/** The lanes a cause names: its own, then its consumer when that is a lane. */
+function namedLanes(cause: Cause): Lane[] {
+  const lanes =
+    typeof cause.consumer === "string"
+      ? cause.lanes
+      : [...cause.lanes, cause.consumer];
+  return lanes.filter(
+    (lane, i) => lanes.findIndex((other) => other.id === lane.id) === i,
+  );
+}
+
+/**
+ * The processes a cause names: its own `procs`, then each named lane's main
+ * process. A lane leading no process has none to list.
+ */
+function processes(cause: Cause): SummaryProcess[] {
+  return [
+    ...cause.procs.map((proc) => ({ pid: proc.pid, name: programName(proc) })),
+    ...namedLanes(cause)
+      .filter((lane) => lane.mainPid)
+      .map((lane) => ({ pid: lane.mainPid, name: lane.name })),
+  ];
+}
+
+/** A reading `meters()` sets on every meter of this id; an unread one is null. */
+function reading(meter: Meter, name: string): number | null {
+  const value = meter.values[name];
+  if (value === undefined)
+    throw new Error(`Meter ${meter.id} carries no ${name} reading`);
+  return value;
+}
+
+function summaryMeter(meter: Meter): SummaryMeter {
+  switch (meter.id) {
+    case "cpu":
+      return {
+        id: meter.id,
+        value: reading(meter, "system"),
+        max: 100,
+        level: meter.level,
+      };
+    case "memory":
+      return {
+        id: meter.id,
+        value: reading(meter, "used"),
+        max: reading(meter, "total"),
+        level: meter.level,
+      };
+    case "disk":
+      return {
+        id: meter.id,
+        value: reading(meter, "some"),
+        max: 100,
+        level: meter.level,
+      };
+    case "builds":
+      return {
+        id: meter.id,
+        value: reading(meter, "builds"),
+        max: reading(meter, "cores"),
+        level: meter.level,
+      };
+    default:
+      throw new Error(`Unknown meter id: ${meter.id}`);
+  }
+}
+
+/**
+ * Cheap machine verdict for external consumers, among them the bar widget's
+ * flyout. Its words are the Home cards' own, so the two never disagree.
+ */
+export function summarySnapshot(
+  s: Snapshot,
+  c: Config,
+  options: SummaryOptions = {},
+): Summary {
+  // One card per cause, keyed by the cause it was written for. The widget
+  // draws no process id, so a lane is its name; the ids are in `processes`.
+  const cards = attention(s, c, { laneName: (lane) => lane.name });
+  const titles = new Map(cards.map((card) => [card.id, card.title]));
+  const verdict: SummaryCause[] = causes(s, c).map((cause) => {
+    const title = titles.get(cause.id);
+    if (title === undefined)
+      throw new Error(`Cause ${cause.id} has no attention card`);
+    return {
+      cause: cause.id,
+      level: cause.level,
+      subject: subject(cause),
+      title,
+      processes: processes(cause),
+      // No vsys argument opens vsys at a cause yet.
+      open: [],
+    };
+  });
+  if (options.scratchMeasured === false)
+    verdict.push({ cause: "scratch", level: null, subject: null });
+  // Until a unit has an hour average, as in a `--once` run, the cause is
+  // unmeasured, not clear.
+  const units = s.services;
+  if (
+    units === null ||
+    (units.length > 0 && units.every((u) => u.cpuHourPercent === null))
+  )
+    verdict.push({ cause: "service-cpu", level: null, subject: null });
+  return {
+    schema: summarySchema,
+    time: s.time,
+    verdict,
+    meters: meters(s, c).map(summaryMeter),
+    errors: options.errors ?? s.errors,
+  };
+}
+
+export function exportSummary(
+  s: Snapshot,
+  c: Config,
+  errors: SourceError[] = s.errors,
+  options: Omit<SummaryOptions, "errors"> = {},
+): string {
+  return `${JSON.stringify(
+    summarySnapshot(s, c, { ...options, errors }),
+    null,
+    2,
+  )}\n`;
+}
 
 /** Reports retain resource limits and launch evidence alongside each rule hit. */
 export function exportSnapshot(

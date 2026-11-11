@@ -1,12 +1,18 @@
 import { expect, test } from "bun:test";
+import { defaults } from "../config/config";
+import { laneText } from "../model/naming";
+import { causeOrder, causes } from "../model/verdict";
 import {
   emptySnapshot,
+  everyCauseSnapshot,
   groupSnapshot,
   laneSnapshot,
   processSnapshot,
+  serviceSnapshot,
 } from "../test/fixture";
 import { present } from "../test/present";
-import { exportSnapshot } from "./export";
+import { attention } from "./attention";
+import { exportSnapshot, summarySnapshot } from "./export";
 
 // A lane name reaches a cell of the Agents table, which a Markdown renderer's
 // table parser reads: an unescaped `|` would split the cell, a newline would
@@ -82,4 +88,178 @@ test("a lane with no member read exports its main process as unknown", () => {
   const pid = (name: string) =>
     rows.find((row) => row.startsWith(`| ${name} |`))?.split(" | ")[5];
   expect([pid("led"), pid("bare")]).toEqual(["4071", "?"]);
+});
+test("summary subjects never use navigation-only targets", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.system.pressure.memory = { some: c.pressureRed + 1, full: 0, total: 0 };
+  s.groups = [
+    groupSnapshot({
+      path: "app.slice",
+      name: c.desktopSlice,
+      swap: c.swapFloor + 1,
+    }),
+    groupSnapshot({
+      path: "app.slice/shell.scope",
+      name: "shell.scope",
+      swap: c.swapFloor + 1,
+    }),
+  ];
+  const summary = summarySnapshot(s, c);
+  expect(
+    summary.verdict.find((cause) => cause.cause === "system-memory"),
+  ).toMatchObject({
+    level: "warn",
+    subject: null,
+  });
+  expect(
+    summary.verdict.find((cause) => cause.cause === "desktop-swap"),
+  ).toMatchObject({
+    level: "danger",
+    subject: "app.slice/shell.scope",
+  });
+});
+
+test("summary meters keep unknown readings null and graded warn", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.system.pressure = {};
+  s.system.memory = {};
+  // A running desktop slice whose swap could not be read.
+  s.groups = [
+    groupSnapshot({ path: c.desktopSlice, name: c.desktopSlice, swap: null }),
+  ];
+  const summary = summarySnapshot(s, c);
+  expect(summary.meters).toContainEqual({
+    id: "cpu",
+    value: null,
+    max: 100,
+    level: "warn",
+  });
+  expect(summary.meters).toContainEqual({
+    id: "memory",
+    value: null,
+    max: null,
+    level: "warn",
+  });
+  expect(summary.meters).toContainEqual({
+    id: "disk",
+    value: null,
+    max: 100,
+    level: "warn",
+  });
+});
+
+test("summary keeps service-cpu unmeasured until a unit has an hour average", () => {
+  const c = defaults();
+  const s = emptySnapshot();
+  s.services = [serviceSnapshot({ cpuHourPercent: null })];
+  expect(summarySnapshot(s, c).verdict).toContainEqual({
+    cause: "service-cpu",
+    level: null,
+    subject: null,
+  });
+  // A failed unit listing is unmeasured too.
+  s.services = null;
+  expect(summarySnapshot(s, c).verdict).toContainEqual({
+    cause: "service-cpu",
+    level: null,
+    subject: null,
+  });
+  s.services = [serviceSnapshot({ cpuHourPercent: 0 })];
+  expect(
+    summarySnapshot(s, c).verdict.some((v) => v.cause === "service-cpu"),
+  ).toBe(false);
+});
+
+test("each raised cause carries its card's title and the processes it names", () => {
+  const c = defaults();
+  // The every-cause snapshot fires every host pressure, so a host card owns
+  // each stalling lane there; a quiet host with stalling lanes raises the one
+  // cause it cannot.
+  const quiet = emptySnapshot();
+  quiet.system.pressure = {
+    cpu: { some: 1, full: 0, total: 0 },
+    memory: { some: 0, full: 0, total: 0 },
+    io: { some: 1, full: 0, total: 0 },
+  };
+  // The second lane leads no process, so the summary lists none for it.
+  quiet.lanes = [
+    laneSnapshot({ pressure: c.pressureRed + 1 }),
+    laneSnapshot({
+      id: "agents.slice/b.scope",
+      name: "lane-b",
+      mainPid: 0,
+      pressure: c.pressureRed + 1,
+    }),
+  ];
+  // Each lane a cause names is listed by its main process.
+  const lanePids: Record<string, string[]> = {
+    unconfined: ["escaped"],
+    "memory-cap": ["capped"],
+    disk: ["writer"],
+    "system-cpu": ["escaped"],
+    stalls: ["lane-a"],
+  };
+  const seen = new Set<string>();
+  // The causes whose Home card names a lane with its process id.
+  const named = new Set<string>();
+  for (const s of [everyCauseSnapshot(c), quiet]) {
+    const cards = attention(s, c);
+    const raised = causes(s, c);
+    for (const entry of summarySnapshot(s, c).verdict) {
+      if (entry.level === null) continue;
+      seen.add(entry.cause);
+      const card = present(
+        cards.find((item) => item.id === entry.cause),
+        `the ${entry.cause} card`,
+      );
+      const cause = present(
+        raised.find((item) => item.id === entry.cause),
+        `the ${entry.cause} cause`,
+      );
+      // The card's own words, with each lane it names by its name alone.
+      const lanes =
+        typeof cause.consumer === "string"
+          ? cause.lanes
+          : [...cause.lanes, cause.consumer];
+      const title = lanes.reduce(
+        (text, lane) => text.replaceAll(laneText(lane), lane.name),
+        card.title,
+      );
+      if (title !== card.title) named.add(entry.cause);
+      expect({ cause: entry.cause, title: entry.title }).toEqual({
+        cause: entry.cause,
+        title,
+      });
+      expect({ cause: entry.cause, title: entry.title }).not.toEqual({
+        cause: entry.cause,
+        title: expect.stringMatching(/PID \d/),
+      });
+      expect({ cause: entry.cause, open: entry.open }).toEqual({
+        cause: entry.cause,
+        open: [],
+      });
+      // Only an unconfirmed tool names processes of its own in `procs`.
+      expect({ cause: entry.cause, processes: entry.processes }).toEqual({
+        cause: entry.cause,
+        processes:
+          entry.cause === "unconfirmed-tool"
+            ? [{ pid: 2, name: "pi" }]
+            : (lanePids[entry.cause] ?? []).map((name) => ({ pid: 40, name })),
+      });
+    }
+  }
+  expect([...seen].sort()).toEqual(Object.keys(causeOrder).sort());
+  // The fixture reaches every card that lists lanes, so the rows above
+  // compare a card that carries a process id with a summary that does not.
+  expect([...named]).toEqual(
+    expect.arrayContaining([
+      "disk",
+      "memory-cap",
+      "stalls",
+      "system-cpu",
+      "unconfined",
+    ]),
+  );
 });

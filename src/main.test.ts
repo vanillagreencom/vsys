@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { Collector } from "./collect/collector";
 import { ConfigError, saveConfig } from "./config/config";
 import { main, sampleSummary } from "./main";
-import { summarySnapshot } from "./model/export";
 import { fixture, hermeticBin } from "./test/fixture";
+import { summarySnapshot } from "./ui/export";
 import { errorText } from "./ui/refusals";
 
 test("once exports structured evidence and fails visibly on source errors", async () => {
@@ -105,7 +105,7 @@ test("once summary exports verdict schema and skips scratch collection", async (
     }).toMatchInlineSnapshot(`
       {
         "errors": [],
-        "schema": "vsys.summary.v1",
+        "schema": "vsys.summary.v2",
         "time": "number",
         "verdict": [
           {

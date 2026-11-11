@@ -122,6 +122,23 @@ export interface DamageFigures {
   unnamed: number | null;
   blocks: number | null;
 }
+/**
+ * What a cause or a meter names as its consumer: the lane itself, so each
+ * reader writes it in its own form, or the text naming anything else.
+ */
+export type Consumer = Lane | string;
+/** How a reader writes a lane it names. */
+export type LaneName = (lane: Lane) => string;
+/**
+ * A consumer written as text: a lane through `laneName`, `laneText()` unless
+ * the caller writes lanes another way, and anything else as it is.
+ */
+export function consumerText(
+  consumer: Consumer,
+  laneName: LaneName = laneText,
+): string {
+  return typeof consumer === "string" ? consumer : laneName(consumer);
+}
 export interface Cause {
   id: CauseId;
   level: Level;
@@ -144,7 +161,7 @@ export interface Cause {
   /** Where the card lands, when that row is not one of the subjects above. */
   at?: CauseAt;
   /** The single biggest consumer behind the cause, empty when there is none. */
-  consumer: string;
+  consumer: Consumer;
   /** The numbers behind the cause. Formatting belongs to the UI. */
   values: Record<string, number | null>;
   /**
@@ -158,9 +175,9 @@ export interface Cause {
 export interface Meter {
   id: "cpu" | "memory" | "disk" | "builds";
   level: Level;
-  consumer: string;
+  consumer: Consumer;
   /** The scope holding swap, named only while the desktop is swapped out. */
-  holder?: string;
+  holder?: Consumer;
   values: Record<string, number | null>;
 }
 export type Kind = "cpu" | "memory" | "io";
@@ -319,18 +336,22 @@ export function laneLinkers(s: Snapshot, lane: Lane, c: Config): number | null {
     (p) => members.has(p.pid) && c.linkerNames.includes(p.build ?? ""),
   ).length;
 }
-/** A scope's lane name when it has one, otherwise the decoded unit name. */
+/** A scope's lane when it has one, otherwise the decoded unit name. */
+export function consumerOf(
+  group: Pick<Group, "path" | "name"> | undefined,
+  s: Snapshot,
+): Consumer {
+  if (!group) return "";
+  return s.lanes.find((l) => l.id === group.path) ?? unitLabel(group.name);
+}
+/** `consumerOf()` written as text by `consumerText()`. */
 export function consumerName(
   group: Pick<Group, "path" | "name"> | undefined,
   s: Snapshot,
+  laneName?: LaneName,
 ): string {
-  if (!group) return "";
-  const lane = s.lanes.find((l) => l.id === group.path);
-  return lane ? laneText(lane) : unitLabel(group.name);
+  return consumerText(consumerOf(group, s), laneName);
 }
-/** A lane named in text, or nothing when there is no lane to name. */
-const laneOrNone = (lane: Lane | undefined): string =>
-  lane ? laneText(lane) : "";
 function busiest(lanes: Lane[]): Lane | undefined {
   return [...lanes].sort((a, b) => (b.cpu ?? 0) - (a.cpu ?? 0))[0];
 }
@@ -550,7 +571,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (firstEscaped)
     add("unconfined", "danger", {
       lanes: escaped,
-      consumer: laneText(firstEscaped),
+      consumer: firstEscaped,
       values: { lanes: escaped.length },
     });
   const readOnly = s.storage.volumes.filter((v) => v.readOnly);
@@ -640,7 +661,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     add("disk", io !== null && io > c.pressureRed ? "danger" : "warn", {
       lanes: [...(lane ? [lane] : []), ...stalled],
       groups: [writer],
-      consumer: consumerName(writer, s),
+      consumer: consumerOf(writer, s),
       values: {
         some: io,
         full: s.system.pressure.io?.full ?? null,
@@ -652,14 +673,14 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   }
   /** The swap cause is about the top holder; the reclaim cause only points to it. Keep that distinction so a changing top holder cannot create a second alert for something that did not stall. */
   const swapHolder = topSwapHolder(s.groups, c);
-  const holderName = consumerName(swapHolder, s);
+  const swapConsumer = consumerOf(swapHolder, s);
   const holderAt: CauseAt | undefined = swapHolder
     ? { kind: "group", path: swapHolder.path }
     : undefined;
   if (j.host["desktop-swap"] === "fired")
     add("desktop-swap", "danger", {
       groups: swapHolder ? [swapHolder] : [],
-      consumer: holderName,
+      consumer: swapConsumer,
       values: {
         swap,
         holder: swapHolder?.swap ?? null,
@@ -679,7 +700,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (firstCapped)
     add("memory-cap", "danger", {
       lanes: capped,
-      consumer: laneText(firstCapped),
+      consumer: firstCapped,
       values: { lanes: capped.length, floor: c.memoryFloor },
     });
   const [firstLoose] = loose;
@@ -687,21 +708,21 @@ export function causes(s: Snapshot, c: Config): Cause[] {
     const worst = Math.max(...loose.map((l) => lanePressure(l) ?? 0));
     add("stalls", worst > c.pressureRed ? "danger" : "warn", {
       lanes: loose,
-      consumer: laneText(firstLoose),
+      consumer: firstLoose,
       values: { lanes: loose.length, worst },
     });
   }
   if (memoryFired)
     add("system-memory", "warn", {
       lanes: owned("memory"),
-      consumer: holderName,
+      consumer: swapConsumer,
       at: holderAt,
       values: { some: memory },
     });
   if (cpuFired)
     add("system-cpu", "warn", {
       lanes: owned("cpu"),
-      consumer: laneOrNone(busiest(s.lanes)),
+      consumer: busiest(s.lanes) ?? "",
       values: { some: cpu },
     });
   const busyUnits = where(j["service-cpu"], "fired").sort(
@@ -711,7 +732,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
   if (busiestUnit)
     add("service-cpu", "warn", {
       groups: busyUnits,
-      consumer: consumerName(busiestUnit, s),
+      consumer: consumerOf(busiestUnit, s),
       values: {
         hour: busiestUnit.cpuHourPercent,
         threshold: c.serviceCpuPercent,
@@ -826,7 +847,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     {
       id: "cpu",
       level: gauge(cpu, c.pressureRed, c.pressureAmber),
-      consumer: laneOrNone(top),
+      consumer: top ?? "",
       values: {
         // The stall percentage the level grades on, so the meter shows its cause.
         system: cpu,
@@ -845,8 +866,8 @@ export function meters(s: Snapshot, c: Config): Meter[] {
         !groupsComplete(s, c.cgroupRoot)
           ? gauge(swap, c.swapFloor, c.swapFloor)
           : "ok",
-      consumer: consumerName(largest, s),
-      holder: swapped ? consumerName(holder, s) : undefined,
+      consumer: consumerOf(largest, s),
+      holder: swapped ? consumerOf(holder, s) : undefined,
       values: {
         used: total === null || available === null ? null : total - available,
         total,
@@ -859,7 +880,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     {
       id: "disk",
       level: gauge(io, c.pressureRed, c.pressureAmber),
-      consumer: consumerName(writer, s),
+      consumer: consumerOf(writer, s),
       values: {
         some: io,
         full: s.system.pressure.io?.full ?? null,
@@ -870,7 +891,7 @@ export function meters(s: Snapshot, c: Config): Meter[] {
     {
       id: "builds",
       level: gauge(load.builds, s.system.cores * 2, s.system.cores),
-      consumer: laneOrNone(top),
+      consumer: top ?? "",
       values: {
         builds: load.builds,
         linkers: load.linkers,
