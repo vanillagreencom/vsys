@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { emptySnapshot, serviceSnapshot } from "../test/fixture";
+import { emptySnapshot, groupSnapshot, serviceSnapshot } from "../test/fixture";
 import { present } from "../test/present";
 import { normalizeLane, normalizeSnapshot } from "./migrate";
 
-test("snapshot replay leaves missing service warm-up readings unknown and keeps recorded values", () => {
+test("snapshot replay leaves missing service warm-up readings and group file counters unknown and keeps recorded values", () => {
   for (const values of [
     {},
     { cpuSoFarPercent: 0, cpuSoFarMs: 60_000 },
@@ -15,10 +15,12 @@ test("snapshot replay leaves missing service warm-up readings unknown and keeps 
       cpuSoFarMs: _span,
       ...legacy
     } = serviceSnapshot({ cpuHourPercent: 50 });
+    const { fileStat: _fileStat, ...olderGroup } = groupSnapshot();
     const stored = JSON.parse(
       JSON.stringify({
         ...s,
         services: [{ ...legacy, ...values }],
+        groups: [olderGroup],
       }),
     );
     const replay = normalizeSnapshot(stored);
@@ -29,6 +31,7 @@ test("snapshot replay leaves missing service warm-up readings unknown and keeps 
         cpuSoFarMs: values.cpuSoFarMs ?? null,
       },
     );
+    expect(present(replay.groups[0], "the replayed group").fileStat).toBeNull();
     expect(normalizeSnapshot(replay)).toEqual(replay);
     expect(stored.services[0]).toEqual({ ...legacy, ...values });
   }
