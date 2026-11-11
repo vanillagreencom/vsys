@@ -18,6 +18,7 @@ import {
   processSnapshot,
   serviceSnapshot,
   volumeSnapshot,
+  wardenFixture,
 } from "../test/fixture";
 import { present } from "../test/present";
 import { summarySnapshot } from "../ui/export";
@@ -143,6 +144,15 @@ test("the agent slice name comes from config, not a hardcoded name", () => {
   expect(meterOf(s, defaults(), "memory").values.cache).toBeNull();
 });
 
+/**
+ * The near list of the warden's lane near both its limits, in the order the
+ * warden writes it, so a warning that names memory second still counts.
+ */
+const nearBoth: string[] = present(
+  wardenFixture("status-near-limit").lanes[0],
+  "the warden's near-limit lane",
+).near;
+
 test.each([
   {
     name: "memory.current past 90% with working memory under it raises nothing",
@@ -166,7 +176,7 @@ test.each([
   },
   {
     name: "a lane scope the warden warns is near its memory limit is left out",
-    warden: [{ scope: "agents.slice/a.scope", near: ["memory"] }],
+    warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
     want: "clear",
   },
   {
@@ -185,7 +195,7 @@ test.each([
     // The warden warns for the slice only past memory.high itself.
     name: "vsys judges the slice while the warden warns for a lane in it",
     at: "agents.slice",
-    warden: [{ scope: "agents.slice/a.scope", near: ["memory"] }],
+    warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
     want: "fired",
   },
 ] as {

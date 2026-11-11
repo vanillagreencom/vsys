@@ -11,7 +11,12 @@ import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
-import { claudeLink, fixture, userManager } from "../test/fixture";
+import {
+  claudeLink,
+  fixture,
+  userManager,
+  wardenFixture,
+} from "../test/fixture";
 import { present } from "../test/present";
 import { fakeBus, noBus } from "../test/udisks";
 import { FinishedScrubMemory } from "./btrfs";
@@ -1185,12 +1190,7 @@ test("a warden warning names the kernel path of the lane scope it is about", asy
   f.group(scope, [40]);
   f.proc(40, scope);
   // The warden's own fixture, which warns for that scope.
-  const status = JSON.parse(
-    fs.readFileSync(
-      join(import.meta.dir, "../../warden/fixtures/status-near-limit.json"),
-      "utf8",
-    ),
-  );
+  const status = wardenFixture("status-near-limit");
   const file = join(f.root, "run/agent-warden/status.json");
   f.write(file, JSON.stringify(status));
   const collector = new Collector(

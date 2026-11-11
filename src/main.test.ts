@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Collector } from "./collect/collector";
 import { ConfigError, saveConfig } from "./config/config";
 import { main, sampleSummary } from "./main";
-import { fixture, hermeticBin } from "./test/fixture";
+import { fixture, hermeticBin, wardenFixture } from "./test/fixture";
 import { summarySnapshot } from "./ui/export";
 import { errorText } from "./ui/refusals";
 
@@ -396,12 +396,7 @@ test("once carries the warden's leftover counts, and null where none were read",
       leftovers: { state: "absent", time: null, ...none },
     });
     // The warden's own fixture, written as of now so it is fresh.
-    const status = JSON.parse(
-      readFileSync(
-        join(import.meta.dir, "../warden/fixtures/status-leftovers.json"),
-        "utf8",
-      ),
-    );
+    const status = wardenFixture("status-leftovers");
     status.time = Math.floor(Date.now() / 1000);
     f.write(join(runtime, "agent-warden/status.json"), JSON.stringify(status));
     expect(await run()).toEqual({

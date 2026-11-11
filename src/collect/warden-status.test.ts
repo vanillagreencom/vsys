@@ -1,24 +1,27 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WardenNearLimit } from "../model/types";
-import { fixture, userManager } from "../test/fixture";
+import { fixture, userManager, wardenFixture } from "../test/fixture";
 import { Reader } from "./io";
 import { readWardenStatus, staleAfterMs } from "./warden-status";
 
-/** The warden's own fixtures, so this reads the shape the warden writes. */
-const wardenFixture = (name: string) =>
-  JSON.parse(
-    readFileSync(
-      join(import.meta.dir, `../../warden/fixtures/${name}.json`),
-      "utf8",
-    ),
-  );
 const written = wardenFixture("status-leftovers");
 const now = written.time * 1000;
 const counts = { testWorlds: 3, failedUnits: 1, testProcesses: 3 };
 const none = { testWorlds: null, failedUnits: null, testProcesses: null };
 const noWarnings: WardenNearLimit[] = [];
+const nearLimit = wardenFixture("status-near-limit");
+/**
+ * A real status lists every lane, so the warned lane sits among the calm lanes
+ * of another warden fixture, neither first nor last, and its warning must take
+ * the near list of the lane its key names.
+ */
+const calm = wardenFixture("status-leftover-idle").lanes.filter(
+  (lane: { scope: string }) =>
+    !nearLimit.lanes.some(
+      (warned: { scope: string }) => warned.scope === lane.scope,
+    ),
+);
 /** The one warning the warden's near-limit fixture gives. */
 const warned: WardenNearLimit[] = [
   {
@@ -45,8 +48,9 @@ test.each([
   {
     name: "a fresh status gives the warden's near-limit warnings and their limits",
     text: JSON.stringify({
-      ...wardenFixture("status-near-limit"),
+      ...nearLimit,
       time: written.time,
+      lanes: [...calm.slice(0, 1), ...nearLimit.lanes, ...calm.slice(1)],
     }),
     want: {
       state: "read",

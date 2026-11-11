@@ -1,6 +1,7 @@
 import {
   chmodSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -29,6 +30,18 @@ const claudeBinary = "/home/reader/.local/share/claude/versions/2.1.0";
 /** The kernel cgroup of the user manager of the user running the tests. */
 const uid = process.getuid?.() ?? 1000;
 export const userManager = `/user.slice/user-${uid}.slice/user@${uid}.service`;
+
+/**
+ * One of the warden's shipped `status.json` fixtures, which its own suite
+ * proves are what it writes, so a reader is tested on the warden's shape.
+ */
+export const wardenFixture = (name: string) =>
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dir, `../../warden/fixtures/${name}.json`),
+      "utf8",
+    ),
+  );
 
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
