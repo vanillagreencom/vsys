@@ -102,30 +102,12 @@ test("the switch asks tmux for the target and reports what it refuses", async ()
 });
 
 test("a detached terminal settles at executable launch, independent of its later lifetime", async () => {
-  type Row = [
-    string | undefined,
-    string[],
-    string | null,
-    "-e" | "--",
-    "ok" | "error" | "nonzero" | "signal",
-  ];
-  const rows: Row[] = [
-    ["ghostty", ["ghostty", "xdg-terminal-exec"], "ghostty", "-e", "ok"],
-    [
-      "gnome-terminal",
-      ["gnome-terminal", "xdg-terminal-exec"],
-      "gnome-terminal",
-      "--",
-      "ok",
-    ],
-    [undefined, ["xdg-terminal-exec"], "xdg-terminal-exec", "-e", "signal"],
-    ["missing", ["xdg-terminal-exec"], "xdg-terminal-exec", "-e", "ok"],
-    ["ghostty --flag", ["xdg-terminal-exec"], "xdg-terminal-exec", "-e", "ok"],
-    ["missing", [], null, "-e", "ok"],
-    ["ghostty", ["ghostty"], "ghostty", "-e", "error"],
-    ["ghostty", ["ghostty"], "ghostty", "-e", "nonzero"],
-  ];
-  for (const [terminal, available, opener, execute, end] of rows) {
+  const rows = [
+    { available: true, end: "ok" },
+    { available: false, end: "ok" },
+    { available: true, end: "error" },
+  ] as const;
+  for (const { available, end } of rows) {
     const calls: unknown[] = [];
     let unreferenced = false;
     class Terminal extends ChildProcess {
@@ -140,14 +122,16 @@ test("a detached terminal settles at executable launch, independent of its later
       DISPLAY: ":fixture",
       TMUX: "/old/socket,111,0",
       TMUX_PANE: "%3",
-      TERMINAL: terminal,
+      TERMINAL: "preferred-terminal",
     };
     const result = openTerminal(
       "%9",
       "/run/agent,4242",
       env,
       (command) =>
-        available.includes(command) ? `/launch/bin/${command}` : null,
+        command === "xdg-terminal-exec" && !available
+          ? null
+          : `/launch/bin/${command}`,
       (command, args, options) => {
         calls.push({ command, args, options });
         queueMicrotask(() => {
@@ -170,24 +154,26 @@ test("a detached terminal settles at executable launch, independent of its later
     // terminal. Awaiting result itself would hide dependence on window exit.
     await new Promise<void>((resolve) => setImmediate(resolve));
     const expected =
-      end === "error" ? spawnError : opener === null ? "unavailable" : "opened";
+      end === "error" ? spawnError : available ? "opened" : "unavailable";
     expect(outcome).toBe(expected);
-    if (opener !== null && end !== "error") {
-      child.emit(
-        "exit",
-        end === "signal" ? null : end === "nonzero" ? 1 : 0,
-        end === "signal" ? "SIGHUP" : null,
-      );
-      await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(outcome).toBe(expected);
+    if (available && end !== "error") {
+      for (const [code, signal] of [
+        [0, null],
+        [1, null],
+        [null, "SIGHUP"],
+      ] as const) {
+        child.emit("exit", code, signal);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(outcome).toBe(expected);
+      }
     }
     expect(calls).toEqual(
-      opener === null
+      !available
         ? []
         : [
             {
-              command: `/launch/bin/${opener}`,
-              args: [execute, "tmux", "-S", "/run/agent", "attach", "-t", "%9"],
+              command: "/launch/bin/xdg-terminal-exec",
+              args: ["tmux", "-S", "/run/agent", "attach", "-t", "%9"],
               options: {
                 detached: true,
                 stdio: "ignore",
@@ -200,6 +186,6 @@ test("a detached terminal settles at executable launch, independent of its later
             },
           ],
     );
-    expect(unreferenced).toBe(opener !== null);
+    expect(unreferenced).toBe(available);
   }
 });

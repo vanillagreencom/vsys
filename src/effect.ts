@@ -1,6 +1,5 @@
 import { type ChildProcess, spawn as spawnProcess } from "node:child_process";
 import { writeFile } from "node:fs/promises";
-import { basename } from "node:path";
 import { attachArgv, switchClientArgv } from "./collect/tmux";
 import type { LaneEffect } from "./model/actions";
 
@@ -69,19 +68,15 @@ export async function openTerminal(
   which: (command: string) => string | null = Bun.which,
   spawn: TerminalSpawn = spawnProcess,
 ): ReturnType<TerminalOpen> {
-  const terminal =
-    (env.TERMINAL ? which(env.TERMINAL) : null) ?? which("xdg-terminal-exec");
+  const terminal = which("xdg-terminal-exec");
   if (!terminal) return "unavailable";
-  // GNOME's -e consumes one command string; -- preserves the attach argv.
-  // https://manpages.ubuntu.com/manpages/noble/man1/gnome-terminal.1.html
-  const execute = basename(terminal) === "gnome-terminal" ? "--" : "-e";
   // Inherit the desktop and PATH, but not a pane identity: a terminal opened
   // from another server must not look like a nested tmux client.
   const inherited = { ...env };
   delete inherited.TMUX;
   delete inherited.TMUX_PANE;
   return new Promise((resolve, reject) => {
-    const child = spawn(terminal, [execute, ...attachArgv(target, server)], {
+    const child = spawn(terminal, attachArgv(target, server), {
       detached: true,
       stdio: "ignore",
       env: inherited,

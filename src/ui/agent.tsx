@@ -493,9 +493,9 @@ export function Agent({
   });
   /**
    * One row, two answers. Inside the server that holds the pane vsys moves the
-   * reader's own view; outside it a new terminal attaches to the pane. Neither
-   * changes the agent's process or cgroup, so both bypass write mode. Without
-   * a terminal opener, copy the attach command and explain in the row.
+   * reader's own view; outside it xdg-terminal-exec opens a terminal attached
+   * to the pane. Neither changes the agent's process or cgroup, so both bypass
+   * write mode. Without xdg-terminal-exec, copy the command and explain in the row.
    */
   const goToTerminal = () => {
     // tmux moves a client to the pane it is already in by doing nothing, so

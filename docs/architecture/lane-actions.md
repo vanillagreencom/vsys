@@ -20,7 +20,7 @@ Review holds boundaries without a named check.
 - An action another program asks for, such as `vsys --lane SCOPE --stop`, only opens vsys's own confirmation. The keypress that accepts it rebuilds the command through `resolveIntent()`, and vsys refuses the action while write mode is off. No one-shot command changes the system. `src/main.test.ts` and `src/ui/App.test.tsx` check this boundary.
 - Report a refused effect as a refusal, never a completed stop.
 - Keep every system change in `runEffect()`. Review holds the single-writer rule.
-- A tmux view switch or opening a terminal on a pane changes no agent process or cgroup. Both bypass write mode and `runEffect()`, through `switchToPane()` and `openTerminal()` in `src/effect.ts`.
+- A tmux view switch or opening a terminal on a pane through `xdg-terminal-exec` changes no agent process or cgroup. Both bypass write mode and `runEffect()`, through `switchToPane()` and `openTerminal()` in `src/effect.ts`.
 
 ## The canonical example
 
