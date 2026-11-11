@@ -2563,9 +2563,10 @@ def _move_items(doc):
     items = []
     failed = _recent(doc, "failed")
     if failed:
-        # A failed event with no pid is the unreachable bus. It names no agent, and
-        # `outside` is this tick's plan, not that tick's, so the agents are unknown.
-        pids = set() if any(event["pid"] is None for event in failed) else _agents(failed)
+        # The count is the distinct agents the failed events name. A failed event with
+        # no pid, the unreachable bus, names none; `outside` is this tick's plan, not
+        # that tick's, so it adds none either.
+        pids = _agents(failed)
         tools = []
         for row in doc["outside"] or []:
             tool = _name(row["tool"]) if row["pid"] in pids else None
