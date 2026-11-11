@@ -190,6 +190,12 @@ test.each([
     want: "warden",
   },
   {
+    // Past vsys's own line too, where the summary would repeat the warning.
+    name: "a lane the warden warns for past vsys's own line is still left out of the summary",
+    warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
+    want: "warden",
+  },
+  {
     // The warden gives no item for a lane it could not read or could not
     // name, and none below its own line.
     name: "a lane scope the warden gives no warning for stays vsys's",
