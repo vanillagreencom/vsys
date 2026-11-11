@@ -7,7 +7,7 @@ import { act, useState } from "react";
 import { collectGroups } from "../collect/cgroups";
 import { Reader } from "../collect/io";
 import { defaults } from "../config/config";
-import type { Group, Lane, Snapshot } from "../model/types";
+import type { Group, Lane, Snapshot, WardenNearLimit } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import {
   emptySnapshot,
@@ -245,7 +245,13 @@ test("a coloured group row carries its cause, and a low cap is a cause only on a
     cap: 256 * mib,
     floor: c.memoryFloor,
   };
-  const rows: [string, Group[], Lane[], GroupCause | null][] = [
+  const rows: [
+    string,
+    Group[],
+    Lane[],
+    GroupCause | null,
+    WardenNearLimit[]?,
+  ][] = [
     [
       "a service capped on purpose",
       [capped("app.slice/slack-listen.service", { memory: 70 * mib })],
@@ -337,11 +343,25 @@ test("a coloured group row carries its cause, and a low cap is a cause only on a
       [],
       null,
     ],
+    [
+      "working memory near memory high in a scope the warden warns for",
+      [
+        groupSnapshot({
+          kernelPath: "/user.slice/agents.slice/a.scope",
+          memory: 95,
+          high: 100,
+        }),
+      ],
+      [],
+      null,
+      [{ kernelPath: "/user.slice/agents.slice/a.scope", near: ["memory"] }],
+    ],
   ];
-  for (const [name, groups, lanes, cause] of rows) {
+  for (const [name, groups, lanes, cause, warden] of rows) {
     const s = emptySnapshot();
     s.groups = groups;
     s.lanes = lanes;
+    if (warden) s.wardenNearLimits = warden;
     const g = present(groups[0], name);
     expect({ name, cause: groupCause(g, s, c) }).toEqual({ name, cause });
     expect({ name, level: groupLevel(g, s, c) }).toEqual({

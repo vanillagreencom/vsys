@@ -181,15 +181,21 @@ test("each alert condition emits its own rule and clears before rearming", () =>
     "ken PID 9152",
   ]);
 });
-test("pressure holds for elapsed seconds and resets when samples recover", () => {
+test("pressure holds for elapsed seconds and resets when samples recover, warden warning or not", () => {
   const engine = new AlertEngine();
   const c = defaults();
   c.pressureHoldSeconds = 5;
   const s = emptySnapshot(1000);
+  // The warden warns for this scope's memory, which leaves its pressure to vsys.
+  const kernelPath = "/user.slice/agents.slice/a.scope";
   const group = groupSnapshot({
+    kernelPath,
+    memory: 95,
+    high: 100,
     pressure: { cpu: { some: 15, full: 0, total: 1 } },
   });
   s.groups = [group];
+  s.wardenNearLimits = [{ kernelPath, near: ["memory"] }];
   expect(engine.evaluate(s, c)).toEqual([]);
   s.time = 5999;
   expect(engine.evaluate(s, c)).toEqual([]);

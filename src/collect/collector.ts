@@ -171,7 +171,7 @@ export class Collector {
     readonly serviceCpu = new ServiceCpu(),
     /**
      * The warden's status file. A collector given none reads no warden, and
-     * its sample carries no leftovers reading and no group the warden judged.
+     * its sample carries no leftovers reading and no warden warning.
      */
     private wardenStatus?: string,
   ) {
@@ -452,7 +452,7 @@ export class Collector {
       services,
       ...(sccache ? { sccache } : {}),
       ...(warden ? { leftovers: warden.leftovers } : {}),
-      ...(warden?.groups ? { wardenGroups: warden.groups } : {}),
+      ...(warden?.nearLimits ? { wardenNearLimits: warden.nearLimits } : {}),
     };
     s.alerts = this.engine.evaluate(s, c);
     mark("model");

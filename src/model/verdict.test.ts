@@ -165,32 +165,34 @@ test.each([
     want: "unread",
   },
   {
-    name: "a fresh warden status that judged the slice leaves it out",
-    at: "agents.slice",
-    warden: ["agents.slice"],
+    name: "a lane scope the warden warns is near its memory limit is left out",
+    warden: [{ scope: "agents.slice/a.scope", near: ["memory"] }],
     want: "clear",
   },
   {
-    name: "a fresh warden status that listed a lane scope leaves it out",
-    warden: ["agents.slice", "agents.slice/a.scope"],
-    want: "clear",
-  },
-  {
-    name: "a scope the warden did not list stays vsys's to judge",
-    warden: ["agents.slice", "agents.slice/b.scope"],
+    // The warden gives no item for a lane it could not read or could not
+    // name, and none below its own line.
+    name: "a lane scope the warden gives no warning for stays vsys's",
+    warden: [],
     want: "fired",
   },
   {
-    // A stale or unread status reaches the model as no status at all.
-    name: "with no fresh warden status vsys judges the slice itself",
+    name: "a warden warning for tasks alone leaves memory to vsys",
+    warden: [{ scope: "agents.slice/a.scope", near: ["tasks"] }],
+    want: "fired",
+  },
+  {
+    // The warden warns for the slice only past memory.high itself.
+    name: "vsys judges the slice while the warden warns for a lane in it",
     at: "agents.slice",
+    warden: [{ scope: "agents.slice/a.scope", near: ["memory"] }],
     want: "fired",
   },
 ] as {
   name: string;
   stat?: Group["fileStat"];
   at?: string;
-  warden?: string[];
+  warden?: { scope: string; near: string[] }[];
   want: "fired" | "clear" | "unread";
 }[])(
   "memory-high: $name",
@@ -216,7 +218,11 @@ test.each([
         fileStat,
       }),
     ];
-    if (warden) s.wardenGroups = warden.map((path) => `${slice}/${path}`);
+    if (warden)
+      s.wardenNearLimits = warden.map(({ scope, near }) => ({
+        kernelPath: `${slice}/${scope}`,
+        near,
+      }));
     const fired = causes(s, c).find((cause) => cause.id === "memory-high");
     const unread = unjudged(s, c)["memory-high"];
     expect({

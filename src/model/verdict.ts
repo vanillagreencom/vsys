@@ -399,16 +399,21 @@ export type MemoryHigh =
   | { judged: "absent" | "unjudged" };
 /**
  * An unread limit cannot clear an alert; a measured unlimited limit can. A
- * group a fresh warden status judged is the warden's to warn about, so vsys
- * leaves it out, null here, and one group near its limit is one warning.
+ * lane scope the warden's fresh status warns is near its memory limit has the
+ * warden's warning, so vsys leaves it out, null here, and one agent near its
+ * limit is one warning. vsys judges every other group, the agent slice
+ * included, since the warden decides when it warns and vsys copies none of it.
  */
 export function memoryHighJudgment(
   group: Group,
-  s: Pick<Snapshot, "wardenGroups">,
+  s: Pick<Snapshot, "wardenNearLimits">,
 ): MemoryHigh | null {
   if (
-    group.kernelPath !== undefined &&
-    s.wardenGroups?.includes(group.kernelPath)
+    s.wardenNearLimits?.some(
+      (warning) =>
+        warning.kernelPath === group.kernelPath &&
+        warning.near.includes("memory"),
+    )
   )
     return null;
   const high = group.high;
@@ -422,7 +427,7 @@ export function memoryHighJudgment(
 }
 /** `memoryHighJudgment()` for every group vsys judges. */
 export function memoryHighJudgments(
-  s: Pick<Snapshot, "groups" | "wardenGroups">,
+  s: Pick<Snapshot, "groups" | "wardenNearLimits">,
 ): Judgment<Group>[] {
   return s.groups.flatMap((group) => {
     const memoryHigh = memoryHighJudgment(group, s);

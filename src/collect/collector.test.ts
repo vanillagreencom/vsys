@@ -1179,6 +1179,45 @@ test("a mount list that cannot be read leaves the limit above the root unknown",
   const lane = present(s.lanes[0], "lane with no mount list");
   expect([lane.memoryMax, lane.memoryMaxKnown]).toEqual([null, false]);
 });
+test("a warden warning names the kernel path of the lane scope it is about", async () => {
+  const f = setup();
+  const scope = "agents.slice/agent-warden-100-200.scope";
+  f.group(scope, [40]);
+  f.proc(40, scope);
+  // The warden's own fixture, which warns for that scope.
+  const status = JSON.parse(
+    fs.readFileSync(
+      join(import.meta.dir, "../../warden/fixtures/status-near-limit.json"),
+      "utf8",
+    ),
+  );
+  const file = join(f.root, "run/agent-warden/status.json");
+  f.write(file, JSON.stringify(status));
+  const collector = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    file,
+  );
+  const s = await sampleAt(collector, status.time * 1000);
+  const group = present(
+    s.groups.find((g) => g.path === scope),
+    "the warned lane scope",
+  );
+  expect(s.wardenNearLimits?.map((w) => w.kernelPath)).toEqual([
+    present(group.kernelPath, "the scope's kernel path"),
+  ]);
+});
 test("io.stat and memory.stat give byte totals, write rates, page cache and file counters", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40]);

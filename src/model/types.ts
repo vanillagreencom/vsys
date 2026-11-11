@@ -580,11 +580,18 @@ export interface Snapshot {
    */
   leftovers?: Leftovers;
   /**
-   * The kernel cgroup paths whose memory the warden judged on a fresh status:
-   * its slice and each lane scope it listed. Absent where vsys read no fresh
-   * status, and in snapshots recorded before vsys read them.
+   * The warden's own per-scope `near-limit` warnings on a fresh status.
+   * Absent where vsys read no fresh status, and in snapshots recorded before
+   * vsys read them.
    */
-  wardenGroups?: string[];
+  wardenNearLimits?: WardenNearLimit[];
+}
+/** One `near-limit:SCOPE` item from the warden's `status.json`. */
+export interface WardenNearLimit {
+  /** The kernel cgroup path of the lane scope the item warns about. */
+  kernelPath: string;
+  /** The limits that lane's `near` lists: `memory`, `tasks`, or both. */
+  near: string[];
 }
 /**
  * How the last read of the warden's status file ended: counts read, no file,
