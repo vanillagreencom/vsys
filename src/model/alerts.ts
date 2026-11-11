@@ -4,7 +4,11 @@ import type { Config } from "../config/config";
 import { escaped } from "./lanes";
 import { laneText } from "./naming";
 import type { Alert, Rule, Snapshot } from "./types";
-import { memoryHighJudgments, processesUnread } from "./verdict";
+import {
+  memoryHighJudgments,
+  processesUnread,
+  scratchJudgments,
+} from "./verdict";
 
 /** Rules emit transitions, with sustained pressure measured in wall time. */
 export class AlertEngine {
@@ -87,12 +91,15 @@ export class AlertEngine {
     }
     for (const scrub of s.storage.scrubs)
       hit("scrub", scrub.path, scrub.problem, `Scrub problem: ${scrub.path}`);
-    for (const scratch of s.storage.scratch) {
-      keep(`scratch:${scratch.path}`, scratch.bytes === null);
+    for (const { subject: scratch, judged } of scratchJudgments(
+      s.storage.scratch,
+      c.scratchQuota,
+    )) {
+      keep(`scratch:${scratch.path}`, judged === "unjudged");
       hit(
         "scratch",
         scratch.path,
-        scratch.bytes !== null && scratch.bytes > c.scratchQuota,
+        judged === "fired",
         `${scratch.path} exceeds ${c.scratchQuota} bytes`,
       );
     }

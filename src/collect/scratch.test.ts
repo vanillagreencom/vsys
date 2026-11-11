@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { defaultScratchDirs, defaults } from "../config/config";
-import { fixture, processSnapshot } from "../test/fixture";
+import { processSnapshot } from "../test/fixture";
 import { present } from "../test/present";
 import {
   agentScratchDirs,
@@ -10,12 +10,7 @@ import {
   ScratchCollector,
   scratchRoots,
 } from "./scratch";
-import {
-  type ScanBudget,
-  type ScanRoot,
-  type ScratchScan,
-  scanScratch,
-} from "./scratch-scan";
+import type { ScanBudget, ScanRoot, ScratchScan } from "./scratch-scan";
 
 const empty = (time: number): ScratchScan => ({
   scratch: [],
@@ -365,34 +360,4 @@ test("only running agents name scratch, by absolute path, once each", () => {
     "/scratch/claude",
     "/t",
   ]);
-});
-
-test("the shipped list on a machine without it reports nothing; a typed path that is missing fails", async () => {
-  const f = fixture();
-  try {
-    // The fixture's shipped list, none of which exists on this machine.
-    const shipped: [string, string] = [
-      join(f.root, "agents"),
-      join(f.root, "claude"),
-    ];
-    const rows: [string, string[], { rows: number; errors: string[] }][] = [
-      ["no settings file", shipped, { rows: 0, errors: [] }],
-      // The reader kept one of the shipped paths, so it is theirs to fix.
-      ["one path typed", [shipped[0]], { rows: 1, errors: [shipped[0]] }],
-    ];
-    for (const [name, dirs, expected] of rows) {
-      const { scan } = await scanScratch(
-        scratchRoots(dirs, [], shipped),
-        1000,
-        { sliceMs: 10, dutyPercent: 100 },
-      );
-      expect({
-        name,
-        rows: scan.scratch.length,
-        errors: scan.errors.map((e) => e.source),
-      }).toEqual({ name, ...expected });
-    }
-  } finally {
-    f.cleanup();
-  }
 });

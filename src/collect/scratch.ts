@@ -205,10 +205,9 @@ export class ScratchCollector {
           if (!controller.signal.aborted) this.data = scan;
         })
         .catch((error) => {
-          // A failed scan keeps the last complete reading and its measurement
-          // time, and says what went wrong beside them. Publishing what a
-          // stopped traversal had counted would report a partial total as the
-          // size of the directory.
+          // A failed scan keeps the last finished reading and its measurement
+          // time. A stopped traversal cannot identify everything it skipped,
+          // unlike a finished scan that names its unreadable entries.
           if (controller.signal.aborted) return;
           this.data = {
             ...this.data,
