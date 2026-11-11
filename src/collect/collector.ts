@@ -40,7 +40,7 @@ import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 import { Udisks } from "./udisks";
-import { readLeftovers, wardenStatusPath } from "./warden-status";
+import { readLeftovers } from "./warden-status";
 
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
@@ -164,10 +164,11 @@ export class Collector {
     /** A predecessor's checkpoints, so a settings change keeps each window. */
     readonly serviceCpu = new ServiceCpu(),
     /**
-     * The warden's status file. Null unless a caller supplies one, so no test
-     * reads this session's warden.
+     * The warden's status file. With none the sample carries no leftovers
+     * reading: only the program supplies one, so no test reads this session's
+     * warden.
      */
-    private wardenStatus: string | null = null,
+    private wardenStatus?: string,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -412,7 +413,10 @@ export class Collector {
         });
       }
     mark("tmux");
-    const leftovers = readLeftovers(r, this.wardenStatus, time);
+    const leftovers =
+      this.wardenStatus === undefined
+        ? undefined
+        : readLeftovers(r, this.wardenStatus, time);
     mark("leftovers");
     const capabilities = [
       ...this.capabilities.map((cap) =>
@@ -442,7 +446,7 @@ export class Collector {
       errors: r.errors,
       services,
       ...(sccache ? { sccache } : {}),
-      leftovers,
+      ...(leftovers ? { leftovers } : {}),
     };
     s.alerts = this.engine.evaluate(s, c);
     mark("model");
@@ -484,6 +488,11 @@ export async function createCollector(
    * systemd units: the program passes `packagedScrubUnits`.
    */
   scrubUnits?: ScrubUnits,
+  /**
+   * Absent unless the program supplies it, so no test reads this session's
+   * warden: the program passes `wardenStatusPath()`.
+   */
+  wardenStatus?: string,
 ): Promise<Collector> {
   const read = async (name: string) => {
     const child = Bun.spawn(["getconf", name], {
@@ -525,6 +534,6 @@ export async function createCollector(
     previous?.lastFinishedScrub,
     scrubUnits,
     previous?.serviceCpu,
-    wardenStatusPath(),
+    wardenStatus,
   );
 }

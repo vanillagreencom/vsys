@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import { type Collector, createCollector } from "./collect/collector";
 import { packagedScrubUnits } from "./collect/scrub-timers";
 import { capturePane, insideTmux } from "./collect/tmux";
+import { wardenStatusPath } from "./collect/warden-status";
 import { agentToolsPath } from "./config/agent-tools";
 import { configPath, loadConfig } from "./config/config";
 import { runEffect, switchToPane, terminalOpener } from "./effect";
@@ -87,6 +88,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
     undefined,
     undefined,
     packagedScrubUnits,
+    wardenStatusPath(),
   );
   if (values.once) {
     try {

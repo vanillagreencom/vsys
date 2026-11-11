@@ -1710,16 +1710,29 @@ test("a screen too short for every fact counts what the card gave up", async () 
 test("a card draws the rows it was measured for, at every width", async () => {
   const c = defaults();
   const s = escapedSnapshot({ lanes: 5, perLane: 2 });
+  // A backlog whose line wraps to two rows at 64 columns.
+  s.leftovers = {
+    state: "read",
+    time: s.time,
+    testWorlds: null,
+    failedUnits: 244,
+    testProcesses: 7,
+  };
   // Widths across the range a panel can be, at heights the room reaches, and
   // the heights that lost the key line while the action lines were measured
-  // without the words drawn in front of them.
+  // without the words drawn in front of them. Then at 64 columns, where the
+  // leftovers line wraps, the heights whose card fills the room it has.
   const sizes = [
     ...[64, 76, 88, 100, 120, 130].flatMap((width) =>
       [35, 60].map((height) => ({ width, height })),
     ),
     ...[31, 32, 33, 34, 35].map((height) => ({ width: 100, height })),
   ];
-  for (const size of sizes) {
+  const filled = [37, 38, 39, 40, 41, 43].map((height) => ({
+    width: 64,
+    height,
+  }));
+  for (const size of [...sizes, ...filled]) {
     const t = await mount(s, c, size);
     try {
       await t.ui.renderOnce();
@@ -1738,9 +1751,16 @@ test("a card draws the rows it was measured for, at every width", async () => {
         `${at}: true`,
       );
       const panel = screenPad + panelWidth(screenWidth(size.width));
-      const drawn = rows
-        .slice(card + 1, next)
-        .map((row) => row.slice(0, panel).replace("│", "").trim());
+      const words = (row: string | undefined) =>
+        (row ?? "").slice(0, panel).replace("│", "").trim();
+      // Above its floor, the card leaves blank the row the scroll box keeps
+      // under the key line: one measured for a row the screen spent above it,
+      // such as a wrapped leftovers line, writes into it.
+      if (filled.includes(size))
+        expect(`${at}: ${JSON.stringify(words(rows[hint + 1]))}`).toBe(
+          `${at}: ""`,
+        );
+      const drawn = rows.slice(card + 1, next).map(words);
       // One blank row per paragraph: the break above each one after the first,
       // and the row above the action lines. A row the renderer added for
       // itself would stand here as a blank nothing was charged for.
@@ -2130,7 +2150,9 @@ test.each([
       failedUnits: 0,
       testProcesses: 1,
     },
-    line: "Test leftovers: 3 test worlds · 0 failed units · 1 old test process",
+    lines: [
+      "Test leftovers: 3 test worlds · 0 failed units · 1 old test process",
+    ],
     plain: ["3 test worlds", "1 old test process"],
     dim: ["0 failed units"],
   },
@@ -2144,7 +2166,9 @@ test.each([
       failedUnits: 244,
       testProcesses: null,
     },
-    line: `Test leftovers: test worlds ${gap} · 244 failed units · old test processes ${gap}`,
+    lines: [
+      `Test leftovers: test worlds ${gap} · 244 failed units · old test processes ${gap}`,
+    ],
     plain: ["244 failed units"],
     dim: [`test worlds ${gap}`, `old test processes ${gap}`],
   },
@@ -2157,7 +2181,7 @@ test.each([
       failedUnits: null,
       testProcesses: null,
     },
-    line: `Test leftovers: ${gap}: no agent warden status`,
+    lines: [`Test leftovers: ${gap}: no agent warden status`],
     plain: [],
     dim: [gap],
   },
@@ -2170,30 +2194,73 @@ test.each([
       failedUnits: null,
       testProcesses: null,
     },
-    line: `Test leftovers: ${gap}: the agent warden last wrote its status 5m ago`,
+    lines: [
+      `Test leftovers: ${gap}: the agent warden last wrote its status 5m ago`,
+    ],
     plain: [],
     dim: [gap],
   },
   {
+    // Narrow, the line wraps between counts rather than cutting the last off.
+    name: "a narrow terminal wraps the counts, keeping each whole",
+    width: 64,
+    leftovers: {
+      state: "read",
+      time: 1000,
+      testWorlds: null,
+      failedUnits: 244,
+      testProcesses: 7,
+    },
+    lines: [
+      `Test leftovers: test worlds ${gap} · 244 failed units`,
+      "7 old test processes",
+    ],
+    plain: ["244 failed units", "7 old test processes"],
+    dim: [`test worlds ${gap}`],
+  },
+  {
+    name: "a narrow terminal wraps the reason, keeping the status's age",
+    width: 64,
+    leftovers: {
+      state: "stale",
+      time: 1000 - 300_000,
+      testWorlds: null,
+      failedUnits: null,
+      testProcesses: null,
+    },
+    lines: [
+      `Test leftovers: ${gap}: the agent warden last wrote`,
+      "its status 5m ago",
+    ],
+    plain: [],
+    dim: ["its status 5m ago"],
+  },
+  {
     name: "a stored sample from before the reading has none",
     leftovers: undefined,
-    line: `Test leftovers: ${gap}`,
+    lines: [`Test leftovers: ${gap}`],
     plain: [],
     dim: [gap],
   },
-] as const)("$name", async ({ leftovers, line, plain, dim }) => {
+] as const)("$name", async ({ leftovers, lines, plain, dim, ...row }) => {
   const s = emptySnapshot(1000);
   if (leftovers) s.leftovers = { ...leftovers };
-  const t = await mount(s, defaults(), { width: 140, height: 35 });
+  const t = await mount(s, defaults(), {
+    width: ("width" in row ? row.width : undefined) ?? 140,
+    height: 35,
+  });
   try {
     await t.press("1");
     const drawn = t
       .frame()
       .split("\n")
       // The scroll bar takes the last column when the page overflows.
-      .map((row) => row.replace(/[█▀▄]\s*$/, "").trim())
-      .filter((row) => row.startsWith("Test leftovers:"));
-    expect(drawn).toEqual([line]);
+      .map((row) => row.replace(/[█▀▄]\s*$/, "").trim());
+    const first = drawn.findIndex((row) => row.startsWith("Test leftovers:"));
+    expect(drawn.slice(first, first + lines.length + 1)).toEqual([
+      ...lines,
+      "",
+    ]);
     for (const text of plain)
       expect(cellStyle(t.ui, text, ui.dim)).toBe("plain");
     for (const text of dim) expect(cellStyle(t.ui, text, ui.dim)).toBe("dim");

@@ -1,19 +1,17 @@
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
+import { xdgHome } from "../config/xdg";
 import type { Leftovers, LeftoversState } from "../model/types";
 import type { Reader } from "./io";
 
 /**
- * Where the warden writes its status, null where the session names no runtime
- * directory: with none, there is no warden status vsys could share.
+ * Where the warden writes its status: under the session's runtime directory,
+ * or `/run/user/UID` where the session names none, the directory the warden
+ * itself falls back to. A cron job or a `sudo -u` shell often has no
+ * `XDG_RUNTIME_DIR` while the warden's user unit writes there all the same.
  */
-export function wardenStatusPath(
+export const wardenStatusPath = (
   env: NodeJS.ProcessEnv = process.env,
-): string | null {
-  const runtime = env.XDG_RUNTIME_DIR;
-  return runtime && isAbsolute(runtime)
-    ? join(runtime, "agent-warden/status.json")
-    : null;
-}
+): string => join(xdgHome("XDG_RUNTIME_DIR", env), "agent-warden/status.json");
 /**
  * A status older or newer than this is from a warden that stopped: three
  * missed ticks at its default 30 s interval, the bound the desktop widget
@@ -46,12 +44,7 @@ type StatusDoc = {
  * know, is a source error. Every count is unknown unless it was read from a
  * fresh status, never zero.
  */
-export function readLeftovers(
-  r: Reader,
-  path: string | null,
-  now: number,
-): Leftovers {
-  if (path === null) return unknown("absent", null);
+export function readLeftovers(r: Reader, path: string, now: number): Leftovers {
   const errors = r.errors.length;
   const text = r.text(path, true);
   if (text === null)

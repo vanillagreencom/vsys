@@ -18,13 +18,6 @@ const none = { testWorlds: null, failedUnits: null, testProcesses: null };
 
 test.each([
   {
-    name: "a session with no runtime directory has no warden",
-    text: undefined,
-    path: null,
-    want: { state: "absent", time: null, ...none },
-    errors: 0,
-  },
-  {
     name: "no status file is an absent warden, not a failed read",
     text: undefined,
     want: { state: "absent", time: null, ...none },
@@ -84,13 +77,13 @@ test.each([
     want: { state: "failed", time: null, ...none },
     errors: 1,
   },
-])("$name", ({ text, path, want, errors }) => {
+])("$name", ({ text, want, errors }) => {
   const f = fixture();
   try {
     const file = join(f.root, "run/agent-warden/status.json");
     if (text !== undefined) f.write(file, text);
     const r = new Reader();
-    expect(readLeftovers(r, path === null ? null : file, now)).toEqual(want);
+    expect(readLeftovers(r, file, now)).toEqual(want);
     expect(r.errors.map((e) => e.source)).toEqual(
       Array.from({ length: errors }, () => file),
     );

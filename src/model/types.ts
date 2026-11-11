@@ -563,7 +563,10 @@ export interface Snapshot {
   services: Service[] | null;
   /** Absent in snapshots recorded before the build-cache reading existed. */
   sccache?: Sccache;
-  /** Absent in snapshots recorded before vsys read the warden's leftovers. */
+  /**
+   * Absent in snapshots recorded before vsys read the warden's leftovers, and
+   * from a collector given no status path to read.
+   */
   leftovers?: Leftovers;
 }
 /**

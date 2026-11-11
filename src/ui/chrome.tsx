@@ -75,9 +75,7 @@ export const detailWidth = (width: number): number =>
   Math.max(1, panelWidth(screenWidth(width)) - detailIndent);
 /** The line under the verdict counting the agents, the cores and the concerns. */
 const countRow = 1;
-/** The line under that one counting what test runs left behind. */
-const leftoversRow = 1;
-/** The blank row between the leftovers line and the tile row. */
+/** The blank row between the leftovers lines and the tile row. */
 const blankRow = 1;
 /** A section heading: the blank row it opens with, then the heading itself. */
 export const headingRows = 2;
@@ -92,21 +90,22 @@ const scrollRow = 1;
 /**
  * The rows a list on Home has: the screen's own rows, less the row the scroll
  * box keeps and everything Home draws above a list — the verdict, the line
- * counting agents and concerns, the line counting test leftovers, the blank
- * under it, the tile row, and the heading over the list itself. `screen` is the rows the shell leaves the
- * screen; `verdict` and `tiles` are the rows those two draw at the width they
- * are drawn at.
+ * counting agents and concerns, the lines counting test leftovers, the blank
+ * under them, the tile row, and the heading over the list itself. `screen` is
+ * the rows the shell leaves the screen; `verdict`, `leftovers` and `tiles` are
+ * the rows those three draw at the width they are drawn at.
  */
 export const listRows = (o: {
   screen: number;
   verdict: number;
+  leftovers: number;
   tiles: number;
 }): number =>
   o.screen -
   scrollRow -
   o.verdict -
   countRow -
-  leftoversRow -
+  o.leftovers -
   blankRow -
   o.tiles -
   headingRows;
@@ -120,6 +119,7 @@ export const listRows = (o: {
 export const detailRows = (o: {
   screen: number;
   verdict: number;
+  leftovers: number;
   tiles: number;
   /** The rows of `Next`, the command and the line naming the keys. */
   actions: number;
