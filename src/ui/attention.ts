@@ -2,7 +2,7 @@ import { agentToolsPath } from "../config/agent-tools";
 import type { Config } from "../config/config";
 import { sliceCompared } from "../model/lanes";
 import { launcherCopy, launcherKnown, launcherTally } from "../model/launcher";
-import { laneText, programName, unitLabel } from "../model/naming";
+import { laneText, programName } from "../model/naming";
 import { shellLine } from "../model/shell";
 import type { CapabilityId, Snapshot } from "../model/types";
 import {
@@ -640,7 +640,7 @@ function copy(
       const groups = cause.groups.length;
       return {
         word: "Busy",
-        title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => unitLabel(g.name)))}`,
+        title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => consumerName(g, s, laneName)))}`,
         ways: ["Memory reclaim can slow every task in these groups."],
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",

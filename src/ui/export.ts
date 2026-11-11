@@ -6,6 +6,7 @@ import {
   type Cause,
   type CauseId,
   causes,
+  consumerOf,
   type Level,
   type Meter,
   meters,
@@ -61,12 +62,18 @@ function subject(cause: Cause): string | null {
   return null;
 }
 
-/** The lanes a cause names: its own, then its consumer when that is a lane. */
-function namedLanes(cause: Cause): Lane[] {
-  const lanes =
-    typeof cause.consumer === "string"
-      ? cause.lanes
-      : [...cause.lanes, cause.consumer];
+/**
+ * The lanes a cause names: its own, then its consumer and each of its groups
+ * when that is a lane.
+ */
+function namedLanes(cause: Cause, s: Snapshot): Lane[] {
+  const lanes = [
+    ...cause.lanes,
+    ...[
+      cause.consumer,
+      ...cause.groups.map((group) => consumerOf(group, s)),
+    ].filter((named) => typeof named !== "string"),
+  ];
   return lanes.filter(
     (lane, i) => lanes.findIndex((other) => other.id === lane.id) === i,
   );
@@ -76,10 +83,10 @@ function namedLanes(cause: Cause): Lane[] {
  * The processes a cause names: its own `procs`, then each named lane's main
  * process. A lane leading no process has none to list.
  */
-function processes(cause: Cause): SummaryProcess[] {
+function processes(cause: Cause, s: Snapshot): SummaryProcess[] {
   return [
     ...cause.procs.map((proc) => ({ pid: proc.pid, name: programName(proc) })),
-    ...namedLanes(cause)
+    ...namedLanes(cause, s)
       .filter((lane) => lane.mainPid)
       .map((lane) => ({ pid: lane.mainPid, name: lane.name })),
   ];
@@ -150,7 +157,7 @@ export function summarySnapshot(
       level: cause.level,
       subject: subject(cause),
       title,
-      processes: processes(cause),
+      processes: processes(cause, s),
       // No vsys argument opens vsys at a cause yet.
       open: [],
     };
