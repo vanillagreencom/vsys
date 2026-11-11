@@ -170,6 +170,14 @@ test.each([
     want: "fired",
   },
   {
+    // file_dirty and file_writeback count dirty pages on the active list
+    // too, so their sum can pass inactive_file.
+    name: "dirty pages past the inactive file cache never add to working memory",
+    memory: 70,
+    stat: { inactiveFile: 0, fileDirty: 10, fileWriteback: 0 },
+    want: "clear",
+  },
+  {
     name: "an unread memory.stat leaves the group unjudged, never zero",
     stat: null,
     want: "unread",
@@ -200,13 +208,14 @@ test.each([
   },
 ] as {
   name: string;
+  memory?: number;
   stat?: Group["fileStat"];
   at?: string;
   warden?: { scope: string; near: string[] }[];
   want: "fired" | "clear" | "unread";
 }[])(
   "memory-high: $name",
-  ({ stat, at = "agents.slice/a.scope", warden, want }) => {
+  ({ memory = 79, stat, at = "agents.slice/a.scope", warden, want }) => {
     const c = defaults();
     const gib = 2 ** 30;
     const bytes = (n: number) => n * gib;
@@ -223,7 +232,7 @@ test.each([
     s.groups = [
       g(at, at.split("/").at(-1) ?? at, {
         kernelPath: `${slice}/${at}`,
-        memory: bytes(79),
+        memory: bytes(memory),
         high: bytes(80),
         fileStat,
       }),
