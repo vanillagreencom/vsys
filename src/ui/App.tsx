@@ -355,16 +355,24 @@ export function App({
     if (!actionAllowed(intent, onRow)) return;
     setConfirming(intent);
   };
-  // The command line's lane opens on the first sample that read the
-  // processes, and on that sample alone, so a later sample never pulls the
-  // reader back to it. A sample whose process read missed its deadline lists
-  // no main process and no escaped lane, so it can say neither that the lane
-  // is absent nor that it offers no Stop. A Stop goes through `act`, the door
-  // a keypress takes, so write mode and the confirmation still stand before it.
+  // The command line's lane opens on the first sample alone, before the reader
+  // can act, so a later sample never pulls the reader away from their choice.
+  // A sample whose process read missed its deadline lists no main process and
+  // no escaped lane, so it can say neither that the lane is absent nor that it
+  // offers no Stop, and the start ends with that said instead. A Stop goes
+  // through `act`, the door a keypress takes, so write mode and the
+  // confirmation still stand before it.
   const started = useRef(false);
   useEffect(() => {
-    if (started.current || !start || processesUnread(snapshot)) return;
+    if (started.current || !start) return;
     started.current = true;
+    if (processesUnread(snapshot)) {
+      notice(
+        `The process read has not answered · cannot open ${start.scope}`,
+        "warn",
+      );
+      return;
+    }
     const lane = snapshot.lanes.find(
       (l) => l.cgroup.split("/").at(-1) === start.scope,
     );

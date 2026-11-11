@@ -107,7 +107,7 @@ test.each([
     unread: false,
   },
   // The collector's first process read can miss its deadline. That sample
-  // lists no main process, so it must neither refuse nor use up the start.
+  // lists no main process, so it can only say the read has not answered.
   {
     scope: "a.scope",
     stop: true,
@@ -154,23 +154,16 @@ test.each([
   };
   try {
     await t.ui.renderOnce();
-    if (row.unread) {
-      expect(read()).toEqual({
-        open: false,
-        confirming: false,
-        refusal: false,
-      });
-      await act(() => t.update(s));
-    }
-    const confirming = row.stop && row.writeMode && !row.nested;
+    const confirming = row.stop && row.writeMode && !row.nested && !row.unread;
     expect({
       ...read(),
       agents: t.frame().includes("sorted by CPU") || read().open,
     }).toEqual({
-      agents: true,
-      open: row.scope === "a.scope",
+      agents: !row.unread,
+      open: row.scope === "a.scope" && !row.unread,
       confirming,
-      refusal: row.scope === "gone.scope" || (row.stop && !confirming),
+      refusal:
+        row.scope === "gone.scope" || (row.stop && !confirming) || row.unread,
     });
     await t.press("enter");
     expect(calls.map((command) => command.text)).toEqual(
