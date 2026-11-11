@@ -84,9 +84,24 @@ test("a lane the warden warns for alerts once, crediting the warden, below vsys'
   const s = emptySnapshot();
   s.lanes = [laneSnapshot({ mainPid: 4071 })];
   // Working memory half of memory.high: vsys alone would raise nothing.
-  s.groups = [groupSnapshot({ kernelPath, memory: 50, high: 100 })];
+  const warned = groupSnapshot({ kernelPath, memory: 50, high: 100 });
+  // A group the warden does not warn for, past vsys's own line.
+  const judged = groupSnapshot({
+    path: "agents.slice/b.scope",
+    kernelPath: "/user.slice/agents.slice/b.scope",
+    name: "b.scope",
+    memory: 95,
+    high: 100,
+  });
+  s.groups = [warned, judged];
   s.wardenNearLimits = [{ kernelPath, near: ["tasks", "memory"] }];
   const c = { ...defaults(), notifications: ["memory-high"] };
+  const own = (subject: string, name: string) => ({
+    time: s.time,
+    rule: "memory-high" as const,
+    subject,
+    message: `${name} is near memory.high`,
+  });
   const alerts = engine.evaluate(s, c);
   expect(alerts).toEqual([
     {
@@ -97,10 +112,21 @@ test("a lane the warden warns for alerts once, crediting the warden, below vsys'
         "The agent warden warns lane-a PID 4071 is near its memory limit",
       source: "warden",
     },
+    own("agents.slice/b.scope", "b.scope"),
   ]);
-  // The warden's own handoff sends its desktop notice; vsys sends none.
-  expect(notifiable(alerts, c)).toEqual([]);
+  // The warden's own handoff sends its desktop notice; vsys sends only its own.
+  expect(notifiable(alerts, c)).toEqual([
+    own("agents.slice/b.scope", "b.scope"),
+  ]);
   expect(engine.evaluate(s, c)).toEqual([]);
+  // The warden's status goes stale with the lane past vsys's line: vsys's
+  // own alert opens new and is sent.
+  warned.memory = 95;
+  delete s.wardenNearLimits;
+  const handed = engine.evaluate(s, c);
+  expect(notifiable(handed, c)).toEqual([
+    own("agents.slice/a.scope", "a.scope"),
+  ]);
 });
 test("each alert condition emits its own rule and clears before rearming", () => {
   const cases: [Rule, (s: ReturnType<typeof emptySnapshot>) => void][] = [

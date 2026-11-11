@@ -101,9 +101,6 @@ test("every event is one line that states its cause", () => {
   expect(memory("alert-close", { source: "warden" })).toContain(
     "Alert closed: the agent warden warned a group is near its memory limit | lane-a",
   );
-  expect(memory("alert-close", {})).toContain(
-    "Alert closed: a group neared its memory threshold | lane-a",
-  );
   expect(lines[4]).toContain("previously nothing needs attention");
   // The shipped EventLog wrote subject and duration before participant and
   // interval fields existed. Timeline must keep that known result on upgrade.

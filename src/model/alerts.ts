@@ -28,7 +28,9 @@ export class AlertEngine {
       source?: Alert["source"],
     ) => {
       if (!condition) return;
-      const key = `${rule}:${subject}`;
+      // The source is part of the alert's identity, so vsys's own judgment
+      // taking over from a warden that stopped opens a new alert to notify.
+      const key = `${rule}:${subject}${source ? `:${source}` : ""}`;
       next.add(key);
       if (repeat || !this.active.has(key))
         alerts.push({
@@ -63,6 +65,7 @@ export class AlertEngine {
     for (const g of s.groups) {
       const { judged } = memoryHighJudgment(g, s);
       keep(`memory-high:${g.path}`, judged === "unjudged");
+      keep(`memory-high:${g.path}:warden`, judged === "unjudged");
       hit(
         "memory-high",
         g.path,
