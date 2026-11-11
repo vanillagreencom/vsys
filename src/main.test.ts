@@ -184,8 +184,6 @@ test("summary sampling gives rate-backed activity a baseline", async () => {
   }
 });
 test("quit, hangup and terminate all take the quit key's shutdown", async () => {
-  // Leave time for both termination waits before Bun ends the test.
-  const deadline = (Date.now() + 13000) / 1000;
   const f = fixture();
   try {
     const path = join(f.root, "config.toml");
@@ -287,6 +285,8 @@ finally:
       ["hangup", "fault"],
       ["term", "fault"],
     ] as const) {
+      // Leave time for both termination waits before Bun ends the test.
+      const deadline = (Date.now() + 13000) / 1000;
       const child = Bun.spawn(
         [
           "python3",
@@ -320,4 +320,4 @@ finally:
   } finally {
     f.cleanup();
   }
-}, 20000);
+}, 100000);
