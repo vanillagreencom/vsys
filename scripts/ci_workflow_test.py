@@ -25,7 +25,7 @@ NEITHER = "lane_application=false\nlane_package=false"
 # then the expected application run, arch-package run and CI acceptance.
 # Expected results are independent of the expressions under test.
 ROWS = (
-    ("claimed render refresh", "render", "true", BOTH, ".codex/config.toml", "success", True, True, True),
+    ("claimed render refresh", "render", "true", "lane_application=true\nlane_package=false", ".agents/skills/harness-ci/scripts/harness-only", "success", True, False, True),
     ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, True),
     ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, True),
     ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, False, True),
