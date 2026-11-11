@@ -561,6 +561,19 @@ def exe_path(link):
     return link.removesuffix(" (deleted)")
 
 
+def _proc_stat(pid):
+    stat = read(f"/proc/{pid}/stat")
+    if not stat:
+        raise OSError
+    head, _, tail = stat.rpartition(")")
+    return head, tail.split()
+
+
+def _proc_uid(pid):
+    m = re.search(r"^Uid:\s+(\d+)", read(f"/proc/{pid}/status", "") or "", re.M)
+    return int(m.group(1)) if m else -1
+
+
 class Proc:
     __slots__ = ("pid", "ppid", "comm", "argv", "exe", "cgroup", "start", "uid", "tty", "_marked")
 
@@ -574,17 +587,12 @@ class Proc:
             self.tty = tty
             self._marked = marked
             return
-        stat = read(f"/proc/{pid}/stat")
-        if not stat:
-            raise OSError
-        head, _, tail = stat.rpartition(")")
+        head, fields = _proc_stat(pid)
         self.comm = head.split("(", 1)[1]
-        fields = tail.split()
         self.ppid = int(fields[1])
         self.tty = int(fields[4])   # tty_nr; 0 = no controlling terminal
         self.start = int(fields[19])
-        m = re.search(r"^Uid:\s+(\d+)", read(f"/proc/{pid}/status", ""), re.M)
-        self.uid = int(m.group(1)) if m else -1
+        self.uid = _proc_uid(pid)
         raw = read(f"/proc/{pid}/cmdline", "")
         self.argv = [a for a in raw.split("\0") if a] if raw else []
         try:
@@ -987,8 +995,11 @@ def _exited(pid):
     reads fail as a non-dumpable process's do, but it holds nothing; short
     jobs in agents.slice exit between the scan and these reads on most
     ticks."""
-    stat = read(f"/proc/{pid}/stat")
-    return stat is None or stat.rpartition(")")[2].split()[:1] in (["Z"], ["X"])
+    try:
+        _, fields = _proc_stat(pid)
+    except OSError:
+        return True
+    return fields[:1] in (["Z"], ["X"])
 
 
 def _birth_time(path):
@@ -1057,21 +1068,32 @@ def _desktop_unit(cgroup):
 
 
 def _unread_may_hold(proc):
-    """Whether proc, whose environment or current directory could not be
-    read, can hold a gone scope's scratch directory. Its cgroup decides, as
-    /proc/<pid>/cgroup stays readable for a non-dumpable process. Only a
-    desktop unit by _desktop_unit() cannot: no lane starts one. Every other
-    process can. A lane's own scope keeps its inherited TMPDIR when the
-    launcher's mkdir meets a folder of the same name, every launch keeps the
-    inherited current directory, move() relocates a nested session by cgroup
-    only, and an escaped worker in an uncontained systemd-run scope keeps the
-    lane's TMPDIR and current directory. _lineage_born_by bounds what a
-    process in a lane scope can hold."""
-    return not _desktop_unit(proc.cgroup or "")
+    """Whether unread proc adds uncertainty to either holder pass. Desktop
+    units cannot hold lane paths. A live non-init parent of another real uid
+    also exempts only this process, not its session or descendants. This
+    accepts the sudo/setuid limit in docs/architecture/warden.md. Parent pid,
+    start and real uid remain readable for non-dumpable login processes;
+    recheck ancestry and parent identity after the process scan."""
+    if _desktop_unit(proc.cgroup or ""):
+        return False
+    if proc.ppid is None or proc.ppid <= 1:
+        return True
+    try:
+        _, parent = _proc_stat(proc.ppid)
+        parent_start = int(parent[19])
+        parent_uid = _proc_uid(proc.ppid)
+        if parent_uid < 0 or parent_uid == proc.uid:
+            return True
+        _, current = _proc_stat(proc.pid)
+        _, after = _proc_stat(proc.ppid)
+        return (int(current[1]) != proc.ppid or int(current[19]) != proc.start
+                or _exited(proc.ppid) or int(after[19]) != parent_start)
+    except (OSError, IndexError, ValueError):
+        return True
 
 
 def _scratch_holders(procs):
-    """Return held paths, unread pids and their creation-time bound. Held paths include resolved TMPDIR and cwd ancestors. Unread excludes exited and desktop-unit processes and is limited by _lineage_born_by. Read once for the initial pass and before each attempted removal, not once per retained directory."""
+    """Return held paths, unread pids and their creation-time bound. Held paths include resolved TMPDIR and cwd ancestors. Unread excludes exited processes and exemptions by _unread_may_hold and is limited by _lineage_born_by. Read once for the initial pass and before each attempted removal, not once per retained directory."""
     held = set()
     readable = set()
     unread = []
@@ -1325,8 +1347,8 @@ def _world_holders(procs, prefixes):
     follows. A path in argv or the environment is also read resolved, so
     one reaching a world through a symlink of its own (TMPDIR under a
     symlinked directory) still names it; the kernel's cwd, exe and fd links
-    are already resolved. unread lists the pids this user runs, outside a
-    desktop unit by _unread_may_hold, that have not exited and for which any
+    are already resolved. unread lists the pids this user runs, admitted by
+    _unread_may_hold, that have not exited and for which any
     of those reads failed. Unlike _scratch_holders no lane lineage bounds them: a test
     creates its world after its lane launched, so a launch says nothing of
     what an unreadable lane member holds."""
