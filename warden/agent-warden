@@ -73,8 +73,8 @@ Rules, per process, never per pane
 
 Memory: moving a process moves its future charges only. Pages it already owns
 stay charged to the old cgroup (cgroup v2). The headroom guard skips moves when
-agents.slice's working memory (memory.current less inactive file cache) is
-above 90% of memory.max, or when the counters cannot be read, and alerts; it
+agents.slice's working memory (memory.current less clean inactive file cache)
+is above 90% of memory.max, or when the counters cannot be read, and alerts; it
 promises nothing about OOM safety.
 
 Runs from background.slice with its own small MemoryMax and a runtime cap so
@@ -1679,33 +1679,40 @@ def scope_usage_usec(unit):
     return int(m.group(1)) if m else None
 
 
-def memory_stat(d, key):
-    """One counter from the memory.stat of the cgroup at D, which covers its
-    nested cgroups too, or None when the file or the counter cannot be read."""
+def memory_stat(d, *keys):
+    """The KEYS counters, in order, from one read of the memory.stat of the
+    cgroup at D, which covers its nested cgroups too, or None when the file or
+    any of the counters cannot be read."""
     txt = read(d / "memory.stat")
     if not txt:
         return None
-    m = re.search(rf"^{key}\s+(\d+)$", txt, re.M)
-    return int(m.group(1)) if m else None
+    counters = dict(re.findall(r"^(\w+)\s+(\d+)$", txt, re.M))
+    if any(key not in counters for key in keys):
+        return None
+    return tuple(int(counters[key]) for key in keys)
 
 
 def working_memory(d):
     """Memory the cgroup at D holds that the kernel cannot simply drop:
-    memory.current less the inactive file cache in its memory.stat, the
-    working set Kubernetes judges by, or None when either cannot be read. Past
-    memory.high the kernel reclaims clean inactive file cache before it
-    throttles, so that cache never slows an agent."""
-    current, inactive = _read_int(d / "memory.current"), memory_stat(d, "inactive_file")
-    if current is None or inactive is None:
+    memory.current less its clean inactive file cache, inactive_file less
+    file_dirty and file_writeback from its memory.stat, or None when any of
+    them cannot be read. Past memory.high the kernel reclaims clean inactive
+    file cache before it throttles, so that cache never slows an agent. Dirty
+    and writeback pages stay counted: inactive_file includes them, and reclaim
+    must wait for their I/O while they stay charged against the limits."""
+    current, stat = _read_int(d / "memory.current"), memory_stat(d, "inactive_file", "file_dirty", "file_writeback")
+    if current is None or stat is None:
         return None
+    inactive, dirty, writeback = stat
     # The two files are read at different moments.
-    return max(0, current - inactive)
+    return max(0, current - max(0, inactive - dirty - writeback))
 
 
 def scope_anon_bytes(unit):
     """Anonymous memory the scope and its nested cgroups hold, or None.
-    working_memory() would also count active file cache."""
-    return memory_stat(CG_ROOT / SLICE / unit, "anon")
+    working_memory() would also count file cache."""
+    stat = memory_stat(CG_ROOT / SLICE / unit, "anon")
+    return stat[0] if stat else None
 
 
 def scope_identity(unit):
