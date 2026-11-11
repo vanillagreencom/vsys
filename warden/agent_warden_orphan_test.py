@@ -358,7 +358,7 @@ class AgentWardenOrphanRules(WardenRulesCase):
                 self.w.CG_ROOT, self.w.reap, self.w.scope_still_orphan = old_root, old_reap, old_still
         self.assertEqual(len(reaped), 1)
         self.assertIn(reaped_unit, reaped[0])
-        self.assertEqual([row["scope"] for row in rows], [quiet_unit])
+        self.assertEqual([(row["scope"], row["reapFailed"]) for row in rows], [(quiet_unit, False)])
         self.assertIsNone(rows[0]["cores"])
         self.assertNotIn(reaped_unit, st["orphans"])
         events = [event for event in st["events"] if event["kind"] == "reaped"]
