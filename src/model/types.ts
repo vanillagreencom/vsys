@@ -563,4 +563,25 @@ export interface Snapshot {
   services: Service[] | null;
   /** Absent in snapshots recorded before the build-cache reading existed. */
   sccache?: Sccache;
+  /** Absent in snapshots recorded before vsys read the warden's leftovers. */
+  leftovers?: Leftovers;
+}
+/**
+ * How the last read of the warden's status file ended: counts read, no file,
+ * a file the warden stopped refreshing, or a file that could not be read or
+ * parsed.
+ */
+export type LeftoversState = "read" | "absent" | "stale" | "failed";
+/**
+ * What test runs left behind, as the optional warden last counted it. Every
+ * count is null unless the state is `read`, and also where the warden could
+ * not take it: a failed pass, or no test-world pattern configured.
+ */
+export interface Leftovers {
+  state: LeftoversState;
+  /** When the warden wrote the status, in milliseconds; null with no file read. */
+  time: number | null;
+  testWorlds: number | null;
+  failedUnits: number | null;
+  testProcesses: number | null;
 }

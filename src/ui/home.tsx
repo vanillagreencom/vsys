@@ -1,8 +1,8 @@
 import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
-import { type ReactNode, useRef, useState } from "react";
+import { Fragment, type ReactNode, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
-import type { Lane, Snapshot } from "../model/types";
+import type { Lane, Leftovers, Snapshot } from "../model/types";
 import { type Meter, meters, processesComplete } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import {
@@ -34,6 +34,7 @@ import {
   wrapLines,
 } from "./columns";
 import {
+  age,
   amount,
   count,
   gap,
@@ -184,6 +185,58 @@ function series(
 }
 
 /** The tile row's name, so a screen that has scrolled away can come back. */
+/** The warden's counts in the order the leftovers line reads them. */
+const leftoverParts = [
+  ["testWorlds", "test world", "test worlds"],
+  ["failedUnits", "failed unit", "failed units"],
+  ["testProcesses", "old test process", "old test processes"],
+] as const;
+/** Why the warden's status gave no counts, null where it gave them. */
+function leftoversGap(l: Leftovers | undefined, now: number): string | null {
+  if (l === undefined) return gap;
+  if (l.state === "read") return null;
+  if (l.state === "absent") return `${gap}: no agent warden status`;
+  if (l.state === "failed" || l.time === null)
+    return `${gap}: the agent warden status could not be read`;
+  return now >= l.time
+    ? `${gap}: the agent warden last wrote its status ${age((now - l.time) / 1000)} ago`
+    : `${gap}: the agent warden status is dated ${age((l.time - now) / 1000)} ahead`;
+}
+/**
+ * What test runs left behind, as the warden last counted it. Each count is a
+ * reading of its own, so a backlog stands out from the zeros beside it, and a
+ * count the warden could not take stays not available rather than zero.
+ */
+function LeftoversLine({
+  leftovers: l,
+  now,
+}: {
+  leftovers: Leftovers | undefined;
+  now: number;
+}) {
+  const why = leftoversGap(l, now);
+  return (
+    <Line height={1} flexShrink={0} truncate>
+      <span attributes={ui.dim}>Test leftovers: </span>
+      {why !== null || l === undefined ? (
+        <span attributes={ui.dim}>{why}</span>
+      ) : (
+        leftoverParts.map(([key, one, many], at) => {
+          const n = l[key];
+          return (
+            <Fragment key={key}>
+              {at > 0 && <span attributes={ui.dim}> · </span>}
+              <Reading
+                value={n}
+                text={n === null ? `${many} ${gap}` : count(n, one, many)}
+              />
+            </Fragment>
+          );
+        })
+      )}
+    </Line>
+  );
+}
 const tileRowId = "home-tiles";
 export function Home({
   snapshot: s,
@@ -590,6 +643,7 @@ export function Home({
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
           {`${agentCount} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
         </Line>
+        <LeftoversLine leftovers={s.leftovers} now={s.time} />
         <box height={1} flexShrink={0} />
         <Tiles width={width} id={tileRowId}>
           {gauges.map((gauge, at) => {

@@ -40,6 +40,7 @@ import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 import { Udisks } from "./udisks";
+import { readLeftovers, wardenStatusPath } from "./warden-status";
 
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
@@ -162,6 +163,11 @@ export class Collector {
     scrubUnits?: ScrubUnits,
     /** A predecessor's checkpoints, so a settings change keeps each window. */
     readonly serviceCpu = new ServiceCpu(),
+    /**
+     * The warden's status file. Null unless a caller supplies one, so no test
+     * reads this session's warden.
+     */
+    private wardenStatus: string | null = null,
   ) {
     this.processes =
       processes ?? new ProcessCollector(config, ticksPerSecond, pageSize);
@@ -406,6 +412,8 @@ export class Collector {
         });
       }
     mark("tmux");
+    const leftovers = readLeftovers(r, this.wardenStatus, time);
+    mark("leftovers");
     const capabilities = [
       ...this.capabilities.map((cap) =>
         cap.id === "io-stat" ? probeIoStat(c, groups, cap) : cap,
@@ -434,6 +442,7 @@ export class Collector {
       errors: r.errors,
       services,
       ...(sccache ? { sccache } : {}),
+      leftovers,
     };
     s.alerts = this.engine.evaluate(s, c);
     mark("model");
@@ -516,5 +525,6 @@ export async function createCollector(
     previous?.lastFinishedScrub,
     scrubUnits,
     previous?.serviceCpu,
+    wardenStatusPath(),
   );
 }

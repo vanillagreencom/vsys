@@ -116,7 +116,7 @@ test("Home keeps the selected concern in view and opens its agent", async () => 
   const c = defaults();
   // One card per cause, so the list is grouped and still long enough to scroll.
   const s = everyCauseSnapshot(c);
-  const t = await mount(s, c, { width: 80, height: 24 });
+  const t = await mount(s, c, { width: 80, height: 25 });
   try {
     await t.ui.renderOnce();
     const cards = attention(s, c);
@@ -191,7 +191,7 @@ test("a wide terminal puts the concerns and the agents side by side", async () =
     await wide.close();
   }
   // Below the width they stack, and the headings sit on separate rows.
-  const tall = await mount(s, c, { width: 120, height: 44 });
+  const tall = await mount(s, c, { width: 120, height: 45 });
   try {
     await tall.press("1");
     const lines = tall.frame().split("\n");
@@ -1686,7 +1686,7 @@ test("a screen too short for every fact counts what the card gave up", async () 
   // Short enough that the card cannot write both conclusions: it keeps the
   // first whole and counts the group it gave up, and the reader still has the
   // step to take and the command under it.
-  const short = await open({ width: 160, height: 25 });
+  const short = await open({ width: 160, height: 26 });
   expect(short.detail.split("Launched bare")).toHaveLength(2);
   expect(short.detail).toContain(
     "And 1 more group of processes not written here.",
@@ -1697,7 +1697,7 @@ test("a screen too short for every fact counts what the card gave up", async () 
   // Shorter still, below what any way of writing the description takes: the
   // floor holds, so the card counts every conclusion and names the lanes
   // rather than saying nothing, and the two lines to act on stay on screen.
-  const tiny = await open({ width: 160, height: 22 });
+  const tiny = await open({ width: 160, height: 23 });
   expect(tiny.detail).toBe(
     "2 groups of processes: 2 bare. 10 processes in 5 lanes: kendex agent-0 " +
       "PID 1000, kendex agent-1 PID 1002, kendex agent-2 PID 1004, kendex " +
@@ -1717,7 +1717,7 @@ test("a card draws the rows it was measured for, at every width", async () => {
     ...[64, 76, 88, 100, 120, 130].flatMap((width) =>
       [35, 60].map((height) => ({ width, height })),
     ),
-    ...[30, 31, 32, 33, 34].map((height) => ({ width: 100, height })),
+    ...[31, 32, 33, 34, 35].map((height) => ({ width: 100, height })),
   ];
   for (const size of sizes) {
     const t = await mount(s, c, size);
@@ -2117,5 +2117,87 @@ test("Home wraps its single truthful verdict status, including unknown pressure"
     } finally {
       await t.close();
     }
+  }
+});
+
+test.each([
+  {
+    name: "a fresh status reads each count, a backlog over the zeros",
+    leftovers: {
+      state: "read",
+      time: 1000,
+      testWorlds: 3,
+      failedUnits: 0,
+      testProcesses: 1,
+    },
+    line: "Test leftovers: 3 test worlds · 0 failed units · 1 old test process",
+    plain: ["3 test worlds", "1 old test process"],
+    dim: ["0 failed units"],
+  },
+  {
+    // The warden writes these two null while no test-world pattern is set.
+    name: "a count the warden could not take reads not available, never zero",
+    leftovers: {
+      state: "read",
+      time: 1000,
+      testWorlds: null,
+      failedUnits: 244,
+      testProcesses: null,
+    },
+    line: `Test leftovers: test worlds ${gap} · 244 failed units · old test processes ${gap}`,
+    plain: ["244 failed units"],
+    dim: [`test worlds ${gap}`, `old test processes ${gap}`],
+  },
+  {
+    name: "no warden status leaves every count not available",
+    leftovers: {
+      state: "absent",
+      time: null,
+      testWorlds: null,
+      failedUnits: null,
+      testProcesses: null,
+    },
+    line: `Test leftovers: ${gap}: no agent warden status`,
+    plain: [],
+    dim: [gap],
+  },
+  {
+    name: "a status the warden stopped writing says how old it is",
+    leftovers: {
+      state: "stale",
+      time: 1000 - 300_000,
+      testWorlds: null,
+      failedUnits: null,
+      testProcesses: null,
+    },
+    line: `Test leftovers: ${gap}: the agent warden last wrote its status 5m ago`,
+    plain: [],
+    dim: [gap],
+  },
+  {
+    name: "a stored sample from before the reading has none",
+    leftovers: undefined,
+    line: `Test leftovers: ${gap}`,
+    plain: [],
+    dim: [gap],
+  },
+] as const)("$name", async ({ leftovers, line, plain, dim }) => {
+  const s = emptySnapshot(1000);
+  if (leftovers) s.leftovers = { ...leftovers };
+  const t = await mount(s, defaults(), { width: 140, height: 35 });
+  try {
+    await t.press("1");
+    const drawn = t
+      .frame()
+      .split("\n")
+      // The scroll bar takes the last column when the page overflows.
+      .map((row) => row.replace(/[█▀▄]\s*$/, "").trim())
+      .filter((row) => row.startsWith("Test leftovers:"));
+    expect(drawn).toEqual([line]);
+    for (const text of plain)
+      expect(cellStyle(t.ui, text, ui.dim)).toBe("plain");
+    for (const text of dim) expect(cellStyle(t.ui, text, ui.dim)).toBe("dim");
+  } finally {
+    await t.close();
   }
 });
