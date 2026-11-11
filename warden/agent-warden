@@ -1622,6 +1622,10 @@ def warn_near_cap():
     limit it. Returns (near, unknown, complete) where near is [(unit, kind,
     human)], unknown is {(unit, kind)} for unreadable metrics, and complete says
     the scope list itself was read."""
+    # This notice and its near-cap event judge against the global thresholds,
+    # so AGENT_SCOPE_*_WARN still sets when they fire. lanes[].near, which the
+    # status items read, judges each scope against its own limit through
+    # _near_limit(); a near-cap event makes no item.
     near, unknown = [], set()
     base = CG_ROOT / SLICE
     if not base.is_dir():
@@ -2344,6 +2348,17 @@ def lane_label(scope, procs):
     return {"tool": _tool_label(root), "worktree": _worktree_label(root.pid)}
 
 
+def _near_limit(value, limit, warn):
+    """Whether VALUE is near the scope's own LIMIT. agent-confine sets each
+    scope's limits from the launching shell, which the warden does not read, so
+    a lane is judged against its own: never near a limit that reads max, near
+    at three quarters of a number (the ratio of the default warnings), and
+    against the global WARN only when the limit could not be read."""
+    if value is None or limit == "max":
+        return False
+    return value >= (limit * 3 // 4 if isinstance(limit, int) else warn)
+
+
 def lane_statuses(procs=None):
     base = CG_ROOT / SLICE
     state = cgroup_dir_state(base)
@@ -2368,13 +2383,9 @@ def lane_statuses(procs=None):
             return None
         tasks, tasks_max = _read_int(d / "pids.current"), _read_limit(d / "pids.max")
         memory, memory_high = _read_int(d / "memory.current"), _read_limit(d / "memory.high")
-        # The thresholds are global, but a scope whose own limit reads max has
-        # no limit on that dimension to be near.
-        near = []
-        if tasks is not None and tasks_max != "max" and tasks >= SCOPE_TASKS_WARN:
-            near.append("tasks")
-        if memory is not None and memory_high != "max" and memory >= SCOPE_MEM_WARN:
-            near.append("memory")
+        near = [kind for kind, value, limit, warn in (("tasks", tasks, tasks_max, SCOPE_TASKS_WARN),
+                                                      ("memory", memory, memory_high, SCOPE_MEM_WARN))
+                if _near_limit(value, limit, warn)]
         lanes.append({
             "scope": d.name,
             "label": lane_label(d.name, procs),
