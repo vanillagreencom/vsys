@@ -143,6 +143,92 @@ test("the agent slice name comes from config, not a hardcoded name", () => {
   expect(meterOf(s, defaults(), "memory").values.cache).toBeNull();
 });
 
+test.each([
+  {
+    name: "memory.current past 90% with working memory under it raises nothing",
+    stat: { inactiveFile: 60, fileDirty: 0, fileWriteback: 0 },
+    want: "clear",
+  },
+  {
+    name: "working memory past 90% raises the cause",
+    stat: { inactiveFile: 1, fileDirty: 0, fileWriteback: 0 },
+    want: "fired",
+  },
+  {
+    name: "dirty and writeback file pages stay counted",
+    stat: { inactiveFile: 60, fileDirty: 30, fileWriteback: 30 },
+    want: "fired",
+  },
+  {
+    name: "an unread memory.stat leaves the group unjudged, never zero",
+    stat: null,
+    want: "unread",
+  },
+  {
+    name: "a fresh warden status that judged the slice leaves it out",
+    at: "agents.slice",
+    warden: ["agents.slice"],
+    want: "clear",
+  },
+  {
+    name: "a fresh warden status that listed a lane scope leaves it out",
+    warden: ["agents.slice", "agents.slice/a.scope"],
+    want: "clear",
+  },
+  {
+    name: "a scope the warden did not list stays vsys's to judge",
+    warden: ["agents.slice", "agents.slice/b.scope"],
+    want: "fired",
+  },
+  {
+    // A stale or unread status reaches the model as no status at all.
+    name: "with no fresh warden status vsys judges the slice itself",
+    at: "agents.slice",
+    want: "fired",
+  },
+] as {
+  name: string;
+  stat?: Group["fileStat"];
+  at?: string;
+  warden?: string[];
+  want: "fired" | "clear" | "unread";
+}[])(
+  "memory-high: $name",
+  ({ stat, at = "agents.slice/a.scope", warden, want }) => {
+    const c = defaults();
+    const gib = 2 ** 30;
+    const bytes = (n: number) => n * gib;
+    const fileStat =
+      stat === undefined
+        ? { inactiveFile: bytes(1), fileDirty: 0, fileWriteback: 0 }
+        : stat && {
+            inactiveFile: bytes(stat.inactiveFile),
+            fileDirty: bytes(stat.fileDirty),
+            fileWriteback: bytes(stat.fileWriteback),
+          };
+    const slice = "/user.slice/user-1000.slice/user@1000.service";
+    const s = healthy();
+    s.groups = [
+      g(at, at.split("/").at(-1) ?? at, {
+        kernelPath: `${slice}/${at}`,
+        memory: bytes(79),
+        high: bytes(80),
+        fileStat,
+      }),
+    ];
+    if (warden) s.wardenGroups = warden.map((path) => `${slice}/${path}`);
+    const fired = causes(s, c).find((cause) => cause.id === "memory-high");
+    const unread = unjudged(s, c)["memory-high"];
+    expect({
+      fired: fired?.groups.map((group) => group.path) ?? [],
+      unread: unread === "all" ? "all" : [...(unread ?? [])],
+    }).toEqual({
+      fired: want === "fired" ? [at] : [],
+      unread: want === "unread" ? [at] : [],
+    });
+  },
+);
+
 test("a saturated disk names the writing scope and carries its numbers", () => {
   const s = healthy();
   s.system.pressure.io = { some: 70, full: 41, total: 0 };

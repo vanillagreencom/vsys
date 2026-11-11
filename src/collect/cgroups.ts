@@ -105,9 +105,16 @@ export function collectGroups(
           }
         }
         // memory.stat charges page cache to the group that faulted it in.
-        const file = r
-          .text(join(path, "memory.stat"), true)
-          ?.match(/^file (\d+)$/m)?.[1];
+        const memoryStat = r.text(join(path, "memory.stat"), true);
+        const counter = (key: string): number | null => {
+          const raw = memoryStat?.match(
+            new RegExp(`^${key} (\\d+)$`, "m"),
+          )?.[1];
+          return raw === undefined ? null : Number(raw);
+        };
+        const inactiveFile = counter("inactive_file");
+        const fileDirty = counter("file_dirty");
+        const fileWriteback = counter("file_writeback");
         const memoryHigh = r.limit(join(path, "memory.high"), true);
         const memoryMax = r.limit(join(path, "memory.max"), true);
         const swapMax = r.limit(join(path, "memory.swap.max"), true);
@@ -142,7 +149,13 @@ export function collectGroups(
           tasks: r.number(join(path, "pids.current"), true),
           tasksMax: tasksMax.value,
           tasksMaxRead: tasksMax.read,
-          cache: file === undefined ? null : Number(file),
+          cache: counter("file"),
+          fileStat:
+            inactiveFile === null ||
+            fileDirty === null ||
+            fileWriteback === null
+              ? null
+              : { inactiveFile, fileDirty, fileWriteback },
           ioRead: io ? io.read : null,
           ioWrite: io ? io.write : null,
           readRate: rate(io ? io.read : null, old?.ioRead, elapsedMs),

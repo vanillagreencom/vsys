@@ -40,7 +40,7 @@ import type { CollectionConfig } from "./settings";
 import { collectSystem } from "./system";
 import { ownPaneSet, type PaneSet, readPanes } from "./tmux";
 import { Udisks } from "./udisks";
-import { readLeftovers } from "./warden-status";
+import { readWardenStatus } from "./warden-status";
 
 export interface SampleOptions {
   /** Skip scratch collection for cheap consumers that must treat it as unknown. */
@@ -171,7 +171,7 @@ export class Collector {
     readonly serviceCpu = new ServiceCpu(),
     /**
      * The warden's status file. A collector given none reads no warden, and
-     * its sample carries no leftovers reading.
+     * its sample carries no leftovers reading and no group the warden judged.
      */
     private wardenStatus?: string,
   ) {
@@ -418,10 +418,10 @@ export class Collector {
         });
       }
     mark("tmux");
-    const leftovers =
+    const warden =
       this.wardenStatus === undefined
         ? undefined
-        : readLeftovers(r, this.wardenStatus, time);
+        : readWardenStatus(r, this.wardenStatus, time);
     mark("leftovers");
     const capabilities = [
       ...this.capabilities.map((cap) =>
@@ -451,7 +451,8 @@ export class Collector {
       errors: r.errors,
       services,
       ...(sccache ? { sccache } : {}),
-      ...(leftovers ? { leftovers } : {}),
+      ...(warden ? { leftovers: warden.leftovers } : {}),
+      ...(warden?.groups ? { wardenGroups: warden.groups } : {}),
     };
     s.alerts = this.engine.evaluate(s, c);
     mark("model");

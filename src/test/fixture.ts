@@ -74,7 +74,8 @@ export function fixture() {
       "pids.current": String(pids.length),
       "pids.max": "max",
       "io.stat": "259:0 rbytes=1000 wbytes=2000 rios=1 wios=2\n",
-      "memory.stat": "anon 5000\nfile 4000\n",
+      "memory.stat":
+        "anon 5000\nfile 4000\ninactive_file 0\nfile_dirty 0\nfile_writeback 0\n",
       "cpu.pressure": psi,
       "memory.pressure": psi,
       "io.pressure": psi,
@@ -290,6 +291,7 @@ export function groupSnapshot(overrides: Partial<Group> = {}): Group {
     tasksMax: null,
     tasksMaxRead: true,
     cache: null,
+    fileStat: { inactiveFile: 0, fileDirty: 0, fileWriteback: 0 },
     ioRead: null,
     ioWrite: null,
     readRate: null,

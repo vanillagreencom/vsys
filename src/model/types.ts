@@ -41,11 +41,22 @@ export interface Group {
   tasksMaxRead: boolean;
   /** Page cache from memory.stat; io.stat totals since boot and their rates. */
   cache: number | null;
+  /**
+   * The `memory.stat` counters working memory takes from `memory`, null where
+   * the file or any of the three went unread.
+   */
+  fileStat: FileStat | null;
   ioRead: number | null;
   ioWrite: number | null;
   readRate: number | null;
   writeRate: number | null;
   pressure: Record<string, Pressure | null>;
+}
+/** Bytes from a cgroup's `memory.stat`, under the kernel's names for them. */
+export interface FileStat {
+  inactiveFile: number;
+  fileDirty: number;
+  fileWriteback: number;
 }
 /** Only the selected environment fields leave the process collector. */
 export interface Proc {
@@ -568,6 +579,12 @@ export interface Snapshot {
    * from a collector given no status path to read.
    */
   leftovers?: Leftovers;
+  /**
+   * The kernel cgroup paths whose memory the warden judged on a fresh status:
+   * its slice and each lane scope it listed. Absent where vsys read no fresh
+   * status, and in snapshots recorded before vsys read them.
+   */
+  wardenGroups?: string[];
 }
 /**
  * How the last read of the warden's status file ended: counts read, no file,

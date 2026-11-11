@@ -377,19 +377,47 @@ interface Judgment<T> {
   subject: T;
   judged: Judged;
 }
-/** An unread limit cannot clear an alert; a measured unlimited limit can. */
-export function memoryHighJudgments(groups: Group[]): Judgment<Group>[] {
-  return groups.map((group) => {
-    const high = group.high;
-    return {
-      subject: group,
-      judged: !group.highRead
-        ? "unjudged"
-        : high === null
-          ? "absent"
-          : judge([group.memory], (n) => n >= high * 0.9),
-    };
-  });
+/**
+ * Working memory, the figure the warden judges by under
+ * `docs/architecture/warden.md`: `memory.current` less the clean inactive file
+ * cache, which the kernel drops before it throttles a group past
+ * `memory.high`.
+ */
+function workingMemory(group: Group): number | null {
+  const stat = group.fileStat;
+  if (group.memory === null || stat === null) return null;
+  // memory.current and memory.stat are read at different moments.
+  return Math.max(
+    0,
+    group.memory -
+      Math.max(0, stat.inactiveFile - stat.fileDirty - stat.fileWriteback),
+  );
+}
+/**
+ * An unread limit cannot clear an alert; a measured unlimited limit can. The
+ * groups a fresh warden status judged are the warden's to warn about, so
+ * vsys leaves them out and one group near its limit is one warning.
+ */
+export function memoryHighJudgments(
+  s: Pick<Snapshot, "groups" | "wardenGroups">,
+): Judgment<Group>[] {
+  const warden = new Set(s.wardenGroups);
+  return s.groups
+    .filter(
+      (group) =>
+        group.kernelPath === undefined || !warden.has(group.kernelPath),
+    )
+    .map((group) => {
+      const high = group.high;
+      return {
+        subject: group,
+        judged: !group.highRead
+          ? "unjudged"
+          : high === null
+            ? "absent"
+            : judge([workingMemory(group)], (n) => n >= high * 0.9),
+      };
+    });
 }
 /** A partial subtotal can prove a crossing, but cannot prove recovery. */
 export function scratchJudgments(
@@ -462,7 +490,7 @@ function judgments(s: Snapshot, c: Config): Judgments {
         (n) => n > c.pressureAmber,
       ),
     })),
-    "memory-high": memoryHighJudgments(s.groups),
+    "memory-high": memoryHighJudgments(s),
     "free-space": s.storage.volumes.map((volume) => ({
       subject: volume,
       judged: judge([volume.free], (n) => n < c.freeFloor),

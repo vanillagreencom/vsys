@@ -52,7 +52,7 @@ export class AlertEngine {
         `${laneText(l)} has a memory cap below ${c.memoryFloor} bytes`,
       );
     }
-    for (const { subject: g, judged } of memoryHighJudgments(s.groups)) {
+    for (const { subject: g, judged } of memoryHighJudgments(s)) {
       keep(`memory-high:${g.path}`, judged === "unjudged");
       hit(
         "memory-high",
@@ -60,6 +60,8 @@ export class AlertEngine {
         judged === "fired",
         `${g.name} is near memory.high`,
       );
+    }
+    for (const g of s.groups) {
       for (const [kind, p] of Object.entries(g.pressure)) {
         const key = `${g.path}/${kind}`;
         if (p === null) {

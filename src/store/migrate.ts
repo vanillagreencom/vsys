@@ -125,6 +125,8 @@ export function normalizeSnapshot(s: Snapshot): Snapshot {
       highRead: group.highRead ?? typeof group.high === "number",
       swapMaxRead: group.swapMaxRead ?? typeof group.swapMax === "number",
       tasksMaxRead: group.tasksMaxRead ?? typeof group.tasksMax === "number",
+      // A build older than the read kept no file counters.
+      fileStat: group.fileStat ?? null,
     })),
     lanes: (s.lanes ?? []).map((lane) => {
       if (s.processRead !== undefined) return normalizeLane(lane);
