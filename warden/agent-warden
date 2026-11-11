@@ -995,8 +995,11 @@ def _exited(pid):
     reads fail as a non-dumpable process's do, but it holds nothing; short
     jobs in agents.slice exit between the scan and these reads on most
     ticks."""
-    stat = read(f"/proc/{pid}/stat")
-    return stat is None or stat.rpartition(")")[2].split()[:1] in (["Z"], ["X"])
+    try:
+        _, fields = _proc_stat(pid)
+    except OSError:
+        return True
+    return fields[:1] in (["Z"], ["X"])
 
 
 def _birth_time(path):
@@ -1084,8 +1087,7 @@ def _unread_may_hold(proc):
         _, current = _proc_stat(proc.pid)
         _, after = _proc_stat(proc.ppid)
         return (int(current[1]) != proc.ppid or int(current[19]) != proc.start
-                or parent[0] in ("Z", "X") or after[0] in ("Z", "X")
-                or int(after[19]) != parent_start or _proc_uid(proc.ppid) != parent_uid)
+                or _exited(proc.ppid) or int(after[19]) != parent_start)
     except (OSError, IndexError, ValueError):
         return True
 
