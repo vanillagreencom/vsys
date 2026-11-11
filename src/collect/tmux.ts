@@ -45,7 +45,7 @@ export const switchCommand = (target: string) =>
 
 /** Use the socket already read from the pane's TMUX, without its server pid. */
 export const attachArgv = (target: string, server = "") => {
-  const socket = server.split(",")[0];
+  const { socket } = serverFields(server);
   return ["tmux", ...(socket ? ["-S", socket] : []), "attach", "-t", target];
 };
 /** A plain terminal needs an attachment, not an already-attached client. */
@@ -270,6 +270,16 @@ export const serverSocket = (
 /** The `socket,serverpid` of a `TMUX` value, and "" when there is none. */
 export const serverPart = (tmux: string | null | undefined): string =>
   (tmux ?? "").split(",").slice(0, 2).join(",");
+/**
+ * The two fields of a `serverPart` value. The pid is 0 when there is none:
+ * no process has it, so a lookup by it finds nothing.
+ */
+export const serverFields = (
+  server: string,
+): { socket: string; pid: number } => {
+  const [socket = "", pid = ""] = server.split(",");
+  return { socket, pid: Number(pid) || 0 };
+};
 /** Every pane one server holds, which server that was, and which pane is ours. */
 export interface PaneSet {
   /** Empty when vsys is outside tmux, which is not the same as knowing. */

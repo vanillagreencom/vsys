@@ -365,10 +365,22 @@ export interface Lane {
   window: string;
   /**
    * The pane belongs to a tmux server this vsys is not talking to, so its
-   * handle names a different pane here. True only when both servers are known
-   * and differ.
+   * handle names a different pane here. True when both servers are known and
+   * differ, and when the lane's own server has stopped: whichever server now
+   * answers on its socket hands out the same handles to other panes.
    */
   elsewhere: boolean;
+  /**
+   * Whether the tmux server the lane's `TMUX` names is still running, which
+   * is what an attach to its socket needs: a stopped server's path may be
+   * served by a newer one, where the same `%N` is a stranger's pane.
+   * `running` when it is vsys's own server, or when its pid is a process that
+   * started no later than the lane's main process. `stopped` when vsys's own
+   * server answers on that path under another pid, or when a complete process
+   * read holds no such process. `unknown` when the lane names no server or an
+   * incomplete read cannot settle it.
+   */
+  server: "running" | "stopped" | "unknown";
   /**
    * Whether this lane's pane is the pane vsys is drawing in. Reading that one
    * would show vsys's own screen inside itself, one copy deeper on every

@@ -307,6 +307,7 @@ export function laneSnapshot(overrides: Partial<Lane> = {}): Lane {
     address: "",
     window: "",
     elsewhere: false,
+    server: "unknown",
     self: "no",
     title: "",
     cwd: "/repo",

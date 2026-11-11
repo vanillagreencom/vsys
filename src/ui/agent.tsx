@@ -336,14 +336,23 @@ export function Agent({
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
   const switches = onSwitch !== undefined && !lane.elsewhere;
   const server = paneSocket(proc);
-  const terminalCommand = switches
-    ? switchCommand(lane.pane)
-    : attachCommand(lane.pane, server);
+  // An attach goes by socket path, and a stopped server's path may be served
+  // by a newer one holding the same `%N` for another pane, so only a server
+  // the model found running is attached to. Null where the row offers nothing
+  // to run: no Enter, and nothing to copy.
+  const terminalCommand =
+    lane.self !== "no"
+      ? null
+      : switches
+        ? switchCommand(lane.pane)
+        : lane.server === "running"
+          ? attachCommand(lane.pane, server)
+          : null;
   // Without an opener the command is the row's whole answer, so it is drawn
   // where it can wrap, as a failed launch draws it: a truncated row would cut
   // it, and the copy notice says the command stays on screen.
   const terminalReason =
-    lane.self === "no" && !switches && !onTerminal
+    terminalCommand !== null && !switches && !onTerminal
       ? `${keyLabel(c.keys.open)} copies the command`
       : terminalError?.command === terminalCommand
         ? terminalError.reason
@@ -492,9 +501,10 @@ export function Agent({
           ? row.intent.text
           : // A switch to the pane the reader is in moves nothing, and one to
             // a pane that may be it is a move vsys cannot promise, so neither
-            // gets a command to hand them.
-            row?.kind === "terminal" && lane.self === "no"
-            ? terminalCommand
+            // gets a command to hand them, nor does a pane on a server vsys
+            // cannot show is running.
+            row?.kind === "terminal"
+            ? (terminalCommand ?? undefined)
             : undefined,
       );
       return true;
@@ -504,16 +514,17 @@ export function Agent({
   /**
    * One row, two answers. Inside the server that holds the pane vsys moves the
    * reader's own view; outside it xdg-terminal-exec opens a terminal attached
-   * to the pane. Neither changes the agent's process or cgroup, so both bypass
-   * write mode. Without xdg-terminal-exec the row says so and Enter copies the
-   * command.
+   * to the pane, when the model found that pane's server running. Neither
+   * changes the agent's process or cgroup, so both bypass write mode. Without
+   * xdg-terminal-exec the row says so and Enter copies the command.
    */
   const goToTerminal = () => {
     // tmux moves a client to the pane it is already in by doing nothing, so
     // the row states that instead of asking for a move that cannot happen.
     // A pane vsys could not decide about is left alone for the same reason:
     // it may be that pane, and vsys cannot say which move it is asking for.
-    if (lane.self !== "no") return;
+    // A server vsys cannot show is running gets no attach either.
+    if (terminalCommand === null) return;
     // A switch rejects when the pane has gone, the server stopped or the
     // target is not one it holds. Dropped, the reader pressed a key, nothing
     // moved, and nothing said why.
@@ -703,15 +714,19 @@ export function Agent({
                           ? "vsys cannot tell whether this is the terminal you are reading in"
                           : switches
                             ? `moves this terminal to ${lane.address || lane.pane}`
-                            : onTerminal
-                              ? `opens a new terminal on ${lane.address || lane.pane}`
-                              : "xdg-terminal-exec is not on PATH",
+                            : lane.server === "stopped"
+                              ? "the tmux server this agent ran in has stopped"
+                              : lane.server === "unknown"
+                                ? "vsys cannot confirm this pane's tmux server is running"
+                                : onTerminal
+                                  ? `opens a new terminal on ${lane.address || lane.pane}`
+                                  : "xdg-terminal-exec is not on PATH",
                     )}
                   </span>
                 </>,
                 {
                   indent: 3,
-                  under: terminalReason && (
+                  under: terminalReason && terminalCommand && (
                     <Detail>
                       <Line marginTop={1} flexShrink={0} wrapMode="word">
                         {safe(`${terminalReason} · run: ${terminalCommand}`)}
@@ -796,8 +811,16 @@ export function Agent({
                             {/* `%9` is unique per tmux server, so the server this
                           vsys reads holds a `%9` of its own: reading or
                           switching would reach a stranger's pane. */}
-                            {lane.pane && lane.elsewhere && (
-                              <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                            {lane.pane &&
+                              lane.elsewhere &&
+                              lane.server !== "stopped" && (
+                                <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                              )}
+                            {/* The server that handed out this handle is gone,
+                          and whichever one answers on its socket now gives the
+                          same handle to another pane. */}
+                            {lane.pane && lane.server === "stopped" && (
+                              <Empty text="The tmux server this pane belonged to has stopped, so vsys is not reading it." />
                             )}
                             {/* Reading it would draw this screen inside itself, and
                           one copy deeper on every sample after that. Live

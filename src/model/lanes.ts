@@ -5,6 +5,7 @@ import {
   isPaneId,
   type PaneAddress,
   type PaneSet,
+  serverFields,
   targetPanes,
 } from "../collect/tmux";
 import {
@@ -338,16 +339,38 @@ export function lanes(
     /**
      * What the lane says about its tmux server, against the one vsys read.
      * Naming no server is its own state, neither a match nor a boundary:
-     * `elsewhere` refuses only a server known to differ, and the own-pane mark
-     * below asks only that the lane is not on one.
+     * `elsewhere` refuses only a server known to differ or known to have
+     * stopped, and the own-pane mark below asks only that the lane is not on
+     * one.
      */
-    const server =
+    const relation =
       socket === "" || mine === ""
         ? "unknown"
         : mine === socket
           ? "same"
           : "other";
-    const elsewhere = server === "other";
+    const theirs = serverFields(mine);
+    // tmux keeps the `TMUX` it exported, so a process that outlived its
+    // server still names it. One server listens on a path, so a path vsys's
+    // own server holds under another pid names a server that has stopped.
+    // Elsewhere the pid must be a process, and one that started no later than
+    // this one, which inherited the server's `TMUX` from a pane it opened: a
+    // later start is the pid reused. Only a complete read can show it absent.
+    const holder = byPid.get(theirs.pid);
+    const server: Lane["server"] =
+      mine === ""
+        ? "unknown"
+        : relation === "same"
+          ? "running"
+          : relation === "other" &&
+              theirs.socket === serverFields(socket).socket
+            ? "stopped"
+            : holder && main && holder.start <= main.start
+              ? "running"
+              : processRead === "complete"
+                ? "stopped"
+                : "unknown";
+    const elsewhere = relation === "other" || server === "stopped";
     // `TMUX_PANE` alone, never the configured list, which holds whatever
     // target the reader chose: a handle compares to a handle.
     const handle = firstEnv(main, ["TMUX_PANE"]);
@@ -408,11 +431,13 @@ export function lanes(
        * The pane belongs to a tmux server this vsys is not talking to. `%9` is
        * unique per server, so the one this vsys read holds a `%9` of its own
        * and reading or switching to it would reach a stranger's pane. Refused
-       * only when both servers are known and differ: an unknown one is not a
-       * boundary vsys can see, and the only route to a handle with no server
+       * when both servers are known and differ, or when the lane's own server
+       * has stopped and its `%9` names nothing it holds: an unknown one is not
+       * a boundary vsys can see, and the only route to a handle with no server
        * is a reader setting it themselves.
        */
       elsewhere,
+      server,
       self,
       title,
       cwd,
