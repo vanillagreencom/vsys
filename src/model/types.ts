@@ -41,11 +41,22 @@ export interface Group {
   tasksMaxRead: boolean;
   /** Page cache from memory.stat; io.stat totals since boot and their rates. */
   cache: number | null;
+  /**
+   * The `memory.stat` counters working memory takes from `memory`, null where
+   * the file or any of the three went unread.
+   */
+  fileStat: FileStat | null;
   ioRead: number | null;
   ioWrite: number | null;
   readRate: number | null;
   writeRate: number | null;
   pressure: Record<string, Pressure | null>;
+}
+/** Bytes from a cgroup's `memory.stat`, under the kernel's names for them. */
+export interface FileStat {
+  inactiveFile: number;
+  fileDirty: number;
+  fileWriteback: number;
 }
 /** Only the selected environment fields leave the process collector. */
 export interface Proc {
@@ -465,6 +476,11 @@ export interface Alert {
   rule: Rule;
   subject: string;
   message: string;
+  /**
+   * `warden` on a memory-high alert the agent warden's warning raised, whose
+   * desktop notice the warden delivers itself; absent where vsys judged.
+   */
+  source?: "warden";
 }
 /** A kernel or system interface the dashboard needs to fill a reading. */
 export type CapabilityId =
@@ -568,6 +584,19 @@ export interface Snapshot {
    * from a collector given no status path to read.
    */
   leftovers?: Leftovers;
+  /**
+   * The warden's own per-scope `near-limit` warnings on a fresh status.
+   * Absent where vsys read no fresh status, and in snapshots recorded before
+   * vsys read them.
+   */
+  wardenNearLimits?: WardenNearLimit[];
+}
+/** One `near-limit:SCOPE` item from the warden's `status.json`. */
+export interface WardenNearLimit {
+  /** The kernel cgroup path of the lane scope the item warns about. */
+  kernelPath: string;
+  /** The limits that lane's `near` lists: `memory`, `tasks`, or both. */
+  near: string[];
 }
 /**
  * How the last read of the warden's status file ended: counts read, no file,

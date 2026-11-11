@@ -18,6 +18,7 @@ import {
   processSnapshot,
   serviceSnapshot,
   volumeSnapshot,
+  wardenFixture,
 } from "../test/fixture";
 import { present } from "../test/present";
 import { summarySnapshot } from "../ui/export";
@@ -142,6 +143,128 @@ test("the agent slice name comes from config, not a hardcoded name", () => {
   // The default slice name must not be consulted anywhere.
   expect(meterOf(s, defaults(), "memory").values.cache).toBeNull();
 });
+
+/**
+ * The near list of the warden's lane near both its limits, in the order the
+ * warden writes it, so a warning that names memory second still counts.
+ */
+const nearBoth: string[] = present(
+  wardenFixture("status-near-limit").lanes[0],
+  "the warden's near-limit lane",
+).near;
+
+test.each([
+  {
+    name: "memory.current past 90% with working memory under it raises nothing",
+    stat: { inactiveFile: 60, fileDirty: 0, fileWriteback: 0 },
+    want: "clear",
+  },
+  {
+    name: "working memory past 90% raises the cause",
+    stat: { inactiveFile: 1, fileDirty: 0, fileWriteback: 0 },
+    want: "fired",
+  },
+  {
+    name: "dirty and writeback file pages stay counted",
+    stat: { inactiveFile: 60, fileDirty: 30, fileWriteback: 30 },
+    want: "fired",
+  },
+  {
+    // file_dirty and file_writeback count dirty pages on the active list
+    // too, so their sum can pass inactive_file.
+    name: "dirty pages past the inactive file cache never add to working memory",
+    memory: 70,
+    stat: { inactiveFile: 0, fileDirty: 10, fileWriteback: 0 },
+    want: "clear",
+  },
+  {
+    name: "an unread memory.stat leaves the group unjudged, never zero",
+    stat: null,
+    want: "unread",
+  },
+  {
+    // Under vsys's own line, so only the warden's warning can raise it.
+    name: "a lane scope the warden warns for carries that warning, left out of the summary",
+    memory: 50,
+    warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
+    want: "warden",
+  },
+  {
+    // Past vsys's own line too, where the summary would repeat the warning.
+    name: "a lane the warden warns for past vsys's own line is still left out of the summary",
+    warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
+    want: "warden",
+  },
+  {
+    // The warden gives no item for a lane it could not read or could not
+    // name, and none below its own line.
+    name: "a lane scope the warden gives no warning for stays vsys's",
+    warden: [],
+    want: "fired",
+  },
+  {
+    name: "a warden warning for tasks alone leaves memory to vsys",
+    warden: [{ scope: "agents.slice/a.scope", near: ["tasks"] }],
+    want: "fired",
+  },
+  {
+    // The warden warns for the slice only past memory.high itself.
+    name: "vsys judges the slice while the warden warns for a lane in it",
+    at: "agents.slice",
+    warden: [{ scope: "agents.slice/a.scope", near: nearBoth }],
+    want: "fired",
+  },
+] as {
+  name: string;
+  memory?: number;
+  stat?: Group["fileStat"];
+  at?: string;
+  warden?: { scope: string; near: string[] }[];
+  want: "fired" | "clear" | "unread" | "warden";
+}[])(
+  "memory-high: $name",
+  ({ memory = 79, stat, at = "agents.slice/a.scope", warden, want }) => {
+    const c = defaults();
+    const gib = 2 ** 30;
+    const bytes = (n: number) => n * gib;
+    const fileStat =
+      stat === undefined
+        ? { inactiveFile: bytes(1), fileDirty: 0, fileWriteback: 0 }
+        : stat && {
+            inactiveFile: bytes(stat.inactiveFile),
+            fileDirty: bytes(stat.fileDirty),
+            fileWriteback: bytes(stat.fileWriteback),
+          };
+    const slice = "/user.slice/user-1000.slice/user@1000.service";
+    const s = healthy();
+    s.groups = [
+      g(at, at.split("/").at(-1) ?? at, {
+        kernelPath: `${slice}/${at}`,
+        memory: bytes(memory),
+        high: bytes(80),
+        fileStat,
+      }),
+    ];
+    if (warden)
+      s.wardenNearLimits = warden.map(({ scope, near }) => ({
+        kernelPath: `${slice}/${scope}`,
+        near,
+      }));
+    const fired = causes(s, c).find((cause) => cause.id === "memory-high");
+    const unread = unjudged(s, c)["memory-high"];
+    expect({
+      fired: fired?.groups.map((group) => group.path) ?? [],
+      unread: unread === "all" ? "all" : [...(unread ?? [])],
+      summary: summarySnapshot(s, c)
+        .verdict.filter((entry) => entry.cause === "memory-high")
+        .map((entry) => entry.subject),
+    }).toEqual({
+      fired: want === "fired" || want === "warden" ? [at] : [],
+      unread: want === "unread" ? [at] : [],
+      summary: want === "fired" ? [at] : [],
+    });
+  },
+);
 
 test("a saturated disk names the writing scope and carries its numbers", () => {
   const s = healthy();

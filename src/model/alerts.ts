@@ -5,7 +5,8 @@ import { escaped } from "./lanes";
 import { laneText } from "./naming";
 import type { Alert, Rule, Snapshot } from "./types";
 import {
-  memoryHighJudgments,
+  consumerName,
+  memoryHighJudgment,
   processesUnread,
   scratchJudgments,
 } from "./verdict";
@@ -24,12 +25,21 @@ export class AlertEngine {
       condition: boolean,
       message: string,
       repeat = false,
+      source?: Alert["source"],
     ) => {
       if (!condition) return;
-      const key = `${rule}:${subject}`;
+      // The source is part of the alert's identity, so vsys's own judgment
+      // taking over from a warden that stopped opens a new alert to notify.
+      const key = `${rule}:${subject}${source ? `:${source}` : ""}`;
       next.add(key);
       if (repeat || !this.active.has(key))
-        alerts.push({ time: s.time, rule, subject, message });
+        alerts.push({
+          time: s.time,
+          rule,
+          subject,
+          message,
+          ...(source ? { source } : {}),
+        });
     };
     for (const p of s.procs) {
       hit(
@@ -52,13 +62,19 @@ export class AlertEngine {
         `${laneText(l)} has a memory cap below ${c.memoryFloor} bytes`,
       );
     }
-    for (const { subject: g, judged } of memoryHighJudgments(s.groups)) {
+    for (const g of s.groups) {
+      const { judged } = memoryHighJudgment(g, s);
       keep(`memory-high:${g.path}`, judged === "unjudged");
+      keep(`memory-high:${g.path}:warden`, judged === "unjudged");
       hit(
         "memory-high",
         g.path,
-        judged === "fired",
-        `${g.name} is near memory.high`,
+        judged === "fired" || judged === "warden",
+        judged === "warden"
+          ? `The agent warden warns ${consumerName(g, s)} is near its memory limit`
+          : `${g.name} is near memory.high`,
+        false,
+        judged === "warden" ? "warden" : undefined,
       );
       for (const [kind, p] of Object.entries(g.pressure)) {
         const key = `${g.path}/${kind}`;
@@ -129,9 +145,15 @@ export class AlertEngine {
 /** How long one notify-send call may run before it is killed as a failure. */
 export const notifyTimeoutMs = 5000;
 
-/** The alerts whose rule the reader chose to receive as desktop notifications. */
+/**
+ * The alerts whose rule the reader chose to receive as desktop notifications.
+ * A warning the warden raised is left out: the warden's own handoff delivers
+ * its desktop notice, so sending it here too would show it twice.
+ */
 export function notifiable(alerts: Alert[], c: Config): Alert[] {
-  return alerts.filter((a) => c.notifications.includes(a.rule));
+  return alerts.filter(
+    (a) => a.source !== "warden" && c.notifications.includes(a.rule),
+  );
 }
 
 /**

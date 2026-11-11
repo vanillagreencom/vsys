@@ -11,9 +11,11 @@ import {
   causes,
   consumerName,
   consumerText,
+  type Ladder,
   type LaneName,
   type Level,
   type Meter,
+  memoryHighJudgment,
 } from "../model/verdict";
 import { capLines, fit, textWidth, wrapLines } from "./columns";
 import {
@@ -638,10 +640,28 @@ function copy(
     }
     case "memory-high": {
       const groups = cause.groups.length;
+      const warned = s.groups.filter(
+        (g) =>
+          cause.groups.includes(g) &&
+          memoryHighJudgment(g, s).judged === "warden",
+      );
+      const names = list(cause.groups.map((g) => consumerName(g, s, laneName)));
+      const reclaim = `Memory reclaim can slow every task in ${p(groups, "this group", "these groups")}.`;
+      // A card the warden's warnings alone raised states the warden's
+      // condition, not vsys's threshold; a mixed card names which are its.
+      const wardens = warned.length === groups;
       return {
         word: "Busy",
-        title: `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${list(cause.groups.map((g) => consumerName(g, s, laneName)))}`,
-        ways: ["Memory reclaim can slow every task in these groups."],
+        title: wardens
+          ? `${groups} ${p(groups, "group is near its memory limit", "groups are near their memory limits")}: ${names}`
+          : `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${names}`,
+        ways: [
+          wardens
+            ? `The agent warden gave this warning. ${reclaim}`
+            : warned.length
+              ? `The agent warden warns ${list(warned.map((g) => consumerName(g, s, laneName)))} ${p(warned.length, "is near its memory limit", "are near their memory limits")}. ${reclaim}`
+              : reclaim,
+        ],
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",
         target: group,
@@ -754,12 +774,16 @@ function copy(
 export function attention(
   s: Snapshot,
   c: Config,
-  o: { basePath?: string[]; width?: number; laneName?: LaneName } = {},
+  o: {
+    basePath?: string[];
+    width?: number;
+    laneName?: LaneName;
+  } & Ladder = {},
 ): Attention[] {
   const basePath = o.basePath ?? (process.env.PATH ?? "").split(":");
   const width = o.width ?? defaultDetailWidth;
   const laneName = o.laneName ?? laneText;
-  return causes(s, c).map((cause) => {
+  return causes(s, c, o).map((cause) => {
     const { word, headline, ways, keep, ...card } = copy(
       cause,
       s,

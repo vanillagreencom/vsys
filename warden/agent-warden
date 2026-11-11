@@ -1623,10 +1623,11 @@ def warn_near_cap():
     limit it. Returns (near, unknown, complete) where near is [(unit, kind,
     human)], unknown is {(unit, kind)} for unreadable metrics, and complete says
     the scope list itself was read."""
-    # This notice and its near-cap event judge against the global thresholds,
-    # so AGENT_SCOPE_*_WARN still sets when they fire. lanes[].near, which the
-    # status items read, judges each scope against its own limit through
-    # _near_limit(); a near-cap event makes no item.
+    # Memory is judged as lanes[].near judges it, through _near_limit() against
+    # the scope's own memory.high, because vsys hands a lane the status warns
+    # for to this notice and sends none of its own; AGENT_SCOPE_MEM_WARN_BYTES
+    # applies only when that limit cannot be read. Tasks still judge against
+    # the global AGENT_SCOPE_TASKS_WARN. A near-cap event makes no item.
     near, unknown = [], set()
     base = CG_ROOT / SLICE
     if not base.is_dir():
@@ -1650,9 +1651,9 @@ def warn_near_cap():
         if mem is None:
             unknown.add((d.name, "memory"))
         else:
-            if mem >= SCOPE_MEM_WARN:
-                high = _read_limit(d / "memory.high")
-                cap = str(high >> 30) if isinstance(high, int) else "unlimited" if high == "max" else "unknown"
+            high = _read_limit(d / "memory.high")
+            if _near_limit(mem, high, SCOPE_MEM_WARN):
+                cap = str(high >> 30) if isinstance(high, int) else "unknown"
                 near.append((d.name, "memory", f"{mem >> 30} GiB (soft cap {cap})"))
     return near, unknown, True
 

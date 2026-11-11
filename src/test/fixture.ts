@@ -1,6 +1,7 @@
 import {
   chmodSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -29,6 +30,18 @@ const claudeBinary = "/home/reader/.local/share/claude/versions/2.1.0";
 /** The kernel cgroup of the user manager of the user running the tests. */
 const uid = process.getuid?.() ?? 1000;
 export const userManager = `/user.slice/user-${uid}.slice/user@${uid}.service`;
+
+/**
+ * One of the warden's shipped `status.json` fixtures, which its own suite
+ * proves are what it writes, so a reader is tested on the warden's shape.
+ */
+export const wardenFixture = (name: string) =>
+  JSON.parse(
+    readFileSync(
+      join(import.meta.dir, `../../warden/fixtures/${name}.json`),
+      "utf8",
+    ),
+  );
 
 /** Fake kernel files never require systemd, mounted test disks, or live agents. */
 export function fixture() {
@@ -74,7 +87,8 @@ export function fixture() {
       "pids.current": String(pids.length),
       "pids.max": "max",
       "io.stat": "259:0 rbytes=1000 wbytes=2000 rios=1 wios=2\n",
-      "memory.stat": "anon 5000\nfile 4000\n",
+      "memory.stat":
+        "anon 5000\nfile 4000\ninactive_file 0\nfile_dirty 0\nfile_writeback 0\n",
       "cpu.pressure": psi,
       "memory.pressure": psi,
       "io.pressure": psi,
@@ -290,6 +304,7 @@ export function groupSnapshot(overrides: Partial<Group> = {}): Group {
     tasksMax: null,
     tasksMaxRead: true,
     cache: null,
+    fileStat: { inactiveFile: 0, fileDirty: 0, fileWriteback: 0 },
     ioRead: null,
     ioWrite: null,
     readRate: null,

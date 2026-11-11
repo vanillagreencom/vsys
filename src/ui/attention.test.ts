@@ -2161,3 +2161,64 @@ test("a new-errors card tells only the errors newer than the last check", () => 
   );
   expect(counted).not.toContain("kernel logged");
 });
+
+test.each([
+  {
+    name: "vsys's own threshold names the threshold",
+    warden: [] as number[],
+    groups: 1,
+    title: "1 group is near the memory threshold: lane-1 PID 1",
+    way: "Memory reclaim can slow every task in this group.",
+  },
+  {
+    name: "one lane the warden warns for takes the warden's term and one naming",
+    warden: [1],
+    groups: 1,
+    title: "1 group is near its memory limit: lane-1 PID 1",
+    way: "The agent warden gave this warning. Memory reclaim can slow every task in this group.",
+  },
+  {
+    name: "two lanes the warden warns for read in the plural",
+    warden: [1, 2],
+    groups: 2,
+    title: "2 groups are near their memory limits: lane-1 PID 1, lane-2 PID 2",
+    way: "The agent warden gave this warning. Memory reclaim can slow every task in these groups.",
+  },
+  {
+    name: "a mixed card names the lanes the warden warns for",
+    warden: [1],
+    groups: 2,
+    title: "2 groups are near the memory threshold: lane-1 PID 1, lane-2 PID 2",
+    way: "The agent warden warns lane-1 PID 1 is near its memory limit. Memory reclaim can slow every task in these groups.",
+  },
+])("memory-high card: $name", ({ warden, groups, title, way }) => {
+  const c = defaults();
+  const s = emptySnapshot();
+  const ids = Array.from({ length: groups }, (_, i) => i + 1);
+  const scope = (n: number) => `agents.slice/agent-confine-${n}-1.scope`;
+  s.lanes = ids.map((n) =>
+    laneSnapshot({ id: scope(n), name: `lane-${n}`, mainPid: n }),
+  );
+  // Each lane's working memory is past vsys's own line, so a lane the warden
+  // does not warn for is vsys's judgment.
+  s.groups = ids.map((n) =>
+    groupSnapshot({
+      path: scope(n),
+      name: `agent-confine-${n}-1.scope`,
+      kernelPath: `/${scope(n)}`,
+      memory: 95,
+      high: 100,
+    }),
+  );
+  s.wardenNearLimits = warden.map((n) => ({
+    kernelPath: `/${scope(n)}`,
+    near: ["memory"],
+  }));
+  const card = attention(s, c, { basePath: base }).find(
+    (item) => item.id === "memory-high",
+  );
+  expect({ title: card?.title, ways: card?.ways }).toEqual({
+    title,
+    ways: [[way]],
+  });
+});

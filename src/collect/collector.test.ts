@@ -11,7 +11,12 @@ import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
 import { causes, meters } from "../model/verdict";
 import { point } from "../store/point";
-import { claudeLink, fixture, userManager } from "../test/fixture";
+import {
+  claudeLink,
+  fixture,
+  userManager,
+  wardenFixture,
+} from "../test/fixture";
 import { present } from "../test/present";
 import { fakeBus, noBus } from "../test/udisks";
 import { FinishedScrubMemory } from "./btrfs";
@@ -1179,7 +1184,41 @@ test("a mount list that cannot be read leaves the limit above the root unknown",
   const lane = present(s.lanes[0], "lane with no mount list");
   expect([lane.memoryMax, lane.memoryMaxKnown]).toEqual([null, false]);
 });
-test("io.stat and memory.stat give byte totals, write rates and page cache", async () => {
+test("a warden warning names the kernel path of the lane scope it is about", async () => {
+  const f = setup();
+  const scope = "agents.slice/agent-warden-100-200.scope";
+  f.group(scope, [40]);
+  f.proc(40, scope);
+  // The warden's own fixture, which warns for that scope.
+  const status = wardenFixture("status-near-limit");
+  const file = join(f.root, "run/agent-warden/status.json");
+  f.write(file, JSON.stringify(status));
+  const collector = new Collector(
+    f.config,
+    100,
+    4096,
+    false,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    file,
+  );
+  const s = await sampleAt(collector, status.time * 1000);
+  const group = present(
+    s.groups.find((g) => g.path === scope),
+    "the warned lane scope",
+  );
+  expect(s.wardenNearLimits?.map((w) => w.kernelPath)).toEqual([
+    present(group.kernelPath, "the scope's kernel path"),
+  ]);
+});
+test("io.stat and memory.stat give byte totals, write rates, page cache and file counters", async () => {
   const f = setup();
   f.group("agents.slice/a.scope", [40]);
   f.proc(40, "agents.slice/a.scope");
@@ -1188,11 +1227,19 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
     join(path, "io.stat"),
     "259:0 rbytes=100 wbytes=200\n8:0 rbytes=1 wbytes=2\n",
   );
-  f.write(join(path, "memory.stat"), "anon 5\nfile 4096\nslab 1\n");
+  f.write(
+    join(path, "memory.stat"),
+    "anon 5\nfile 4096\ninactive_file 3072\nfile_dirty 1024\nfile_writeback 512\nslab 1\n",
+  );
   const collector = new Collector(f.config, 100, 4096);
   const a = await sampleAt(collector, 1000);
   const first = a.groups.find((g) => g.path === "agents.slice/a.scope");
-  expect(first).toMatchObject({ ioRead: 101, ioWrite: 202, cache: 4096 });
+  expect(first).toMatchObject({
+    ioRead: 101,
+    ioWrite: 202,
+    cache: 4096,
+    fileStat: { inactiveFile: 3072, fileDirty: 1024, fileWriteback: 512 },
+  });
   // The first sample has no earlier counter, so a rate is unknown, not zero.
   expect(first?.writeRate).toBeNull();
   f.write(
@@ -1210,6 +1257,7 @@ test("io.stat and memory.stat give byte totals, write rates and page cache", asy
   const group = bad.groups.find((g) => g.path === "agents.slice/a.scope");
   expect(group?.ioWrite).toBeNull();
   expect(group?.cache).toBeNull();
+  expect(group?.fileStat).toBeNull();
   expect(bad.errors.map((e) => e.source)).toContain(join(path, "io.stat"));
 });
 // The kernel adds a device line to a group's io.stat on the group's first I/O

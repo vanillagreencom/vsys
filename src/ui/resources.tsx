@@ -6,7 +6,13 @@ import { safe } from "../model/export";
 import { coveringGroup, dangerousCap, effectiveMax } from "../model/lanes";
 import { distinctNames, unitLabel } from "../model/naming";
 import type { Group, Service, Snapshot } from "../model/types";
-import { causes, type Level, meters } from "../model/verdict";
+import {
+  causes,
+  type Level,
+  memoryHighJudgment,
+  meters,
+  workingMemory,
+} from "../model/verdict";
 import { meterTile, type Target } from "./attention";
 import { screenPad, sideWidth } from "./chrome";
 import { type Column, cell, columnGap, columnsWidth } from "./columns";
@@ -69,6 +75,8 @@ export function groupRows(s: Snapshot, all: boolean): Group[] {
 export type ResourceRow =
   | { kind: "group"; path: string; group: Group }
   | { kind: "service"; path: string; service: Service };
+/** The longest Selected label, "Working memory", and a gap after it. */
+const labelWidth = 16;
 /** The identity a row is selected and targeted by. */
 const rowKey = (row: { kind: string; path: string }): string =>
   `${row.kind}:${row.path}`;
@@ -258,7 +266,8 @@ export type GroupCause =
       some: number;
       threshold: number;
     }
-  | { kind: "high"; level: "warn"; memory: number; high: number }
+  | { kind: "high"; level: "warn"; working: number; high: number }
+  | { kind: "warden"; level: "warn" }
   | { kind: "unread"; level: "warn" };
 /**
  * Whether a group is a lane or holds one. A group-less lane carries its
@@ -312,11 +321,18 @@ export function groupCause(
       ...worst,
       threshold: c.pressureAmber,
     };
-  if (g.memory !== null && g.high !== null && g.memory >= g.high * 0.9)
-    return { kind: "high", level: "warn", memory: g.memory, high: g.high };
+  const memoryHigh = memoryHighJudgment(g, s);
+  if (memoryHigh.judged === "fired")
+    return {
+      kind: "high",
+      level: "warn",
+      working: memoryHigh.working,
+      high: memoryHigh.high,
+    };
+  if (memoryHigh.judged === "warden") return { kind: "warden", level: "warn" };
   if (
     Object.values(g.pressure).some((p) => p === null) ||
-    (g.memory === null && g.high !== null)
+    memoryHigh.judged === "unjudged"
   )
     return { kind: "unread", level: "warn" };
   return null;
@@ -333,7 +349,9 @@ function causeText(cause: GroupCause, c: Config): string {
     case "pressure":
       return waitText(cause.resource, cause.some, cause.threshold);
     case "high":
-      return `memory ${bytes(cause.memory, c)} past 90% of memory high ${bytes(cause.high, c)}`;
+      return `working memory ${bytes(cause.working, c)} past 90% of memory high ${bytes(cause.high, c)}`;
+    case "warden":
+      return "the agent warden warns this lane is near its memory limit";
     case "unread":
       return `a threshold reading is ${gap}`;
     default:
@@ -558,42 +576,58 @@ export function Resources({
   const selectedDetail =
     current?.kind === "service" && currentState ? (
       <>
-        <Field label="Unit" value={current.service.name} wrap={side > 0} />
+        <Field
+          label="Unit"
+          value={current.service.name}
+          width={labelWidth}
+          wrap={side > 0}
+        />
         <Field
           label="Status"
           value={serviceWords[currentState.kind]}
           color={statusColor(serviceWords[currentState.kind])}
+          width={labelWidth}
           wrap={side > 0}
         />
         <Field
           label="CPU use"
           value={serviceStatusText(currentState)}
+          width={labelWidth}
           wrap={side > 0}
         />
         <Field
           label="Cgroup"
           value={`${c.cgroupTop}/${current.path}`}
+          width={labelWidth}
           wrap={side > 0}
         />
       </>
     ) : (
       currentGroup && (
         <>
-          <Field label="Unit" value={currentGroup.name} wrap={side > 0} />
+          <Field
+            label="Unit"
+            value={currentGroup.name}
+            width={labelWidth}
+            wrap={side > 0}
+          />
           <Field
             label="Status"
             value={levelStatus(currentCause?.level ?? "ok")}
             color={statusColor(levelStatus(currentCause?.level ?? "ok"))}
+            width={labelWidth}
             wrap={side > 0}
           />
           {currentCause && (
             <Field
               label="Reason"
               value={causeText(currentCause, c)}
+              width={labelWidth}
               wrap={side > 0}
             />
           )}
           {[
+            ["Working memory", amount(workingMemory(currentGroup), c)],
             [
               "Memory high",
               currentGroup.highRead ? limit(currentGroup.high) : gap,
@@ -629,6 +663,7 @@ export function Resources({
               key={label}
               label={label ?? ""}
               value={value ?? gap}
+              width={labelWidth}
               wrap={side > 0}
             />
           ))}

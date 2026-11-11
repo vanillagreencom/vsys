@@ -377,18 +377,79 @@ interface Judgment<T> {
   subject: T;
   judged: Judged;
 }
-/** An unread limit cannot clear an alert; a measured unlimited limit can. */
-export function memoryHighJudgments(groups: Group[]): Judgment<Group>[] {
-  return groups.map((group) => {
-    const high = group.high;
-    return {
-      subject: group,
-      judged: !group.highRead
-        ? "unjudged"
-        : high === null
-          ? "absent"
-          : judge([group.memory], (n) => n >= high * 0.9),
-    };
+/**
+ * Working memory, the figure the warden judges by under
+ * `docs/architecture/warden.md`: `memory.current` less the clean inactive file
+ * cache, which the kernel drops before it throttles a group past
+ * `memory.high`.
+ */
+export function workingMemory(group: Group): number | null {
+  const stat = group.fileStat;
+  if (group.memory === null || stat === null) return null;
+  // memory.current and memory.stat are read at different moments.
+  return Math.max(
+    0,
+    group.memory -
+      Math.max(0, stat.inactiveFile - stat.fileDirty - stat.fileWriteback),
+  );
+}
+/**
+ * How memory-high stands on one group, with the figures it fired on, or
+ * `warden` where the warden's own warning stands in for vsys's judgment.
+ */
+export type MemoryHigh =
+  | { judged: "fired"; working: number; high: number }
+  | { judged: "absent" | "unjudged" }
+  | { judged: "warden" };
+/**
+ * An unread limit cannot clear an alert; a measured unlimited limit can. A
+ * lane scope the warden's fresh status warns is near its memory limit carries
+ * the warden's warning, so vsys judges no threshold there: every reader shows
+ * that warning credited to the warden, and the summary leaves it to the
+ * warden's own item. vsys judges every other group, the agent slice included,
+ * since the warden decides when it warns and vsys copies none of it.
+ */
+export function memoryHighJudgment(
+  group: Group,
+  s: Pick<Snapshot, "wardenNearLimits">,
+): MemoryHigh {
+  if (
+    s.wardenNearLimits?.some(
+      (warning) =>
+        warning.kernelPath === group.kernelPath &&
+        warning.near.includes("memory"),
+    )
+  )
+    return { judged: "warden" };
+  const high = group.high;
+  if (!group.highRead) return { judged: "unjudged" };
+  if (high === null) return { judged: "absent" };
+  const working = workingMemory(group);
+  if (working === null) return { judged: "unjudged" };
+  return working >= high * 0.9
+    ? { judged: "fired", working, high }
+    : { judged: "absent" };
+}
+/**
+ * Who reads the ladder. The summary is read beside the warden's own status
+ * items, in the bar widget's flyout, so it leaves out the memory warnings the
+ * warden gives there; one agent near its limit is one warning in the flyout.
+ */
+export interface Ladder {
+  besideWarden?: boolean;
+}
+/**
+ * `memoryHighJudgment()` for every group, the warden's warning fired, or left
+ * out beside the warden.
+ */
+function memoryHighJudgments(
+  s: Pick<Snapshot, "groups" | "wardenNearLimits">,
+  { besideWarden = false }: Ladder,
+): Judgment<Group>[] {
+  return s.groups.flatMap((group) => {
+    const { judged } = memoryHighJudgment(group, s);
+    if (judged !== "warden") return [{ subject: group, judged }];
+    return besideWarden ? [] : [{ subject: group, judged: "fired" as const }];
   });
 }
 /** A partial subtotal can prove a crossing, but cannot prove recovery. */
@@ -430,7 +491,7 @@ interface Judgments {
   scratch: Judgment<ScratchRoot>[];
   "service-cpu": Judgment<Service>[];
 }
-function judgments(s: Snapshot, c: Config): Judgments {
+function judgments(s: Snapshot, c: Config, ladder: Ladder = {}): Judgments {
   const io = s.system.pressure.io?.some ?? null;
   const cpu = s.system.pressure.cpu?.some ?? null;
   const memory = s.system.pressure.memory?.some ?? null;
@@ -462,7 +523,7 @@ function judgments(s: Snapshot, c: Config): Judgments {
         (n) => n > c.pressureAmber,
       ),
     })),
-    "memory-high": memoryHighJudgments(s.groups),
+    "memory-high": memoryHighJudgments(s, ladder),
     "free-space": s.storage.volumes.map((volume) => ({
       subject: volume,
       judged: judge([volume.free], (n) => n < c.freeFloor),
@@ -533,7 +594,7 @@ export function unjudged(s: Snapshot, c: Config): Unjudged {
  * first verdict-worthy one is the verdict, and the meters read the same
  * numbers. Severity ranks it, then the impact on the person at the keyboard.
  */
-export function causes(s: Snapshot, c: Config): Cause[] {
+export function causes(s: Snapshot, c: Config, ladder: Ladder = {}): Cause[] {
   const out: Cause[] = [];
   const add = (id: CauseId, level: Level, rest: Partial<Cause>) =>
     out.push({
@@ -549,7 +610,7 @@ export function causes(s: Snapshot, c: Config): Cause[] {
       verdictWorthy: true,
       ...rest,
     });
-  const j = judgments(s, c);
+  const j = judgments(s, c, ladder);
   const { io, cpu, memory, swap, writer } = j;
   // A lane stalling on a resource a specific cause reports belongs to that
   // card, so one contention never produces two cards.
