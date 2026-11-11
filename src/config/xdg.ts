@@ -2,26 +2,30 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-/** Each XDG base directory's default, under the home directory. */
+/**
+ * Each XDG base directory's default: under the home directory, or for the
+ * runtime directory the one systemd-logind makes for the user, which is where
+ * the agent warden falls back to as well.
+ */
 const fallbacks = {
-  XDG_CONFIG_HOME: ".config",
-  XDG_DATA_HOME: ".local/share",
-  XDG_STATE_HOME: ".local/state",
+  XDG_CONFIG_HOME: () => join(homedir(), ".config"),
+  XDG_DATA_HOME: () => join(homedir(), ".local/share"),
+  XDG_STATE_HOME: () => join(homedir(), ".local/state"),
+  XDG_RUNTIME_DIR: () => `/run/user/${process.getuid?.() ?? 1000}`,
 } as const;
 
 /**
  * An XDG base directory: the variable when it holds an absolute path,
- * otherwise its default under the home directory. The base directory
- * specification has an empty or relative value ignored, and systemd's own
- * lookup does the same, so a unit directory vsys reads is the one systemd
- * reads.
+ * otherwise its default. The base directory specification has an empty or
+ * relative value ignored, and systemd's own lookup does the same, so a unit
+ * directory vsys reads is the one systemd reads.
  */
 export function xdgHome(
   name: keyof typeof fallbacks,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const value = env[name];
-  return value && isAbsolute(value) ? value : join(homedir(), fallbacks[name]);
+  return value && isAbsolute(value) ? value : fallbacks[name]();
 }
 
 /**
@@ -38,7 +42,7 @@ export function xdgPath(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const chosen = join(xdgHome(name, env), relative);
-  const home = join(homedir(), fallbacks[name], relative);
+  const home = join(fallbacks[name](), relative);
   return chosen === home || present(chosen) || !present(home) ? chosen : home;
 }
 

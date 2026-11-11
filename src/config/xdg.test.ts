@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { underHome } from "../test/fixture";
 import { xdgHome } from "./xdg";
 
-test("an XDG base directory is its variable when absolute, else the home default", () => {
+test("an XDG base directory is its variable when absolute, else its default", () => {
   const rows: [
     string,
     Parameters<typeof xdgHome>[0],
@@ -58,6 +58,16 @@ test("an XDG base directory is its variable when absolute, else the home default
       "XDG_STATE_HOME",
       { XDG_STATE_HOME: "x/state" },
       join(homedir(), ".local/state"),
+    ],
+    ["runtime set", "XDG_RUNTIME_DIR", { XDG_RUNTIME_DIR: "/x/run" }, "/x/run"],
+    // A cron job or a `sudo -u` shell names none; the agent warden's user unit
+    // writes under the user's own runtime directory all the same.
+    ["runtime unset", "XDG_RUNTIME_DIR", {}, `/run/user/${process.getuid?.()}`],
+    [
+      "runtime relative",
+      "XDG_RUNTIME_DIR",
+      { XDG_RUNTIME_DIR: "x/run" },
+      `/run/user/${process.getuid?.()}`,
     ],
     [
       "another variable set",

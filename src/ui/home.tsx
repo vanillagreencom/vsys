@@ -2,7 +2,7 @@ import type { RGBA, ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useRef, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
-import type { Lane, Snapshot } from "../model/types";
+import type { Lane, Leftovers, Snapshot } from "../model/types";
 import { type Meter, meters, processesComplete } from "../model/verdict";
 import type { TimelineEvent } from "../store/events";
 import {
@@ -31,9 +31,11 @@ import {
   fit,
   pidCell,
   pidColumn,
+  textWidth,
   wrapLines,
 } from "./columns";
 import {
+  age,
   amount,
   count,
   gap,
@@ -183,6 +185,96 @@ function series(
   );
 }
 
+/** The warden's counts in the order the leftovers line reads them. */
+const leftoverParts = [
+  ["testWorlds", "test world", "test worlds"],
+  ["failedUnits", "failed unit", "failed units"],
+  ["testProcesses", "old test process", "old test processes"],
+] as const;
+/** Why the warden's status gave no counts, null where it gave them. */
+function leftoversGap(l: Leftovers | undefined, now: number): string | null {
+  if (l === undefined) return gap;
+  if (l.state === "read") return null;
+  if (l.state === "absent") return `${gap}: no agent warden status`;
+  if (l.state === "failed" || l.time === null)
+    return `${gap}: the agent warden status could not be read`;
+  return now >= l.time
+    ? `${gap}: the agent warden last wrote its status ${age((now - l.time) / 1000)} ago`
+    : `${gap}: the agent warden status is dated ${age((l.time - now) / 1000)} ahead`;
+}
+/**
+ * A run of the leftovers line: one count, drawn as a reading of its own, or
+ * the words around the counts, which are dim.
+ */
+type LeftoversPiece = { text: string; value?: number | null };
+const leftoversLabel = "Test leftovers: ";
+const leftoversSeparator = " · ";
+/**
+ * What test runs left behind, as the warden last counted it, in the rows it
+ * draws at `width`. Home budgets these rows, so a narrow terminal wraps the
+ * line rather than cutting a count off its end. A row breaks between counts,
+ * so each reads whole; only a count wider than a row of its own wraps inside.
+ */
+export function leftoversRows(
+  l: Leftovers | undefined,
+  now: number,
+  width: number,
+): LeftoversPiece[][] {
+  const why = leftoversGap(l, now);
+  if (why !== null || l === undefined)
+    return wrapLines(`${leftoversLabel}${why ?? gap}`, width).map((text) => [
+      { text },
+    ]);
+  const rows: LeftoversPiece[][] = [];
+  let row: LeftoversPiece[] = [{ text: leftoversLabel }];
+  let used = textWidth(leftoversLabel);
+  let counted = false;
+  for (const [key, one, many] of leftoverParts) {
+    const value = l[key];
+    const text = value === null ? `${many} ${gap}` : count(value, one, many);
+    const separator = counted ? leftoversSeparator : "";
+    if (used + textWidth(`${separator}${text}`) <= width) {
+      if (separator) row.push({ text: separator });
+      row.push({ text, value });
+      used += textWidth(`${separator}${text}`);
+      counted = true;
+      continue;
+    }
+    rows.push(row);
+    const lines = wrapLines(text, width);
+    const last = lines.pop() ?? "";
+    for (const line of lines) rows.push([{ text: line, value }]);
+    row = [{ text: last, value }];
+    used = textWidth(last);
+    counted = true;
+  }
+  rows.push(row);
+  return rows;
+}
+/**
+ * The leftovers line, drawn from the rows `leftoversRows` wrapped it into.
+ * Each count is a reading of its own, so a backlog stands out from the zeros
+ * beside it, and a count the warden could not take stays not available
+ * rather than zero.
+ */
+function LeftoversLines({ rows }: { rows: LeftoversPiece[][] }) {
+  return rows.map((row, at) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: a row is its place
+    <Line key={at} height={1} flexShrink={0} truncate>
+      {row.map(({ text, value }, i) =>
+        value === undefined ? (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a run is its place
+          <span key={i} attributes={ui.dim}>
+            {text}
+          </span>
+        ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a run is its place
+          <Reading key={i} value={value} text={text} />
+        ),
+      )}
+    </Line>
+  ));
+}
 /** The tile row's name, so a screen that has scrolled away can come back. */
 const tileRowId = "home-tiles";
 export function Home({
@@ -226,8 +318,8 @@ export function Home({
   const columns = width >= wideWidth;
   const gauges = meters(s, c);
   // What this screen draws above its lists, measured rather than guessed: the
-  // verdict at the rows it wraps to here, and the tile row at the rows a tile
-  // takes. `listRows` and `detailRows` take it from there, so the rows a list
+  // verdict and the test leftovers at the rows they wrap to here, and the tile
+  // row at the rows a tile takes. `listRows` and `detailRows` take it from there, so the rows a list
   // has and the rows an open card has come from one place. The verdict is
   // drawn from these rows, because the renderer's own wrapping also breaks
   // after a full stop and would split `agents.slice` across a row these
@@ -251,8 +343,14 @@ export function Home({
     ? count(s.lanes.length, "agent")
     : `agents ${gap}`;
   const above = verdict.length;
+  const leftovers = leftoversRows(s.leftovers, s.time, width);
   const tiles = tilesHeight(gauges.length, width, tileLines);
-  const room = { screen: height, verdict: above, tiles };
+  const room = {
+    screen: height,
+    verdict: above,
+    leftovers: leftovers.length,
+    tiles,
+  };
   // The agents list has what its own heading leaves; side by side it has the
   // column to itself, stacked it shares one with the concerns and the changes.
   const busiest = Math.max(
@@ -590,6 +688,7 @@ export function Home({
         <Line height={1} flexShrink={0} truncate attributes={ui.dim}>
           {`${agentCount} · ${s.system.cores} cores · ${items.length ? `${items.length} ${plural(items.length, "concern", "concerns")}` : "nothing needs attention"}`}
         </Line>
+        <LeftoversLines rows={leftovers} />
         <box height={1} flexShrink={0} />
         <Tiles width={width} id={tileRowId}>
           {gauges.map((gauge, at) => {

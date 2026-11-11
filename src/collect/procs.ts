@@ -232,9 +232,9 @@ export class ProcessCollector implements ProcessSource {
     private ticksPerSecond: number,
     private pageSize: number,
     /**
-     * The program hands over the shipped agent-tool data with the machine
-     * overlay merged in; a collector built any other way reads the shipped
-     * data, so no test reads the host's overlay.
+     * A collector given none reads the shipped agent-tool data alone, with no
+     * overlay. `createCollector()` merges in the overlay at the path it was
+     * given and hands the result to the process thread.
      */
     tools: AgentToolsDocument = shippedAgentTools,
   ) {

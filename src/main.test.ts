@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Collector } from "./collect/collector";
 import { ConfigError, saveConfig } from "./config/config";
@@ -330,3 +330,54 @@ finally:
     f.cleanup();
   }
 }, 100000);
+
+test("once carries the warden's leftover counts, and null where none were read", async () => {
+  const f = fixture();
+  try {
+    const bin = hermeticBin(f.root);
+    const path = join(f.root, "config.toml");
+    await saveConfig(f.config, path, f.agentToolsPath);
+    const runtime = join(f.root, "run");
+    const run = async () => {
+      const child = Bun.spawn(
+        [process.execPath, "src/main.ts", "--once", "--config", path],
+        {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { HOME: f.root, PATH: bin, XDG_RUNTIME_DIR: runtime },
+        },
+      );
+      const [stdout, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        child.exited,
+      ]);
+      return { code, leftovers: JSON.parse(stdout).leftovers };
+    };
+    const none = { testWorlds: null, failedUnits: null, testProcesses: null };
+    expect(await run()).toEqual({
+      code: 0,
+      leftovers: { state: "absent", time: null, ...none },
+    });
+    // The warden's own fixture, written as of now so it is fresh.
+    const status = JSON.parse(
+      readFileSync(
+        join(import.meta.dir, "../warden/fixtures/status-leftovers.json"),
+        "utf8",
+      ),
+    );
+    status.time = Math.floor(Date.now() / 1000);
+    f.write(join(runtime, "agent-warden/status.json"), JSON.stringify(status));
+    expect(await run()).toEqual({
+      code: 0,
+      leftovers: {
+        state: "read",
+        time: status.time * 1000,
+        testWorlds: 3,
+        failedUnits: 1,
+        testProcesses: 3,
+      },
+    });
+  } finally {
+    f.cleanup();
+  }
+});

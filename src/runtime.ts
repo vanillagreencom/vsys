@@ -7,6 +7,7 @@ import type { SccacheCollector } from "./collect/sccache";
 import { packagedScrubUnits } from "./collect/scrub-timers";
 import type { ServiceCpu } from "./collect/services";
 import { collectionKeys } from "./collect/settings";
+import { wardenStatusPath } from "./collect/warden-status";
 import {
   type AgentToolNamesSave,
   agentToolsPath as defaultAgentToolsPath,
@@ -170,6 +171,7 @@ export class Session {
           this.agentToolsPath,
           undefined,
           packagedScrubUnits,
+          wardenStatusPath(),
         ));
     this.agentToolsPath = options.agentToolsPath ?? defaultAgentToolsPath;
     this.writeConfig = options.writeConfig ?? writeFileAtomic;
