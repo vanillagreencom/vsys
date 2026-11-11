@@ -267,7 +267,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                 lane.mkdir(parents=True)
                 doc = self.w.status_document("report", {"_state_readable": True},
                                              slice_reading=self.w.slice_status(), lanes=self.w.lane_statuses(),
-                                             moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                                             reap=False, moves=[], waiting=[], orphans_status=[], contained=[], now=1)
                 self.assertIsNone(doc["slice"]["memory"])
                 self.assertIsNone(doc["slice"]["tasks"])
                 self.assertIsNone(doc["lanes"][0]["tasks"])
@@ -410,7 +410,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                 lanes = self.w.lane_statuses()
                 doc = self.w.status_document("report", {"_state_readable": True},
                                              slice_reading=self.w.slice_status(), lanes=lanes,
-                                             moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                                             reap=False, moves=[], waiting=[], orphans_status=[], contained=[], now=1)
                 self.assertIsNone(doc["lanes"])
                 self.assertFalse(self.w.status_errors(doc))
             finally:
@@ -582,7 +582,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                 event = self.w.emit_event(st, "moved", now=1)
                 self.assertGreater(event["id"], 5000)
                 doc = self.w.status_document("report", st, slice_reading=None, lanes=[],
-                                             moves=[], waiting=[], orphans_status=[], contained=[], now=1)
+                                             reap=False, moves=[], waiting=[], orphans_status=[], contained=[], now=1)
                 self.assertFalse(self.w.status_errors(doc))
                 self.w.STATE.unlink(missing_ok=True)
                 self.w.STATUS.write_text(json.dumps({"schema": "1.0", "events": [
@@ -1008,6 +1008,179 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                 else:
                     self.assertIn(field, fields)
 
+    def test_status_items_rows(self):
+        w, gib, now = self.w, self.w._gib, self.w.FIXTURE_NOW
+        fixtures = w.status_fixture_docs()
+        lane = "agent-warden-100-200.scope"
+        show, show_lane, stop_lane = [], ["--lane", lane], ["--lane", lane, "--stop"]
+
+        def doc(mode="correct", *, events=(), **kw):
+            st = w._fixture_state()
+            for kind, at, fields in events:
+                w.emit_event(st, kind, now=now + at, **fields)
+            kw.setdefault("moves", [])
+            for key in ("waiting", "orphans_status", "contained"):
+                kw.setdefault(key, [])
+            return w._fixture_doc(mode, st, now=now, reap=mode == "correct", **kw)
+
+        def orphans(*rows):
+            return {"orphans_status": list(rows), "lanes": w._fixture_orphan_lanes(rows)}
+
+        def without_reap_setting(mode, **kw):
+            # The real tick's route: the reap answer comes from reaps(), here with AGENT_WARDEN_REAP=0.
+            tick = {"moves": [], "waiting": [], "contained": [], "error": None, "procs": {},
+                    "orphans": kw["orphans_status"], "leftovers": w._fixture_leftovers()}
+            with patch.object(w, "REAP", False):
+                return w.status_from_tick(mode, w._fixture_state(), tick, slice_reading=w._fixture_slice(),
+                                          lanes=kw["lanes"])
+
+        harmful = w._fixture_orphan("agent-confine-leak.scope", processes=42, cores=1.5, memory=gib(2), harmful=True)
+        idle = w._fixture_orphan("agent-confine-idle.scope", processes=3)
+        tree = w._fixture_tree()
+        scan_full = w._fixture_doc("report", w._fixture_state(), now=now, reap=False, error="scan",
+                                   slice_reading=w._fixture_slice(memory=gib(73), headroom=False))
+        unread = dict.fromkeys(("memory", "high", "max", "tasks", "tasksMax", "headroomOk"))
+        long_name = "w" * 50
+        rows = [
+            ("calm", fixtures["calm"], []),
+            ("readings that make no item",
+             doc(lanes=[{**w._fixture_lanes(near=["memory"])[0], "label": {"tool": None, "worktree": None}}],
+                 moves=[("escaped launch", tree)], contained=[tree[0]], leftovers=dict.fromkeys(w.LEFTOVER_KEYS),
+                 events=[("near-cap", 0, {"scope": lane, "near": "memory"}), ("waiting", 0, {"pid": 321})]), []),
+            ("memory full, agents held back", fixtures["holding-off"],
+             [("memory-full", "memory-full", "danger", "Agents are close to their memory limit.",
+               "73 of 80 GB in use. The warden holds back 1 agents until memory frees.", [show])]),
+            ("memory full beside a failed check", scan_full,
+             [("memory-full", "memory-full", "danger", "Agents are close to their memory limit.",
+               "73 of 80 GB in use.", [show]),
+              ("scan-failed", "scan-failed", "warn", "The warden's last check failed.",
+               "Agents are not checked or moved until a check succeeds. It tries again in 30 seconds.", [])]),
+            ("memory unread", doc(slice_reading=unread),
+             [("memory-unread", "memory-unread", "warn", "The warden cannot read how much memory agents use.",
+               "It moves no agent into its limits until it can.", [show])]),
+            ("past the slowdown point", doc(slice_reading=w._fixture_slice(memory=gib(70))),
+             [("slowdown", "slowdown", "warn", "Agents use more memory than the slowdown point.",
+               "70 of 64 GB. The system slows every agent until use falls.", [show])]),
+            ("failed check", w.status_failed_scan_fixture(),
+             [("scan-failed", "scan-failed", "warn", "The warden's last check failed.",
+               "Agents are not checked or moved until a check succeeds. It tries again in 30 seconds.", [])]),
+            ("failed move, tool known", doc(moves=[("escaped launch", tree)], events=[("failed", 0, {"pid": 321})]),
+             [("move-failed", "move-failed", "warn", "The warden could not move 1 agents into their limits.",
+               "claude still run outside them. It tries again on its next check.", [show])]),
+            ("failed move, tool unknown", doc(events=[("failed", 0, {})]),
+             [("move-failed", "move-failed", "warn", "The warden could not move 1 agents into their limits.",
+               "It tries again on its next check.", [show])]),
+            ("partial move", fixtures["partial"],
+             [("move-partial", "move-partial", "warn", "The warden moved only part of 1 agents into their limits.",
+               "The rest still runs outside them. It tries again on its next check.", [show])]),
+            ("near both limits", fixtures["near-limit"],
+             [("near-limit", f"near-limit:{lane}", "warn", "claude in vsy-52 is near its memory and task limits.",
+               "Memory: 50 of 64 GB; past it the system slows this agent. "
+               "Tasks: 6200 of 8192 tasks; past it the agent cannot start processes.", [show_lane, stop_lane])]),
+            ("near the memory limit, names cleaned and capped",
+             doc(lanes=[{**w._fixture_lanes(memory=gib(50), near=["memory"])[0],
+                         "label": {"tool": "cla\x1bude\x9b", "worktree": long_name}}]),
+             [("near-limit", f"near-limit:{lane}", "warn", f"claude in {'w' * 39}… is near its memory limit.",
+               "Memory: 50 of 64 GB; past it the system slows this agent.", [show_lane, stop_lane])]),
+            ("near the task limit", doc(lanes=w._fixture_lanes(tasks=6200, near=["tasks"])),
+             [("near-limit", f"near-limit:{lane}", "warn", "claude in vsy-52 is near its task limit.",
+               "Tasks: 6200 of 8192 tasks; past it the agent cannot start processes.", [show_lane, stop_lane])]),
+            ("busy leftover work in report mode", fixtures["leftover-busy"],
+             [("leftover-busy", "leftover-busy:agent-confine-leak.scope", "warn",
+               "Leftover work from a finished agent is busy.",
+               "42 processes, 1.5 cores, 2 GB. The warden is set not to stop it.",
+               [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]])]),
+            ("busy leftover work with reaping off, cores unread",
+             without_reap_setting("correct", **orphans({**harmful, "cores": None}, idle)),
+             [("leftover-busy", "leftover-busy:agent-confine-leak.scope", "warn",
+               "Leftover work from a finished agent is busy.", "42 processes, 2 GB. The warden is set not to stop it.",
+               [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]]),
+              ("leftover", "leftover", "info", "Leftover work from 1 finished agents is still running.",
+               "3 processes. The warden is set not to stop it.", [show])]),
+            ("idle leftover work in correct mode with reaping on", fixtures["leftover-idle"],
+             [("leftover", "leftover", "info", "Leftover work from 5 finished agents is still running.",
+               "5 processes. The warden stops it if it gets busy.", [show])]),
+            ("busy leftover work the warden stops", doc(**orphans(harmful, idle)),
+             [("leftover", "leftover", "info", "Leftover work from 2 finished agents is still running.",
+               "45 processes. The warden stops the busy work on its next check.", [show])]),
+            ("recent reap", fixtures["reaped"],
+             [("reaped", "reaped", "info", "The warden stopped leftover work from 1 finished agents.",
+               "42 processes had become busy.", [])]),
+            ("reaps at and past the recent window",
+             doc(events=[("reaped", -301, {"processes": 7}), ("reaped", -300, {"processes": 5})]),
+             [("reaped", "reaped", "info", "The warden stopped leftover work from 1 finished agents.",
+               "5 processes had become busy.", [])]),
+            ("recent move", doc(events=[("moved", 0, {"pid": 321, "processes": 3})]),
+             [("moved", "moved", "info", "The warden moved 1 agents into their limits.", None, [])]),
+            ("outside in report mode", doc("report", moves=[("escaped launch", tree)]),
+             [("outside-report", "outside-report", "info", "1 agents run outside their limits.",
+               "The warden is set to report only, so it moves nothing.", [show])]),
+            ("test leftovers in correct mode", fixtures["leftovers"],
+             [("test-processes", "test-processes", "info", "3 old test processes are still running.",
+               "From vgshell. The warden reports them and never stops them.", []),
+              ("test-worlds", "test-worlds", "info", "3 old test folders are waiting to be removed.",
+               "The warden removes each one when nothing uses it.", []),
+              ("failed-units", "failed-units", "info", "1 failed test units are waiting to be cleared.",
+               "The warden clears each one when it is old enough.", [])]),
+            ("test leftovers in report mode, repositories unknown",
+             doc("report", leftovers=w._fixture_leftovers(2, 4, [(None, 2)])),
+             [("test-processes", "test-processes", "info", "2 old test processes are still running.",
+               "The warden reports them and never stops them.", []),
+              ("test-worlds", "test-worlds", "info", "2 old test folders are waiting to be removed.",
+               "The warden is set to report only.", []),
+              ("failed-units", "failed-units", "info", "4 failed test units are waiting to be cleared.",
+               "The warden is set to report only.", [])]),
+        ]
+        for name, built, expected in rows:
+            with self.subTest(name=name):
+                self.assertEqual(w.status_errors(built), [])
+                self.assertEqual([(item["kind"], item["key"], item["level"], item["title"], item["detail"],
+                                   [action["args"] for action in item["actions"]]) for item in built["items"]],
+                                 expected)
+
+    def test_status_validator_rejects_bad_items(self):
+        base = self.w.status_fixture_docs()["leftover-busy"]
+        scope = "agent-confine-leak.scope"
+        info = {"kind": "moved", "key": "moved", "level": "info", "title": "Moved.", "detail": None, "actions": []}
+
+        def action(index, **fields):
+            return lambda d: d["items"][0]["actions"][index].update(fields)
+
+        rows = [
+            ("items missing", lambda d: d.pop("items"), "status"),
+            ("items an object", lambda d: d.update(items={}), "items"),
+            ("unknown kind", lambda d: d["items"][0].update(kind="other"), "items[0].kind"),
+            ("unknown level", lambda d: d["items"][0].update(level="look"), "items[0].level"),
+            ("duplicate key", lambda d: d["items"].append(json.loads(json.dumps(d["items"][0]))), "items[1].key"),
+            ("aggregate key with a scope", lambda d: d["items"].append({**info, "key": f"moved:{scope}"}),
+             "items[1].key"),
+            ("per-scope key without its scope", lambda d: d["items"][0].update(key="leftover-busy"), "items[0].key"),
+            ("empty title", lambda d: d["items"][0].update(title=""), "items[0].title"),
+            ("control character in the title", lambda d: d["items"][0].update(title="Busy\x1b[2J."), "items[0].title"),
+            ("control character in the detail", lambda d: d["items"][0].update(detail="a\x85b"), "items[0].detail"),
+            ("control character in a label", action(0, label="Stop\n"), "items[0].actions[0].label"),
+            ("unknown action id", action(0, id="kill"), "items[0].actions[0].id"),
+            ("lane flag without a scope", action(0, args=["--lane"]), "items[0].actions[0].args"),
+            ("stop without the lane flag", action(0, args=["--stop"]), "items[0].actions[0].args"),
+            ("an argument vsys does not take", action(0, args=["--lane", scope, "--once"]), "items[0].actions[0].args"),
+            ("an extra argument", action(0, args=["--lane", scope, "--stop", "--stop"]), "items[0].actions[0].args"),
+            ("a scope neither lanes nor orphans lists", action(1, args=["--lane", "gone.scope"]),
+             "items[0].actions[1].args"),
+            ("a scope only orphans lists",
+             lambda d: d.update(lanes=[lane for lane in d["lanes"] if lane["scope"] != scope]), None),
+            ("out of level order", lambda d: d["items"].insert(0, info), "items[1].level"),
+        ]
+        # Each error opens with the path of the field it rejects, so a row
+        # passes only on its own field's error.
+        for name, change, field in rows:
+            with self.subTest(name=name):
+                doc = json.loads(json.dumps(base))
+                change(doc)
+                fields = [error.split(" ", 1)[0] for error in self.w.status_errors(doc)]
+                if field is None:
+                    self.assertEqual(fields, [])
+                else:
+                    self.assertIn(field, fields)
 
     def test_near_cap_status_episode_lifetime_rows(self):
         st = {"_state_readable": True, "event_seq": 0, "events": [], "near_open": []}

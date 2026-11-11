@@ -11,6 +11,7 @@
   "error": null,
   "events": [],
   "interval": 30,
+  "items": [],
   "lanes": [
     {
       "label": {
@@ -34,7 +35,7 @@
   "mode": "report",
   "orphans": [],
   "outside": [],
-  "schema": "1.2",
+  "schema": "1.3",
   "slice": {
     "headroomOk": true,
     "high": 68719476736,

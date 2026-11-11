@@ -11,6 +11,32 @@
   "error": null,
   "events": [],
   "interval": 30,
+  "items": [
+    {
+      "actions": [],
+      "detail": "From vgshell. The warden reports them and never stops them.",
+      "key": "test-processes",
+      "kind": "test-processes",
+      "level": "info",
+      "title": "3 old test processes are still running."
+    },
+    {
+      "actions": [],
+      "detail": "The warden removes each one when nothing uses it.",
+      "key": "test-worlds",
+      "kind": "test-worlds",
+      "level": "info",
+      "title": "3 old test folders are waiting to be removed."
+    },
+    {
+      "actions": [],
+      "detail": "The warden clears each one when it is old enough.",
+      "key": "failed-units",
+      "kind": "failed-units",
+      "level": "info",
+      "title": "1 failed test units are waiting to be cleared."
+    }
+  ],
   "lanes": [
     {
       "label": {
@@ -43,7 +69,7 @@
   "mode": "correct",
   "orphans": [],
   "outside": [],
-  "schema": "1.2",
+  "schema": "1.3",
   "slice": {
     "headroomOk": true,
     "high": 68719476736,

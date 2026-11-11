@@ -30,6 +30,34 @@
     }
   ],
   "interval": 30,
+  "items": [
+    {
+      "actions": [
+        {
+          "args": [
+            "--lane",
+            "agent-warden-100-200.scope"
+          ],
+          "id": "show",
+          "label": "Show in vsys"
+        },
+        {
+          "args": [
+            "--lane",
+            "agent-warden-100-200.scope",
+            "--stop"
+          ],
+          "id": "stop",
+          "label": "Stop"
+        }
+      ],
+      "detail": "Memory: 50 of 64 GB; past it the system slows this agent. Tasks: 6200 of 8192 tasks; past it the agent cannot start processes.",
+      "key": "near-limit:agent-warden-100-200.scope",
+      "kind": "near-limit",
+      "level": "warn",
+      "title": "claude in vsy-52 is near its memory and task limits."
+    }
+  ],
   "lanes": [
     {
       "label": {
@@ -56,7 +84,7 @@
   "mode": "report",
   "orphans": [],
   "outside": [],
-  "schema": "1.2",
+  "schema": "1.3",
   "slice": {
     "headroomOk": true,
     "high": 68719476736,

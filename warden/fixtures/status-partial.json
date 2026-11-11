@@ -21,6 +21,22 @@
     }
   ],
   "interval": 30,
+  "items": [
+    {
+      "actions": [
+        {
+          "args": [],
+          "id": "show",
+          "label": "Show in vsys"
+        }
+      ],
+      "detail": "The rest still runs outside them. It tries again on its next check.",
+      "key": "move-partial",
+      "kind": "move-partial",
+      "level": "warn",
+      "title": "The warden moved only part of 1 agents into their limits."
+    }
+  ],
   "lanes": [
     {
       "label": {
@@ -44,7 +60,7 @@
   "mode": "correct",
   "orphans": [],
   "outside": [],
-  "schema": "1.2",
+  "schema": "1.3",
   "slice": {
     "headroomOk": true,
     "high": 68719476736,
