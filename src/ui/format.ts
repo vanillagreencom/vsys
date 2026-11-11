@@ -114,14 +114,16 @@ export function laneValue(l: Lane, key: string, c: Config): string {
   if (key === "age") return age(l.age);
   return value === null || value === undefined ? gap : String(value);
 }
+/** `value` reads a column whose cell shows something other than the field. */
 export function sortLanes(
   lanes: Lane[],
   column: string,
   descending: boolean,
+  value: (lane: Lane) => unknown = (lane) => lane[column as keyof Lane],
 ): Lane[] {
   return [...lanes].sort((a, b) => {
-    const x = a[column as keyof Lane];
-    const y = b[column as keyof Lane];
+    const x = value(a);
+    const y = value(b);
     if (x === null) return y === null ? 0 : 1;
     if (y === null) return -1;
     const compare =
