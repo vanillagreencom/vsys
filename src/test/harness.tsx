@@ -10,6 +10,7 @@ import { testRender } from "@opentui/react/test-utils";
 import { act, useState } from "react";
 import { type OpenFiles, ProcessCollector } from "../collect/procs";
 import type { Config } from "../config/config";
+import type { TerminalOpen } from "../effect";
 import type { LaneCommand } from "../model/actions";
 import type { Snapshot } from "../model/types";
 import { History } from "../store/history";
@@ -37,6 +38,7 @@ export async function mount(
     onAction: (command: LaneCommand) => Promise<void>;
     onCapture: (paneId: string) => Promise<string[]>;
     onSwitch: (paneId: string) => Promise<void>;
+    onTerminal: TerminalOpen;
     onOpenFiles: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
     onExport: (s: Snapshot, format: "json" | "markdown") => Promise<string>;
     history: History;
@@ -76,6 +78,7 @@ export async function mount(
         onAction={hooks.onAction ?? (async () => {})}
         onCapture={hooks.onCapture}
         onSwitch={hooks.onSwitch}
+        onTerminal={hooks.onTerminal}
         onOpenFiles={
           // The program reads on the process thread; a test reads the same
           // way in its own thread unless it supplies the answer.

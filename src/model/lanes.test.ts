@@ -969,108 +969,196 @@ test("a configured pane address is the address, not a key into the server", () =
   });
 });
 
-test("a pane on another tmux server resolves to nothing, not to a stranger", () => {
+test("a lane's tmux server is judged running, stopped or unknown, and only its own resolves its handle", () => {
   const c = defaults();
-  const groups = [
-    groupSnapshot({ path: "a.scope", name: "a.scope" }),
-    groupSnapshot({ path: "b.scope", name: "b.scope" }),
-  ];
+  const groups = [groupSnapshot({ path: "a.scope", name: "a.scope" })];
   const path = "/tmp/tmux-1000/default";
   // The server vsys read, named the way the collector names it: from the
   // `TMUX` of vsys's own shell rather than written out by hand, so a test
   // cannot agree with a lane by a spelling production does not use.
-  const socket = serverPart(`${path},4242,3`);
-  // Two lanes carrying the same handle, because `%9` is unique per server and
-  // says nothing across one. One belongs to the server vsys read; the other
-  // does not.
-  const here = processSnapshot({
-    pid: 1,
-    group: "a.scope",
-    tool: "claude",
-    env: { TMUX_PANE: "%9", TMUX: `${path},4242,0` },
-  });
-  const away = processSnapshot({
-    pid: 2,
-    group: "b.scope",
-    tool: "claude",
-    env: { TMUX_PANE: "%9", TMUX: "/tmp/tmux-1000/other,777,0" },
-  });
+  const ours = serverPart(`${path},4242,3`);
   const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
-  const both = lanes(groups, [here, away], c, 0, tmuxRead(panes, socket));
-  const mine = present(both[0], "the lane on this server");
-  const theirs = present(both[1], "the lane on another server");
-  // The lane on this server reads as it always did.
-  expect({
-    address: mine.address,
-    window: mine.window,
-    elsewhere: mine.elsewhere,
-  }).toEqual({ address: "work:1.1", window: "build", elsewhere: false });
-  // A different known server must resolve no address: the same handle there
-  // names a stranger’s pane.
-  expect({
-    address: theirs.address,
-    window: theirs.window,
-    elsewhere: theirs.elsewhere,
-  }).toEqual({ address: "", window: "", elsewhere: true });
-  // A boundary vsys cannot see is not one it refuses at: with no server known
-  // for the read, or none for the lane, both resolve as before.
-  const unknownServer = lanes(groups, [away], c, 0, tmuxRead(panes))[0];
-  expect(unknownServer?.elsewhere).toBe(false);
-  const bare = processSnapshot({
-    pid: 3,
-    group: "a.scope",
-    tool: "claude",
-    env: { TMUX_PANE: "%9" },
-  });
-  const unknownLane = present(
-    lanes(groups, [bare], c, 0, tmuxRead(panes, socket))[0],
-    "the lane naming no server",
-  );
-  expect(unknownLane.elsewhere).toBe(false);
-  expect(unknownLane.address).toBe("work:1.1");
-});
-
-test("a restarted server on the same socket path is a different server", () => {
-  const c = defaults();
-  const groups = [
-    groupSnapshot({ path: "a.scope", name: "a.scope" }),
-    groupSnapshot({ path: "b.scope", name: "b.scope" }),
+  // The agent inherited its `TMUX` from a pane its server opened, so a
+  // running server started before it.
+  const agent = (tmux: string | null) =>
+    processSnapshot({
+      pid: 1,
+      start: 200,
+      group: "a.scope",
+      tool: "claude",
+      env:
+        tmux === null ? { TMUX_PANE: "%9" } : { TMUX_PANE: "%9", TMUX: tmux },
+    });
+  const tmuxServer = (pid: number, start: number) =>
+    processSnapshot({
+      pid,
+      start,
+      comm: "tmux: server",
+      command: ["/usr/bin/tmux"],
+      group: "/user.slice/tmux-spawn.scope",
+      tool: null,
+    });
+  const resolved = { address: "work:1.1", window: "build" };
+  const unresolved = { address: "", window: "" };
+  // The row, the server vsys read, the lane's `TMUX`, the processes beside
+  // the agent, how much of the process table was read, then what the lane
+  // earns. A `%9` resolves against vsys's server only when nothing says the
+  // lane's server is another one or gone: a stopped server's socket may be
+  // served by a newer one, whose `%9` is a stranger's pane.
+  type Row = [
+    string,
+    string,
+    string | null,
+    Proc[],
+    ProcessRead,
+    Lane["server"],
+    boolean,
+    { address: string; window: string },
   ];
-  const path = "/tmp/tmux-1000/default";
-  // Measured on this machine: every client of one server carries the same
-  // `socket,serverpid` and differs only in the session after it.
-  const socket = serverPart(`${path},4242,3`);
-  // A server that died and restarted takes the default socket path back, and
-  // hands out `%N` from one again. This process outlived its own server, so
-  // its `%9` is not the `%9` the running server holds.
-  const stale = processSnapshot({
-    pid: 1,
-    group: "a.scope",
-    tool: "claude",
-    env: { TMUX_PANE: "%9", TMUX: `${path},777,0` },
-  });
-  // Another client of the server vsys read, in a different session. The path
-  // and the pid both match, so nothing that compared equal stops doing so.
-  const sibling = processSnapshot({
-    pid: 2,
-    group: "b.scope",
-    tool: "claude",
-    env: { TMUX_PANE: "%9", TMUX: `${path},4242,7` },
-  });
-  const panes = new Map([["%9", { address: "work:1.1", window: "build" }]]);
-  const pair = lanes(groups, [stale, sibling], c, 0, tmuxRead(panes, socket));
-  const dead = present(pair[0], "the lane on the dead server");
-  const live = present(pair[1], "the lane on the live server");
-  // The server pid distinguishes a restarted server even when it reuses the
-  // socket path.
-  expect({ address: dead.address, elsewhere: dead.elsewhere }).toEqual({
-    address: "",
-    elsewhere: true,
-  });
-  expect({ address: live.address, elsewhere: live.elsewhere }).toEqual({
-    address: "work:1.1",
-    elsewhere: false,
-  });
+  const rows: Row[] = [
+    // Another client of vsys's own server, in another session.
+    [
+      "same server",
+      ours,
+      `${path},4242,7`,
+      [],
+      "complete",
+      "running",
+      false,
+      resolved,
+    ],
+    [
+      "other server, running",
+      ours,
+      "/tmp/tmux-1000/other,777,0",
+      [tmuxServer(777, 50)],
+      "complete",
+      "running",
+      true,
+      unresolved,
+    ],
+    // One server listens on a path, and vsys's own holds this one, so the
+    // lane's server has stopped whatever process now has its pid.
+    [
+      "restarted on the same path",
+      ours,
+      `${path},777,0`,
+      [tmuxServer(777, 50)],
+      "complete",
+      "stopped",
+      true,
+      unresolved,
+    ],
+    [
+      "other server, gone",
+      ours,
+      "/tmp/tmux-1000/other,777,0",
+      [],
+      "complete",
+      "stopped",
+      true,
+      unresolved,
+    ],
+    // vsys outside tmux names no server to compare against, so the lane's
+    // own pid is the only evidence.
+    [
+      "outside, running",
+      "",
+      `${path},777,0`,
+      [tmuxServer(777, 50)],
+      "complete",
+      "running",
+      false,
+      resolved,
+    ],
+    [
+      "outside, gone",
+      "",
+      `${path},777,0`,
+      [],
+      "complete",
+      "stopped",
+      true,
+      unresolved,
+    ],
+    // A process that started after the agent cannot be the server whose
+    // `TMUX` it inherited: the pid was reused, which the holder shows
+    // whatever else the read missed.
+    [
+      "outside, pid reused, read incomplete",
+      "",
+      `${path},777,0`,
+      [tmuxServer(777, 300)],
+      "incomplete",
+      "stopped",
+      true,
+      unresolved,
+    ],
+    // An agent that outlived its server starts this one with the stale
+    // `TMUX`, after the pid went to a process that is no tmux server.
+    [
+      "outside, inherited stale, pid held by another process",
+      "",
+      `${path},777,0`,
+      [
+        processSnapshot({
+          pid: 777,
+          start: 100,
+          comm: "sleep",
+          command: ["sleep", "600"],
+          group: "/user.slice/other.scope",
+          tool: null,
+        }),
+      ],
+      "incomplete",
+      "stopped",
+      true,
+      unresolved,
+    ],
+    // An incomplete read cannot show the server absent.
+    [
+      "outside, read incomplete",
+      "",
+      `${path},777,0`,
+      [],
+      "incomplete",
+      "unknown",
+      false,
+      resolved,
+    ],
+    // A boundary vsys cannot see is not one it refuses at.
+    [
+      "lane names no server",
+      ours,
+      null,
+      [],
+      "complete",
+      "unknown",
+      false,
+      resolved,
+    ],
+  ];
+  for (const [row, socket, tmux, others, read, server, elsewhere, at] of rows) {
+    const lane = present(
+      lanes(
+        groups,
+        [agent(tmux), ...others],
+        c,
+        0,
+        tmuxRead(panes, socket),
+        [],
+        read,
+      ).find((l) => l.mainPid === 1),
+      row,
+    );
+    expect({
+      row,
+      server: lane.server,
+      elsewhere: lane.elsewhere,
+      address: lane.address,
+      window: lane.window,
+    }).toEqual({ row, server, elsewhere, ...at });
+  }
 });
 
 test("vsys's own pane is marked however the lane's target spells it", () => {

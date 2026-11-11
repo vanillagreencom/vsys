@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
+import { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defaults } from "./config/config";
-import { runEffect, switchToPane } from "./effect";
+import { runEffect, switchToPane, terminalOpener } from "./effect";
 import { laneIntent, laneTarget, resolveIntent } from "./model/actions";
 import { emptySnapshot, laneSnapshot, processSnapshot } from "./test/fixture";
 
@@ -98,4 +99,92 @@ test("the switch asks tmux for the target and reports what it refuses", async ()
   const before = asked.length;
   await expect(switchToPane("", fake(0, ""))).rejects.toThrow();
   expect(asked.length).toBe(before);
+});
+
+test("an opener exists only with xdg-terminal-exec and settles at executable launch, not window exit", async () => {
+  const rows = [
+    { available: true, end: "ok" },
+    { available: false, end: "ok" },
+    { available: true, end: "error" },
+  ] as const;
+  for (const { available, end } of rows) {
+    const calls: unknown[] = [];
+    let unreferenced = false;
+    class Terminal extends ChildProcess {
+      override unref() {
+        unreferenced = true;
+      }
+    }
+    const child = new Terminal();
+    const spawnError = new Error("ENOENT");
+    const env = {
+      PATH: "/launch/bin",
+      DISPLAY: ":fixture",
+      TMUX: "/old/socket,111,0",
+      TMUX_PANE: "%3",
+      TERMINAL: "preferred-terminal",
+    };
+    const open = terminalOpener(
+      env,
+      (command) =>
+        command === "xdg-terminal-exec" && !available
+          ? null
+          : `/launch/bin/${command}`,
+      (command, args, options) => {
+        calls.push({ command, args, options });
+        queueMicrotask(() => {
+          if (end === "error") child.emit("error", spawnError);
+          else child.emit("spawn");
+        });
+        return child;
+      },
+    );
+    expect(open === undefined).toBe(!available);
+    let outcome: unknown = "pending";
+    void open?.("%9", "/run/agent,4242").then(
+      () => {
+        outcome = "opened";
+      },
+      (error: unknown) => {
+        outcome = error;
+      },
+    );
+    // A next-turn acknowledgement drains launch callbacks without closing the
+    // terminal. Awaiting the open itself would hide dependence on window exit.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const expected =
+      end === "error" ? spawnError : available ? "opened" : "pending";
+    expect(outcome).toBe(expected);
+    if (available && end !== "error") {
+      for (const [code, signal] of [
+        [0, null],
+        [1, null],
+        [null, "SIGHUP"],
+      ] as const) {
+        child.emit("exit", code, signal);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(outcome).toBe(expected);
+      }
+    }
+    expect(calls).toEqual(
+      !available
+        ? []
+        : [
+            {
+              command: "/launch/bin/xdg-terminal-exec",
+              args: ["tmux", "-S", "/run/agent", "attach", "-t", "%9"],
+              options: {
+                detached: true,
+                stdio: "ignore",
+                env: {
+                  PATH: env.PATH,
+                  DISPLAY: env.DISPLAY,
+                  TERMINAL: env.TERMINAL,
+                },
+              },
+            },
+          ],
+    );
+    expect(unreferenced).toBe(available);
+  }
 });

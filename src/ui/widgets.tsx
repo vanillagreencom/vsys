@@ -86,7 +86,9 @@ export function useKeepInView(
   landed = false,
 ) {
   const renderer = useRenderer();
-  const placed = useRef<{ id: string; at: number } | null>(null);
+  const placed = useRef<{ id: string; at: number; bottom: number } | null>(
+    null,
+  );
   const wanted = useRef(target);
   wanted.current = target;
   // Whether a row has ever been chosen on this screen, by the reader or for
@@ -105,8 +107,9 @@ export function useKeepInView(
       const seen =
         child.y >= top && child.y + child.height <= top + box.viewport.height;
       const at = child.y + box.scrollTop;
+      const bottom = at + child.height;
       const was = placed.current;
-      placed.current = { id, at };
+      placed.current = { id, at, bottom };
       if (!was) {
         if (moved.current) box.scrollChildIntoView(id);
         return;
@@ -116,7 +119,8 @@ export function useKeepInView(
         box.scrollChildIntoView(id);
         return;
       }
-      if (moved.current && was.at !== at && !seen) box.scrollChildIntoView(id);
+      if (moved.current && (was.at !== at || was.bottom !== bottom) && !seen)
+        box.scrollChildIntoView(id);
     };
     // The first reading has to be a settled one: read early, the target's own
     // height is a layout behind, and a row that will be below the fold reports

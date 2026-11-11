@@ -2,8 +2,9 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { OpenFiles } from "../collect/procs";
 import { agentScratchDirs, scratchRoots } from "../collect/scratch";
-import { switchCommand } from "../collect/tmux";
+import { attachCommand, switchCommand } from "../collect/tmux";
 import type { Config } from "../config/config";
+import type { TerminalOpen } from "../effect";
 import {
   type LaneAction,
   type LaneIntent,
@@ -12,7 +13,7 @@ import {
 } from "../model/actions";
 import { safe } from "../model/export";
 import { parentChain, processTree } from "../model/lanes";
-import { programName } from "../model/naming";
+import { paneSocket, programName } from "../model/naming";
 import type { Lane, Snapshot } from "../model/types";
 import type { History } from "../store/history";
 import type { LaneSample } from "../store/lane-series";
@@ -262,6 +263,7 @@ export function Agent({
   onError,
   onCapture,
   onSwitch,
+  onTerminal,
   onOpenFiles,
   landing,
 }: {
@@ -291,10 +293,14 @@ export function Agent({
   onCapture?: (paneId: string) => Promise<string[]>;
   /**
    * Moves the reader's own tmux view to that pane. Present only when vsys is
-   * itself a client of the server holding it; absent, the row hands over the
-   * command as text instead. Moving a view touches no process either way.
+   * itself a tmux client. A lane on another server opens a terminal instead.
    */
   onSwitch?: (paneId: string) => Promise<void>;
+  /**
+   * Opens a separate terminal without changing the agent's processes. Absent
+   * when xdg-terminal-exec is not on PATH, and then the row copies instead.
+   */
+  onTerminal?: TerminalOpen;
   /**
    * Reads the scratch files the lane's processes hold open. The read runs on
    * the process thread, so this view reads no process file itself.
@@ -322,8 +328,35 @@ export function Agent({
   const [captured, setCaptured] = useState<
     { lines: string[] } | { error: string } | null
   >(null);
+  const [terminalError, setTerminalError] = useState<{
+    command: string;
+    reason: string;
+  } | null>(null);
   const scroller = useRef<ScrollBoxRenderable | null>(null);
   const proc = snapshot.procs.find((p) => p.pid === lane.mainPid);
+  const switches = onSwitch !== undefined && !lane.elsewhere;
+  const server = paneSocket(proc);
+  // An attach goes by socket path, and a stopped server's path may be served
+  // by a newer one holding the same `%N` for another pane, so only a server
+  // the model found running is attached to. Null where the row offers nothing
+  // to run: no Enter, and nothing to copy.
+  const terminalCommand =
+    lane.self !== "no"
+      ? null
+      : switches
+        ? switchCommand(lane.pane)
+        : lane.server === "running"
+          ? attachCommand(lane.pane, server)
+          : null;
+  // Without an opener the command is the row's whole answer, so it is drawn
+  // where it can wrap, as a failed launch draws it: a truncated row would cut
+  // it, and the copy notice says the command stays on screen.
+  const terminalReason =
+    terminalCommand !== null && !switches && !onTerminal
+      ? `${keyLabel(c.keys.open)} copies the command`
+      : terminalError?.command === terminalCommand
+        ? terminalError.reason
+        : null;
   const members = snapshot.procs.filter((p) => lane.pids.includes(p.pid));
   const filesOpen = open.has("Open files");
   useEffect(() => {
@@ -427,11 +460,7 @@ export function Agent({
   const target = laneTarget(lane, c, snapshot.procs);
   const rows: DetailRow[] = [
     ...sections.flatMap((name): DetailRow[] =>
-      name === "Terminal" &&
-      terminalOpen &&
-      lane.pane &&
-      live &&
-      !lane.elsewhere
+      name === "Terminal" && terminalOpen && lane.pane && live
         ? [{ kind: "section", name }, { kind: "terminal" }]
         : [{ kind: "section", name }],
     ),
@@ -472,9 +501,10 @@ export function Agent({
           ? row.intent.text
           : // A switch to the pane the reader is in moves nothing, and one to
             // a pane that may be it is a move vsys cannot promise, so neither
-            // gets a command to hand them.
-            row?.kind === "terminal" && lane.self === "no"
-            ? switchCommand(lane.pane)
+            // gets a command to hand them, nor does a pane on a server vsys
+            // cannot show is running.
+            row?.kind === "terminal"
+            ? (terminalCommand ?? undefined)
             : undefined,
       );
       return true;
@@ -483,22 +513,36 @@ export function Agent({
   });
   /**
    * One row, two answers. Inside the server that holds the pane vsys moves the
-   * reader's own view; outside it there is no client to move, so the line goes
-   * to the clipboard and the row says why. No terminal is ever launched: the
-   * program that would open one differs on every desktop and does not exist on
-   * macOS, while a switch behaves the same wherever tmux runs.
+   * reader's own view; outside it xdg-terminal-exec opens a terminal attached
+   * to the pane, when the model found that pane's server running. Neither
+   * changes the agent's process or cgroup, so both bypass write mode. Without
+   * xdg-terminal-exec the row says so and Enter copies the command.
    */
   const goToTerminal = () => {
     // tmux moves a client to the pane it is already in by doing nothing, so
     // the row states that instead of asking for a move that cannot happen.
     // A pane vsys could not decide about is left alone for the same reason:
     // it may be that pane, and vsys cannot say which move it is asking for.
-    if (lane.self !== "no") return;
+    // A server vsys cannot show is running gets no attach either.
+    if (terminalCommand === null) return;
     // A switch rejects when the pane has gone, the server stopped or the
     // target is not one it holds. Dropped, the reader pressed a key, nothing
     // moved, and nothing said why.
-    if (onSwitch) void onSwitch(lane.pane).catch(onError);
-    else onCopy(switchCommand(lane.pane));
+    if (switches) {
+      void onSwitch(lane.pane).catch(onError);
+      return;
+    }
+    if (!onTerminal) {
+      onCopy(terminalCommand);
+      return;
+    }
+    setTerminalError(null);
+    void onTerminal(lane.pane, server).catch((error: unknown) =>
+      setTerminalError({
+        command: terminalCommand,
+        reason: `Terminal could not open: ${errorText(error)}`,
+      }),
+    );
   };
   const toggle = (name: SectionName) =>
     setOpen((current) => {
@@ -668,13 +712,28 @@ export function Agent({
                         ? "this is the terminal you are reading in"
                         : lane.self === "unknown"
                           ? "vsys cannot tell whether this is the terminal you are reading in"
-                          : onSwitch
+                          : switches
                             ? `moves this terminal to ${lane.address || lane.pane}`
-                            : `vsys is not inside that tmux server · ${keyLabel(c.keys.open)} copies ${switchCommand(lane.pane)}`,
+                            : lane.server === "stopped"
+                              ? "the tmux server this agent ran in has stopped"
+                              : lane.server === "unknown"
+                                ? "vsys cannot confirm this pane's tmux server is running"
+                                : onTerminal
+                                  ? `opens a new terminal on ${lane.address || lane.pane}`
+                                  : "xdg-terminal-exec is not on PATH",
                     )}
                   </span>
                 </>,
-                { indent: 3 },
+                {
+                  indent: 3,
+                  under: terminalReason && terminalCommand && (
+                    <Detail>
+                      <Line marginTop={1} flexShrink={0} wrapMode="word">
+                        {safe(`${terminalReason} · run: ${terminalCommand}`)}
+                      </Line>
+                    </Detail>
+                  ),
+                },
               )
             : row.kind === "action"
               ? detailRow(
@@ -752,8 +811,16 @@ export function Agent({
                             {/* `%9` is unique per tmux server, so the server this
                           vsys reads holds a `%9` of its own: reading or
                           switching would reach a stranger's pane. */}
-                            {lane.pane && lane.elsewhere && (
-                              <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                            {lane.pane &&
+                              lane.elsewhere &&
+                              lane.server !== "stopped" && (
+                                <Empty text="This pane belongs to a different tmux server, which vsys is not talking to." />
+                              )}
+                            {/* The server that handed out this handle is gone,
+                          and whichever one answers on its socket now gives the
+                          same handle to another pane. */}
+                            {lane.pane && lane.server === "stopped" && (
+                              <Empty text="The tmux server this pane belonged to has stopped, so vsys is not reading it." />
                             )}
                             {/* Reading it would draw this screen inside itself, and
                           one copy deeper on every sample after that. Live

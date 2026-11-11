@@ -20,6 +20,7 @@ import {
   userManager,
 } from "../test/fixture";
 import {
+  cellStyle,
   isChildLine,
   mount,
   overflowing,
@@ -30,6 +31,7 @@ import { present } from "../test/present";
 import type { DetailRow } from "./agent";
 import { osc52 } from "./clipboard";
 import { gap } from "./format";
+import { ui } from "./theme";
 
 test("process readings keep whole PIDs and indent program names at four tree levels", async () => {
   const s = emptySnapshot();
@@ -850,7 +852,7 @@ test("what a pane drew is shown as text, never obeyed", async () => {
   }
 });
 
-test("the switch is offered only when vsys shares the tmux server", async () => {
+test("the same-server terminal row switches the reader's view", async () => {
   const switched: string[] = [];
   const inside = await paned({
     onCapture: async () => ["output"],
@@ -869,18 +871,109 @@ test("the switch is offered only when vsys shares the tmux server", async () => 
   } finally {
     await inside.close();
   }
-  // Outside that server there is no view to move, so the line is handed over
-  // instead and the row says why.
-  const outside = await paned({ onCapture: async () => ["output"] });
-  try {
-    await outside.press("enter");
-    expect(outside.frame()).toContain("not inside that tmux server");
-    await outside.press("j");
-    await outside.press("enter");
-    expect(outside.frame()).toContain("tmux switch-client -t %9");
-    expect(osc52("tmux switch-client -t %9")).toBe(outside.written.join(""));
-  } finally {
-    await outside.close();
+});
+
+test("outside-server terminal navigation opens or explains its fallback in the row", async () => {
+  // The row is product output: a refusal or a missing opener must leave the
+  // manual command whole, visible and plain, not cut or in a transient notice.
+  // A stopped server gets neither a terminal nor a command: its socket path
+  // may be served by a newer server whose `%9` is a stranger's pane. Nor does
+  // one an incomplete read could not show running.
+  for (const state of [
+    "opened",
+    "foreign",
+    "unavailable",
+    "failed",
+    "stopped",
+    "unknown",
+  ] as const) {
+    const refused = state === "stopped" || state === "unknown";
+    const narrow = state === "unavailable" || state === "failed";
+    const calls: string[][] = [];
+    const t = await paned(
+      {
+        onCapture: async () => ["output"],
+        ...(state === "foreign" || state === "stopped"
+          ? {
+              onSwitch: async () => {
+                throw new Error("must not switch another server's client");
+              },
+            }
+          : {}),
+        // Without xdg-terminal-exec on PATH the program wires no opener.
+        ...(state === "unavailable"
+          ? {}
+          : {
+              onTerminal: async (target: string, server: string) => {
+                calls.push([target, server]);
+                if (state === "failed") throw new Error("terminal exited 1");
+              },
+            }),
+      },
+      {
+        elsewhere: state === "foreign" || state === "stopped",
+        server: state === "stopped" || state === "unknown" ? state : "running",
+      },
+      narrow ? 30 : 45,
+      narrow ? { width: 60 } : {},
+    );
+    const server = state === "foreign" ? "/run/foreign,4242" : "/run/t,7";
+    const command =
+      state === "foreign"
+        ? "tmux -S /run/foreign attach -t %9"
+        : refused
+          ? null
+          : "tmux -S /run/t attach -t %9";
+    // At 60 columns the line wraps inside the command, which tmux's `-S` path
+    // makes long, so it is read back with the rows' rules and gutters taken
+    // off. The line is one plain style, so its start stands for the rest.
+    const shownWhole = (whole: string) => {
+      const text = t
+        .frame()
+        .split("\n")
+        .map((line) => line.replace(/^[\s│▍]*/, "").trimEnd())
+        .join(" ");
+      return [text.includes(`run: ${whole}`), cellStyle(t.ui, "run:", ui.dim)];
+    };
+    try {
+      await t.update({
+        ...t.snapshot,
+        procs: t.snapshot.procs.map((p) => ({
+          ...p,
+          env: { TMUX: `${server},0` },
+          envAvailable: true,
+        })),
+      });
+      await t.press("enter");
+      await t.press("j");
+      const row = selectedRow(t.frame());
+      expect(row).toContain("Go to terminal");
+      if (state === "stopped")
+        expect(row).toContain("the tmux server this agent ran in has stopped");
+      if (state === "unknown")
+        expect(row).toContain("vsys cannot confirm this pane's tmux server");
+      // Copying is what Enter will do, so the command is on screen before the
+      // press as well as after it.
+      if (state === "unavailable" && command)
+        expect(shownWhole(command)).toEqual([true, "plain"]);
+      await t.press("enter");
+      await t.settle();
+      expect(calls).toEqual(
+        state === "unavailable" || refused ? [] : [["%9", server]],
+      );
+      expect(t.frame()).not.toContain("Confirm");
+      if (narrow && command)
+        expect(shownWhole(command)).toEqual([true, "plain"]);
+      if (state === "failed") expect(t.frame()).toContain("terminal exited 1");
+      expect(t.written).toEqual(
+        state === "unavailable" && command ? [osc52(command)] : [],
+      );
+      t.written.length = 0;
+      await t.press(t.config.keys.copy);
+      expect(t.written).toEqual(command ? [osc52(command)] : []);
+    } finally {
+      await t.close();
+    }
   }
 });
 
@@ -1333,11 +1426,13 @@ test("every kind of detail row is opened alike by the key and the mouse, and fol
     const t = await paned(
       {
         onCapture: async () => ["output"],
-        onSwitch: async (paneId) => {
+        onTerminal: async (paneId) => {
           switched.push(paneId);
         },
       },
-      {},
+      // A running server, so the terminal row reaches `onTerminal` and the
+      // two paths are compared on a dispatch rather than on its absence.
+      { server: "running" },
       60,
     );
     await t.press("enter");
