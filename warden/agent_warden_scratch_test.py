@@ -396,7 +396,7 @@ class AgentWardenScratchRules(WardenRulesCase):
         # survives a trailing slash on AGENT_TMPDIR, which agent-confine's
         # bash concatenation ("$AGENT_EFFECTIVE_TMPDIR/$unit") doubles while
         # os.path.join (this candidate path's source) never does. An
-        # unreadable process is ignored only in a desktop unit: init.scope,
+        # unreadable process with parent pid 1 is ignored only in a desktop unit: init.scope,
         # or an app.slice or session.slice unit that is neither a
         # systemd-run transient (run-*) nor a contained job unit. Every other one counts, a live
         # lane scope whose own folder exists included: the launcher keeps the
@@ -525,6 +525,46 @@ class AgentWardenScratchRules(WardenRulesCase):
                             self.assertEqual(removed, [])
                     finally:
                         self.w.CG_ROOT, self.w.AGENT_TMPDIR_PARENT = old_cg, old_parent
+
+    def test_login_parent_exemption_does_not_exempt_its_session(self):
+        # sshd's unread login has a foreign-uid parent, but the shell and
+        # unread workers it launches share its session scope and still count.
+        monitor, login, child = 4_000_010, 4_000_011, 4_000_012
+        session = f"/user.slice/user-{self.w.UID}.slice/session-2.scope"
+        parents = {monitor: 1, login: monitor, child: login}
+        stats = {pid: f"{pid} (x) S {ppid} " + "0 " * 17 + "1" for pid, ppid in parents.items()}
+        procs = {pid: self.P(pid, parents[pid], "test", ["test"], cg=session) for pid in (login, child)}
+        rows = [
+            ("unread login alone", False, False, True),
+            ("readable child holds scratch", True, True, False),
+            ("unread child keeps uncertainty", True, False, False),
+        ]
+        for name, with_child, readable_child, free in rows:
+            with self.subTest(name=name), scratch() as tmp:
+                base = Path(tmp)
+                (base / "cg" / self.w.SLICE).mkdir(parents=True)
+                gone = base / "scratch" / "agent-confine-300-400"
+                gone.mkdir(parents=True)
+                os.utime(gone, (0, 0))
+                reads = {f"/proc/{pid}/stat": text for pid, text in stats.items()}
+                reads.update({f"/proc/{pid}/status": f"Uid:\t{self.w.UID + (pid == monitor)}\n" for pid in parents})
+                reads[f"/proc/{login}/environ"] = None
+                reads[f"/proc/{child}/environ"] = f"TMPDIR={gone}\0" if readable_child else None
+                real_read = self.w.read
+
+                def read(path, default=None):
+                    if str(path) in reads:
+                        value = reads[str(path)]
+                        return default if value is None else value
+                    return real_read(path, default)
+
+                with patch.object(self.w, "CG_ROOT", base / "cg"), \
+                        patch.object(self.w, "AGENT_TMPDIR_PARENT", str(base / "scratch")), \
+                        patch.object(self.w, "AGENT_TMPDIR_DEFAULT", str(base / "scratch")), \
+                        patch.object(self.w, "read", side_effect=read), \
+                        patch.object(self.w.os, "readlink", return_value="/unrelated"), patch.object(self.w, "log"):
+                    removed = self.w.reap_scratch_dirs(True, lambda: procs if with_child else {login: procs[login]}, set())
+                self.assertEqual((removed, gone.exists()), ([gone.name] if free else [], not free))
 
     def _detached_worker_scratch(self, module):
         with scratch() as tmp:

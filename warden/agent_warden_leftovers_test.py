@@ -3,24 +3,31 @@ import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import patch
 
-from agent_warden_testlib import WARDEN, WardenRulesCase, scratch
+from agent_warden_testlib import WARDEN, WardenRulesCase, load_warden, materialize_warden_script, scratch
 
 sys.dont_write_bytecode = True
 
 # Pids a row's fake /proc answers for; every other /proc read is real.
-HOLDER, MATE = 4_000_001, 4_000_002
+HOLDER, MATE, PARENT = 4_000_001, 4_000_002, 4_000_003
 WORLD = "vgw-world.1"
+
+
+def proc_stat(ppid=1, start=1, state="S"):
+    # proc_pid_stat(5): state is field 3, ppid field 4, starttime field 22.
+    return "1 (x) " + " ".join([state, str(ppid), *(["0"] * 17), str(start)])
 
 
 def fake_proc(w, views):
     """Patches w's /proc reads so each pid in views reads as its dict says:
     environ and cmdline as raw text, cwd and exe as link targets, fds as a
     list of link targets, any of them an exception to raise, and a missing
-    entry as unreadable. A view pid reads as running."""
+    entry as unreadable. Stat defaults to a running process; a list of stat
+    or status values advances on each read and repeats its last value."""
     real_read, real_readlink, real_listdir = w.read, os.readlink, os.listdir
 
     def view_of(path):
@@ -38,9 +45,10 @@ def fake_proc(w, views):
         view, rest = view_of(path)
         if view is None:
             return real_read(path, default)
-        if rest == "stat":
-            return "1 (x) S 1"
-        return view.get(rest, default)
+        value = view.get(rest, proc_stat(view.get("ppid", 1), view.get("start", 1)) if rest == "stat" else default)
+        if isinstance(value, list):
+            value = value.pop(0) if len(value) > 1 else value[0]
+        return default if value is None else value
 
     def readlink(path, *args, **kwargs):
         view, rest = view_of(path)
@@ -114,6 +122,12 @@ class AgentWardenLeftoverRules(WardenRulesCase):
         world as {world} and its pattern's symlinked parent as {link}."""
         lane = self._cg("agent-confine-300-400.scope")
         user = f"/user.slice/user-{self.w.UID}.slice/user@{self.w.UID}.service"
+        session = f"/user.slice/user-{self.w.UID}.slice/session-2.scope"
+        login = readable(environ=None, cwd=None, exe=None, fds=None, cgroup=session, ppid=PARENT, start=2)
+        # The real uid, not the effective uid, identifies the parent.
+        foreign_uid = f"Uid:\t{self.w.UID + 1}\t{self.w.UID}\t{self.w.UID}\t{self.w.UID}\n"
+        own_uid = f"Uid:\t{self.w.UID}\t{self.w.UID + 1}\t{self.w.UID + 1}\t{self.w.UID + 1}\n"
+        parent = {"scanned": False, "status": foreign_uid}
         return [
             ("old and unheld", {}, (), "removed"),
             ("younger than the age", {}, ("young",), "skipped"),
@@ -146,6 +160,29 @@ class AgentWardenLeftoverRules(WardenRulesCase):
              {HOLDER: readable(environ=None, cgroup=f"{user}/app.slice/ssh-agent.service")}, (), "removed"),
             ("unreadable under another uid", {HOLDER: readable(environ=None, cgroup=lane, uid=self.w.UID + 1)},
              (), "removed"),
+            ("unread login with a live foreign-real-uid parent", {HOLDER: login, PARENT: parent}, (), "removed"),
+            ("unread login with a same-real-uid parent",
+             {HOLDER: login, PARENT: {**parent, "status": own_uid}}, (), "kept"),
+            ("parent owner unreadable", {HOLDER: login, PARENT: {**parent, "status": None}}, (), "kept"),
+            ("parent stat unreadable", {HOLDER: login, PARENT: {**parent, "stat": None}}, (), "kept"),
+            ("parent exited during the scan",
+             {HOLDER: {**login, "stat": [proc_stat(PARENT, 2), proc_stat(1, 2)]}, PARENT: parent}, (), "kept"),
+            ("child replaced since the scan",
+             {HOLDER: {**login, "stat": [proc_stat(PARENT, 2), proc_stat(PARENT, 3)]}, PARENT: parent}, (), "kept"),
+            ("child stat unreadable after the scan",
+             {HOLDER: {**login, "stat": [proc_stat(PARENT, 2), None]}, PARENT: parent}, (), "kept"),
+            ("parent exited during the recheck",
+             {HOLDER: login, PARENT: {**parent, "stat": [proc_stat(), None]}}, (), "kept"),
+            ("parent pid reused during the recheck",
+             {HOLDER: login, PARENT: {**parent, "stat": [proc_stat(), proc_stat(start=3)]}}, (), "kept"),
+            ("parent is a zombie",
+             {HOLDER: login, PARENT: {**parent, "stat": proc_stat(state="Z")}}, (), "kept"),
+            ("parent owner unreadable during the recheck",
+             {HOLDER: login, PARENT: {**parent, "status": [foreign_uid, None]}}, (), "kept"),
+            ("parent real uid changed during the recheck",
+             {HOLDER: login, PARENT: {**parent, "status": [foreign_uid, own_uid]}}, (), "kept"),
+            ("readable path evidence from the exempt login",
+             {HOLDER: {**login, "cwd": "{world}/sub"}, PARENT: parent}, (), "kept"),
             ("a symlink matching the pattern", {}, ("symlink",), "skipped"),
             ("owned by another uid", {}, ("foreign",), "skipped"),
             ("HOME itself", {}, ("home",), "skipped"),
@@ -173,8 +210,10 @@ class AgentWardenLeftoverRules(WardenRulesCase):
                                      else [x.format(world=world) if isinstance(x, str) else x for x in v]
                                      if isinstance(v, list) else v)
                                  for k, v in view.items()}
-                procs[pid] = w.Proc(pid, ppid=1, comm="test", argv=["test"], exe="/usr/bin/test",
-                                    cgroup=view.get("cgroup", self.A), uid=view.get("uid"))
+                if view.get("scanned", True):
+                    procs[pid] = w.Proc(pid, ppid=view.get("ppid", 1), start=view.get("start", 1),
+                                        comm="test", argv=["test"], exe="/usr/bin/test",
+                                        cgroup=view.get("cgroup", self.A), uid=view.get("uid"))
             patches = [patch.object(w, "TEST_WORLD_PATTERNS", (pattern,)), patch.object(w, "log"),
                        patch.object(w, "_mount_points", return_value={str(world / "sub")} if "mount" in setup else set()),
                        patch.object(w, "AGENT_TMPDIR_PARENT",
@@ -226,6 +265,18 @@ class AgentWardenLeftoverRules(WardenRulesCase):
                 views, setup, expected = cases[row]
                 count, removed, present, real = self._world_pass(mutant, views, setup)
                 self.assertNotEqual((count, removed, present), self._expected(expected, real))
+
+    def test_foreign_parent_exemption_control(self):
+        text = WARDEN.read_text()
+        old = "if parent_uid < 0 or parent_uid == proc.uid:"
+        self.assertEqual(text.count(old), 1)
+        with tempfile.TemporaryDirectory(prefix="vsys-parent-control-", dir="/tmp") as tmp:
+            path = materialize_warden_script(Path(tmp), text.replace(old, "if True or parent_uid < 0 or parent_uid == proc.uid:"))
+            mutant = load_warden(self.env, "agent_warden_parent_control", path)
+            row = next(row for row in self._world_rows() if row[0] == "unread login with a live foreign-real-uid parent")
+            _, views, setup, expected = row
+            count, removed, present, real = self._world_pass(mutant, views, setup)
+            self.assertNotEqual((count, removed, present), self._expected(expected, real))
 
     def test_test_worlds_cap_removals_per_pass(self):
         with scratch() as tmp:
