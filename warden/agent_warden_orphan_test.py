@@ -467,7 +467,7 @@ class AgentWardenOrphanRules(WardenRulesCase):
             ("move failures unchanged", st["move_failures"], 0),
             ("reaped unchanged", st["reaped"], 0),
             ("no event", st["events"], []),
-            ("scope still listed", [row["scope"] for row in rows], [unit]),
+            ("scope still listed, its failed stop marked", [(row["scope"], row["reapFailed"]) for row in rows], [(unit, True)]),
             ("scope still tracked", unit in st["orphans"], True),
         ]
         for name, actual, expected in checks:

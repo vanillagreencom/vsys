@@ -114,6 +114,7 @@
       "harmful": false,
       "memory": 50331648,
       "processes": 1,
+      "reapFailed": false,
       "scope": "agent-confine-501-1.scope",
       "since": 1699996400
     },
@@ -122,6 +123,7 @@
       "harmful": false,
       "memory": 50331648,
       "processes": 1,
+      "reapFailed": false,
       "scope": "agent-confine-502-1.scope",
       "since": 1699996400
     },
@@ -130,6 +132,7 @@
       "harmful": false,
       "memory": 50331648,
       "processes": 1,
+      "reapFailed": false,
       "scope": "agent-confine-503-1.scope",
       "since": 1699996400
     },
@@ -138,6 +141,7 @@
       "harmful": false,
       "memory": 50331648,
       "processes": 1,
+      "reapFailed": false,
       "scope": "agent-confine-504-1.scope",
       "since": 1699996400
     },
@@ -146,6 +150,7 @@
       "harmful": false,
       "memory": 50331648,
       "processes": 1,
+      "reapFailed": false,
       "scope": "agent-confine-505-1.scope",
       "since": 1699996400
     }

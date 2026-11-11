@@ -78,6 +78,7 @@
       "harmful": true,
       "memory": 2147483648,
       "processes": 42,
+      "reapFailed": false,
       "scope": "agent-confine-leak.scope",
       "since": 1699996400
     }

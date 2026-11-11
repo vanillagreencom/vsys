@@ -938,23 +938,26 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
             doc["waiting"][0][field] = None
             rows.append((f"waiting {field} null", doc, f"waiting[0].{field}"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": None, "cores": None, "memory": None, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": None, "cores": None, "memory": None, "since": 1, "harmful": False, "reapFailed": False}]
         rows.append(("orphan processes null", doc, "orphans[0].processes"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": True, "memory": None, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": True, "memory": None, "since": 1, "harmful": False, "reapFailed": False}]
         rows.append(("orphan cores bool", doc, "orphans[0].cores"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": float("inf"), "memory": None, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": float("inf"), "memory": None, "since": 1, "harmful": False, "reapFailed": False}]
         rows.append(("orphan cores infinite", doc, "orphans[0].cores"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": 1.5, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": 1.5, "since": 1, "harmful": False, "reapFailed": False}]
         rows.append(("orphan memory fraction", doc, "orphans[0].memory"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": 1, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "since": 1, "harmful": False, "reapFailed": False}]
         rows.append(("orphan memory missing", doc, "orphans[0]"))
         doc = json.loads(json.dumps(base))
-        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": None, "since": True, "harmful": False}]
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": None, "since": True, "harmful": False, "reapFailed": False}]
         rows.append(("orphan since bool", doc, "orphans[0].since"))
+        doc = json.loads(json.dumps(base))
+        doc["orphans"] = [{"scope": "orphan.scope", "processes": 1, "cores": None, "memory": None, "since": 1, "harmful": True, "reapFailed": None}]
+        rows.append(("orphan reapFailed null", doc, "orphans[0].reapFailed"))
         doc = json.loads(json.dumps(base))
         doc["contained"] = [{"unit": "orch.service", "processes": None}]
         rows.append(("contained processes null", doc, "contained[0].processes"))
@@ -1062,6 +1065,8 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
 
         harmful = w._fixture_orphan("agent-confine-leak.scope", processes=42, cores=1.5, memory=gib(2), harmful=True)
         idle = w._fixture_orphan("agent-confine-idle.scope", processes=3)
+        idle_one = w._fixture_orphan("agent-confine-idle.scope")
+        stuck = w._fixture_orphan("agent-confine-leak.scope", cores=1.5, memory=gib(2), harmful=True, reap_failed=True)
         tree = w._fixture_tree()
         scan_full = w._fixture_doc("report", w._fixture_state(), now=now, reap=False, error="scan",
                                    slice_reading=w._fixture_slice(memory=gib(73), headroom=False))
@@ -1075,7 +1080,7 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                  events=[("near-cap", 0, {"scope": lane, "near": "memory"}), ("waiting", 0, {"pid": 321})]), []),
             ("memory full, agents held back", fixtures["holding-off"],
              [("memory-full", "memory-full", "danger", "Agents are close to their memory limit.",
-               "73 of 80 GB in use. The warden holds back 1 agents until memory frees.", [show])]),
+               "73 of 80 GB in use. The warden holds back 1 agent until memory frees.", [show])]),
             ("memory full beside a failed check", scan_full,
              [("memory-full", "memory-full", "danger", "Agents are close to their memory limit.",
                "73 of 80 GB in use.", [show]),
@@ -1096,13 +1101,13 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                         ("escaped launch", [w._fixture_proc(900, 1, "codex", ["codex"], w.FIXTURE_OUTSIDE_CG, start=700)])],
                  events=[*[("failed", at, {"pid": 321}) for at in (-60, -30, 0)],
                          *[(kind, at, {"pid": 777}) for kind in ("partial", "moved") for at in (-30, 0)]]),
-             [("move-failed", "move-failed", "warn", "The warden could not move 1 agents into their limits.",
-               "claude still run outside them. It tries again on its next check.", [show]),
-              ("move-partial", "move-partial", "warn", "The warden moved only part of 1 agents into their limits.",
+             [("move-failed", "move-failed", "warn", "The warden could not move 1 agent into its limits.",
+               "claude still runs outside them. It tries again on its next check.", [show]),
+              ("move-partial", "move-partial", "warn", "The warden moved only part of 1 agent into its limits.",
                "The rest still runs outside them. It tries again on its next check.", [show]),
-              ("moved", "moved", "info", "The warden moved 1 agents into their limits.", None, [])]),
+              ("moved", "moved", "info", "The warden moved 1 agent into its limits.", None, [])]),
             ("partial move", fixtures["partial"],
-             [("move-partial", "move-partial", "warn", "The warden moved only part of 1 agents into their limits.",
+             [("move-partial", "move-partial", "warn", "The warden moved only part of 1 agent into its limits.",
                "The rest still runs outside them. It tries again on its next check.", [show])]),
             ("near both limits", fixtures["near-limit"],
              [("near-limit", f"near-limit:{lane}", "warn", "claude in vsy-52 is near its memory and task limits.",
@@ -1122,12 +1127,19 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
                "42 processes, 1.5 cores, 2 GB. The warden is set not to stop it.",
                [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]])]),
             ("busy leftover work with reaping off, cores unread",
-             from_tick("correct", False, **orphans({**harmful, "cores": None}, idle)),
+             from_tick("correct", False, **orphans({**harmful, "cores": None}, idle_one)),
              [("leftover-busy", "leftover-busy:agent-confine-leak.scope", "warn",
                "Leftover work from a finished agent is busy.", "42 processes, 2 GB. The warden is set not to stop it.",
                [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]]),
-              ("leftover", "leftover", "info", "Leftover work from 1 finished agents is still running.",
-               "3 processes. The warden is set not to stop it.", [show])]),
+              ("leftover", "leftover", "info", "Leftover work from 1 finished agent is still running.",
+               "1 process. The warden is set not to stop it.", [show])]),
+            ("busy leftover work whose stop failed", from_tick("correct", True, **orphans(stuck, idle)),
+             [("leftover-busy", "leftover-busy:agent-confine-leak.scope", "warn",
+               "Leftover work from a finished agent is busy.",
+               "1 process, 1.5 cores, 2 GB. The warden could not stop it. It tries again on its next check.",
+               [["--lane", "agent-confine-leak.scope", "--stop"], ["--lane", "agent-confine-leak.scope"]]),
+              ("leftover", "leftover", "info", "Leftover work from 1 finished agent is still running.",
+               "3 processes. The warden stops it if it gets busy.", [show])]),
             ("idle leftover work in correct mode with reaping on", fixtures["leftover-idle"],
              [("leftover", "leftover", "info", "Leftover work from 5 finished agents is still running.",
                "5 processes. The warden stops it if it gets busy.", [show])]),
@@ -1135,29 +1147,29 @@ class AgentWardenStatusRules(WardenMutantMixin, WardenStateMixin, unittest.TestC
              [("leftover", "leftover", "info", "Leftover work from 2 finished agents is still running.",
                "45 processes. The warden stops the busy work on its next check.", [show])]),
             ("recent reap", fixtures["reaped"],
-             [("reaped", "reaped", "info", "The warden stopped leftover work from 1 finished agents.",
+             [("reaped", "reaped", "info", "The warden stopped leftover work from 1 finished agent.",
                "42 processes had become busy.", [])]),
             ("reaps at and past the recent window",
-             doc(events=[("reaped", -301, {"processes": 7}), ("reaped", -300, {"processes": 5})]),
-             [("reaped", "reaped", "info", "The warden stopped leftover work from 1 finished agents.",
-               "5 processes had become busy.", [])]),
+             doc(events=[("reaped", -301, {"processes": 7}), ("reaped", -300, {"processes": 1})]),
+             [("reaped", "reaped", "info", "The warden stopped leftover work from 1 finished agent.",
+               "1 process had become busy.", [])]),
             ("recent move", doc(events=[("moved", 0, {"pid": 321, "processes": 3})]),
-             [("moved", "moved", "info", "The warden moved 1 agents into their limits.", None, [])]),
+             [("moved", "moved", "info", "The warden moved 1 agent into its limits.", None, [])]),
             ("outside in report mode", doc("report", moves=[("escaped launch", tree)]),
-             [("outside-report", "outside-report", "info", "1 agents run outside their limits.",
+             [("outside-report", "outside-report", "info", "1 agent runs outside its limits.",
                "The warden is set to report only, so it moves nothing.", [show])]),
             ("test leftovers in correct mode", fixtures["leftovers"],
              [("test-processes", "test-processes", "info", "3 old test processes are still running.",
                "From vgshell. The warden reports them and never stops them.", []),
               ("test-worlds", "test-worlds", "info", "3 old test folders are waiting to be removed.",
                "The warden removes each one when nothing uses it.", []),
-              ("failed-units", "failed-units", "info", "1 failed test units are waiting to be cleared.",
-               "The warden clears each one when it is old enough.", [])]),
+              ("failed-units", "failed-units", "info", "1 failed test unit is waiting to be cleared.",
+               "The warden clears it when it is old enough.", [])]),
             ("test leftovers in report mode, repositories unknown",
-             doc("report", leftovers=w._fixture_leftovers(2, 4, [(None, 2)])),
-             [("test-processes", "test-processes", "info", "2 old test processes are still running.",
-               "The warden reports them and never stops them.", []),
-              ("test-worlds", "test-worlds", "info", "2 old test folders are waiting to be removed.",
+             doc("report", leftovers=w._fixture_leftovers(1, 4, [(None, 1)])),
+             [("test-processes", "test-processes", "info", "1 old test process is still running.",
+               "The warden reports it and never stops it.", []),
+              ("test-worlds", "test-worlds", "info", "1 old test folder is waiting to be removed.",
                "The warden is set to report only.", []),
               ("failed-units", "failed-units", "info", "4 failed test units are waiting to be cleared.",
                "The warden is set to report only.", [])]),

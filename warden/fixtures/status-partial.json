@@ -34,7 +34,7 @@
       "key": "move-partial",
       "kind": "move-partial",
       "level": "warn",
-      "title": "The warden moved only part of 1 agents into their limits."
+      "title": "The warden moved only part of 1 agent into its limits."
     }
   ],
   "lanes": [

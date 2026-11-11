@@ -30,11 +30,11 @@
     },
     {
       "actions": [],
-      "detail": "The warden clears each one when it is old enough.",
+      "detail": "The warden clears it when it is old enough.",
       "key": "failed-units",
       "kind": "failed-units",
       "level": "info",
-      "title": "1 failed test units are waiting to be cleared."
+      "title": "1 failed test unit is waiting to be cleared."
     }
   ],
   "lanes": [

@@ -30,7 +30,7 @@
           "label": "Show in vsys"
         }
       ],
-      "detail": "73 of 80 GB in use. The warden holds back 1 agents until memory frees.",
+      "detail": "73 of 80 GB in use. The warden holds back 1 agent until memory frees.",
       "key": "memory-full",
       "kind": "memory-full",
       "level": "danger",

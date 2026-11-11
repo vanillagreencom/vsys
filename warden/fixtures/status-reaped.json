@@ -28,7 +28,7 @@
       "key": "reaped",
       "kind": "reaped",
       "level": "info",
-      "title": "The warden stopped leftover work from 1 finished agents."
+      "title": "The warden stopped leftover work from 1 finished agent."
     }
   ],
   "lanes": [
