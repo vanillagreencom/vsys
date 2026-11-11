@@ -93,15 +93,12 @@ test("severity ranks the ladder and housekeeping never leads it", () => {
   const s = healthy();
   s.system.pressure.io = { some: 70, full: 40, total: 0 };
   s.groups = [g("a.scope", "a.scope", { writeRate: 200 })];
-  // A lane leading no process is named by its name alone.
-  s.lanes = [
-    laneSnapshot({ name: "kendex hclaude", mainPid: 0, unconfined: true }),
-  ];
+  s.lanes = [laneSnapshot({ name: "kendex hclaude", unconfined: true })];
   const ladder = causes(s, c);
   expect(ladder.map((cause) => cause.id)).toEqual(["unconfined", "disk"]);
   expect(ladder[0]).toMatchObject({
     level: "danger",
-    consumer: "kendex hclaude",
+    consumer: s.lanes[0],
     values: { lanes: 1 },
   });
   expect(ladder[0]?.lanes.map((l) => l.name)).toEqual(["kendex hclaude"]);
@@ -171,7 +168,7 @@ test("a saturated disk names the writing scope and carries its numbers", () => {
   expect(ladder[0]).toMatchObject({
     id: "disk",
     level: "danger",
-    consumer: "lane-510341 PID 40",
+    consumer: s.lanes[0],
     values: { some: 70, full: 41, writeRate: 200, linkers: 1, stalling: 1 },
   });
   // Storage stallers join the disk card; only the CPU one stays generic.
@@ -391,10 +388,11 @@ test("four meters carry exact numbers and the biggest consumer", () => {
   const [cpu, memory, disk, builds] = (
     ["cpu", "memory", "disk", "builds"] as const
   ).map((id) => meterOf(s, c, id));
+  const lane = present(s.lanes[0], "lane-a");
   expect(cpu).toEqual({
     id: "cpu",
     level: "ok",
-    consumer: "lane-a PID 40",
+    consumer: lane,
     values: { system: 1, agents: 11.8, desktop: 40, top: 30 },
   });
   // "largest" always means the largest memory scope; the swap holder is its
@@ -422,7 +420,7 @@ test("four meters carry exact numbers and the biggest consumer", () => {
   expect(builds).toEqual({
     id: "builds",
     level: "ok",
-    consumer: "lane-a PID 40",
+    consumer: lane,
     values: { builds: 2, linkers: 1, cores: 32, lanes: 1 },
   });
 });
@@ -588,11 +586,12 @@ test("the cause order table is the ladder's own tie order", () => {
   expect(stalls).toContain("stalls");
   const covered = new Set([...ladder.map((cause) => cause.id), ...stalls]);
   expect(Object.keys(causeOrder).sort()).toEqual([...covered].sort());
-  // A cause that names a lane names it in text, its process id included.
-  const lanes = ["unconfined", "memory-cap", "system-cpu"].map(
-    (id) => ladder.find((cause) => cause.id === id)?.consumer,
-  );
-  expect(lanes).toEqual(["escaped PID 40", "capped PID 40", "escaped PID 40"]);
+  // A cause that names a lane carries the lane, so each reader writes it.
+  const lanes = ["unconfined", "memory-cap", "system-cpu"].map((id) => {
+    const consumer = ladder.find((cause) => cause.id === id)?.consumer;
+    return typeof consumer === "string" ? consumer : consumer?.name;
+  });
+  expect(lanes).toEqual(["escaped", "capped", "escaped"]);
   // Within one severity the table alone decides, so those ranks only rise.
   const danger = ladder
     .filter((cause) => cause.level === "danger")

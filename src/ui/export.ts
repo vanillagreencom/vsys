@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import { exportedSnapshot, exportJson, safe } from "../model/export";
 import { programName } from "../model/naming";
-import type { Snapshot, SourceError } from "../model/types";
+import type { Lane, Snapshot, SourceError } from "../model/types";
 import {
   type Cause,
   type CauseId,
@@ -59,6 +59,30 @@ function subject(cause: Cause): string | null {
   if (cause.groups[0]) return cause.groups[0].path;
   if (cause.paths[0]) return cause.paths[0];
   return null;
+}
+
+/** The lanes a cause names: its own, then its consumer when that is a lane. */
+function namedLanes(cause: Cause): Lane[] {
+  const lanes =
+    typeof cause.consumer === "string"
+      ? cause.lanes
+      : [...cause.lanes, cause.consumer];
+  return lanes.filter(
+    (lane, i) => lanes.findIndex((other) => other.id === lane.id) === i,
+  );
+}
+
+/**
+ * The processes a cause names: those that joined no lane, then each named
+ * lane's main process. A lane leading no process has none to list.
+ */
+function processes(cause: Cause): SummaryProcess[] {
+  return [
+    ...cause.procs.map((proc) => ({ pid: proc.pid, name: programName(proc) })),
+    ...namedLanes(cause)
+      .filter((lane) => lane.mainPid)
+      .map((lane) => ({ pid: lane.mainPid, name: lane.name })),
+  ];
 }
 
 /** A reading `meters()` sets on every meter of this id; an unread one is null. */
@@ -126,10 +150,7 @@ export function summarySnapshot(
       level: cause.level,
       subject: subject(cause),
       title,
-      processes: cause.procs.map((proc) => ({
-        pid: proc.pid,
-        name: programName(proc),
-      })),
+      processes: processes(cause),
       // No vsys argument opens vsys at a cause yet.
       open: [],
     };

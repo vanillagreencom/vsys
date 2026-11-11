@@ -433,7 +433,7 @@ test("nine stalling lanes produce one card that names them", () => {
   );
   expect(stall.target?.kind).not.toBe("lane");
   const cause = causes(s, c).find((x) => x.id === "stalls");
-  expect(cause?.consumer).toBe("kendex PID 100");
+  expect(cause?.consumer).toBe(present(s.lanes[0], "the first lane"));
 });
 
 test("unconfined lanes are one card that states the launcher conclusion", () => {

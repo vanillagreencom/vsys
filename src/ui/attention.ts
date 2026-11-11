@@ -8,8 +8,10 @@ import type { CapabilityId, Lane, Snapshot } from "../model/types";
 import {
   agentLanes,
   type Cause,
+  type Consumer,
   causes,
-  consumerName,
+  consumerOf,
+  consumerText,
   type Level,
   type Meter,
 } from "../model/verdict";
@@ -223,6 +225,9 @@ function copy(
   const b = (n: number | null | undefined) => bytes(n, c);
   const v = cause.values;
   const n = cause.lanes.length;
+  const named = (who: Consumer) =>
+    typeof who === "string" ? who : laneName(who);
+  const consumer = named(cause.consumer);
   const laneNames = cause.lanes.map(laneName);
   const names = list(laneNames);
   const every = laneSentence(laneNames, width, `${p(n, "Lane", "Lanes")}: `);
@@ -487,7 +492,7 @@ function copy(
         word: "Danger",
         title: `New device errors on ${mounts}`,
         ways: [
-          `Error counters on ${cause.consumer} increased since the previous sample.`,
+          `Error counters on ${consumer} increased since the previous sample.`,
         ],
         next: "Open Storage and read the per-device counters before writing more data to these devices.",
         view: "Storage",
@@ -501,7 +506,7 @@ function copy(
           : undefined;
       return {
         word: cause.level === "danger" ? "Slow" : "Busy",
-        title: `Disk I/O ${cause.level === "danger" ? "saturated" : "stalling tasks"}: ${cause.consumer} writing ${b(v.writeRate)}/s`,
+        title: `Disk I/O ${cause.level === "danger" ? "saturated" : "stalling tasks"}: ${consumer} writing ${b(v.writeRate)}/s`,
         ways: [
           `Tasks stalled on storage ${percent(v.some)} of the recent window, ${percent(v.full)} of it with nothing else to run${v.linkers ? `, with ${count(v.linkers, "linker")} running in that lane` : ""}.${v.stalling ? ` Waiting on storage: ${names}.` : ""}`,
         ],
@@ -531,7 +536,7 @@ function copy(
         headline: `Slow: desktop swapped out, agents hold ${b(v.cache)} of page cache`,
         title: `Desktop swapped out: ${b(v.swap)} in ${c.desktopSlice}`,
         ways: [
-          `${cause.consumer ? `${cause.consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
+          `${consumer ? `${consumer} holds ${b(v.holder)}. ` : ""}Agents hold ${b(v.cache)} of page cache, which the desktop cannot use.`,
         ],
         next: compared
           ? "Reduce concurrent build work, or cap the agent slice memory so the desktop keeps its pages."
@@ -546,7 +551,7 @@ function copy(
       };
     }
     case "free-space": {
-      const minimum = `${cause.consumer} has ${b(v.free)} free of ${b(v.total)}`;
+      const minimum = `${consumer} has ${b(v.free)} free of ${b(v.total)}`;
       return {
         word: "Danger",
         title:
@@ -560,9 +565,7 @@ function copy(
         ],
         next: `Open Storage and remove build output or scratch data from ${p(paths, "that filesystem", "each of these filesystems")}.`,
         view: "Storage",
-        target: cause.consumer
-          ? { kind: "path", path: cause.consumer }
-          : undefined,
+        target: consumer ? { kind: "path", path: consumer } : undefined,
       };
     }
     case "memory-cap":
@@ -598,7 +601,7 @@ function copy(
         word: "Slow",
         title: `Memory reclaim stalls tasks ${percent(v.some)} of the recent window`,
         ways: [
-          `${cause.consumer ? `${cause.consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
+          `${consumer ? `${consumer} holds the most swap.` : "No scope holds swap yet, so reclaim is dropping page cache."}${n ? ` Waiting on memory: ${names}.` : ""}`,
         ],
         next: "Open Resources and reduce the work in the group with the largest memory use.",
         view: "Resources",
@@ -607,9 +610,9 @@ function copy(
     case "system-cpu":
       return {
         word: "Slow",
-        title: `Tasks wait for CPU ${percent(v.some)} of the recent window${cause.consumer ? `, busiest lane ${cause.consumer}` : ""}`,
+        title: `Tasks wait for CPU ${percent(v.some)} of the recent window${consumer ? `, busiest lane ${consumer}` : ""}`,
         ways: [
-          `${cause.consumer ? `${cause.consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
+          `${consumer ? `${consumer} is the busiest lane.` : "No lane is running, so the load is outside the watched slices."}${n ? ` Waiting on CPU: ${names}.` : ""}`,
         ],
         next: "Open Agents and sort by CPU to find the lane to pause.",
         view: "Agents",
@@ -624,12 +627,12 @@ function copy(
         word: "Busy",
         title:
           units > 1
-            ? `${units} system services used CPU for an hour: ${list(cause.groups.map((g) => consumerName(g, s)))}`
-            : `${cause.consumer} used ${percent(v.hour)} of a core for an hour`,
+            ? `${units} system services used CPU for an hour: ${list(cause.groups.map((g) => named(consumerOf(g, s))))}`
+            : `${consumer} used ${percent(v.hour)} of a core for an hour`,
         ways: [
-          `${cause.consumer} averaged ${percent(v.hour)} of one core over the last hour, at or above the threshold of ${percent(v.threshold)}. A service stuck in a loop looks like this.`,
+          `${consumer} averaged ${percent(v.hour)} of one core over the last hour, at or above the threshold of ${percent(v.threshold)}. A service stuck in a loop looks like this.`,
         ],
-        next: `Check the log of ${cause.consumer}, and restart it if it is stuck: ${shellLine(["sudo", "systemctl", "restart", unit])}`,
+        next: `Check the log of ${consumer}, and restart it if it is stuck: ${shellLine(["sudo", "systemctl", "restart", unit])}`,
         // The copy key offers only the read: a restart is a step the reader
         // types after reading the log, never one the clipboard hands them.
         command: shellLine(["journalctl", "-u", unit, "--since", "1 hour ago"]),
@@ -749,8 +752,8 @@ function copy(
 /**
  * Cards are grouped by cause, never by lane. Nine lanes stalling on one
  * saturated disk produce one card that names all nine. `laneName` writes each
- * lane the cards name from the cause's own lanes; a reader that draws no
- * process id, such as the summary, passes the bare name.
+ * lane the cards name, from the cause's lanes and its consumer; a reader that
+ * draws no process id, such as the summary, passes the bare name.
  */
 export function attention(
   s: Snapshot,
@@ -820,7 +823,9 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
   const pc = (n: number | null | undefined, id?: CapabilityId) =>
     n === null || n === undefined ? unread(s, id) : share(n);
   const who = (value: string, id?: CapabilityId) =>
-    meter.consumer ? `${meter.consumer} ${value}`.trimEnd() : unread(s, id);
+    meter.consumer
+      ? `${consumerText(meter.consumer)} ${value}`.trimEnd()
+      : unread(s, id);
   const v = meter.values;
   const level = meter.level;
   // The headline is time lost to waiting; the detail is how much of the
@@ -869,7 +874,7 @@ export function meterTile(meter: Meter, s: Snapshot, c: Config): TileCopy {
           : [
               [
                 "Most swapped",
-                `${meter.holder || gap} ${b(v.holderSwap, "delegation")}`,
+                `${consumerText(meter.holder) || gap} ${b(v.holderSwap, "delegation")}`,
               ] as [string, string],
             ]),
       ],

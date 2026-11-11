@@ -9,6 +9,7 @@ import {
   causeRank,
   causes,
   consumerName,
+  consumerText,
   type Level,
   processesUnread,
   unjudged,
@@ -152,7 +153,7 @@ export function subjects(cause: Cause, s: Snapshot): Subject[] {
   // one sustained episode into several, or merge namesakes, every time the
   // name changed. `at` is where to look, not a subject: it never joins
   // `named` and never decides this identity either.
-  return [{ id: "", name: cause.consumer }];
+  return [{ id: "", name: consumerText(cause.consumer) }];
 }
 /**
  * Events come from successive snapshots and from the one cause ladder. An

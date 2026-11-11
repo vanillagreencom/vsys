@@ -172,23 +172,35 @@ test("summary keeps service-cpu unmeasured until a unit has an hour average", ()
   ).toBe(false);
 });
 
-// These titles name a lane through the cause's `consumer`, which
-// `src/model/verdict.ts` writes through `laneText()`, so the summary still
-// carries that lane's process id. Reported on VSY-268 for a decision.
-const consumerTitles = new Set(["disk", "system-cpu"]);
-
 test("each raised cause carries its card's title and the processes it names", () => {
   const c = defaults();
   // The every-cause snapshot fires every host pressure, so a host card owns
-  // each stalling lane there; a quiet host with one stalling lane raises the
-  // one cause it cannot.
+  // each stalling lane there; a quiet host with stalling lanes raises the one
+  // cause it cannot.
   const quiet = emptySnapshot();
   quiet.system.pressure = {
     cpu: { some: 1, full: 0, total: 0 },
     memory: { some: 0, full: 0, total: 0 },
     io: { some: 1, full: 0, total: 0 },
   };
-  quiet.lanes = [laneSnapshot({ pressure: c.pressureRed + 1 })];
+  // The second lane leads no process, so the summary lists none for it.
+  quiet.lanes = [
+    laneSnapshot({ pressure: c.pressureRed + 1 }),
+    laneSnapshot({
+      id: "agents.slice/b.scope",
+      name: "lane-b",
+      mainPid: 0,
+      pressure: c.pressureRed + 1,
+    }),
+  ];
+  // Each lane a cause names is listed by its main process.
+  const lanePids: Record<string, string[]> = {
+    unconfined: ["escaped"],
+    "memory-cap": ["capped"],
+    disk: ["writer"],
+    "system-cpu": ["escaped"],
+    stalls: ["lane-a"],
+  };
   const seen = new Set<string>();
   // The causes whose Home card names a lane with its process id.
   const named = new Set<string>();
@@ -207,22 +219,23 @@ test("each raised cause carries its card's title and the processes it names", ()
         `the ${entry.cause} cause`,
       );
       // The card's own words, with each lane it names by its name alone.
-      const title = consumerTitles.has(entry.cause)
-        ? card.title
-        : cause.lanes.reduce(
-            (text, lane) => text.replaceAll(laneText(lane), lane.name),
-            card.title,
-          );
+      const lanes =
+        typeof cause.consumer === "string"
+          ? cause.lanes
+          : [...cause.lanes, cause.consumer];
+      const title = lanes.reduce(
+        (text, lane) => text.replaceAll(laneText(lane), lane.name),
+        card.title,
+      );
       if (title !== card.title) named.add(entry.cause);
       expect({ cause: entry.cause, title: entry.title }).toEqual({
         cause: entry.cause,
         title,
       });
-      if (!consumerTitles.has(entry.cause))
-        expect({ cause: entry.cause, title: entry.title }).not.toEqual({
-          cause: entry.cause,
-          title: expect.stringMatching(/PID \d/),
-        });
+      expect({ cause: entry.cause, title: entry.title }).not.toEqual({
+        cause: entry.cause,
+        title: expect.stringMatching(/PID \d/),
+      });
       expect({ cause: entry.cause, open: entry.open }).toEqual({
         cause: entry.cause,
         open: [],
@@ -231,7 +244,9 @@ test("each raised cause carries its card's title and the processes it names", ()
       expect({ cause: entry.cause, processes: entry.processes }).toEqual({
         cause: entry.cause,
         processes:
-          entry.cause === "unconfirmed-tool" ? [{ pid: 2, name: "pi" }] : [],
+          entry.cause === "unconfirmed-tool"
+            ? [{ pid: 2, name: "pi" }]
+            : (lanePids[entry.cause] ?? []).map((name) => ({ pid: 40, name })),
       });
     }
   }
@@ -239,6 +254,12 @@ test("each raised cause carries its card's title and the processes it names", ()
   // The fixture reaches every card that lists lanes, so the rows above
   // compare a card that carries a process id with a summary that does not.
   expect([...named]).toEqual(
-    expect.arrayContaining(["memory-cap", "stalls", "unconfined"]),
+    expect.arrayContaining([
+      "disk",
+      "memory-cap",
+      "stalls",
+      "system-cpu",
+      "unconfined",
+    ]),
   );
 });
