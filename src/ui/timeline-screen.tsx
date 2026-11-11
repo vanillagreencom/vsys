@@ -1,10 +1,12 @@
+import { ScrollBoxRenderable } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
 import { useCallback, useEffect, useState } from "react";
 import type { Config } from "../config/config";
 import { safe } from "../model/export";
 import type { Snapshot } from "../model/types";
 import type { TimelineEvent } from "../store/events";
 import type { Point } from "../store/point";
-import { screenPad, sideWidth } from "./chrome";
+import { screenPad, screenWidth, sideWidth } from "./chrome";
 import { fit } from "./columns";
 import { bytes, gap, percent, spanLabel, sparkline } from "./format";
 import { useScreenKeys } from "./keys";
@@ -15,6 +17,7 @@ import { eventKey, eventParts, eventStatus } from "./timeline";
 import {
   Chart,
   Detail,
+  detailIndent,
   Field,
   gutter,
   Ink,
@@ -112,6 +115,7 @@ export function Timeline({
   onTargetUsed: () => void;
 }) {
   const windowMs = windowAt(windowIndex);
+  const renderer = useRenderer();
   const { points, events: changes } = retained;
   // What the reader chose, followed by identity: the window key can swap a
   // long list for a shorter one and a new sample prepends to it, so a row
@@ -131,6 +135,16 @@ export function Timeline({
       ? undefined
       : Math.min(chartWidth - 1, Math.max(0, column(at)));
   useScreenKeys((name, key) => {
+    if (name === "pageup" || name === "pagedown") {
+      const detail =
+        renderer.root.findDescendantById("timeline-detail") ??
+        renderer.root.findDescendantById("split-detail");
+      if (detail instanceof ScrollBoxRenderable) {
+        key.preventDefault();
+        detail.scrollBy(name === "pagedown" ? 1 : -1, "viewport");
+        return true;
+      }
+    }
     if (name === c.keys.down || name === "down") {
       move((from) => nextDown(changes.length, from));
       return true;
@@ -278,7 +292,11 @@ export function Timeline({
       : undefined;
   const detail = current && (
     <>
-      <Line flexShrink={0} wrapMode="word">
+      <Line
+        width={Math.max(1, (side || screenWidth(width) - detailIndent) - 1)}
+        flexShrink={0}
+        wrapMode="word"
+      >
         {safe(eventParts(current, c).text)}
       </Line>
       {unitOf(current) && (
@@ -392,6 +410,8 @@ export function Timeline({
           below ? (
             <Detail>
               <scrollbox
+                id="timeline-detail"
+                key={current && eventKey(current)}
                 height={detailHeight}
                 scrollY
                 scrollbarOptions={scrollbar}

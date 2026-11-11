@@ -1,1 +1,1 @@
-- Timeline records name every process observed in an unconfirmed-agent warning, with its command name, PID and warning start and end times, even after the warning clears and history is reopened.
+- Timeline records name every process observed in an unconfirmed-agent warning, with its command name, PID and warning start and end times, even after the warning clears and history is reopened. Page Up and Page Down reach long details. Selecting another warning starts its detail at the top. Older warnings retain their known tool and duration.

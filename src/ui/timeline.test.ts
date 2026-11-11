@@ -77,6 +77,28 @@ test("every event is one line that states its cause", () => {
   expect(lines[3]).toContain("open for 1m");
   expect(causePhrase("scrub")).toBe("a scrub reported a problem");
   expect(lines[4]).toContain("previously nothing needs attention");
+  // The shipped EventLog wrote subject and duration before participant and
+  // interval fields existed. Timeline must keep that known result on upgrade.
+  for (const [durationMs, duration] of [
+    [300000, "5m"],
+    [0, "0s"],
+    [null, "not available"],
+    [undefined, "not available"],
+  ] as const) {
+    const legacy = eventLine(
+      event({
+        kind: "alert-close",
+        cause: "unconfirmed-tool",
+        subject: "codex",
+        values: durationMs === undefined ? {} : { durationMs },
+      }),
+      c,
+    );
+    expect(legacy).toContain("codex | processes unknown");
+    expect(legacy).toContain(`open for ${duration}`);
+    expect(legacy).toContain("start unknown | end unknown");
+    expect(legacy).not.toContain(new Date(1000).toLocaleString());
+  }
 });
 test("a swap crossing states the swap and the floor it passed", () => {
   const line = eventLine(

@@ -57,10 +57,16 @@ function unconfirmed(e: TimelineEvent): string {
     time == null ? "unknown" : new Date(time).toLocaleString();
   return parts(
     e.processes == null
-      ? "processes unknown"
+      ? parts(e.subject, "processes unknown")
       : e.processes.map((p) => `${p.comm} PID ${p.pid}`).join(", "),
     `start ${date(e.values.startTime)}`,
     e.kind === "alert-close" ? `end ${date(e.values.endTime)}` : "",
+    e.kind === "alert-close" &&
+      (e.values.startTime == null || e.values.endTime == null)
+      ? `open for ${age(
+          e.values.durationMs == null ? null : e.values.durationMs / 1000,
+        )}`
+      : "",
     causePhrase(e.cause),
   );
 }

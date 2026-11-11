@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { ScrollBoxRenderable } from "@opentui/core";
 import { defaults } from "../config/config";
 import { History } from "../store/history";
 import type { Point } from "../store/point";
@@ -71,54 +72,129 @@ test("Timeline lists what changed with a cause instead of raw samples", async ()
 test("a cleared unconfirmed warning names every observed process and its interval on Timeline", async () => {
   const c = { ...defaults(), pressureHoldSeconds: 0 };
   const start = Date.UTC(2026, 10, 10, 18, 30);
-  for (const width of [140, 180]) {
+  for (const width of [100, 140, 180]) {
     const h = new History(c);
     h.add(emptySnapshot(start - 1000));
-    h.add({
-      ...emptySnapshot(start),
-      procs: [
+    // Two completed warnings force both paging and an identity change while
+    // scrolled. The history suite owns membership accumulation and replay.
+    for (const [offset, firstPid] of [
+      [0, 410],
+      [90000, 510],
+    ] as const) {
+      const procs = Array.from({ length: 40 }, (_, i) =>
         processSnapshot({
-          pid: 410,
-          comm: "claude",
-          tool: null,
-          unconfirmedTool: "claude",
-        }),
-        processSnapshot({
-          pid: 411,
+          pid: firstPid + i,
           comm: "node",
           tool: null,
           unconfirmedTool: "codex",
         }),
-      ],
-    });
-    h.add({
-      ...emptySnapshot(start + 30000),
-      procs: [
-        processSnapshot({
-          pid: 412,
-          comm: "pi",
-          tool: null,
-          unconfirmedTool: "pi",
-        }),
-      ],
-    });
-    const cleared = emptySnapshot(start + 60000);
-    h.add(cleared);
-    const t = await mount(cleared, c, { width, height: 44 }, { history: h });
+      );
+      h.add({ ...emptySnapshot(start + offset), procs });
+      h.add({ ...emptySnapshot(start + offset + 30000), procs });
+      h.add(emptySnapshot(start + offset + 60000));
+    }
+    const cleared = emptySnapshot(start + 150000);
+    const t = await mount(cleared, c, { width, height: 35 }, { history: h });
     try {
       await t.press("6");
       await t.settle();
-      // Timeline is the product's result text: its selected detail must expose
-      // identities the one-row summary marks as cut, including on narrow terminals.
-      const frame = t.frame();
-      for (const identity of ["claude PID 410", "node PID 411", "pi PID 412"])
-        expect(frame).toContain(identity);
-      const flattened = frame.replace(/\s+/g, " ");
-      expect(flattened).toContain(`start ${new Date(start).toLocaleString()}`);
-      expect(flattened).toContain(
-        `end ${new Date(start + 30000).toLocaleString()}`,
+      const detail = present(
+        t.ui.renderer.root.findDescendantById("timeline-detail") ??
+          t.ui.renderer.root.findDescendantById("split-detail"),
+        "selected Timeline detail",
       );
-      expect(selectedRow(frame)).toContain("Alert closed");
+      if (!(detail instanceof ScrollBoxRenderable))
+        throw new Error("Timeline detail is not a scroll viewport");
+      const detailFrame = () =>
+        t
+          .frame()
+          .split("\n")
+          .slice(detail.viewport.y, detail.viewport.y + detail.viewport.height)
+          .map((line) =>
+            line.slice(
+              detail.viewport.x,
+              detail.viewport.x + detail.viewport.width,
+            ),
+          )
+          .join(" ");
+      const list = present(
+        t.ui.renderer.root.findDescendantById("split-list"),
+        "Timeline change list",
+      );
+      const marked = () =>
+        selectedRow(
+          t
+            .frame()
+            .split("\n")
+            .map((line) => line.slice(list.x, list.x + list.width))
+            .join("\n"),
+        );
+      const initialSelection = marked();
+      const advertised = t.frame().includes("PgUp/PgDn");
+      const frames = [detailFrame()];
+      // Stop at the actual bound, not an assumed amount of wrapping.
+      for (let page = 0; page < detail.scrollHeight; page++) {
+        const before = detail.scrollTop;
+        await t.press("\u001b[6~");
+        await t.settle();
+        frames.push(detailFrame());
+        if (detail.scrollTop === before) break;
+      }
+      const paged = detail.scrollTop > 0;
+      const selectionAfterPaging = marked();
+      const pagedText = frames.join(" ").replace(/\s+/g, " ");
+      for (let page = 0; page < detail.scrollHeight; page++) {
+        await t.press("\u001b[5~");
+        await t.settle();
+        if (detail.scrollTop === 0) break;
+      }
+      const returnedToStart = detail.scrollTop === 0;
+      for (let page = 0; page < detail.scrollHeight; page++) {
+        const before = detail.scrollTop;
+        await t.press("\u001b[6~");
+        await t.settle();
+        if (detail.scrollTop === before) break;
+      }
+      await t.settle();
+      await t.press("j");
+      await t.press("j");
+      await t.settle();
+      const other = present(
+        t.ui.renderer.root.findDescendantById("timeline-detail") ??
+          t.ui.renderer.root.findDescendantById("split-detail"),
+        "other warning detail",
+      );
+      if (!(other instanceof ScrollBoxRenderable))
+        throw new Error("Other Timeline detail is not a scroll viewport");
+      // The product delivers this text as its result. A joined set of visible
+      // pages must include every identity and the stored, not confirmation, time.
+      expect({
+        width,
+        advertised,
+        paged,
+        returnedToStart,
+        selectionAfterPaging,
+        otherScrollTop: other.scrollTop,
+        otherFirstParticipant: t.frame().includes("node PID 410"),
+      }).toEqual({
+        width,
+        advertised: true,
+        paged: true,
+        returnedToStart: true,
+        selectionAfterPaging: initialSelection,
+        otherScrollTop: 0,
+        otherFirstParticipant: true,
+      });
+      for (let pid = 510; pid < 550; pid++)
+        expect(pagedText).toContain(`node PID ${pid}`);
+      expect(pagedText).toContain(
+        `start ${new Date(start + 90000).toLocaleString()}`,
+      );
+      expect(pagedText).toContain(
+        `end ${new Date(start + 120000).toLocaleString()}`,
+      );
+      expect(initialSelection).toContain("Alert closed");
+      expect(selectedRow(t.frame())).toContain("Alert closed");
     } finally {
       await t.close();
     }

@@ -174,6 +174,7 @@ export const hints: Record<
   ],
   Timeline: (c) => [
     ["←→", "time"],
+    ["PgUp/PgDn", "detail"],
     [c.keys.window, "window"],
     [c.keys.pin, "pin"],
   ],
