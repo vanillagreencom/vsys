@@ -645,23 +645,36 @@ function copy(
           cause.groups.includes(g) &&
           memoryHighJudgment(g, s).judged === "warden",
       );
-      const names = list(cause.groups.map((g) => consumerName(g, s, laneName)));
+      const named = (of: typeof cause.groups) =>
+        of.map((g) => consumerName(g, s, laneName));
       const reclaim = `Memory reclaim can slow every task in ${p(groups, "this group", "these groups")}.`;
       // A card the warden's warnings alone raised states the warden's
       // condition, not vsys's threshold; a mixed card names which are its.
       const wardens = warned.length === groups;
+      const mixed = warned.length > 0 && !wardens;
+      // The title only counts: readers outside vsys, such as a bar widget,
+      // draw it whole. The names go under it, each group named once, so a
+      // mixed card names here only the groups its warden sentence does not.
+      const rest = cause.groups.filter((g) => !warned.some((w) => w === g));
       return {
         word: "Busy",
         title: wardens
-          ? `${groups} ${p(groups, "group is near its memory limit", "groups are near their memory limits")}: ${names}`
-          : `${groups} ${p(groups, "group is", "groups are")} near the memory threshold: ${names}`,
+          ? `${groups} ${p(groups, "group is near its memory limit", "groups are near their memory limits")}`
+          : `${groups} ${p(groups, "group is", "groups are")} near the memory threshold`,
         ways: [
           wardens
             ? `The agent warden gave this warning. ${reclaim}`
-            : warned.length
-              ? `The agent warden warns ${list(warned.map((g) => consumerName(g, s, laneName)))} ${p(warned.length, "is near its memory limit", "are near their memory limits")}. ${reclaim}`
+            : mixed
+              ? `The agent warden warns ${list(named(warned))} ${p(warned.length, "is near its memory limit", "are near their memory limits")}. ${reclaim}`
               : reclaim,
         ],
+        keep: mixed
+          ? laneSentence(named(rest), width, "Near the memory threshold: ")
+          : laneSentence(
+              named(cause.groups),
+              width,
+              `${p(groups, "Group", "Groups")}: `,
+            ),
         next: "Open Resources and raise memory.high, or reduce the work running there.",
         view: "Resources",
         target: group,
