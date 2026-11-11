@@ -134,7 +134,7 @@ test.each([
     mount(
       row.unread ? { ...s, procs: [], processRead: "unknown" } : s,
       { ...defaults(), writeMode: row.writeMode },
-      { width: 160, height: 45 },
+      undefined,
       {
         onAction: async (command) => {
           calls.push(command);

@@ -451,7 +451,7 @@ export function Agent({
   );
   // The sections open and close and the pane fills asynchronously, so what sits
   // above the selected row moves without the selection moving.
-  useKeepInView(scroller, `detail-${selected}`);
+  useKeepInView(scroller, `detail-${selected}`, landing !== undefined);
   useScreenKeys((name) => {
     if (name === c.keys.down || name === "down") {
       move((from) => nextDown(rows.length, from));
