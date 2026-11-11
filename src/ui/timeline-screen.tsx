@@ -10,10 +10,11 @@ import { bytes, gap, percent, spanLabel, sparkline } from "./format";
 import { useScreenKeys } from "./keys";
 import type { ChartField, Retained } from "./retained";
 import { firstRow, useSelection } from "./selection";
-import { metric, readingWeight, statusColor, ui } from "./theme";
+import { metric, readingWeight, scrollbar, statusColor, ui } from "./theme";
 import { eventKey, eventParts, eventStatus } from "./timeline";
 import {
   Chart,
+  Detail,
   Field,
   gutter,
   Ink,
@@ -260,6 +261,8 @@ export function Timeline({
   const current = changes[row];
   // On a wide terminal the selected change's detail sits beside the list.
   const side = current ? sideWidth(width) : 0;
+  const below = !side && current?.cause === "unconfirmed-tool";
+  const detailHeight = Math.max(1, Math.floor((listHeight - 2) / 2));
   const listWidth = width - side - (side ? sideGap : 0);
   // A change row less its marker, its time and its kind, so a long subject is
   // cut with its mark rather than at the edge.
@@ -273,6 +276,16 @@ export function Timeline({
     event.names.unit && event.names.unit !== event.subject
       ? event.names.unit
       : undefined;
+  const detail = current && (
+    <>
+      <Line flexShrink={0} wrapMode="word">
+        {safe(eventParts(current, c).text)}
+      </Line>
+      {unitOf(current) && (
+        <Field label="Unit" value={unitOf(current) ?? ""} width={14} wrap />
+      )}
+    </>
+  );
   return (
     <box flexDirection="column" flexGrow={1} minHeight={0} paddingX={screenPad}>
       <box flexDirection="row" height={1} flexShrink={0}>
@@ -374,22 +387,21 @@ export function Timeline({
       <SplitPane
         side={side}
         item={current && eventKey(current)}
+        below={below}
         detail={
-          current && (
-            <>
-              {/* Whole here, where the row cuts it at the list's edge. */}
-              <Line flexShrink={0} wrapMode="word">
-                {safe(eventParts(current, c).text)}
-              </Line>
-              {unitOf(current) && (
-                <Field
-                  label="Unit"
-                  value={unitOf(current) ?? ""}
-                  width={14}
-                  wrap
-                />
-              )}
-            </>
+          below ? (
+            <Detail>
+              <scrollbox
+                height={detailHeight}
+                scrollY
+                scrollbarOptions={scrollbar}
+                contentOptions={{ flexShrink: 0 }}
+              >
+                {detail}
+              </scrollbox>
+            </Detail>
+          ) : (
+            detail
           )
         }
       >
@@ -403,7 +415,7 @@ export function Timeline({
         <List
           items={changes}
           selected={row}
-          height={listHeight}
+          height={below ? listHeight - detailHeight - 1 : listHeight}
           onSelect={choose}
           empty="Nothing changed in this window: no lane, cgroup or cause moved."
           render={(event, at, isSelected) => {

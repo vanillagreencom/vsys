@@ -1,0 +1,1 @@
+- Timeline records name every process observed in an unconfirmed-agent warning, with its command name, PID and warning start and end times, even after the warning clears and history is reopened.

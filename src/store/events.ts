@@ -1,7 +1,7 @@
 import type { Config } from "../config/config";
 import { escaped, lanePressure, standInLane } from "../model/lanes";
 import { laneText } from "../model/naming";
-import type { Lane, Snapshot } from "../model/types";
+import type { Lane, Proc, Snapshot } from "../model/types";
 import {
   type Cause,
   type CauseId,
@@ -35,6 +35,8 @@ export interface TimelineEvent {
   names: Record<string, string>;
   /** The numbers behind the change, unformatted. */
   values: Record<string, number | null>;
+  /** Observed warning participants, not command lines; null in older records. */
+  processes?: Pick<Proc, "pid" | "start" | "comm">[] | null;
 }
 /** The slice a cgroup path sits in, which is what a lane event must name. */
 export function sliceOf(path: string): string {
@@ -54,6 +56,7 @@ interface Watch {
   level: Level;
   verdictWorthy: boolean;
   values: Record<string, number | null>;
+  processes?: Map<string, Pick<Proc, "pid" | "start" | "comm">>;
   firstSeen: number;
   lastSeen: number;
   /**
@@ -353,6 +356,11 @@ export class EventLog {
         // The thresholds and the subject's own numbers belong to the event,
         // not to the settings the reader happens to hold when it is drawn.
         watch.values = subjectValues(cause, subject.id, s, c);
+        if (cause.id === "unconfirmed-tool") {
+          watch.processes ??= new Map();
+          for (const { pid, start, comm } of cause.procs)
+            watch.processes.set(`${pid}:${start}`, { pid, start, comm });
+        }
         this.watching.set(key, watch);
         // An alert that was never recorded as open cannot be recorded as closed.
         if (watch.opened) continue;
@@ -370,6 +378,10 @@ export class EventLog {
           // reader who needs the raw name can still reach it.
           names: { level: cause.level, unit: watch.unit },
           values: { ...watch.values },
+          ...(watch.processes && {
+            processes: [...watch.processes.values()],
+            values: { ...watch.values, startTime: watch.firstSeen },
+          }),
         });
       }
     }
@@ -399,6 +411,14 @@ export class EventLog {
         cause: watch.cause,
         names: { level: watch.level, unit: watch.unit },
         values: { durationMs: watch.lastSeen - watch.firstSeen },
+        ...(watch.processes && {
+          processes: [...watch.processes.values()],
+          values: {
+            durationMs: watch.lastSeen - watch.firstSeen,
+            startTime: watch.firstSeen,
+            endTime: watch.lastSeen,
+          },
+        }),
       });
     }
     // The verdict names the worst alert that opened, an alert waiting out its

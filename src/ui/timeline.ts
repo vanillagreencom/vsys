@@ -51,6 +51,19 @@ function measurement(e: TimelineEvent, c: Config): string {
   return "";
 }
 const parts = (...values: string[]) => values.filter(Boolean).join(" | ");
+/** A closed warning carries its whole observed interval, not the later close confirmation. */
+function unconfirmed(e: TimelineEvent): string {
+  const date = (time: number | null | undefined) =>
+    time == null ? "unknown" : new Date(time).toLocaleString();
+  return parts(
+    e.processes == null
+      ? "processes unknown"
+      : e.processes.map((p) => `${p.comm} PID ${p.pid}`).join(", "),
+    `start ${date(e.values.startTime)}`,
+    e.kind === "alert-close" ? `end ${date(e.values.endTime)}` : "",
+    causePhrase(e.cause),
+  );
+}
 /** How bad a level is, in words a reader does not have to decode. */
 function levelWord(level: string | undefined): string {
   return level === "danger"
@@ -118,18 +131,24 @@ export function eventParts(e: TimelineEvent, c: Config): EventParts {
     return {
       time,
       kind: "Alert opened",
-      text: parts(causePhrase(e.cause), e.subject, measurement(e, c)),
+      text:
+        e.cause === "unconfirmed-tool"
+          ? unconfirmed(e)
+          : parts(causePhrase(e.cause), e.subject, measurement(e, c)),
       level: n.level === "danger" ? "danger" : "warn",
     };
   if (e.kind === "alert-close")
     return {
       time,
       kind: "Alert closed",
-      text: parts(
-        causePhrase(e.cause),
-        e.subject,
-        `open for ${age((e.values.durationMs ?? 0) / 1000)}`,
-      ),
+      text:
+        e.cause === "unconfirmed-tool"
+          ? unconfirmed(e)
+          : parts(
+              causePhrase(e.cause),
+              e.subject,
+              `open for ${age((e.values.durationMs ?? 0) / 1000)}`,
+            ),
       level: "ok",
     };
   // One cause can lead twice: a warning that turns serious is a new verdict.

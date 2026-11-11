@@ -228,14 +228,17 @@ export function normalizePoint(p: Point): Point {
   if (!p.events?.length) return p;
   return {
     ...p,
-    events: p.events.map((e) =>
-      storedRawUnit(e)
+    events: p.events.map((e) => {
+      const event = storedRawUnit(e)
         ? {
             ...e,
             subject: unitLabel(e.subject),
             names: { ...e.names, unit: e.subject },
           }
-        : e,
-    ),
+        : e;
+      return event.cause === "unconfirmed-tool" && event.processes === undefined
+        ? { ...event, processes: null }
+        : event;
+    }),
   };
 }

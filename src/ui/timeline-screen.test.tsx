@@ -6,6 +6,7 @@ import {
   emptySnapshot,
   everyCauseSnapshot,
   laneSnapshot,
+  processSnapshot,
 } from "../test/fixture";
 import { mount, selectedRow } from "../test/harness";
 import { present } from "../test/present";
@@ -64,6 +65,63 @@ test("Timeline lists what changed with a cause instead of raw samples", async ()
     expect(frame).toMatch(/Alert opened\s+an agent ran outside/);
   } finally {
     await t.close();
+  }
+});
+
+test("a cleared unconfirmed warning names every observed process and its interval on Timeline", async () => {
+  const c = { ...defaults(), pressureHoldSeconds: 0 };
+  const start = Date.UTC(2026, 10, 10, 18, 30);
+  for (const width of [140, 180]) {
+    const h = new History(c);
+    h.add(emptySnapshot(start - 1000));
+    h.add({
+      ...emptySnapshot(start),
+      procs: [
+        processSnapshot({
+          pid: 410,
+          comm: "claude",
+          tool: null,
+          unconfirmedTool: "claude",
+        }),
+        processSnapshot({
+          pid: 411,
+          comm: "node",
+          tool: null,
+          unconfirmedTool: "codex",
+        }),
+      ],
+    });
+    h.add({
+      ...emptySnapshot(start + 30000),
+      procs: [
+        processSnapshot({
+          pid: 412,
+          comm: "pi",
+          tool: null,
+          unconfirmedTool: "pi",
+        }),
+      ],
+    });
+    const cleared = emptySnapshot(start + 60000);
+    h.add(cleared);
+    const t = await mount(cleared, c, { width, height: 44 }, { history: h });
+    try {
+      await t.press("6");
+      await t.settle();
+      // Timeline is the product's result text: its selected detail must expose
+      // identities the one-row summary marks as cut, including on narrow terminals.
+      const frame = t.frame();
+      for (const identity of ["claude PID 410", "node PID 411", "pi PID 412"])
+        expect(frame).toContain(identity);
+      const flattened = frame.replace(/\s+/g, " ");
+      expect(flattened).toContain(`start ${new Date(start).toLocaleString()}`);
+      expect(flattened).toContain(
+        `end ${new Date(start + 30000).toLocaleString()}`,
+      );
+      expect(selectedRow(frame)).toContain("Alert closed");
+    } finally {
+      await t.close();
+    }
   }
 });
 
