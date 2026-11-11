@@ -103,9 +103,9 @@ export function probeTmux(argv: string[] = listPanesArgv): Outcome {
  */
 export function probeCapabilities(
   c: CollectionConfig,
-  /** Injected so no test spawns tmux, and so a stub can fail it on purpose. */
+  /** Injected so a test stubs tmux, and so a stub can fail it on purpose. */
   tmux: () => Outcome = probeTmux,
-  /** Injected for the same reason: no test reads this machine's journal. */
+  /** Injected for the same reason, so a test stubs this machine's journal. */
   kernelLog: () => Outcome = probeKernelLog,
 ): Capability[] {
   const probes: [CapabilityId, string, () => Outcome][] = [

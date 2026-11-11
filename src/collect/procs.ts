@@ -234,7 +234,8 @@ export class ProcessCollector implements ProcessSource {
     /**
      * The program hands over the shipped agent-tool data with the machine
      * overlay merged in; a collector built any other way reads the shipped
-     * data, so no test reads the host's overlay.
+     * data, so a collector a test builds reads no overlay. A test that spawns
+     * the program reads the overlay at the program's path.
      */
     tools: AgentToolsDocument = shippedAgentTools,
   ) {
