@@ -370,6 +370,19 @@ export function memoryHighJudgments(groups: Group[]): Judgment<Group>[] {
     };
   });
 }
+/** A partial subtotal can prove a crossing, but cannot prove recovery. */
+export function scratchJudgments(
+  roots: ScratchRoot[],
+  quota: number,
+): Judgment<ScratchRoot>[] {
+  return roots.map((root) => ({
+    subject: root,
+    judged: judge(
+      root.error === null ? [root.bytes] : [root.bytes, null],
+      (n) => n > quota,
+    ),
+  }));
+}
 /** The causes judged on one host reading, so an unread one covers every subject. */
 const hostCauses = [
   "disk",
@@ -433,10 +446,7 @@ function judgments(s: Snapshot, c: Config): Judgments {
       subject: volume,
       judged: judge([volume.free], (n) => n < c.freeFloor),
     })),
-    scratch: s.storage.scratch.map((root) => ({
-      subject: root,
-      judged: judge([root.bytes], (n) => n > c.scratchQuota),
-    })),
+    scratch: scratchJudgments(s.storage.scratch, c.scratchQuota),
     // A unit read with no hour behind it yet is not measurable: absent, not
     // unread, so it raises nothing and holds nothing open, whatever the
     // threshold.

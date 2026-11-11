@@ -9,7 +9,7 @@ import {
 } from "../test/fixture";
 import { AlertEngine } from "./alerts";
 import type { Rule } from "./types";
-import { unjudged } from "./verdict";
+import { causes, unjudged } from "./verdict";
 
 test("memory-high alerts survive failed reads and rearm only after measured recovery", () => {
   for (const quiet of [
@@ -224,30 +224,104 @@ test("each new escaped agent is reported even in an already alarmed scope", () =
   );
 });
 
-test("scratch notification does not repeat after one failed scan", () => {
-  const c = defaults();
-  const engine = new AlertEngine();
-  const root = (bytes: number | null, time: number) => {
+test("scratch quota alerts retain incomplete lower bounds until measured recovery", () => {
+  const c = {
+    ...defaults(),
+    scratchQuota: 100,
+    pressureHoldSeconds: 2,
+    refreshMs: 1000,
+  };
+  const path = "/scratch";
+  const partial =
+    "Partial scratch reading; unreadable entries:\n/scratch/agent-confine-123-456/locked: EACCES";
+  const root = (
+    time: number,
+    bytes: number | null,
+    error: string | null = null,
+  ) => {
     const s = emptySnapshot(time);
     s.storage.scratch = [
       {
-        path: "/scratch",
+        path,
         bytes,
         age: 0,
-        error: bytes === null ? "ENOENT" : null,
+        error,
         origin: "configured",
       },
     ];
     return s;
   };
-  const over = c.scratchQuota + 1;
-  expect(engine.evaluate(root(over, 1000), c).map((a) => a.rule)).toEqual([
-    "scratch",
-  ]);
-  const u = unjudged(root(null, 2000), c).scratch;
-  expect(u !== undefined && u !== "all" && u.has("/scratch")).toBe(true);
-  expect(engine.evaluate(root(null, 2000), c)).toEqual([]);
-  expect(engine.evaluate(root(over, 3000), c)).toEqual([]);
+  const rows: [
+    string,
+    number | null,
+    string | null,
+    "fired" | "absent" | "unjudged",
+  ][] = [
+    ["complete below", 0, null, "absent"],
+    ["complete equal", 100, null, "absent"],
+    ["complete above", 101, null, "fired"],
+    ["unreadable root", null, "EACCES", "unjudged"],
+    ["partial below", 0, partial, "unjudged"],
+    ["partial equal", 100, partial, "unjudged"],
+    ["partial above", 101, partial, "fired"],
+  ];
+  for (const [name, bytes, error, judged] of rows) {
+    const s = root(0, bytes, error);
+    expect({
+      name,
+      unread: unjudged(s, c).scratch,
+      fired: causes(s, c)
+        .filter((cause) => cause.id === "scratch")
+        .flatMap((cause) => cause.paths),
+      notifications: new AlertEngine().evaluate(s, c).map((a) => a.subject),
+    }).toEqual({
+      name,
+      unread: judged === "unjudged" ? new Set([path]) : undefined,
+      fired: judged === "fired" ? [path] : [],
+      notifications: judged === "fired" ? [path] : [],
+    });
+
+    const engine = new AlertEngine();
+    const log = new EventLog();
+    const at = (
+      time: number,
+      bytes: number | null,
+      error: string | null = null,
+    ) => {
+      const sample = root(time, bytes, error);
+      return {
+        name,
+        events: log
+          .advance(sample, c)
+          .filter((event) => event.cause === "scratch")
+          .map((event) => event.kind),
+        notifications: engine.evaluate(sample, c).map((alert) => alert.subject),
+      };
+    };
+    const quiet = { name, events: [], notifications: [] };
+    expect(at(0, 101)).toEqual({ ...quiet, notifications: [path] });
+    expect(at(1000, 101)).toEqual(quiet);
+    expect(at(2000, 101)).toEqual({ ...quiet, events: ["alert-open"] });
+    expect(at(3000, bytes, error)).toEqual(quiet);
+    expect(at(4000, bytes, error)).toEqual({
+      ...quiet,
+      events: judged === "absent" ? ["alert-close"] : [],
+    });
+    expect(at(5000, 101)).toEqual({
+      ...quiet,
+      notifications: judged === "absent" ? [path] : [],
+    });
+    expect(at(6000, 101)).toEqual(quiet);
+    expect(at(7000, 101)).toEqual({
+      ...quiet,
+      events: judged === "absent" ? ["alert-open"] : [],
+    });
+    expect(at(8000, 100)).toEqual(quiet);
+    expect(at(9000, 100)).toEqual({ ...quiet, events: ["alert-close"] });
+    expect(at(10000, 101)).toEqual({ ...quiet, notifications: [path] });
+    expect(at(11000, 101)).toEqual(quiet);
+    expect(at(12000, 101)).toEqual({ ...quiet, events: ["alert-open"] });
+  }
 });
 
 test("memory-cap notification does not repeat after one failed memory.max read", () => {
