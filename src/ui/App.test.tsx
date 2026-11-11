@@ -17,7 +17,9 @@ import { mount } from "../test/harness";
 import { present } from "../test/present";
 import { hints, Waiting } from "./App";
 import { headerRowWidth, keyLabel, viewKey, views } from "./chrome";
+import { osc52 } from "./clipboard";
 import { homeRegions, type NamedRegion, storageRegions } from "./regions";
+import { levelStatus } from "./theme";
 
 test("disabling Agent actions through Settings refuses a pending Stop", async () => {
   const s = emptySnapshot();
@@ -61,6 +63,123 @@ test("disabling Agent actions through Settings refuses a pending Stop", async ()
     expect(present(saved[0], "saved settings").writeMode).toBe(false);
     await t.press("enter");
     expect(calls).toEqual([]);
+  } finally {
+    await t.close();
+  }
+});
+
+// What the command line's lane opens on the first sample that read the
+// processes. Write mode off must leave Stop's confirmation shut, and each
+// refusal must name what it refused.
+test.each([
+  {
+    scope: "a.scope",
+    stop: false,
+    writeMode: false,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: true,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: false,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "gone.scope",
+    stop: false,
+    writeMode: true,
+    nested: false,
+    unread: false,
+  },
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: true,
+    nested: true,
+    unread: false,
+  },
+  // The collector's first process read can miss its deadline. That sample
+  // lists no main process, so it can only say the read has not answered.
+  {
+    scope: "a.scope",
+    stop: true,
+    writeMode: true,
+    nested: false,
+    unread: true,
+  },
+] as const)("the command line opens %o", async (row) => {
+  const stopCommand = "systemctl --user kill --signal=TERM a.scope";
+  // A scope inside a container's unit is readable but belongs to another
+  // manager, so it keeps Freeze and Thaw and offers no Stop.
+  const cgroup = row.nested
+    ? "agents.slice/libpod-x.scope/a.scope"
+    : "agents.slice/a.scope";
+  const s = emptySnapshot();
+  s.lanes = [laneSnapshot({ id: cgroup, cgroup })];
+  s.groups = [groupSnapshot()];
+  s.procs = [processSnapshot({ group: `${userManager}/${cgroup}` })];
+  const calls: LaneCommand[] = [];
+  // The lane opens in an effect after the first commit, and the detail it
+  // opens reads its history asynchronously, so each sample lands inside act.
+  const t = await act(() =>
+    mount(
+      row.unread ? { ...s, procs: [], processRead: "unknown" } : s,
+      { ...defaults(), writeMode: row.writeMode },
+      undefined,
+      {
+        onAction: async (command) => {
+          calls.push(command);
+        },
+        start: { scope: row.scope, stop: row.stop },
+      },
+    ),
+  );
+  const read = () => {
+    const frame = t.frame();
+    const warning = frame
+      .split("\n")
+      .find((line) => line.includes(`${levelStatus("warn")}:`));
+    return {
+      open: frame.includes("Processes"),
+      confirming: frame.includes("Stop a.scope?"),
+      offer: frame.includes(stopCommand),
+      refusal: warning?.includes(row.scope) ?? false,
+    };
+  };
+  try {
+    await t.ui.renderOnce();
+    // A Stop the lane offers lands on its row, so the command is on screen
+    // with its copy hint whether write mode lets the confirmation open or not.
+    const offer = row.stop && !row.nested && !row.unread;
+    const confirming = offer && row.writeMode;
+    expect({
+      ...read(),
+      agents: t.frame().includes("sorted by CPU") || read().open,
+    }).toEqual({
+      agents: !row.unread,
+      open: row.scope === "a.scope" && !row.unread,
+      confirming,
+      offer,
+      refusal:
+        row.scope === "gone.scope" || (row.stop && row.nested) || row.unread,
+    });
+    if (offer && !confirming) {
+      await t.press("y");
+      expect(t.written).toEqual([osc52(stopCommand)]);
+    }
+    await t.press("enter");
+    expect(calls.map((command) => command.text)).toEqual(
+      confirming ? [stopCommand] : [],
+    );
   } finally {
     await t.close();
   }

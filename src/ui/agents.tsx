@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import type { OpenFiles } from "../collect/procs";
 import { type Config, columns, validate } from "../config/config";
-import type { LaneIntent } from "../model/actions";
+import type { LaneAction, LaneIntent } from "../model/actions";
 import { safe } from "../model/export";
 import { worstPressure } from "../model/lanes";
 import type { Lane, Snapshot } from "../model/types";
@@ -438,6 +438,7 @@ export function Agents({
   onCapture,
   onSwitch,
   onOpenFiles,
+  landing,
 }: {
   snapshot: Snapshot;
   history: History;
@@ -458,6 +459,8 @@ export function Agents({
   onSwitch?: (paneId: string) => Promise<void>;
   /** Reads a lane's open scratch files; the agent detail alone uses it. */
   onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
+  /** The action row the open agent's detail lands on; see `Agent`. */
+  landing?: LaneAction;
 }) {
   /**
    * What the reader chose, followed by lane. This screen reads the selection
@@ -800,6 +803,7 @@ export function Agents({
         onCapture={onCapture}
         onSwitch={onSwitch}
         onOpenFiles={onOpenFiles}
+        landing={landing}
       />
     ) : (
       <box paddingX={screenPad}>

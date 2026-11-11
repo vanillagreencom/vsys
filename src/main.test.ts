@@ -140,6 +140,15 @@ test("once summary exports verdict schema and skips scratch collection", async (
     f.cleanup();
   }
 });
+// The lane flags set the dashboard's first view, so no run without it takes
+// them. Each row is refused before any settings or system read.
+test.each([
+  [["--stop"], "stop-needs-lane"],
+  [["--lane", "a.scope", "--once"], "lane-needs-terminal"],
+  [["--lane", "a.scope", "--stop", "--once"], "lane-needs-terminal"],
+] as const)("%p is refused as %s", async (args, kind) => {
+  await expect(main([...args])).rejects.toMatchObject({ refusal: { kind } });
+});
 test("summary sampling gives rate-backed activity a baseline", async () => {
   const f = fixture();
   try {

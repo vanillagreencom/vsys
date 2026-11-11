@@ -14,13 +14,17 @@ import type { OpenFiles } from "../collect/procs";
 import type { Config } from "../config/config";
 import { keyName } from "../config/keys";
 import {
+  type LaneAction,
   type LaneCommand,
   type LaneIntent,
   type LaneResolution,
+  laneIntent,
+  laneTarget,
   resolveIntent,
 } from "../model/actions";
+import { laneText } from "../model/naming";
 import type { Snapshot } from "../model/types";
-import type { Level } from "../model/verdict";
+import { type Level, processesUnread } from "../model/verdict";
 import type { History } from "../store/history";
 import { Agents } from "./agents";
 import { attention, type Target, verdictItem } from "./attention";
@@ -99,6 +103,11 @@ export interface AppProps {
   onOpenFiles?: (pids: number[], dirs: string[]) => Promise<OpenFiles>;
   /** Where the clipboard escape goes: the process output stream. */
   output: Output;
+  /**
+   * The lane the command line asked to open, by its systemd scope, and
+   * whether to open its Stop confirmation. It sets the first view only.
+   */
+  start?: { scope: string; stop: boolean };
 }
 /** The views that show a past sample while one is pinned. */
 const pinnable: View[] = ["Agents", "Resources", "Builds", "Storage"];
@@ -200,6 +209,7 @@ export function App({
   onSwitch,
   onOpenFiles,
   output,
+  start,
 }: AppProps) {
   const renderer = useRenderer();
   const [view, setView] = useState<View>("Home");
@@ -220,6 +230,9 @@ export function App({
   const [help, setHelp] = useState(false);
   const [target, setTarget] = useState<Target | null>(null);
   const [confirming, setConfirming] = useState<LaneIntent | null>(null);
+  // The action row the command line's lane lands on. The reader's own
+  // navigation clears it, so a detail they open later starts at its top.
+  const [landing, setLanding] = useState<LaneAction | null>(null);
   const [toast, setToast] = useState<{ text: string; level: Level } | null>(
     null,
   );
@@ -279,6 +292,7 @@ export function App({
   }, [issues, renderer]);
   const report = (error: unknown) => notice(errorText(error), "danger");
   const navigate = (next: View) => {
+    setLanding(null);
     setView(next);
     setHelp(false);
   };
@@ -342,6 +356,44 @@ export function App({
     if (!actionAllowed(intent)) return;
     setConfirming(intent);
   };
+  // The command line's lane opens on the first sample alone, before the reader
+  // can act, so a later sample never pulls the reader away from their choice.
+  // A sample whose process read missed its deadline lists no main process and
+  // no escaped lane, so it can say neither that the lane is absent nor that it
+  // offers no Stop, and the start ends with that said instead. A Stop goes
+  // through `act`, the door a keypress takes, so write mode and the
+  // confirmation still stand before it.
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current || !start) return;
+    started.current = true;
+    if (processesUnread(snapshot)) {
+      notice(
+        `The process read has not answered · cannot open ${start.scope}`,
+        "warn",
+      );
+      return;
+    }
+    const lane = snapshot.lanes.find(
+      (l) => l.cgroup.split("/").at(-1) === start.scope,
+    );
+    if (lane === undefined) {
+      navigate("Agents");
+      notice(`No lane runs in ${start.scope}`, "warn");
+      return;
+    }
+    openLane(lane.id);
+    if (!start.stop) return;
+    const target = laneTarget(lane, c, snapshot.procs);
+    if (target === null || !target.actions.includes("Stop")) {
+      notice(`${laneText(lane)} in ${start.scope} offers no Stop`, "warn");
+      return;
+    }
+    // The detail lands on the Stop row, so its command and copy hint are on
+    // screen whether the confirmation opens or write mode refuses it.
+    setLanding("Stop");
+    act(laneIntent("Stop", target));
+  });
   useKeyboard((key) => {
     const name = keyName(key);
     if (name === "ctrl+c") {
@@ -464,12 +516,16 @@ export function App({
         height={contentHeight}
         onSave={onSave}
         onError={report}
-        onOpen={setLaneId}
+        onOpen={(id) => {
+          setLanding(null);
+          setLaneId(id);
+        }}
         onCopy={copy}
         onAct={act}
         onCapture={pinned ? undefined : onCapture}
         onSwitch={pinned ? undefined : onSwitch}
         onOpenFiles={pinned ? undefined : onOpenFiles}
+        landing={landing ?? undefined}
       />
     );
   else if (view === "Resources")

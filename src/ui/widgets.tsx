@@ -69,6 +69,10 @@ export function Ink({
  * reader's own scrolling leaves alone, and these boxes do take the wheel, so
  * without it every turn of it would read as the drawing moving.
  *
+ * A screen that opens on a row chosen for the reader, rather than on its top,
+ * has a choice from the start: its first settled reading goes to that row, and
+ * the drawing moving under it is chased from then on.
+ *
  * The second reading waits for the renderer's own next frame, not a fixed
  * timeout, because a row that has just grown does not know its size until the
  * layout after the render that grew it, and a bare timeout can fire before
@@ -78,15 +82,18 @@ export function useKeepInView(
   scroller: RefObject<ScrollBoxRenderable | null>,
   /** The id of the child to keep in view, which may change between renders. */
   target: string,
+  /** Whether the screen opens on a row chosen for the reader. Read at mount. */
+  landed = false,
 ) {
   const renderer = useRenderer();
   const placed = useRef<{ id: string; at: number } | null>(null);
   const wanted = useRef(target);
   wanted.current = target;
-  // Whether the reader has ever chosen anything on this screen. Until they
-  // have, there is nothing to keep in view: a screen drawing itself moves its
-  // own rows, and chasing them opens the screen part-way down.
-  const moved = useRef(false);
+  // Whether a row has ever been chosen on this screen, by the reader or for
+  // them by a landing. Until one has, there is nothing to keep in view: a
+  // screen drawing itself moves its own rows, and chasing them opens the
+  // screen part-way down.
+  const moved = useRef(landed);
   const pending = useRef<(() => void) | null>(null);
   useEffect(() => {
     const place = () => {
@@ -100,7 +107,10 @@ export function useKeepInView(
       const at = child.y + box.scrollTop;
       const was = placed.current;
       placed.current = { id, at };
-      if (!was) return;
+      if (!was) {
+        if (moved.current) box.scrollChildIntoView(id);
+        return;
+      }
       if (was.id !== id) {
         moved.current = true;
         box.scrollChildIntoView(id);
