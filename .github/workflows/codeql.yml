@@ -4,7 +4,8 @@ name: CodeQL
 # filter. The languages and the query suite (the default one) are the ones
 # default setup analysed.
 #
-# Only pull_request skips a diff of Markdown or settings alone: push to main
+# Only pull_request skips a diff of Markdown, settings or kendex renders
+# alone (the render roots and the two kendex inventory files): push to main
 # and the weekly schedule keep the default branch's results whole. CodeQL is
 # not a required check (the required context is CI alone), so a skipped run
 # leaves nothing unreported. No merge_group trigger, so the queue never waits
@@ -17,6 +18,12 @@ on:
       - "**/*.md"
       - "**/*.markdown"
       - kendex.settings.toml
+      - ".agents/**"
+      - ".claude/**"
+      - ".codex/**"
+      - ".pi/**"
+      - .kendex-lock.json
+      - .kendex-generated.json
   schedule:
     - cron: "37 5 * * 1"
 
