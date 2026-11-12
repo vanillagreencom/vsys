@@ -17,19 +17,19 @@
         {
           "args": [
             "--lane",
+            "agent-confine-leak.scope"
+          ],
+          "id": "show",
+          "label": "Show in vsys"
+        },
+        {
+          "args": [
+            "--lane",
             "agent-confine-leak.scope",
             "--stop"
           ],
           "id": "stop",
           "label": "Stop"
-        },
-        {
-          "args": [
-            "--lane",
-            "agent-confine-leak.scope"
-          ],
-          "id": "show",
-          "label": "Show in vsys"
         }
       ],
       "detail": "42 processes, 1.5 cores, 2 GB. The warden is set not to stop it.",

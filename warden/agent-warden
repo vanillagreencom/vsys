@@ -2691,7 +2691,7 @@ def _leftover_items(doc, reap):
                                         cores is not None and f"{cores:.1f} cores",
                                         memory is not None and f"{_gb(memory)} GB") if part) + ".",
             "The warden could not stop it. It tries again on its next check." if row["reapFailed"]
-            else "The warden is set not to stop it."), [_stop(row["scope"]), _show(row["scope"])], row["scope"]))
+            else "The warden is set not to stop it."), [_show(row["scope"]), _stop(row["scope"])], row["scope"]))
     if rest:
         p = _processes(sum(row["processes"] for row in rest))
         if not reap:
