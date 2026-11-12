@@ -17,29 +17,30 @@ if BASH is None:
     raise RuntimeError("bash is required for the CI workflow")
 ENV = {key: os.environ[key] for key in ("PATH", "HOME") if key in os.environ}
 ACTION = "vanillagreencom/kendex/.github/actions/change-class@main"
-BOTH = "lane_application=true\nlane_package=true"
-NEITHER = "lane_application=false\nlane_package=false"
+ALL = "lane_application=true\nlane_package=true\nlane_workflow=true"
+NONE = "lane_application=false\nlane_package=false\nlane_workflow=false"
 # What the change-class action answers for each diff, and what the workflow
 # must do with it. Columns: name, change_class, lanes (None: the classify step
 # published nothing), lane_verdicts, changed_paths, the changes job's result,
-# then the expected application run, arch-package run and CI acceptance.
-# Expected results are independent of the expressions under test.
+# then the expected application, workflow-test and arch-package runs and CI
+# acceptance. Expected results are independent of the expressions under test.
 ROWS = (
-    ("claimed render refresh", "render", "true", "lane_application=true\nlane_package=false", ".agents/skills/harness-ci/scripts/harness-only", "success", True, False, True),
-    ("source diff", "small", "true", BOTH, "src/main.ts", "success", True, True, True),
-    ("README.md.bak", "small", "true", BOTH, "README.md.bak", "success", True, True, True),
-    ("docs-only README.md", "small", "false", NEITHER, "docs/architecture/ui.md\nREADME.md", "success", False, False, True),
-    ("docs-only docs/README.md", "small", "false", NEITHER, "docs/README.md", "success", False, False, True),
-    ("other docs-only", "trivial", "false", NEITHER, "docs/architecture/ui.md", "success", False, False, True),
+    ("harness-ci render refresh", "render", "true", "lane_application=false\nlane_package=false\nlane_workflow=true", ".agents/skills/harness-ci/scripts/harness-only", "success", False, True, False, True),
+    ("application-only source", "small", "true", "lane_application=true\nlane_package=false\nlane_workflow=false", "scripts/ci.py", "success", True, False, False, True),
+    ("source diff", "small", "true", ALL, "src/main.ts", "success", True, True, True, True),
+    ("README.md.bak", "small", "true", ALL, "README.md.bak", "success", True, True, True, True),
+    ("docs-only README.md", "small", "false", NONE, "docs/architecture/ui.md\nREADME.md", "success", False, False, False, True),
+    ("docs-only docs/README.md", "small", "false", NONE, "docs/README.md", "success", False, False, False, True),
+    ("other docs-only", "trivial", "false", NONE, "docs/architecture/ui.md", "success", False, False, False, True),
     # A declaration-only change selects the lane whose claims changed.
-    ("package declaration change", "standard", "true", "lane_application=false\nlane_package=true", ".github/ci-lanes.conf", "success", False, True, True),
+    ("package declaration change", "standard", "true", "lane_application=false\nlane_package=true\nlane_workflow=false", ".github/ci-lanes.conf", "success", False, False, True, True),
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
-    ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, True),
-    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, True),
-    ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, True),
-    ("failed classifier", "render", "false", NEITHER, ".codex/config.toml", "failure", True, True, False),
-    ("cancelled classifier", "", None, "", "", "cancelled", True, True, False),
+    ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, True, True),
+    ("docs-only, no lane declaration", "trivial", "false", "", "docs/architecture/ui.md", "success", False, False, False, True),
+    ("render refresh, no lane declaration", "render", "false", "", ".codex/config.toml", "success", False, False, False, True),
+    ("failed classifier", "render", "false", NONE, ".codex/config.toml", "failure", True, True, True, False),
+    ("cancelled classifier", "", None, "", "", "cancelled", True, True, True, False),
 )
 
 
@@ -127,11 +128,11 @@ class CiWorkflow(unittest.TestCase):
         copy.write_text(defective)
         return copy.read_text()
 
-    def assert_jobs_and_aggregate(self, outputs, status, application, package, accepted, workflow):
+    def assert_jobs_and_aggregate(self, outputs, status, application, workflow_test, package, accepted, workflow):
         fields = {"needs.changes.result": status}
         fields.update({f"needs.changes.outputs.{key}": value for key, value in outputs.items()})
         needs = {"changes": {"result": status, "outputs": outputs}, "bot-instructions": {"result": "success"}}
-        products = (("application", application), ("arch-package", package))
+        products = (("application", application), ("workflow-test", workflow_test), ("arch-package", package))
         for job, expected in products:
             condition = scalar(block(workflow, f"  {job}:", 2), "if")
             self.assertEqual(expression(condition, fields), expected, job)
@@ -147,16 +148,18 @@ class CiWorkflow(unittest.TestCase):
         result = self.shell(aggregate, env)
         self.assertEqual(result.returncode == 0, accepted, result.stderr)
         if accepted:
-            # Every required product job must reject an unauthorized skip.
+            # Every required product job must reject an unauthorized skip,
+            # and every product job a failure.
             rejections = [(job, "skipped") for job, required in products if required]
-            rejections.extend((("application", "failure"), ("bot-instructions", "skipped")))
+            rejections.extend((job, "failure") for job, _ in products)
+            rejections.append(("bot-instructions", "skipped"))
             for job, failure in rejections:
                 rejected = {**needs, job: {"result": failure}}
                 result = self.shell(aggregate, {**env, "NEEDS": json.dumps(rejected)})
                 self.assertNotEqual(result.returncode, 0, (job, failure, outputs))
 
     def check_row(self, workflow, row):
-        _, kind, lanes, verdicts, paths, status, application, package, accepted = row
+        _, kind, lanes, verdicts, paths, status, application, workflow_test, package, accepted = row
         changes = block(workflow, "  changes:", 2)
         steps = {}
         if lanes is not None:
@@ -169,7 +172,7 @@ class CiWorkflow(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             steps["lanes"] = step_outputs(output)
         outputs = mapping(block(changes, "    outputs:", 4), steps)
-        self.assert_jobs_and_aggregate(outputs, status, application, package, accepted, workflow)
+        self.assert_jobs_and_aggregate(outputs, status, application, workflow_test, package, accepted, workflow)
 
     def test_lane_conditions_and_aggregate_accept_only_authorized_skips(self):
         for row in ROWS:
@@ -183,6 +186,7 @@ class CiWorkflow(unittest.TestCase):
             ("output-lanes", "lanes: ${{ steps.classify.outputs.lanes }}", "lanes: 'true'"),
             ("output-lane-package", "lane_package: ${{ steps.lanes.outputs.lane_package }}", "lane_package: ${{ steps.lanes.outputs.lane_application }}"),
             ("application-no-verdict", " && needs.changes.outputs.lane_application != 'false'", ""),
+            ("workflow-test-no-verdict", " && needs.changes.outputs.lane_workflow != 'false'", ""),
             ("application-no-status", "needs.changes.result != 'success' || (needs.changes.outputs.lanes != 'false' && needs.changes.outputs.lane_application", "(needs.changes.outputs.lanes != 'false' && needs.changes.outputs.lane_application"),
             ("waiver-success", "WAIVER: ${{ needs.changes.outputs.lanes == 'false' }}", "WAIVER: ${{ needs.changes.result == 'success' }}"),
             ("waiver-true", '--waiver "$WAIVER"', "--waiver true"),
