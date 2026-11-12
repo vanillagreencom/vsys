@@ -131,8 +131,10 @@ jobs:
       - name: Check the application
         run: python3 scripts/ci.py
 
-  # The one check that reads the harness-ci scripts a kendex refresh changes.
-  # It needs Python and bash alone, so such a refresh skips the Bun job.
+  # Runs scripts/ci_workflow_test.py over this checkout's harness-ci scripts.
+  # scripts/ci.py runs the same suite in the Bun job; this job needs no Bun,
+  # only tools on the runner image, so a kendex refresh that changes those
+  # scripts selects this job and skips the Bun job.
   workflow-test:
     name: CI workflow test
     needs: changes
