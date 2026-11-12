@@ -1,18 +1,13 @@
 ---
 name: docs-writing
 description: "Load when creating or editing any Markdown file or documentation HTML, such as README, DEVELOPMENT, architecture docs, reference docs, SKILL.md and AGENTS.md, and when rewriting or reviewing one."
-summary: "The writing standard, the repository layout, what each document holds, and a finished example per file type, with a blank-page rewrite workflow."
 license: MIT
 user-invocable: true
-dependencies:
-  required: [decider]
-  hooks: [docs-writing-note]
 metadata:
-  author: vanillagreen
-  source: kendex
+  author: "vanillagreen"
+  source: "kendex"
   repository: "https://github.com/vanillagreencom/kendex"
   bugs: "https://github.com/vanillagreencom/kendex/issues"
-tags: [docs]
 ---
 
 <!-- kendex:project-instructions:start -->
