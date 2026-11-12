@@ -6,8 +6,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Help is answered before the libraries load: common.sh sources the repo's
-# .env.local as shell code and resolves API auth, and help needs neither.
+# Help is answered before the libraries load: common.sh loads the repo's
+# settings and .env.local and resolves API auth, and help needs neither.
 show_help() {
     cat <<'EOF'
 Issue Operations
@@ -151,6 +151,10 @@ Create Options:
   [env], create refuses a description with no `Reached by:` line, and a
   `--review-born --priority 2` one with no `Symptom:`; a placeholder or null
   token (TBD, n/a, none, -) counts as no line. Rule: project-management SKILL.md, § Disposition.
+  It also refuses a description with no `Supersession:` record: each matched
+  open item as `superseded`, `duplicate` or `re-scoped` with its identifier,
+  entries separated by `;`, or `none found; searched: <terms>`. Template:
+  project-management templates/issue-description-template.md.
   Under the same key, create, update --description/--description-file,
   and bulk-update --description refuse a checkbox outside "## Done when",
   naming its line and text, and a Post-merge Done-when box whose
