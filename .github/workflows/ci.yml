@@ -75,7 +75,7 @@ jobs:
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ${{ github.token }}
-        run: classifier/.agents/skills/review-gate/scripts/install-latest.sh
+        run: classifier/.agents/skills/harness-ci/scripts/install-latest.sh
       - id: mirror
         if: steps.render-reach.outputs.render_candidate == 'true'
         continue-on-error: true
