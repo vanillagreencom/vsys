@@ -257,7 +257,7 @@ class CiWorkflow(unittest.TestCase):
         changes = block(workflow, "  changes:", 2)
         checkouts = re.findall(r"      - name: .*?\n        uses: actions/checkout@[^\n]+\n(.*?)(?=      - |\Z)", changes, re.S)
         self.assertTrue(any("ref: ${{ github.event.repository.default_branch }}" in checkout and "path: classifier" in checkout for checkout in checkouts))
-        for header, executable in (("id: render-reach", "classifier/.agents/skills/harness-ci/scripts/harness-only"), ("id: kendex", "classifier/.agents/skills/review-gate/scripts/install-latest.sh")):
+        for header, executable in (("id: render-reach", "classifier/.agents/skills/harness-ci/scripts/harness-only"), ("id: kendex", "classifier/.agents/skills/harness-ci/scripts/install-latest.sh")):
             self.assertEqual(shlex.split(command(self.step(changes, header)))[0], executable)
         for header in ("id: kendex", "id: mirror"):
             self.assertEqual(scalar(self.step(changes, header), "if"), "steps.render-reach.outputs.render_candidate == 'true'")
