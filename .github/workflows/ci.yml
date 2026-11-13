@@ -13,12 +13,6 @@ on:
 permissions:
   contents: read
 
-# PR updates cancel superseded runs; other events keep unique groups.
-# .agents/skills/harness-ci/references/wiring.md § The CI template.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 # Each action from outside vanillagreencom is pinned to a commit SHA: its
 # owner can move a tag to other code, but a SHA names one fixed tree.
 jobs:
