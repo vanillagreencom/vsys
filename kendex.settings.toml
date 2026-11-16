@@ -179,7 +179,7 @@ SECOND_OPINION_PI_COPILOT_GPT_INLINE_DIFF = "1"
 SECOND_OPINION_PI_COPILOT_GPT_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --harness pi --model github-copilot/gpt-6.1-sol --max-pct 100"
 SECOND_OPINION_CODEX_MODEL = "gpt-6.1-sol"
 SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN 3codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=high --ephemeral"
-SECOND_OPINION_CODEX_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --harness codex --model gpt-6.1-sol --binding-floor --max-pct 100"
+SECOND_OPINION_CODEX_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --lane /home/method/.3codex --harness codex --model gpt-6.1-sol --binding-floor --max-pct 100"
 
 # Seconds to wait for the external CLI.
 SECOND_OPINION_TIMEOUT = "1080"
