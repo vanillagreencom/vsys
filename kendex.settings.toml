@@ -137,7 +137,7 @@ ORCH_OVERSEER_LANES = "8"
 # harness. Standard class at medium effort follows the owner's 2026-10-24
 # overseer policy; this override stands only while the kendex default
 # still names high effort.
-ORCH_OVERSEER_PREFERENCE = "claude:standard:medium,codex:standard:medium"
+ORCH_OVERSEER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:standard:medium"
 ORCH_OVERSEER_HEADROOM_PCT = "5"
 ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
