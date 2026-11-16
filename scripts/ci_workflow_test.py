@@ -75,6 +75,7 @@ def expression(value, fields, cancelled=False):
     value = value.removeprefix("${{ ").removesuffix(" }}")
     value = value.replace("!cancelled()", f"'{str(cancelled).lower()}' == 'false'")
     value = value.replace("always()", "'true' == 'true'")
+    value = value.replace("github.event_name", shlex.quote(fields.get("github.event_name", "pull_request")))
     value = re.sub(r"needs\.changes\.[a-z_.]+", lambda match: shlex.quote(fields.get(match.group(), "")), value)
     result = subprocess.run([BASH, "-c", f"[[ {value} ]]"], env=ENV, capture_output=True, text=True, timeout=10)
     if result.returncode not in (0, 1):
@@ -128,10 +129,15 @@ class CiWorkflow(unittest.TestCase):
         copy.write_text(defective)
         return copy.read_text()
 
-    def assert_jobs_and_aggregate(self, outputs, status, application, workflow_test, package, accepted, workflow):
-        fields = {"needs.changes.result": status}
+    def assert_jobs_and_aggregate(self, outputs, status, application, workflow_test, package, accepted, workflow, event="pull_request", bot_required=None):
+        fields = {"needs.changes.result": status, "github.event_name": event}
         fields.update({f"needs.changes.outputs.{key}": value for key, value in outputs.items()})
         needs = {"changes": {"result": status, "outputs": outputs}, "bot-instructions": {"result": "success"}}
+        if bot_required is not None:
+            condition = scalar(block(workflow, "  bot-instructions:", 2), "if")
+            self.assertEqual(expression(condition, fields), bot_required)
+            self.assertFalse(expression(condition, fields, cancelled=True))
+            needs["bot-instructions"]["result"] = "success" if bot_required else "skipped"
         products = (("application", application), ("workflow-test", workflow_test), ("arch-package", package))
         for job, expected in products:
             condition = scalar(block(workflow, f"  {job}:", 2), "if")
@@ -152,11 +158,46 @@ class CiWorkflow(unittest.TestCase):
             # and every product job a failure.
             rejections = [(job, "skipped") for job, required in products if required]
             rejections.extend((job, "failure") for job, _ in products)
-            rejections.append(("bot-instructions", "skipped"))
+            if bot_required is not None:
+                rejections.extend(("bot-instructions", result) for result in ("failure", "cancelled"))
+                if bot_required:
+                    rejections.append(("bot-instructions", "skipped"))
             for job, failure in rejections:
                 rejected = {**needs, job: {"result": failure}}
                 result = self.shell(aggregate, {**env, "NEEDS": json.dumps(rejected)})
                 self.assertNotEqual(result.returncode, 0, (job, failure, outputs))
+
+    def test_bot_instructions_event_and_render_skips_preserve_the_aggregate(self):
+        rows = (
+            ("pull_request", "standard", "success", True, True),
+            ("pull_request", "trivial", "success", True, True),
+            ("pull_request", "render", "success", False, True),
+            ("pull_request", "", "failure", True, False),
+            ("pull_request", "render", "failure", True, False),
+            ("merge_group", "standard", "success", False, True),
+            ("merge_group", "render", "success", False, True),
+            ("merge_group", "", "failure", False, False),
+            ("workflow_dispatch", "standard", "success", False, True),
+            ("push", "standard", "success", False, True),
+        )
+
+        def check(workflow):
+            for event, kind, status, required, accepted in rows:
+                outputs = {"change_class": kind, "lanes": "false"}
+                products = status != "success"
+                self.assert_jobs_and_aggregate(outputs, status, products, products, products, accepted, workflow, event, required)
+
+        check(self.text)
+        controls = (
+            ("bot-event", " && github.event_name == 'pull_request'", ""),
+            ("bot-render", "needs.changes.outputs.change_class != 'render'", "'true' == 'true'"),
+            ("bot-unconditional-waiver", "BOT_INSTRUCTIONS_OPTIONAL: ${{ github.event_name != 'pull_request' || needs.changes.outputs.change_class == 'render' }}", "BOT_INSTRUCTIONS_OPTIONAL: ${{ always() }}"),
+            ("bot-swallow-failure", ' && [ "$(jq -r \'.["bot-instructions"].result\' <<<"$NEEDS")" = skipped ]', ""),
+        )
+        for name, old, new in controls:
+            with self.subTest(control=name):
+                with self.assertRaises(AssertionError):
+                    check(self.defective(old, new))
 
     def check_row(self, workflow, row):
         _, kind, lanes, verdicts, paths, status, application, workflow_test, package, accepted = row

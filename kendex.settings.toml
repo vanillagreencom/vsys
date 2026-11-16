@@ -209,7 +209,7 @@ DECISIONS_DIR = "docs/decisions"
 # result for the same commit; CI runs the full suites independently.
 # scripts/ci.py holds the Python suites and the dependency, lint, type, test
 # and build checks.
-DEV_VALIDATE_CMD = "python3 scripts/ci.py && .agents/skills/bot-instructions/scripts/bot-instructions check"
+DEV_VALIDATE_CMD = "python3 scripts/ci.py"
 
 # The required status check whose pull request run covers DEV_VALIDATE_CMD
 # (.agents/skills/dev/README.md; orch's `dev-validate-run --help`, mode ci).
