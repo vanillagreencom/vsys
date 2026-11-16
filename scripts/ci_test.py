@@ -52,6 +52,7 @@ class ApplicationChecks(unittest.TestCase):
         # is made: the real package check owns that directory, and ci.py must
         # run the check without looking for it.
         self.suite("scripts/ci_fixture_test.py", "scripts unittest")
+        (self.root / "scripts" / "ci_workflow_test.py").write_text("raise RuntimeError('The workflow-test CI job owns this suite')\n")
         self.suite("warden/agent_warden_test.py", "warden unittest")
         (self.root / "scripts" / "package_file_list_check.py").write_text(
             "import os\n"

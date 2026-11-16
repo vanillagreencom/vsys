@@ -30,17 +30,18 @@ CHECKS = ("lint", "typecheck", "test", "build", "smoke", "bench:scratch", "bench
 
 
 def run_python_suites() -> None:
-    # Discovery refuses a missing start directory and, from Python 3.12,
-    # exits nonzero when it finds no tests, so a renamed directory or suite
-    # fails here instead of passing.
     # The warden selftest runs inside its suite, as
     # test_selftest_subprocess_exits_zero.
     tests = Path("warden") / "agent_warden_test.py"
     if not tests.is_file():
         refuse(f"suite=missing path={tests}", f"{tests} is missing.")
+    # The workflow-test CI job owns ci_workflow_test.py and needs no Bun.
+    scripts = sorted(str(path) for path in Path("scripts").glob("*_test.py") if path.name != "ci_workflow_test.py")
+    if not scripts:
+        refuse("suite=missing path=scripts/*_test.py", "No application Python suites were found in scripts/.")
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
-    for directory in ("scripts", "warden"):
-        subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", directory, "-p", "*_test.py"], check=True, env=env)
+    subprocess.run([sys.executable, "-m", "unittest", *scripts], check=True, env=env)
+    subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "warden", "-p", "*_test.py"], check=True, env=env)
 
 
 def main() -> int:
