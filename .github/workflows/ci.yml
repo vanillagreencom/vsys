@@ -169,7 +169,7 @@ jobs:
           import subprocess
           path = Path("build/arch-package/PKGBUILD")
           text = path.read_text()
-          old = 'source=("${pkgname}::git+${url}.git")'
+          old = 'source=("vsys-git::git+https://github.com/vanillagreencom/vsys.git")'
           commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
           pkg_var = "$" + "{pkgname}"
           new = f'source=("{pkg_var}::git+file://{Path.cwd()}#commit={commit}")'
