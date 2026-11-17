@@ -79,6 +79,10 @@ AGENT_RUNTIME_CONTROLLER_HEADROOM_PCT = "5"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 AGENT_RUNTIME_ACCOUNT_MAX_PCT = "95"
 AGENT_RUNTIME_CODEX_CREDIT_FLOOR = "0"
+# The account folders a launch may pick among, relative to the home folder:
+# the live Claude, Codex and Copilot logins; 1codex, 2codex and 7claude to
+# 10claude are retired.
+AGENT_RUNTIME_ACCOUNT_DIRS = ".claude:.1claude:.2claude:.3claude:.4claude:.5claude:.6claude:.codex:.3codex:.1copilot"
 
 # Accounts whose cloud sessions can reach this repository: each pair records
 # an approved repository card. The operator adds a pair after approving the
@@ -105,14 +109,14 @@ SECOND_OPINION_MODELS = "claude pi-copilot-gpt codex"
 # 1793840110.122229, 1793840145.668199).
 SECOND_OPINION_CLAUDE_MODEL = "claude-opus-5.5"
 SECOND_OPINION_CLAUDE_CMD = "claude -p --output-format json --no-session-persistence --model claude-opus-5-5 --effort high --restricted --permission-mode dontAsk --tools Bash,Read,Glob,Grep --allowedTools Bash(read-only:true),Read,Glob,Grep --setting-sources="
-SECOND_OPINION_CLAUDE_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --harness claude --model claude-opus-5-5 --max-pct 100"
+SECOND_OPINION_CLAUDE_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness claude --native-model claude-opus-5-5 --max-pct 100"
 SECOND_OPINION_PI_COPILOT_GPT_MODEL = "github-copilot/gpt-6.1-sol"
 SECOND_OPINION_PI_COPILOT_GPT_CMD = "pi -p --no-session --no-extensions --model github-copilot/gpt-6.1-sol --thinking high --tools read,grep,find,ls"
 SECOND_OPINION_PI_COPILOT_GPT_INLINE_DIFF = "1"
-SECOND_OPINION_PI_COPILOT_GPT_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --harness pi --model github-copilot/gpt-6.1-sol --max-pct 100"
+SECOND_OPINION_PI_COPILOT_GPT_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness pi --native-model github-copilot/gpt-6.1-sol --max-pct 100"
 SECOND_OPINION_CODEX_MODEL = "gpt-6.1-sol"
 SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN 3codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=high --ephemeral"
-SECOND_OPINION_CODEX_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --lane /home/method/.3codex --harness codex --model gpt-6.1-sol --binding-floor --max-pct 100"
+SECOND_OPINION_CODEX_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --account /home/method/.3codex --harness codex --native-model gpt-6.1-sol --binding-floor --max-pct 100"
 
 # Repo instruction files appended to the review prompt (repo-rule lens).
 # Empty disables.
