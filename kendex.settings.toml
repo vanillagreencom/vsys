@@ -57,6 +57,8 @@ COMMAND_SAFETY_DENY_PATTERN = "(^|[^[:alnum:]_-])systemd-run[[:space:]][^;|&]*Me
 
 # The runtime quiet window.
 ORCH_REPORT_QUIET_HOURS = "21-8"
+# Keep the two-hour report cadence; the rebuilt orch defaults to 0.
+ORCH_REPORT_EVERY_MINUTES = "120"
 
 # Path globs whose changes add the needs-ui-review QA signal.
 QA_UI_PATHS = "src/ui/**"
@@ -72,11 +74,11 @@ ORCH_OVERSEER_LANES = "8"
 # harness. Standard class at medium effort follows the owner's 2026-10-24
 # overseer policy; this override stands only while the kendex default
 # still names high effort.
-ORCH_OVERSEER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:standard:medium"
-ORCH_OVERSEER_HEADROOM_PCT = "5"
+AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:standard:medium"
+AGENT_RUNTIME_CONTROLLER_HEADROOM_PCT = "5"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
-ORCH_LANE_MAX_PCT = "95"
-ORCH_LANE_CODEX_CREDIT_FLOOR = "0"
+AGENT_RUNTIME_ACCOUNT_MAX_PCT = "95"
+AGENT_RUNTIME_CODEX_CREDIT_FLOOR = "0"
 
 # Accounts whose cloud sessions can reach this repository: each pair records
 # an approved repository card. The operator adds a pair after approving the
@@ -157,9 +159,9 @@ HARNESS_CI_QUEUE_PATHS = "scripts/ci.py scripts/package_file_list_check.py scrip
 
 # Agent-runtime keys whose change alone classifies as trivial. List only keys
 # no CI job and no review gate reads; never COMMIT_GUARDS_*, REVIEW_GATE_*,
-# DEV_VALIDATE_*, HARNESS_CI_* or ORCH_SIZE_*. ORCH_OVERSEER_* stays off:
-# the review gate's settings reader names ORCH_OVERSEER_PREFERENCE.
-HARNESS_CI_TRIVIAL_SETTINGS = "SECOND_OPINION_* ORCH_LANE_* ORCH_REPORT_* ORCH_TMUX_* ORCH_OWNER_* LINEAR_* REVIEWER_SLOT_BUDGET"
+# DEV_VALIDATE_*, HARNESS_CI_* or ORCH_SIZE_*. AGENT_RUNTIME_CONTROLLER_*
+# stays off: the review gate's settings reader names the controller preference.
+HARNESS_CI_TRIVIAL_SETTINGS = "SECOND_OPINION_* ORCH_LANE_* ORCH_REPORT_* AGENT_RUNTIME_TMUX_* AGENT_RUNTIME_ACCOUNT_* AGENT_RUNTIME_CODEX_* ORCH_OWNER_* LINEAR_* REVIEWER_SLOT_BUDGET"
 
 # Test files outside the built-in test rule, counted as test lines rather
 # than production by the branch size and change-class measurements: the
