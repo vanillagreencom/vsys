@@ -286,7 +286,7 @@ orch = """
 - A change to AGENTS.md or any SKILL.md merges only after the owner reviews its before-and-after. (VSYS-ORCH-05; owner 1791260972, 1791262352, 1791333915)
 - A release needs no owner answer. (VSYS-ORCH-06; owner 1790940306)
 - Work the VSY backlog by priority, with CI, performance, efficiency, scalability, maintainability and architecture before features; an empty queue is not Stop. (VSYS-ORCH-07; owner 1792036693, 1791744768; Jarvis 1792292633)
-- Never reboot the owner's machine or log the owner out. (VSYS-ORCH-08; Jarvis 2026-10-05)
+- Never reboot the owner's machine or log the owner out. (VSYS-ORCH-08; owner 2026-10-03)
 """
 
 [bot-instructions]
