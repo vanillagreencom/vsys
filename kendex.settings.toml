@@ -18,14 +18,6 @@ LINEAR_TEAM_PREFIX = "VSY"
 # and agent:human, work for a person. Empty turns the guard off.
 LINEAR_AGENT_LABELS = "agent:frontend, agent:maintainer, agent:runtime, agent:rust, agent:researcher, agent:multi, agent:human"
 
-# Non-empty makes `issues create` hold the presence half of the creation bar
-# in the project-management skill's SKILL.md, § Disposition → **Name what
-# reaches it**: it refuses a body with no `Reached by:` line, and a
-# `--review-born --priority 2` body with no `Symptom:` line. What those lines
-# say is the author's to judge. Creation is the chokepoint, since
-# `Tracked: <ID>` needs only an issue to exist. Empty = guard off.
-LINEAR_REQUIRE_REACH = "1"
-
 # Reviewer merge gate policy, read by orch's approval-wait --resolve-mode
 # through the review-gate skill's settings reader. "off" skips review
 # requests and waits. "enforce" lets GitHub decide: the PR's base-branch
@@ -34,10 +26,6 @@ LINEAR_REQUIRE_REACH = "1"
 # settings reader, makes mode resolution exit 2.
 REVIEW_GATE_MODE = "enforce"
 
-# Organization refresh app, environment and credential names.
-REVIEW_GATE_STANDARD_APP = "vanillagreen-fleet-lanes"
-REVIEW_GATE_STANDARD_ENVIRONMENT = "kendex"
-REVIEW_GATE_STANDARD_SECRETS = "FLEET_GH_APP_ID;FLEET_GH_APP_PRIVATE_KEY"
 # Required status contexts on main, ";"-separated, compared by the standard report.
 REVIEW_GATE_STANDARD_CONTEXTS = "CI"
 # Bypass actors the standard report admits, TYPE:ID:MODE ";"-separated: QUEUE
@@ -56,24 +44,6 @@ REVIEW_GATE_REFRESH_REVIEW = "overseer"
 REVIEW_GATE_REFRESH_BRANCH = "kendex/refresh"
 REVIEW_GATE_REFRESH_AUTHOR = "vanillagreen-fleet-lanes[bot]"
 
-# Total review-wait budget in seconds before the on-timeout policy applies;
-# an explicit max_wait argument always wins.
-PR_REVIEW_WAIT_SECS = "900"
-
-# Check-run or commit-status name a trusted review bot publishes on
-# analyzed heads; a
-# success counts as review-received. SECURITY: matched by NAME and anyone
-# can publish under any name — name only the trusted bot's check. Empty =
-# review objects only.
-PR_REVIEW_CHECK = ""
-
-# When the review signal never arrives: "block" reports a timeout;
-# "proceed" records a reviewer-down override and moves on, but only with
-# zero unresolved threads — a real comment is never bypassed. Comment-only
-# bots can go silent on a trivial head, so a silent round proceeds rather
-# than stalling the session.
-PR_REVIEW_ON_TIMEOUT = "proceed"
-
 # Command text the command-safety hook refuses before the shell runs, where
 # the command-safety bundle is installed: a systemd-run invocation capped by
 # MemoryMax= or MemoryHigh= with a K- or M-suffixed value. The danger is a cap
@@ -85,38 +55,7 @@ PR_REVIEW_ON_TIMEOUT = "proceed"
 # tmp/, still inside the slice.
 COMMAND_SAFETY_DENY_PATTERN = "(^|[^[:alnum:]_-])systemd-run[[:space:]][^;|&]*Memory(Max|High)=[0-9]+[KkMm]([^[:alnum:]]|$)"
 
-# Seconds ci-wait keeps polling before failing when no CI checks registered
-# yet, four polls at its 180 s default interval; raise for approval-gated CI
-# with slow dispatch.
-CI_WAIT_NO_CHECKS_GRACE = "600"
-
-# Max automated ci-fix rounds per PR before a human takes over.
-CI_FIX_MAX_CYCLES = "6"
-
-# Max internal re-review cycles per issue before the verdict pass; the
-# re-review re-entry raises rereview_cycles and refuses at this, so the number
-# set is the number of re-entries allowed.
-REVIEW_MAX_CYCLES = "1"
-
-# Max external review rounds on an open PR. At or past it a finding gets a
-# disposition and no fix push, except a defect the diff introduces or arms.
-REVIEW_MAX_EXTERNAL_ROUNDS = "4"
-
-# Total concurrent agent-session budget, counting the primary; "0" =
-# unlimited. Reviews run in waves when the reviewer set exceeds free slots.
-# On the Codex runtime, set the cap `spawn-adapter slots` reports.
-REVIEWER_SLOT_BUDGET = "0"
-
-# Post-PR choices: "auto-recommended" continues within each budget; "ask" prompts.
-ORCH_DECISION_MODE = "auto-recommended"
-
-# "ask" presents the merge decision; "auto" merges once every gate is green.
-# MERGE_READY = false never auto-merges.
-ORCH_MERGE_AUTONOMY = "auto"
-ORCH_LANE_OUTPUT = "quiet"
-
-# Preserve the current report clock and runtime quiet window.
-ORCH_OWNER_TIME_ZONE = "America/Los_Angeles"
+# The runtime quiet window.
 ORCH_REPORT_QUIET_HOURS = "21-8"
 
 # Path globs whose changes add the needs-ui-review QA signal.
@@ -124,10 +63,6 @@ QA_UI_PATHS = "src/ui/**"
 
 # Design rules used by dev rounds and the needs-ui-review pass.
 QA_UI_DESIGN_DOC = "docs/architecture/ui.md"
-
-# Seconds per brief-delivery verification pass on tmux handoff lanes.
-ORCH_TMUX_VERIFY_SECS = "15"
-ORCH_LANE_SSH_PROMPT_SECS = "60"
 
 # Max concurrent lanes the overseer keeps in flight.
 ORCH_OVERSEER_LANES = "8"
@@ -139,7 +74,6 @@ ORCH_OVERSEER_LANES = "8"
 # still names high effort.
 ORCH_OVERSEER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:standard:medium"
 ORCH_OVERSEER_HEADROOM_PCT = "5"
-ORCH_OVERSEER_WALL_MINUTES = "20"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 ORCH_LANE_MAX_PCT = "95"
 ORCH_LANE_CODEX_CREDIT_FLOOR = "0"
@@ -152,9 +86,6 @@ ORCH_LANE_CLOUD_REPOS = "2claude=vanillagreencom/vsys,3claude=vanillagreencom/vs
 
 # Execute the audit's accepted creations and cancellations without a question.
 PM_CREATE_AUTONOMY = "auto"
-
-# Opinions a review collects; 2+ unions distinct models on one diff.
-SECOND_OPINION_COUNT = "1"
 
 # Second-opinion order: Claude CLI first, then GPT through the Copilot seat
 # (pi-copilot-gpt, 1copilot), then Codex CLI as the fallback. The owner set
@@ -181,25 +112,12 @@ SECOND_OPINION_CODEX_MODEL = "gpt-6.1-sol"
 SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN 3codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=high --ephemeral"
 SECOND_OPINION_CODEX_ROOM_CMD = "env ORCH_LANE_HOST=local .agents/skills/orch/scripts/lanes pick --lane /home/method/.3codex --harness codex --model gpt-6.1-sol --binding-floor --max-pct 100"
 
-# Seconds to wait for the external CLI.
-SECOND_OPINION_TIMEOUT = "1080"
-
-# Home for review/audit records written without --output; a directory the
-# script CREATES is seeded with a "*" .gitignore (a pre-existing one is
-# left alone — ignore it yourself).
-SECOND_OPINION_ARTIFACT_DIR = "tmp/second-opinion"
-
 # Repo instruction files appended to the review prompt (repo-rule lens).
 # Empty disables.
 SECOND_OPINION_REVIEW_INSTRUCTIONS = "AGENTS.md .github/instructions/*.instructions.md .github/copilot-instructions.md"
 
 # ── Skill settings ───────────────────────────────────────────────────────
 # What the installed skills read for repo-specific names, paths and commands.
-
-# Commit identity for agent-authored work. Empty uses the ambient git identity.
-BOT_EMAIL = ""
-BOT_NAME = ""
-BOT_REMOTE_NAME = ""
 
 # Where the decider skill keeps architecture decision records.
 DECISIONS_DIR = "docs/decisions"
@@ -254,14 +172,6 @@ ORCH_SIZE_TEST_PATHS = "warden/*_test.py warden/agent_warden_testlib.py scripts/
 # DEV_VALIDATE_CMD.
 COMMIT_GUARDS_PRE_COMMIT_LOCAL = ""
 
-# The fragment scope of the changelog-entries lane. The two-segment glob
-# keeps changelog.d/README.md out — its bullets document the format and are
-# not entries. CHANGELOG.md is the lane's other scope,
-# COMMIT_GUARDS_CHANGELOG_RECORD, judged by a different rule: entries there
-# are the collator's, so only lines this commit ADDS under [Unreleased] are
-# refused and the released history no one may rewrite is never measured.
-COMMIT_GUARDS_CHANGELOG_PATHS = "changelog.d/*/*.md"
-
 # Paths whose change obliges a changelog entry, checked by the commit-msg
 # lane. These are the paths a release ships: the application, its build and
 # release scripts, the packaging recipes and the installer.
@@ -276,16 +186,9 @@ COMMIT_GUARDS_CHANGELOG_VERSION_PATHS = "package.json"
 # commit touches.
 COMMIT_GUARDS_MD_SCOPE = "all"
 
-GH_BOT_USERNAME = ""
-GH_VERIFY_CMD = ""
-
 # Branch names match Linear issue identifiers case-insensitively. GitHub
 # issues are deliberately absent because a PR's Closes line identifies them.
 GH_ISSUE_PATTERN = "vsy-[0-9]+"
-
-LINEAR_FORMAT = "safe"
-ORCH_STATE_DIR = "tmp"
-ORCH_USER_MODE = "ceo"
 
 # ── Worktrees ────────────────────────────────────────────────────────────
 # What a fresh issue worktree gets from this checkout: only paths git does
@@ -303,22 +206,3 @@ WORKTREE_MKDIRS = "tmp"
 # never in a linked worktree, whose install would write through the link.
 # .gitignore's `node_modules/` pattern covers the symlink.
 WORKTREE_SYMLINKS = ".env.local node_modules"
-
-# Nothing needs one: the CLAUDE.md shims kendex writes beside each AGENTS.md
-# are tracked files, so they arrive through git, and naming one here would
-# shadow tracked content.
-WORKTREE_RELATIVE_SYMLINKS = ""
-
-# Seconds a 1Password token resolution may take.
-KENDEX_GITHUB_OP_TIMEOUT = "10"
-
-# Seconds the `gh` auth preflight may take.
-KENDEX_GITHUB_AUTH_TIMEOUT = "10"
-
-# Seconds a single `pr-view` read may take.
-KENDEX_GITHUB_PR_VIEW_TIMEOUT = "30"
-
-# Path to the worktree CLI `open-terminal` drives. Empty resolves the
-# installed worktree skill's `scripts/worktree`; a value that is not
-# executable stops the launch with that path named.
-WORKTREE_CLI = ""
