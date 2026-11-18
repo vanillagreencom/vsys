@@ -10,12 +10,6 @@ metadata:
   bugs: "https://github.com/vanillagreencom/kendex/issues"
 ---
 
-<!-- kendex:project-instructions:start -->
-## Project Instructions
-
-- Keep plans, research reports, measurements and handoffs in tmp/ or on the owning tracker issue. Attach final artifacts there. Preserve evidence there before removing a tracked copy during a rewrite. Keep durable product and architecture docs in the repository. (DW12)
-<!-- kendex:project-instructions:end -->
-
 # Docs Writing
 
 A repository's internal design documentation holds what the code cannot show: the principle behind a design, the rule an agent could break without noticing, a decision with its reason, a convention that differs from a tool default, and a pointer to the canonical code. Everything else lives in the code, its comments, the tests and git history.

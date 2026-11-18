@@ -13,17 +13,14 @@ metadata:
 <!-- kendex:project-instructions:start -->
 ## Project Instructions
 
-- A worktree created as an orch lane follows the refresh-owner rule (ORCH-M03) in these instructions and respects the lane refresh restriction. A lane explicitly launched to refresh runs kendex refresh or kendex apply only with --lane-refresh, as its brief permits. An ordinary worktree follows its own project resolution and retains actionable drift repair details. Use the explicit lane record to distinguish them. (hook-session-drift-check-04)
-- The kendex-refresh Actions workflow and its rolling kendex/refresh pull request own kendex refresh outputs. A base-checkout refresh after merge reports generated changes and restores only outputs that workflow owns. Preserve unrelated tracked and untracked work. (ORCH-M03)
+- The kendex-refresh Actions workflow and rolling kendex/refresh pull request own vsys refresh outputs. Preserve unrelated work when receiving those outputs. (ORCH-M03)
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear. Read the live issue before changing its state. (ORCH-M09)
 - Use the estimate and post-merge observation policies in kendex.toml [skill-instructions].project-management. (ORCH-M22, ORCH-M23)
-- Route unattended lane questions through lane-mail. The master relays owner decision requests and critical notices to Slack and chat. Keep voice replies on their call, progress reports in open text media, and replies in the owner's message thread. (ORCH-D22)
+- Route unattended lane questions through lane-mail. Jarvis relays owner decision requests and critical notices to Slack and chat. Keep voice replies on their call, progress reports in open text media, and replies in the owner's message thread. (ORCH-D22)
 - Link each owner-summary item to the live tracker URL. Read issue identifiers from LINEAR_TEAM_PREFIX and GH_ISSUE_PATTERN. (ORCH-D25, ORCH-M11)
 - Complete internal review before opening a public or internal repository pull request. A private repository may open after its first validated implementation commit. Read live repository visibility before selecting the route. (ORCH-M01)
 - Apply the refresh identity and approval checks in kendex.toml [skill-instructions].review-gate. (ORCH-D26)
 - The vanillagreen-overseer GitHub App supplies fallback approval separately from lane credentials. Fleet supplies its private mode-600 token file outside lane roots and replaces it atomically before expiry. (ORCH-D27)
-- The fleet's Claude opus capacity is 1000000 on the configurations that measured it. Other providers and models need their own declared or measured capacity. (ORCH-M07)
-- The local fleet's shared Claude transcript store is HOME/.claude-shared/projects. Read relaunch evidence from the selected account and configured store. (ORCH-M17)
 - Keep .kendex-lock.json and .kendex-generated.json out of the micro change class. Keep the consumer queue paths in HARNESS_CI_QUEUE_PATHS. (ORCH-M06)
 - Report measured cycle time against these targets in seconds: render=300, trivial=300, micro=1200, small=1800, standard=5400. Review targets are micro=1, small=1, standard=2 rounds, with 600 seconds per round. A micro task targets about eight lane minutes and three overseer minutes. (ORCH-M12)
 - Request a process issue after the third qualifying miss of the same cycle phase. Include the miss evidence and phase. (ORCH-M13)
@@ -31,12 +28,12 @@ metadata:
 - Use Conventional Commit type syntax for commit subjects and pull-request titles. Keep the issue association. The installed commit gate decides accepted syntax. (ORCH-M26)
 - Every vsys lane launches and relaunches on claude-opus-5-5 at high effort or gpt-6.1-sol at high effort, and never copies a model from an older lane record. (VSYS-ORCH-01; owner 1791067953)
 - The vsys repository has no bot token, so a lane merges as the keyring user bmethod with --expected-head, and only on the exact head the overseer cleared. (VSYS-ORCH-02; standing fleet ruling 2026-10-08)
-- At every pushed head and before any arm, the overseer runs its second opinion through the repository roster in the owner's order: the claude entry (Claude CLI) first, then the pi-copilot-gpt entry (gpt-6.1-sol through Pi on 1copilot), then the codex entry as the fallback, on 3codex through SECOND_OPINION_CODEX_CMD in kendex.settings.toml, and never runs it on 1codex or 2codex. The roster's cross-model check skips an entry whose model is the overseer's own. (VSYS-ORCH-03; owner 1790876473, 1790910316, 1791349877, 1793492823, 1793558900.347579; master 1791179688, 1791469938; Jarvis 1794802002-752187-6298)
-- Never hold a refresh pull request: give it no requested-changes review and do not disable its auto-merge; a wrong render is a kendex finding sent to the master. (VSYS-ORCH-04; owner 1791397764)
+- At every pushed head and before any arm, the overseer runs its second opinion through the repository roster in the owner's order: the claude entry (Claude CLI) first, then the pi-copilot-gpt entry (gpt-6.1-sol through Pi on 1copilot), then the codex entry as the fallback, on 3codex through SECOND_OPINION_CODEX_CMD in kendex.settings.toml, and never runs it on 1codex or 2codex. The roster's cross-model check skips an entry whose model is the overseer's own. (VSYS-ORCH-03; owner 1790876473, 1790910316, 1791349877, 1793492823, 1793558900.347579; Jarvis 1791179688, 1791469938; Jarvis 1794802002-752187-6298)
+- Never hold a refresh pull request: give it no requested-changes review and do not disable its auto-merge; a wrong render is a kendex finding sent to Jarvis. (VSYS-ORCH-04; owner 1791397764)
 - A change to AGENTS.md or any SKILL.md merges only after the owner reviews its before-and-after. (VSYS-ORCH-05; owner 1791260972, 1791262352, 1791333915)
 - A release needs no owner answer. (VSYS-ORCH-06; owner 1790940306)
 - Work the VSY backlog by priority, with CI, performance, efficiency, scalability, maintainability and architecture before features; an empty queue is not Stop. (VSYS-ORCH-07; owner 1792036693, 1791744768; Jarvis 1792292633)
-- Never reboot the owner's machine or log the owner out. (VSYS-ORCH-08; master 2026-10-05)
+- Never reboot the owner's machine or log the owner out. (VSYS-ORCH-08; owner 2026-10-03)
 <!-- kendex:project-instructions:end -->
 
 # Orchestration
