@@ -191,9 +191,6 @@ harnesses = [
 
 [hooks.lane-mail-prompt]
 source = "kendex"
-harnesses = [
-    "copilot",
-]
 
 [hooks.lane-mail-start]
 source = "kendex"
