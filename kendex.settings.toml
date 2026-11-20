@@ -74,15 +74,15 @@ ORCH_OVERSEER_LANES = "8"
 # harness. Standard class at medium effort follows the owner's 2026-10-24
 # overseer policy; this override stands only while the kendex default
 # still names high effort.
-AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:standard:medium"
+AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:gpt-6.1-sol:medium"
 AGENT_RUNTIME_CONTROLLER_HEADROOM_PCT = "5"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 AGENT_RUNTIME_ACCOUNT_MAX_PCT = "95"
 AGENT_RUNTIME_CODEX_CREDIT_FLOOR = "0"
 # The account folders a launch may pick among, relative to the home folder:
-# the live Claude, Codex and Copilot logins; 1codex, 2codex and 7claude to
+# the live Claude, Codex and Copilot logins; 1codex, 2codex and 8claude to
 # 10claude are retired.
-AGENT_RUNTIME_ACCOUNT_DIRS = ".claude:.1claude:.2claude:.3claude:.4claude:.5claude:.6claude:.codex:.3codex:.1copilot"
+AGENT_RUNTIME_ACCOUNT_DIRS = ".claude:.1claude:.2claude:.3claude:.4claude:.5claude:.6claude:.7claude:.codex:.3codex:.1copilot"
 
 # Accounts whose cloud sessions can reach this repository: each pair records
 # an approved repository card. The operator adds a pair after approving the
