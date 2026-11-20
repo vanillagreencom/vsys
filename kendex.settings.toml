@@ -60,6 +60,12 @@ ORCH_REPORT_QUIET_HOURS = "21-8"
 # Keep the two-hour report cadence; the rebuilt orch defaults to 0.
 ORCH_REPORT_EVERY_MINUTES = "120"
 
+# Keep the CEO reader, the recommended post-PR course and automatic merge
+# once every gate is green; the rebuilt orch defaults to engineer, ask, ask.
+ORCH_USER_MODE = "ceo"
+ORCH_DECISION_MODE = "auto-recommended"
+ORCH_MERGE_AUTONOMY = "auto"
+
 # Path globs whose changes add the needs-ui-review QA signal.
 QA_UI_PATHS = "src/ui/**"
 
