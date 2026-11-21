@@ -81,9 +81,7 @@ ORCH_OVERSEER_LANES = "8"
 # overseer policy; this override stands only while the kendex default
 # still names high effort.
 AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:gpt-6.1-sol:medium"
-AGENT_RUNTIME_CONTROLLER_HEADROOM_PCT = "5"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
-AGENT_RUNTIME_ACCOUNT_MAX_PCT = "95"
 AGENT_RUNTIME_CODEX_CREDIT_FLOOR = "0"
 # The account folders a launch may pick among, relative to the home folder:
 # the live Claude, Codex and Copilot logins; 1codex, 2codex and 8claude to
@@ -121,8 +119,8 @@ SECOND_OPINION_PI_COPILOT_GPT_CMD = "pi -p --no-session --no-extensions --model 
 SECOND_OPINION_PI_COPILOT_GPT_INLINE_DIFF = "1"
 SECOND_OPINION_PI_COPILOT_GPT_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness pi --native-model github-copilot/gpt-6.1-sol --max-pct 100"
 SECOND_OPINION_CODEX_MODEL = "gpt-6.1-sol"
-SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN 3codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=high --ephemeral"
-SECOND_OPINION_CODEX_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --account /home/method/.3codex --harness codex --native-model gpt-6.1-sol --binding-floor --max-pct 100"
+SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=xhigh --ephemeral"
+SECOND_OPINION_CODEX_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness codex --native-model gpt-6.1-sol --binding-floor --max-pct 100"
 
 # Repo instruction files appended to the review prompt (repo-rule lens).
 # Empty disables.
