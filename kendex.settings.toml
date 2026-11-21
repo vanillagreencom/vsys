@@ -80,7 +80,7 @@ ORCH_OVERSEER_LANES = "8"
 # harness. Standard class at medium effort follows the owner's 2026-10-24
 # overseer policy; this override stands only while the kendex default
 # still names high effort.
-AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:gpt-6.1-sol:medium"
+AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opus-5.5:medium,codex:gpt-6.2-sol:medium"
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 AGENT_RUNTIME_CODEX_CREDIT_FLOOR = "0"
 # The account folders a launch may pick among, relative to the home folder:
