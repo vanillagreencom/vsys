@@ -118,9 +118,9 @@ SECOND_OPINION_PI_COPILOT_GPT_MODEL = "github-copilot/gpt-6.1-sol"
 SECOND_OPINION_PI_COPILOT_GPT_CMD = "pi -p --no-session --no-extensions --model github-copilot/gpt-6.1-sol --thinking high --tools read,grep,find,ls"
 SECOND_OPINION_PI_COPILOT_GPT_INLINE_DIFF = "1"
 SECOND_OPINION_PI_COPILOT_GPT_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness pi --native-model github-copilot/gpt-6.1-sol --max-pct 100"
-SECOND_OPINION_CODEX_MODEL = "gpt-6.1-sol"
-SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN codex exec --disable hooks -m gpt-6.1-sol -s read-only -c model_reasoning_effort=xhigh --ephemeral"
-SECOND_OPINION_CODEX_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness codex --native-model gpt-6.1-sol --binding-floor --max-pct 100"
+SECOND_OPINION_CODEX_MODEL = "gpt-6.2-sol"
+SECOND_OPINION_CODEX_CMD = "env -u GH_TOKEN codex exec --disable hooks -m gpt-6.2-sol -s read-only -c model_reasoning_effort=xhigh --ephemeral"
+SECOND_OPINION_CODEX_ROOM_CMD = ".agents/skills/agent-runtime/scripts/agent-runtime accounts pick --env --harness codex --native-model gpt-6.2-sol --binding-floor --max-pct 100"
 
 # Repo instruction files appended to the review prompt (repo-rule lens).
 # Empty disables.
