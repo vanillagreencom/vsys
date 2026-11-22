@@ -1,5 +1,6 @@
 [Unit]
 Description=Record host and user slice pressure
+ConditionFileIsExecutable=@WARDEN_DIR@/vsys-pressure-record
 
 [Service]
 Type=oneshot

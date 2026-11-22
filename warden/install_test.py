@@ -174,6 +174,7 @@ class WardenInstallTest(unittest.TestCase):
             self.assertNotIn("%h/.local/bin", service)
             service = (user_dir / "vsys-pressure-record.service").read_text(encoding="utf-8")
             self.assertIn(f"ExecStart={warden / 'vsys-pressure-record'}", service.splitlines())
+            self.assertIn(f"ConditionFileIsExecutable={warden / 'vsys-pressure-record'}", service.splitlines())
             self.assertEqual(data_target.read_bytes(), source_data)
             self.assertEqual(stat.S_IMODE(data_target.stat().st_mode), 0o644)
             self.assertEqual(local.read_text(encoding="utf-8"), "local\n")

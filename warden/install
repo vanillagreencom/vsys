@@ -16,8 +16,7 @@ from typing import Iterable, NamedTuple
 MARKER = "# vsys-warden: written by 'vsys warden install'; 'vsys warden uninstall' removes it"
 DATA_MARKER_PREFIX = "# vsys-warden-data: sha256="
 WARDEN_UNIT_NAMES = ("agent-warden.service", "agent-warden.timer", "agents.slice")
-PRESSURE_SERVICE = "vsys-pressure-record.service"
-UNIT_NAMES = (*WARDEN_UNIT_NAMES, PRESSURE_SERVICE, "vsys-pressure-record.timer")
+UNIT_NAMES = (*WARDEN_UNIT_NAMES, "vsys-pressure-record.service", "vsys-pressure-record.timer")
 TIMER_NAMES = tuple(name for name in UNIT_NAMES if name.endswith(".timer"))
 DATA_NAME = "agent-tools.json"
 CONTROLLERS = frozenset({"cpu", "memory", "pids"})
@@ -195,11 +194,14 @@ def has_symlink_dirs(paths: Iterable[Path], action: str) -> bool:
     return True
 
 
-def systemd_exec_path(path: Path) -> str:
+def systemd_path(path: Path) -> str:
     text = str(path)
     if any(ord(char) < 32 for char in text):
-        raise ValueError(f"ExecStart path contains a control character: {text!r}")
-    text = text.replace("%", "%%")
+        raise ValueError(f"systemd path contains a control character: {text!r}")
+    return text.replace("%", "%%")
+
+
+def systemd_exec_path(text: str) -> str:
     if re.search(r"[\s\"'\\]", text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return text
@@ -212,7 +214,12 @@ def render_unit(warden_dir: Path, name: str, data_hashes: Iterable[str]) -> str:
         exe = warden_dir / name.removesuffix(".service")
         if not exe.is_file() or not os.access(exe, os.X_OK):
             raise ValueError(f"{exe.name} is not executable: {exe}")
-        template = template.replace(f"@WARDEN_DIR@/{exe.name}", systemd_exec_path(exe))
+        slot = f"@WARDEN_DIR@/{exe.name}"
+        path = systemd_path(exe)
+        # Conditions take a literal path after expanding systemd specifiers.
+        condition = "ConditionFileIsExecutable="
+        template = template.replace(condition + slot, condition + path)
+        template = template.replace(slot, systemd_exec_path(path))
         if "@WARDEN_DIR@" in template:
             raise ValueError(f"{name} contains an unresolved @WARDEN_DIR@ placeholder")
     if name == "agent-warden.service":
@@ -411,26 +418,12 @@ def status(directory: Path, controllers_path: Path | None = None) -> int:
     return 0 if ok else 1
 
 
-def check_pressure_replacement(warden_dir: Path, directory: Path) -> int:
-    service = directory / PRESSURE_SERVICE
-    state = classify(service)
-    if has_unknown_units([UnitState(service, state)], "check-pressure-replacement"):
-        return 1
-    if state != "installed-by-vsys":
-        return 0
-    exe = warden_dir / PRESSURE_SERVICE.removesuffix(".service")
-    start = f"ExecStart={systemd_exec_path(exe)}"
-    # install.sh reserves exit 10 for a confirmed dependency on this payload.
-    return 10 if start in service.read_text(encoding="utf-8").splitlines() else 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vsys warden", description="Install and inspect the vsys agent warden user units.")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("install", help="install and enable the agent warden user timers")
     sub.add_parser("uninstall", help="disable and remove files written by this installer")
     sub.add_parser("status", help="report installed files, timer state and user-manager delegation")
-    sub.add_parser("check-pressure-replacement", help="check whether the installed recorder uses this payload")
     return parser
 
 
@@ -446,8 +439,6 @@ def main(argv: list[str] | None = None) -> int:
             return uninstall(directory)
         if args.command == "status":
             return status(directory)
-        if args.command == "check-pressure-replacement":
-            return check_pressure_replacement(warden_dir, directory)
     except (CommandFailure, OSError, ValueError) as error:
         print(f"vsys-warden: error={error}", file=sys.stderr)
         return 1

@@ -320,10 +320,8 @@ class InstallScript(unittest.TestCase):
         vsys = stage / "vsys"
         vsys.write_text(f"{shape} binary\n")
         vsys.chmod(0o755)
-        if shape in ("full", "pre-pressure"):
+        if shape == "full":
             for archive_path, (mode, source) in PAYLOAD.items():
-                if shape == "pre-pressure" and "vsys-pressure-record" in archive_path:
-                    continue
                 target = stage / archive_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / source, target)
@@ -397,7 +395,7 @@ class InstallScript(unittest.TestCase):
         # missing-command case cannot find flock through the host's PATH.
         for name in ("bash", "uname", "flock", "sha256sum", "cut", "mkdir", "mktemp",
                      "rm", "dirname", "install", "find", "cp", "chmod", "mv", "sed",
-                     "head", "tar", "gzip", "python3"):
+                     "head", "tar", "gzip"):
             if name in missing or (commands / name).exists():
                 continue
             found = shutil.which(name)
@@ -430,27 +428,7 @@ class InstallScript(unittest.TestCase):
         )
 
     def lib_root(self) -> Path:
-        return self.bin_dir.parent / "lib" / "vsys"
-
-    def warden_command(self, warden: Path, command: str) -> None:
-        commands = self.write_curl_stub()
-        systemctl = commands / "systemctl"
-        systemctl.write_text("#!/bin/sh\nexit 0\n")
-        systemctl.chmod(0o755)
-        result = subprocess.run(
-            [str(warden / "install"), command],
-            env={"HOME": str(self.root / "home"), "PATH": str(commands)},
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def prepare_downgrade(self, *, missing: tuple[str, ...] = ()) -> Path:
-        self.make_archive("full")
-        initial = self.run_install(missing=missing)
-        self.assertEqual(initial.returncode, 0, initial.stderr)
-        self.make_archive("pre-pressure")
-        return self.lib_root() / "warden"
+        return self.root / "home" / ".local" / "lib" / "vsys"
 
     def assert_full_warden_tree_installed(self) -> None:
         root = self.lib_root()
@@ -494,60 +472,6 @@ class InstallScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
         self.assert_full_warden_tree_installed()
-
-    def test_pressure_units_require_teardown_before_older_archive_replaces_payload(self) -> None:
-        self.bin_dir = self.root / "quoted % prefix" / "bin"
-        warden = self.prepare_downgrade()
-        recorder = warden / "vsys-pressure-record"
-        self.warden_command(warden, "install")
-        unit_dir = self.root / "home" / ".config" / "systemd" / "user"
-        units = [unit_dir / f"vsys-pressure-record.{kind}" for kind in ("service", "timer")]
-        self.assertTrue(all(unit.is_file() for unit in units))
-
-        refused = self.run_install()
-        self.assertEqual(self.refusal(refused), "vsys install: archive=pressure-recorder-removal")
-        self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
-        self.assertTrue(recorder.is_file())
-        self.assertTrue(all(unit.is_file() for unit in units))
-
-        self.warden_command(warden, "uninstall")
-        replaced = self.run_install()
-        self.assertEqual(replaced.returncode, 0, replaced.stderr)
-        self.assertEqual((self.bin_dir / "vsys").read_text(), "pre-pressure binary\n")
-        self.assertFalse(recorder.exists())
-        self.assertFalse(any(unit.exists() for unit in units))
-
-    def test_downgrade_keeps_recorder_from_another_payload(self) -> None:
-        self.prepare_downgrade()
-        other = self.root / "other warden"
-        shutil.copytree(self.lib_root(), other)
-        self.warden_command(other / "warden", "install")
-        service = self.root / "home" / ".config" / "systemd" / "user" / "vsys-pressure-record.service"
-        installed = service.read_bytes()
-
-        replaced = self.run_install()
-        self.assertEqual(replaced.returncode, 0, replaced.stderr)
-        self.assertEqual((self.bin_dir / "vsys").read_text(), "pre-pressure binary\n")
-        self.assertEqual(service.read_bytes(), installed)
-        self.assertTrue((other / "warden" / "vsys-pressure-record").is_file())
-
-    def test_downgrade_without_python_or_recorder_service(self) -> None:
-        self.prepare_downgrade(missing=("python3",))
-
-        replaced = self.run_install(missing=("python3",))
-        self.assertEqual(replaced.returncode, 0, replaced.stderr)
-        self.assertEqual((self.bin_dir / "vsys").read_text(), "pre-pressure binary\n")
-
-    def test_downgrade_reports_recorder_probe_failure(self) -> None:
-        warden = self.prepare_downgrade()
-        self.warden_command(warden, "install")
-        service = self.root / "home" / ".config" / "systemd" / "user" / "vsys-pressure-record.service"
-        service.write_bytes(service.read_bytes() + b"\xff")
-
-        refused = self.run_install()
-        self.assertEqual(self.refusal(refused), "vsys install: archive=pressure-recorder-probe-failed status=1")
-        self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
-        self.assertTrue((warden / "vsys-pressure-record").exists())
 
     def test_missing_flock_refuses_before_changing_files(self) -> None:
         self.make_archive("full")
