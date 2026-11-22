@@ -16,8 +16,8 @@ from typing import Iterable, NamedTuple
 MARKER = "# vsys-warden: written by 'vsys warden install'; 'vsys warden uninstall' removes it"
 DATA_MARKER_PREFIX = "# vsys-warden-data: sha256="
 WARDEN_UNIT_NAMES = ("agent-warden.service", "agent-warden.timer", "agents.slice")
-PRESSURE_UNIT_NAMES = ("vsys-pressure-record.service", "vsys-pressure-record.timer")
-UNIT_NAMES = (*WARDEN_UNIT_NAMES, *PRESSURE_UNIT_NAMES)
+PRESSURE_SERVICE = "vsys-pressure-record.service"
+UNIT_NAMES = (*WARDEN_UNIT_NAMES, PRESSURE_SERVICE, "vsys-pressure-record.timer")
 TIMER_NAMES = tuple(name for name in UNIT_NAMES if name.endswith(".timer"))
 DATA_NAME = "agent-tools.json"
 CONTROLLERS = frozenset({"cpu", "memory", "pids"})
@@ -411,12 +411,17 @@ def status(directory: Path, controllers_path: Path | None = None) -> int:
     return 0 if ok else 1
 
 
-def check_pressure_uninstalled(directory: Path) -> int:
-    # install.sh calls this before replacing a payload that owns the recorder.
-    states = unit_states(directory, PRESSURE_UNIT_NAMES)
-    if has_unknown_units(states, "check-pressure-uninstalled"):
+def check_pressure_replacement(warden_dir: Path, directory: Path) -> int:
+    service = directory / PRESSURE_SERVICE
+    state = classify(service)
+    if has_unknown_units([UnitState(service, state)], "check-pressure-replacement"):
         return 1
-    return int(any(state.state == "installed-by-vsys" for state in states))
+    if state != "installed-by-vsys":
+        return 0
+    exe = warden_dir / PRESSURE_SERVICE.removesuffix(".service")
+    start = f"ExecStart={systemd_exec_path(exe)}"
+    # install.sh reserves exit 10 for a confirmed dependency on this payload.
+    return 10 if start in service.read_text(encoding="utf-8").splitlines() else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -425,7 +430,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("install", help="install and enable the agent warden user timers")
     sub.add_parser("uninstall", help="disable and remove files written by this installer")
     sub.add_parser("status", help="report installed files, timer state and user-manager delegation")
-    sub.add_parser("check-pressure-uninstalled", help="check that the recorder units can be dropped from the payload")
+    sub.add_parser("check-pressure-replacement", help="check whether the installed recorder uses this payload")
     return parser
 
 
@@ -441,8 +446,8 @@ def main(argv: list[str] | None = None) -> int:
             return uninstall(directory)
         if args.command == "status":
             return status(directory)
-        if args.command == "check-pressure-uninstalled":
-            return check_pressure_uninstalled(directory)
+        if args.command == "check-pressure-replacement":
+            return check_pressure_replacement(warden_dir, directory)
     except (CommandFailure, OSError, ValueError) as error:
         print(f"vsys-warden: error={error}", file=sys.stderr)
         return 1

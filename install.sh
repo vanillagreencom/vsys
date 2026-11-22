@@ -189,18 +189,45 @@ rollback_lib_tree() {
 	fi
 }
 
+check_pressure_replacement() {
+	local current_warden="$WARDEN_LIB_ROOT/warden/install"
+	if ! command -v python3 >/dev/null 2>&1; then
+		local service="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/vsys-pressure-record.service"
+		[[ $service = /* ]] || service="$PWD/$service"
+		local ancestor=$service
+		while [[ ! -e $ancestor && ! -L $ancestor ]]; do
+			ancestor=${ancestor%/*}
+			ancestor=${ancestor:-/}
+		done
+		if [[ $ancestor == "$service" ]]; then
+			die "archive=pressure-recorder-probe-failed
+Python 3 is needed to inspect ${service} before replacing the recorder."
+		fi
+		[[ -d $ancestor && -x $ancestor ]] || die "archive=pressure-recorder-probe-failed
+Could not traverse ${ancestor} to check for ${service}."
+		return 0
+	fi
+
+	local result=0
+	"$current_warden" check-pressure-replacement || result=$?
+	case "$result" in
+	0) ;;
+	10)
+		local uninstall
+		printf -v uninstall '%q uninstall' "$current_warden"
+		die "archive=pressure-recorder-removal
+Run the current warden uninstaller before installing ${VERSION}:
+  ${uninstall}" ;;
+	*) die "archive=pressure-recorder-probe-failed status=${result}
+Could not inspect the installed pressure service using ${current_warden}." ;;
+	esac
+}
+
 commit_lib_tree() {
 	[ "$INSTALL_WARDEN" -eq 1 ] || return 0
 	if [ -f "$WARDEN_LIB_ROOT/warden/vsys-pressure-record" ] &&
 		[ ! -x "$WARDEN_NEW_ROOT/warden/vsys-pressure-record" ]; then
-		local current_warden="$WARDEN_LIB_ROOT/warden/install"
-		if ! "$current_warden" check-pressure-uninstalled; then
-			local uninstall
-			printf -v uninstall '%q uninstall' "$current_warden"
-			die "archive=pressure-recorder-removal
-Run the current warden uninstaller before installing ${VERSION}:
-  ${uninstall}"
-		fi
+		check_pressure_replacement
 	fi
 	if [ -e "$WARDEN_LIB_ROOT" ]; then
 		mv -T -- "$WARDEN_LIB_ROOT" "$WARDEN_OLD_ROOT" ||
