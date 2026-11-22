@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 REAL_WARDEN = ROOT / "warden"
 INSTALL = REAL_WARDEN / "install"
 SCRATCH_ROOT = ROOT / "tmp" / "warden-install-tests"
+ACTIVE_TIMERS = ["agent-warden.timer", "vsys-pressure-record.timer"]
+ACTIVE_SERVICES = ["agent-warden.service", "vsys-pressure-record.service"]
 
 
 def scratch():
@@ -56,9 +58,9 @@ class WardenInstallTest(unittest.TestCase):
         warden = package / "warden"
         (warden / "systemd").mkdir(parents=True)
         shutil.copy2(INSTALL, warden / "install")
-        shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.service", warden / "systemd" / "agent-warden.service")
-        shutil.copy2(REAL_WARDEN / "systemd" / "agent-warden.timer", warden / "systemd" / "agent-warden.timer")
-        shutil.copy2(REAL_WARDEN / "systemd" / "agents.slice", warden / "systemd" / "agents.slice")
+        for unit in (REAL_WARDEN / "systemd").iterdir():
+            shutil.copy2(unit, warden / "systemd" / unit.name)
+        shutil.copy2(REAL_WARDEN / "vsys-pressure-record", warden)
         agent = warden / "agent-warden"
         agent.write_text("#!/bin/sh\n", encoding="utf-8")
         agent.chmod(0o755)
@@ -87,25 +89,25 @@ class WardenInstallTest(unittest.TestCase):
             "with log.open('a', encoding='utf-8') as handle:\n"
             "    handle.write(json.dumps(args) + '\\n')\n"
             "wants = user_dir / 'timers.target.wants'\n"
-            "link = wants / 'agent-warden.timer'\n"
-            "timer = user_dir / 'agent-warden.timer'\n"
             "if args == ['--user', 'daemon-reload']:\n"
             "    raise SystemExit(0)\n"
-            "if args == ['--user', 'enable', '--now', 'agent-warden.timer']:\n"
+            "if args[:3] == ['--user', 'enable', '--now']:\n"
             "    wants.mkdir(parents=True, exist_ok=True)\n"
-            "    if link.exists() or link.is_symlink():\n"
-            "        link.unlink()\n"
-            "    link.symlink_to(timer)\n"
+            "    for name in args[3:]:\n"
+            "        link = wants / name\n"
+            "        link.unlink(missing_ok=True)\n"
+            "        link.symlink_to(user_dir / name)\n"
             "    raise SystemExit(0)\n"
-            "if args == ['--user', 'disable', '--now', 'agent-warden.timer']:\n"
-            "    if link.exists() or link.is_symlink():\n"
-            "        link.unlink()\n"
+            "if args[:3] == ['--user', 'disable', '--now']:\n"
+            "    for name in args[3:]:\n"
+            "        (wants / name).unlink(missing_ok=True)\n"
             "    raise SystemExit(0)\n"
-            "if args == ['--user', 'stop', 'agent-warden.service']:\n"
+            "if args[:2] == ['--user', 'stop']:\n"
             "    raise SystemExit(0)\n"
             "if args == ['--user', 'is-enabled', 'agent-warden.timer']:\n"
-            "    print('enabled' if link.is_symlink() else 'disabled')\n"
-            "    raise SystemExit(0 if link.is_symlink() else 1)\n"
+            "    enabled = (wants / args[2]).is_symlink()\n"
+            "    print('enabled' if enabled else 'disabled')\n"
+            "    raise SystemExit(0 if enabled else 1)\n"
             "if args == ['--user', 'is-active', 'agent-warden.timer']:\n"
             "    value = os.environ.get('STUB_ACTIVE', 'active')\n"
             "    print(value)\n"
@@ -151,7 +153,7 @@ class WardenInstallTest(unittest.TestCase):
             code = installer.main(argv)
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def test_install_writes_marked_units_data_and_enables_timer(self):
+    def test_install_writes_marked_units_data_and_enables_timers(self):
         with scratch() as tmp:
             installer, warden, source_data, env, user_dir, data_target, log = self.fixture(Path(tmp))
             local = Path(env["HOME"]) / ".config" / "vsys" / "agent-tools.json"
@@ -161,7 +163,7 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual((code, stderr), (0, ""))
             self.assertIn("vsys-warden: installed", stdout)
             source_hash = hashlib.sha256(source_data).hexdigest()
-            for name in installer.UNIT_NAMES:
+            for name in [*ACTIVE_SERVICES, *ACTIVE_TIMERS, "agents.slice"]:
                 path = user_dir / name
                 text = path.read_text(encoding="utf-8")
                 self.assertEqual(text.splitlines()[0], installer.MARKER)
@@ -170,6 +172,8 @@ class WardenInstallTest(unittest.TestCase):
             self.assertEqual(service.splitlines()[1], installer.DATA_MARKER_PREFIX + source_hash)
             self.assertIn(f"ExecStart={warden / 'agent-warden'} --correct", service)
             self.assertNotIn("%h/.local/bin", service)
+            service = (user_dir / "vsys-pressure-record.service").read_text(encoding="utf-8")
+            self.assertIn(f"ExecStart={warden / 'vsys-pressure-record'}", service.splitlines())
             self.assertEqual(data_target.read_bytes(), source_data)
             self.assertEqual(stat.S_IMODE(data_target.stat().st_mode), 0o644)
             self.assertEqual(local.read_text(encoding="utf-8"), "local\n")
@@ -177,10 +181,11 @@ class WardenInstallTest(unittest.TestCase):
                 self.calls(log),
                 [
                     ["--user", "daemon-reload"],
-                    ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "enable", "--now", *ACTIVE_TIMERS],
                 ],
             )
-            self.assertTrue((user_dir / "timers.target.wants" / "agent-warden.timer").is_symlink())
+            for timer in ACTIVE_TIMERS:
+                self.assertTrue((user_dir / "timers.target.wants" / timer).is_symlink())
 
     def test_install_refuses_missing_agent_tools_before_writing(self):
         with scratch() as tmp:
@@ -355,7 +360,7 @@ class WardenInstallTest(unittest.TestCase):
                 self.calls(log),
                 [
                     ["--user", "daemon-reload"],
-                    ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "enable", "--now", *ACTIVE_TIMERS],
                 ],
             )
 
@@ -400,11 +405,11 @@ class WardenInstallTest(unittest.TestCase):
                 self.calls(log),
                 [
                     ["--user", "daemon-reload"],
-                    ["--user", "enable", "--now", "agent-warden.timer"],
+                    ["--user", "enable", "--now", *ACTIVE_TIMERS],
                     ["--user", "daemon-reload"],
-                    ["--user", "enable", "--now", "agent-warden.timer"],
-                    ["--user", "disable", "--now", "agent-warden.timer"],
-                    ["--user", "stop", "agent-warden.service"],
+                    ["--user", "enable", "--now", *ACTIVE_TIMERS],
+                    ["--user", "disable", "--now", *ACTIVE_TIMERS],
+                    ["--user", "stop", *ACTIVE_SERVICES],
                     ["--user", "daemon-reload"],
                 ],
             )
@@ -467,9 +472,9 @@ class WardenInstallTest(unittest.TestCase):
                 self.calls(log),
                 [
                     ["--user", "daemon-reload"],
-                    ["--user", "enable", "--now", "agent-warden.timer"],
-                    ["--user", "disable", "--now", "agent-warden.timer"],
-                    ["--user", "stop", "agent-warden.service"],
+                    ["--user", "enable", "--now", *ACTIVE_TIMERS],
+                    ["--user", "disable", "--now", *ACTIVE_TIMERS],
+                    ["--user", "stop", *ACTIVE_SERVICES],
                     ["--user", "daemon-reload"],
                 ],
             )
@@ -511,8 +516,9 @@ class WardenInstallTest(unittest.TestCase):
                 self.calls(log),
                 [
                     ["--user", "daemon-reload"],
-                    ["--user", "enable", "--now", "agent-warden.timer"],
-                    ["--user", "stop", "agent-warden.service"],
+                    ["--user", "enable", "--now", *ACTIVE_TIMERS],
+                    ["--user", "disable", "--now", "vsys-pressure-record.timer"],
+                    ["--user", "stop", *ACTIVE_SERVICES],
                     ["--user", "daemon-reload"],
                 ],
             )
@@ -540,6 +546,9 @@ class WardenInstallTest(unittest.TestCase):
             installer, _, _, env, user_dir, _, _ = self.fixture(base)
             code, _, stderr = self.run_main(installer, ["install"], env)
             self.assertEqual((code, stderr), (0, ""))
+            # An installation made before pressure recording still reports sweep health.
+            (user_dir / "vsys-pressure-record.service").unlink()
+            (user_dir / "vsys-pressure-record.timer").unlink()
             full = base / "controllers-full"
             full.write_text("cpu io memory pids\n", encoding="utf-8")
             missing = base / "controllers-missing"
