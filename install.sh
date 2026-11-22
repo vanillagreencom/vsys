@@ -191,6 +191,17 @@ rollback_lib_tree() {
 
 commit_lib_tree() {
 	[ "$INSTALL_WARDEN" -eq 1 ] || return 0
+	if [ -f "$WARDEN_LIB_ROOT/warden/vsys-pressure-record" ] &&
+		[ ! -x "$WARDEN_NEW_ROOT/warden/vsys-pressure-record" ]; then
+		local current_warden="$WARDEN_LIB_ROOT/warden/install"
+		if ! "$current_warden" check-pressure-uninstalled; then
+			local uninstall
+			printf -v uninstall '%q uninstall' "$current_warden"
+			die "archive=pressure-recorder-removal
+Run the current warden uninstaller before installing ${VERSION}:
+  ${uninstall}"
+		fi
+	fi
 	if [ -e "$WARDEN_LIB_ROOT" ]; then
 		mv -T -- "$WARDEN_LIB_ROOT" "$WARDEN_OLD_ROOT" ||
 			die "lib=${WARDEN_LIB_ROOT} move-aside-failed

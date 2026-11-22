@@ -320,8 +320,10 @@ class InstallScript(unittest.TestCase):
         vsys = stage / "vsys"
         vsys.write_text(f"{shape} binary\n")
         vsys.chmod(0o755)
-        if shape == "full":
+        if shape in ("full", "pre-pressure"):
             for archive_path, (mode, source) in PAYLOAD.items():
+                if shape == "pre-pressure" and "vsys-pressure-record" in archive_path:
+                    continue
                 target = stage / archive_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(ROOT / source, target)
@@ -395,7 +397,7 @@ class InstallScript(unittest.TestCase):
         # missing-command case cannot find flock through the host's PATH.
         for name in ("bash", "uname", "flock", "sha256sum", "cut", "mkdir", "mktemp",
                      "rm", "dirname", "install", "find", "cp", "chmod", "mv", "sed",
-                     "head", "tar", "gzip"):
+                     "head", "tar", "gzip", "python3"):
             if name in missing or (commands / name).exists():
                 continue
             found = shutil.which(name)
@@ -472,6 +474,46 @@ class InstallScript(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
         self.assert_full_warden_tree_installed()
+
+    def test_pressure_units_require_teardown_before_older_archive_replaces_payload(self) -> None:
+        self.make_archive("full")
+        initial = self.run_install()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        warden = self.lib_root() / "warden"
+        recorder = warden / "vsys-pressure-record"
+        home = self.root / "home"
+        commands = self.write_curl_stub()
+        systemctl = commands / "systemctl"
+        systemctl.write_text("#!/bin/sh\nexit 0\n")
+        systemctl.chmod(0o755)
+
+        def warden_command(command: str) -> None:
+            result = subprocess.run(
+                [str(warden / "install"), command],
+                env={"HOME": str(home), "PATH": str(commands)},
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+        warden_command("install")
+        unit_dir = home / ".config" / "systemd" / "user"
+        units = [unit_dir / f"vsys-pressure-record.{kind}" for kind in ("service", "timer")]
+        self.assertTrue(all(unit.is_file() for unit in units))
+        self.make_archive("pre-pressure")
+
+        refused = self.run_install()
+        self.assertEqual(self.refusal(refused), "vsys install: archive=pressure-recorder-removal")
+        self.assertEqual((self.bin_dir / "vsys").read_text(), "full binary\n")
+        self.assertTrue(recorder.is_file())
+        self.assertTrue(all(unit.is_file() for unit in units))
+
+        warden_command("uninstall")
+        replaced = self.run_install()
+        self.assertEqual(replaced.returncode, 0, replaced.stderr)
+        self.assertEqual((self.bin_dir / "vsys").read_text(), "pre-pressure binary\n")
+        self.assertFalse(recorder.exists())
+        self.assertFalse(any(unit.exists() for unit in units))
 
     def test_missing_flock_refuses_before_changing_files(self) -> None:
         self.make_archive("full")

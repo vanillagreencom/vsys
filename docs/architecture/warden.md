@@ -55,6 +55,8 @@ The [pressure timer](../../warden/systemd/vsys-pressure-record.timer) samples in
 
 The service keeps owner-only hourly files under `${XDG_STATE_HOME:-$HOME/.local/state}/vsys-pressure/`. The first sample of each UTC hour prunes files whose last sample is at least three days old. An hourly file can also hold earlier samples from that same hour. Uninstall stops the recorder and preserves the saved records.
 
+Before an archive install replaces the warden payload with a release that lacks the recorder, use the current warden's uninstall command to stop and remove its marked units. The archive installer checks this before replacing the files and prints the command when teardown is required.
+
 To read a minute, select it from its UTC hourly file and expand the tab-separated fields. Each sample starts with its UTC timestamp.
 
 ```sh

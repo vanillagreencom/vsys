@@ -29,7 +29,7 @@ record_pressure() {
     printf -v stamp '%(%FT%TZ)T' -1
     record="${STATE_DIRECTORY:?}/${stamp:0:13}.log"
     if [[ ! -e $record ]]; then
-        find "$STATE_DIRECTORY" -maxdepth 1 -type f -name '????-??-??T??.log' -mmin +4319 -delete
+        find "$STATE_DIRECTORY" -maxdepth 1 -type f -name '????-??-??T??.log' -mmin +4320 -delete
     fi
 
     sample=$stamp
