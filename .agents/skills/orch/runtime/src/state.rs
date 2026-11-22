@@ -55,6 +55,13 @@ pub fn item_path(dir: &Path, item: &str) -> PathBuf {
     item_dir(dir, item).join(format!("workflow-state-{item}.json"))
 }
 
+/// The item record's stamp a confined lane's `state remove` writes, an
+/// ISO-8601 UTC time, where an unconfined call removes the record: its
+/// grants hold the item's own folder, so it can mark the close-out's end
+/// but not run it. The close reads a stamp of the lane's current attempt as
+/// it reads a removed record.
+pub const CLOSED_OUT_AT: &str = "closed_out_at";
+
 /// The state directory a state file of [`item_path`]'s stands in, its
 /// inverse; `None` for a path outside that layout.
 pub fn dir_of(path: &Path) -> Option<&Path> {
@@ -728,6 +735,39 @@ impl Lane {
         self.host.as_deref().is_some_and(|h| !h.is_empty())
             && self.kind.as_deref() != Some(crate::ops::CLOUD_KIND)
     }
+
+    /// Whether the lane's last pause is a park: its sandbox was stopped with
+    /// its disk kept, and no launch has brought it back for certain since.
+    pub fn parked_last(&self) -> bool {
+        self.extra
+            .get("pauses")
+            .and_then(Value::as_array)
+            .and_then(|pauses| pauses.last())
+            .and_then(|pause| pause.get("cause"))
+            .and_then(Value::as_str)
+            == Some("parked")
+    }
+
+    /// Whether the lane is a relaunch from its last park that failed
+    /// (`stopped`) and names no sandbox standing ([`SANDBOX`]): its provider
+    /// answered no start or create, so its sandbox is still stopped and no
+    /// session has run there since the park read its mailbox. A relaunch
+    /// still `preparing` is not one: its sandbox may have come back.
+    pub fn park_unresumed(&self) -> bool {
+        self.status == LaneStatus::Stopped
+            && self.parked_last()
+            && self.extra.get(SANDBOX).and_then(Value::as_str) != Some(STANDING)
+    }
+
+    /// Whether the lane's box is in a sandbox a park stopped, holding
+    /// nothing the park did not read: a parked record, one that owes a park,
+    /// or a failed relaunch from a park ([`Self::park_unresumed`]). Such a
+    /// sandbox answers no read.
+    pub fn mail_parked(&self) -> bool {
+        self.status == LaneStatus::Parked
+            || self.extra.contains_key(PARK_OWED)
+            || self.park_unresumed()
+    }
 }
 
 /// What the tracker judged the lane's item: shipped, or ended any other
@@ -772,8 +812,9 @@ pub enum CloseGround {
         park: Option<crate::ops::OwedPark>,
     },
     /// The close judged the lane ended while its item stays open: its merge
-    /// cycle stands and its work is over (its worktree gone, or a local
-    /// lane's item closed out), or its host kind declares no
+    /// cycle stands and its work is over (its worktree gone, or its item
+    /// closed out: the record removed, or, for a confined lane, stamped
+    /// `closed_out_at` at its current attempt), or its host kind declares no
     /// stop this machine can make (a cloud session). The lane ends done
     /// whatever its harness reads, the item's files kept. `source` names the
     /// reading; [`HOST_ABSENT`] is the one that ends an item its tracker

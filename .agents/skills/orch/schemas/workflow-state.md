@@ -87,6 +87,7 @@ The Owner column names the writer. An `op` request is `orch-runtime op --item [I
 | `handoff` | object | `record-handoff`, `resume-handoff` | [§ Handoff](#handoff). |
 | `model_checks`, `lane_session`, `model_reset` | object | `state model-check`, the turn end | [§ Model checks](#model-checks). |
 | `finding_occurrences` | object | `state init`, `state findings record`, `dev-return check` | [§ Finding occurrences](#finding-occurrences). |
+| `closed_out_at` | string | `state remove` in a confined lane | The UTC time the lane's close-out ran, [§ Item close-out](#item-close-out). |
 
 ### Stages
 
@@ -274,16 +275,16 @@ The duty archives each unit before it goes, into `ORCH_ARCHIVE_ROOT/[REPO]/overs
 `orch-runtime state remove --item ITEM [--archive PATH]...` closes an ended item out of the state directory. It removes:
 
 - every entry of the item's folder `items/[ITEM]/` but the record's lock file and mutex;
-- every other direct entry of the state directory named for the item;
+- every other direct file of the state directory named for the item, and each direct folder named `[ITEM].[KIND]`;
 - every file under `handoffs/` named for it.
 
-The item's lane mailbox, the fleet record and the watch's records stay. A lane's round artifacts live under its worktree's `tmp/` and leave with the worktree.
+The item's lane mailbox, the fleet record and the watch's records stay. So does a caller's own entry whose name holds the key: a file that begins with `[ITEM]-` or `[ITEM]_`, and any other folder, such as `[ITEM]-final/` or `final-[ITEM]/`. A lane's round artifacts live under its worktree's `tmp/` and leave with the worktree.
 
 Before it removes anything, `remove` writes one archive at `ORCH_ARCHIVE_ROOT/[REPO]/oversee/close-[ITEM]-[EPOCH]-[SUFFIX].tgz`. The archive holds every path `remove` removes, the lane mailbox, and each `--archive PATH` that stands, which the caller removes after. A relative `--archive` path is the caller's directory's. The archive's `records.json` lists each packed path as a member, with role `state` for the item's record and `along` for the rest. With `ORCH_ARCHIVE_ROOT` empty, `remove` removes with no copy. It holds the item record's lock across the archive and the removals.
 
 The reply's `result` carries `removed`, the paths that left; `kept`, the archive or null; and `pruned`, the retention pass it ran where no fleet record stands, else null. A configured root a removal would take along, or an archive `remove` cannot build, refuses the call, and nothing is removed.
 
-A lane runs `remove` at [merge-pr.md § 5](../workflows/merge-pr.md#5-execute-the-merge) step 6. A confined lane's call answers `state-remove: left cause=confined owner=overseer`, exits 0 and changes nothing: the overseer's terminal close removes the item's files. The runtime's close runs the same close-out at a close that ends the item: a terminal tracker verdict, or a terminal close of a sandbox its provider does not list. A park, a `keep-sandbox` close, or a close of an item still open keeps the files a relaunch resumes into.
+A lane runs `remove` at [merge-pr.md § 5](../workflows/merge-pr.md#5-execute-the-merge) step 6. A confined lane's call sets the item record's `closed_out_at` to the current UTC time (`YYYY-MM-DDThh:mm:ssZ`), the one close-out write its grants hold, then answers `state-remove: left cause=confined owner=overseer` and exits 0. It archives and removes nothing. The overseer's close reads that stamp as this step's end ([lane-reach.md § How a running lane is judged](../references/lane-reach.md#how-a-running-lane-is-judged)), and its terminal close removes the item's files. A stamp that cannot be written refuses, as any record write does. The runtime's close runs the same close-out at a close that ends the item: a terminal tracker verdict, or a terminal close of a sandbox its provider does not list. A park, a `keep-sandbox` close, or a close of an item still open keeps the files a relaunch resumes into.
 
 ## CLI
 

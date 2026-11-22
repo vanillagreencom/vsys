@@ -216,7 +216,7 @@ Split the remaining `.children` rows by `state_type`. `backlog` and `unstarted` 
 
 An active child pauses the merge. Ask the user, per child, whether this PR landed its work. Yes closes it Done. No appends it to `[SAFE_IDS]`. Abort stops § 4.1.
 
-`[SAFE_IDS]` still empty → § 5. Otherwise detach each safe child, so the merge does not cascade it to Done. A detached child keeps its project and takes no new parent: the project-management skill's SKILL.md § Disposition groups related items by project or label. Each detach, one pair per safe id:
+`[SAFE_IDS]` still empty → § 5. Otherwise detach each safe child, so the merge does not cascade it to Done. A detached child keeps its project and takes no new parent: the project-management skill's references/filing.md groups related items by project or label, never by parent. Each detach, one pair per safe id:
 
 ```bash
 .agents/skills/linear/scripts/linear.sh issues update [SAFE_ID] --remove-parent && .agents/skills/linear/scripts/linear.sh issues add-relation [SAFE_ID] --related [ISSUE]
@@ -384,7 +384,7 @@ Some harnesses reset the working directory on every shell call. Use `-C` and abs
 
    The lane owns completion after merge. Where its sandbox is gone, or its item reads Done with the lane ended, the runtime's close completes the item from the PR body's `## Done-when evidence` section. The overseer owns the remaining post-merge checks on the same item.
 
-   Before completion, give every development remainder from a cut its own issue. Prove every branch-provable Done-when box before merge. Keep post-merge boxes on `[ISSUE]` in the form the project-management skill's `SKILL.md` § Disposition states. Each box names its reading, its location, why the branch cannot prove it, and a deadline in that section's form.
+   Before completion, give every development remainder from a cut its own issue. Prove every branch-provable Done-when box before merge. Keep post-merge boxes on `[ISSUE]` in the form the project-management skill's `references/filing.md` § Done when states. Each box names its reading, its location, why the branch cannot prove it, and a deadline in that section's form.
 
    Linear's GitHub integration can set `[ISSUE]` Done when the PR merges. Read the item live and complete it with the command below, even where the integration already set Done. The merge lane never writes In Review or In Progress. Box acceptance follows [SKILL.md § The Cycle](../SKILL.md#the-cycle), The overseer reads results. For a failed post-merge check, follow [oversee-events.md](../references/oversee-events.md) § Verification.
 
@@ -504,7 +504,13 @@ Some harnesses reset the working directory on every shell call. Use `-C` and abs
 
 6. **Verify the project and close the item out.** Run the build, install and verification work the project's own instructions require after a merge. This workflow defines no generic command and infers none. The route the project's own instructions name records its install record (`.kendex-lock.json`). The lane never records it after a merge or a restack. On failure, report the command and its diagnostic in § 6 and keep the worktree.
 
-   **The close-out in a confined lane.** Skip the copy and the close-out below. The overseer's close of the lane removes the item's files. § 6's `tmp/ close-out` line reads `left to the overseer's close`.
+   **The close-out in a confined lane.** Skip the copy and the archived close-out below. Where the verification passed, run the close-out with no `--archive` pair:
+
+   ```bash
+   .agents/skills/orch/scripts/orch-runtime state remove --item [STATE_KEY]
+   ```
+
+   It stamps the item's record and answers `state-remove: left cause=confined owner=overseer`. The overseer's close reads the stamp as this step's end and ends the lane on its merge, keeping the item's files with the open item ([schemas/workflow-state.md § Item close-out](../schemas/workflow-state.md#item-close-out)). § 6's `tmp/ close-out` line reads `left to the overseer's close`. A refusal keeps the worktree, and its key goes on that line.
 
    **The close-out elsewhere.** In an unconfined lane, save the item's record for the overseer's cycle row before the close-out. Read its path, the reply's `result.path`, with `orch-runtime state path --item [STATE_KEY]` from `[MAIN_REPO_ROOT]`. Create `[MAIN_REPO_ROOT]/tmp/cycle-state/` if needed. Copy the record once to `[MAIN_REPO_ROOT]/tmp/cycle-state/workflow-state-pr-[PR_NUMBER].json`, named by the merged PR whatever `[STATE_KEY]` is. Where an earlier close-out already removed the record, keep the saved copy. Where neither reads as a JSON object, report the failure and keep the worktree.
 
