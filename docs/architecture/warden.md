@@ -4,7 +4,7 @@ Read before changing what the optional warden under `warden/` moves, leaves alon
 
 ## The approach
 
-The optional warden corrects placement independently of the dashboard under [D004](../decisions/D004-warden-separate-component.md). Keep automatic correction in `warden/`, with the dashboard dispatching installation through `src/warden.ts`. Packages ship the payload declared by `packaging/vsys-runtime-files.txt`; only an explicit install enables the timer.
+The optional warden corrects placement independently of the dashboard under [D004](../decisions/D004-warden-separate-component.md). Keep automatic correction in `warden/`, with the dashboard dispatching installation through `src/warden.ts`. Packages ship the payload declared by `packaging/vsys-runtime-files.txt`. An explicit install enables the user timers for correction and pressure recording.
 
 ## Why
 
@@ -38,7 +38,7 @@ Review holds boundaries without a named check.
 - Do send a desktop notice only when no consumer owns them, judged by the heartbeat file under the runtime directory, and send one notice per episode. `warden/agent_warden_notify_test.py` covers the handoff and the episodes.
 - Do refuse the whole install when any target is a symlink or an unmarked file, when a unit or data directory is itself a symlink, or when a target cannot be read. A marked file is ours and can be rewritten. `warden/install_test.py` covers foreign, unreadable and linked targets.
 - Do overwrite the copied data file only when it is absent or its hash matches one recorded in the marked service unit, and record both the new and the installed hash during an upgrade so an interrupted write can be retried.
-- Do make `uninstall` remove only marked files and a data copy whose hash matches, stop only a marked service, and leave `agents.slice` and every running scope alone.
+- Do make `uninstall` remove only marked files and a data copy whose hash matches, stop only marked services, and leave `agents.slice` and every running scope alone.
 - Do make `status` read-only, and fail it on any read that could not be taken.
 - Do add a shipped file to `packaging/vsys-runtime-files.txt`. `scripts/package_file_list_check.py` holds the payload, the modes, the reporter rows and the rule that no package installs or enables a user unit, and `scripts/package_file_list_check_test.py` runs each PKGBUILD's `package()`.
 - Never kill an individual process, and never stop a live session.
@@ -48,6 +48,18 @@ Review holds boundaries without a named check.
 - Never write, overwrite or remove the local overlay `~/.config/vsys/agent-tools.json` from the installer.
 - Never install under `/usr/lib/systemd/user`, and never preset or enable a unit from a package.
 - Never strip the compiled binary in a package. Stripping removes Bun's appended bundle, so both PKGBUILDs set `!strip` and `!debug`.
+
+## Pressure records
+
+The [pressure timer](../../warden/systemd/vsys-pressure-record.timer) samples independently of the dashboard. The [recorder](../../warden/vsys-pressure-record) reads the kernel's PSI files and marks unavailable readings explicitly. Run its service inside a top-level user slice so it can find the user manager's sibling slices. Check the timer with `systemctl --user status vsys-pressure-record.timer`.
+
+The service keeps owner-only hourly files under `${XDG_STATE_HOME:-$HOME/.local/state}/vsys-pressure/`. The first sample of each UTC hour prunes files whose last sample is at least three days old. An hourly file can also hold earlier samples from that same hour. Uninstall stops the recorder and preserves the saved records.
+
+To read a minute, select it from its UTC hourly file and expand the tab-separated fields. Each sample starts with its UTC timestamp.
+
+```sh
+grep -F '2026-10-15T14:35:' "${XDG_STATE_HOME:-$HOME/.local/state}/vsys-pressure/2026-10-15T14.log" | tr '\t' '\n'
+```
 
 ## The canonical example
 

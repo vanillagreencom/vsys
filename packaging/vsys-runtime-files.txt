@@ -3,9 +3,12 @@
 755 lib/vsys/warden/agent-warden warden/agent-warden
 755 lib/vsys/warden/agent-confine warden/agent-confine
 755 lib/vsys/warden/agent-confine-lineage-capped warden/agent-confine-lineage-capped
+755 lib/vsys/warden/vsys-pressure-record warden/vsys-pressure-record
 644 lib/vsys/warden/systemd/agent-warden.service warden/systemd/agent-warden.service
 644 lib/vsys/warden/systemd/agent-warden.timer warden/systemd/agent-warden.timer
 644 lib/vsys/warden/systemd/agents.slice warden/systemd/agents.slice
+644 lib/vsys/warden/systemd/vsys-pressure-record.service warden/systemd/vsys-pressure-record.service
+644 lib/vsys/warden/systemd/vsys-pressure-record.timer warden/systemd/vsys-pressure-record.timer
 644 lib/vsys/data/agent-tools.json data/agent-tools.json
 755 lib/vsys/scripts/scrub-reporter/vsys-scrub-report scripts/scrub-reporter/vsys-scrub-report
 644 lib/systemd/system/btrfs-scrub@.service.d/vsys-report.conf packaging/scrub-reporter/vsys-report.conf

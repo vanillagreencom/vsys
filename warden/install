@@ -15,7 +15,9 @@ from typing import Iterable, NamedTuple
 
 MARKER = "# vsys-warden: written by 'vsys warden install'; 'vsys warden uninstall' removes it"
 DATA_MARKER_PREFIX = "# vsys-warden-data: sha256="
-UNIT_NAMES = ("agent-warden.service", "agent-warden.timer", "agents.slice")
+WARDEN_UNIT_NAMES = ("agent-warden.service", "agent-warden.timer", "agents.slice")
+UNIT_NAMES = (*WARDEN_UNIT_NAMES, "vsys-pressure-record.service", "vsys-pressure-record.timer")
+TIMER_NAMES = tuple(name for name in UNIT_NAMES if name.endswith(".timer"))
 DATA_NAME = "agent-tools.json"
 CONTROLLERS = frozenset({"cpu", "memory", "pids"})
 
@@ -142,8 +144,8 @@ def classify_data(path: Path, service_path: Path) -> str:
     return "foreign"
 
 
-def unit_states(directory: Path) -> list[UnitState]:
-    return [UnitState(directory / name, classify(directory / name)) for name in UNIT_NAMES]
+def unit_states(directory: Path, names: Iterable[str] = UNIT_NAMES) -> list[UnitState]:
+    return [UnitState(directory / name, classify(directory / name)) for name in names]
 
 
 def has_foreign_units(states: Iterable[UnitState], action: str) -> bool:
@@ -192,11 +194,14 @@ def has_symlink_dirs(paths: Iterable[Path], action: str) -> bool:
     return True
 
 
-def systemd_exec_path(path: Path) -> str:
+def systemd_path(path: Path) -> str:
     text = str(path)
     if any(ord(char) < 32 for char in text):
-        raise ValueError(f"ExecStart path contains a control character: {text!r}")
-    text = text.replace("%", "%%")
+        raise ValueError(f"systemd path contains a control character: {text!r}")
+    return text.replace("%", "%%")
+
+
+def systemd_exec_path(text: str) -> str:
     if re.search(r"[\s\"'\\]", text):
         return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
     return text
@@ -205,14 +210,19 @@ def systemd_exec_path(path: Path) -> str:
 def render_unit(warden_dir: Path, name: str, data_hashes: Iterable[str]) -> str:
     template = (warden_dir / "systemd" / name).read_text(encoding="utf-8")
     header = MARKER + "\n"
-    if name == "agent-warden.service":
-        exe = warden_dir / "agent-warden"
+    if name.endswith(".service"):
+        exe = warden_dir / name.removesuffix(".service")
         if not exe.is_file() or not os.access(exe, os.X_OK):
-            raise ValueError(f"agent-warden is not executable: {exe}")
-        start = systemd_exec_path(exe)
-        template = template.replace("@WARDEN_DIR@/agent-warden", start)
+            raise ValueError(f"{exe.name} is not executable: {exe}")
+        slot = f"@WARDEN_DIR@/{exe.name}"
+        path = systemd_path(exe)
+        # Conditions take a literal path after expanding systemd specifiers.
+        condition = "ConditionFileIsExecutable="
+        template = template.replace(condition + slot, condition + path)
+        template = template.replace(slot, systemd_exec_path(path))
         if "@WARDEN_DIR@" in template:
-            raise ValueError("agent-warden.service contains an unresolved @WARDEN_DIR@ placeholder")
+            raise ValueError(f"{name} contains an unresolved @WARDEN_DIR@ placeholder")
+    if name == "agent-warden.service":
         for data_hash in sorted(data_hashes):
             header += DATA_MARKER_PREFIX + data_hash + "\n"
     return header + template
@@ -303,7 +313,7 @@ def install(warden_dir: Path, directory: Path) -> int:
         atomic_write(directory / name, text)
     atomic_write_bytes(target, source_data)
     run_systemctl("daemon-reload")
-    run_systemctl("enable", "--now", "agent-warden.timer")
+    run_systemctl("enable", "--now", *TIMER_NAMES)
     print(f"vsys-warden: installed dir={resolved}")
     return 0
 
@@ -338,23 +348,23 @@ def uninstall(directory: Path) -> int:
     if not ours and data_state != "installed-by-vsys":
         print("vsys-warden: nothing-installed")
         return 0
-    timer = directory / "agent-warden.timer"
-    service = directory / "agent-warden.service"
-    timer_ours = classify(timer) == "installed-by-vsys"
-    service_ours = classify(service) == "installed-by-vsys"
-    if timer_ours:
-        run_systemctl("disable", "--now", "agent-warden.timer")
-    if service_ours:
-        run_systemctl("stop", "agent-warden.service")
+    timers = [state.path for state in ours if state.path.suffix == ".timer"]
+    services = [state.path.name for state in ours if state.path.suffix == ".service"]
+    if timers:
+        run_systemctl("disable", "--now", *(timer.name for timer in timers))
+    if services:
+        run_systemctl("stop", *services)
     if data_state == "installed-by-vsys":
         target.unlink(missing_ok=True)
     for state in ours:
         state.path.unlink(missing_ok=True)
-    wants = directory / "timers.target.wants" / "agent-warden.timer"
-    if timer_ours and symlink_points_to(wants, timer):
-        wants.unlink()
+    wants_dir = directory / "timers.target.wants"
+    for timer in timers:
+        wants = wants_dir / timer.name
+        if symlink_points_to(wants, timer):
+            wants.unlink()
     with contextlib.suppress(OSError):
-        wants.parent.rmdir()
+        wants_dir.rmdir()
     run_systemctl("daemon-reload")
     print("vsys-warden: uninstalled")
     return 0
@@ -388,7 +398,7 @@ def read_delegation(path: Path) -> tuple[str, bool]:
 
 
 def status(directory: Path, controllers_path: Path | None = None) -> int:
-    states = unit_states(directory)
+    states = unit_states(directory, WARDEN_UNIT_NAMES)
     for state in states:
         print(f"file {state.path.name}: {state.state}")
     data_state = classify_data(data_target(), directory / "agent-warden.service")
@@ -411,7 +421,7 @@ def status(directory: Path, controllers_path: Path | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vsys warden", description="Install and inspect the vsys agent warden user units.")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("install", help="install and enable the agent warden user timer")
+    sub.add_parser("install", help="install and enable the agent warden user timers")
     sub.add_parser("uninstall", help="disable and remove files written by this installer")
     sub.add_parser("status", help="report installed files, timer state and user-manager delegation")
     return parser

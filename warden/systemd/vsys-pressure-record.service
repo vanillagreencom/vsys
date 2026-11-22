@@ -1,0 +1,13 @@
+[Unit]
+Description=Record host and user slice pressure
+ConditionFileIsExecutable=@WARDEN_DIR@/vsys-pressure-record
+
+[Service]
+Type=oneshot
+ExecStart=@WARDEN_DIR@/vsys-pressure-record
+Slice=background.slice
+Nice=5
+TimeoutStartSec=5s
+StateDirectory=vsys-pressure
+StateDirectoryMode=0700
+UMask=0077

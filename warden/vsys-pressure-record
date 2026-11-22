@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+export TZ=UTC0
+
+read_pressure() {
+    local label=$1 path=$2 line
+    local -a lines=()
+    if mapfile -t lines 2>/dev/null < "$path" && ((${#lines[@]})); then
+        for line in "${lines[@]}"; do
+            printf -v sample '%s\t%s %s' "$sample" "$label" "$line"
+        done
+    else
+        printf -v sample '%s\t%s unavailable' "$sample" "$label"
+    fi
+}
+
+record_pressure() {
+    local group root stamp record sample resource slice load1 load5 load15
+    IFS= read -r group < /proc/self/cgroup
+    if [[ $group != 0::*/*.slice/*.service ]]; then
+        printf 'vsys-pressure-record: expected a service in a top-level cgroup v2 slice\n' >&2
+        return 1
+    fi
+    # The user manager puts this service's slice alongside the sampled slices.
+    root="/sys/fs/cgroup${group#0::}"
+    root=${root%/*/*}
+
+    printf -v stamp '%(%FT%TZ)T' -1
+    record="${STATE_DIRECTORY:?}/${stamp:0:13}.log"
+    if [[ ! -e $record ]]; then
+        find "$STATE_DIRECTORY" -maxdepth 1 -type f -name '????-??-??T??.log' -mmin +4320 -delete
+    fi
+
+    sample=$stamp
+    if read -r load1 load5 load15 _ 2>/dev/null < /proc/loadavg; then
+        printf -v sample '%s\tloadavg %s %s %s' "$sample" "$load1" "$load5" "$load15"
+    else
+        printf -v sample '%s\tloadavg unavailable' "$sample"
+    fi
+    for resource in cpu io memory; do
+        read_pressure "$resource.pressure" "/proc/pressure/$resource"
+        for slice in session.slice app.slice agents.slice; do
+            read_pressure "$slice/$resource.pressure" "$root/$slice/$resource.pressure"
+        done
+    done
+    printf '%s\n' "$sample" >> "$record"
+}
+
+record_pressure
