@@ -84,9 +84,9 @@ AGENT_RUNTIME_CONTROLLER_PREFERENCE = "claude:standard:medium,copilot:claude-opu
 ORCH_HANDOFF_HEADROOM_PCT = "3"
 AGENT_RUNTIME_CODEX_CREDIT_FLOOR = "0"
 # The account folders a launch may pick among, relative to the home folder:
-# the live Claude, Codex and Copilot logins; 1codex, 2codex and 8claude to
-# 10claude are retired.
-AGENT_RUNTIME_ACCOUNT_DIRS = ".claude:.1claude:.2claude:.3claude:.4claude:.5claude:.6claude:.7claude:.codex:.3codex:.1copilot"
+# the live Claude, Codex and Copilot logins; 1codex, 2codex and 9claude are
+# retired.
+AGENT_RUNTIME_ACCOUNT_DIRS = ".claude:.1claude:.2claude:.3claude:.4claude:.5claude:.6claude:.7claude:.8claude:.10claude:.codex:.3codex:.1copilot"
 
 # Accounts whose cloud sessions can reach this repository: each pair records
 # an approved repository card. The operator adds a pair after approving the
