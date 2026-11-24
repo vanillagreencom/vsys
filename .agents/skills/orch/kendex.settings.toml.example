@@ -244,9 +244,10 @@ AGENT_RUNTIME_QUESTION_TOOL = "off"
 # `lane-mail --help` states what the deadline does for each form of
 # question. An ask's own --wait overrides it.
 ORCH_ASK_WAIT_MINUTES = "120"
-# The label and the owner email that enable an item ask's tracker route;
-# with no ORCH_OWNER_EMAIL, the route uses KENDEX_USER_EMAIL. What the
-# route does: references/communication-modes.md § Owner asks.
+# The label and the owner email an item ask's tracker route needs; with
+# either unset, lane-mail refuses an ask that names an item. With no
+# ORCH_OWNER_EMAIL, the route uses KENDEX_USER_EMAIL. What the route does:
+# references/communication-modes.md § Owner asks.
 # ORCH_OWNER_EMAIL = "owner@example.com"
 # ORCH_OWNER_ASK_LABEL = "owner-gated"
 # KENDEX_USER_EMAIL = "owner@example.com"
@@ -500,7 +501,7 @@ ORCH_OVERSEER_CLOUD_LANES = "10"
 
 # External triage: whether the watch lists issues and pull requests from
 # outside contributors for the overseer. "off" leaves them unlisted. How the
-# overseer handles each: workflows/oversee.md § Outside contributions.
+# overseer handles each: references/oversee-events.md § Outside contributions.
 # values: on | off
 ORCH_EXTERNAL_TRIAGE = "on"
 
@@ -571,7 +572,7 @@ ORCH_EXTERNAL_TRIAGE = "on"
 # Lane defaults use harness[@host]:model:effort. @host names a host kind or
 # provider executable path for that entry. Overseer preferences keep the
 # grammar above. When the overseer walks these entries:
-# workflows/oversee.md § 3 Lane directive, step 3.
+# references/lane-launch.md § Lane directive, step 3.
 # Which entry the walk takes, and how an entry without @host is judged:
 # references/lane-directive.md § Lane preference.
 # A lane entry names an exact id or a claude class, since a codex or copilot
