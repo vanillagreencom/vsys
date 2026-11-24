@@ -16,8 +16,7 @@ permissions:
 # Each action from outside vanillagreencom is pinned to a commit SHA: its
 # owner can move a tag to other code, but a SHA names one fixed tree.
 jobs:
-  # kendex's change-class action classifies the diff:
-  # .agents/skills/harness-ci/references/wiring.md § Through the composite action.
+  # kendex's change-class action classifies the diff (the harness-ci package).
   changes:
     name: Classify the diff
     runs-on: ubuntu-latest
@@ -249,8 +248,7 @@ jobs:
       # The last step scans the pull request's merge ref, with full history,
       # for credentials. Its scanner, installer and exclusion policy come
       # from the default branch, so a pull request cannot disable it. It runs
-      # on every pull request, whatever the classifier said:
-      # .agents/skills/harness-ci/references/wiring.md § The CI template.
+      # on every pull request, whatever the classifier said (the harness-ci package).
       # It runs last under always(), so a scan failure skips no aggregate
       # step, and a scan failure and an aggregate failure show in one run.
       - name: the credential guards and skip judge, from the default branch

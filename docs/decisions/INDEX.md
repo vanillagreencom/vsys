@@ -15,4 +15,4 @@
 
 ## Format
 
-Format: [decision-format.md](../../.agents/skills/decider/schemas/decision-format.md). Bar: [the decider skill](../../.agents/skills/decider/SKILL.md#what-warrants-a-decision-record-and-why).
+Format and bar: the decider package.
