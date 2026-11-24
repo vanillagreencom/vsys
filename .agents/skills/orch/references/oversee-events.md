@@ -286,6 +286,7 @@ Each cause, its meaning and its action:
 - A running item: the lane finishes [merge-pr.md § 5](../workflows/merge-pr.md#5-execute-the-merge) itself.
   - Where its worktree or sandbox is gone, the runtime close completes the item's branch boxes from the pull request body's `## Done-when evidence` section ([lane-reach.md § Lane close](lane-reach.md#lane-close)).
   - When a merged lane's work has left its host, the watch closes it at its `lane-exited` or `idle-after-return` line, with the merge as the close's `delivery`.
+  - A running or stopped lane whose harness ended before it finished, which a `lane-ended` line names, takes [lane-reach.md § Ended lanes](lane-reach.md#ended-lanes).
   - Close any other local lane once it has finished `merge-pr.md` § 5. Add `"delivery":{"pr":{"pr":[PR_NUMBER],"repo":"[OWNER/REPO]"}}` to the request § Direct-push cycle records shows.
   - Run it from the overseer's base checkout, or from a checkout of the lane's repository where its `mail_root` is another repository's worktree.
 - A parked or stopped item: once the tracker reads it ended, the watch reads the lane's merges and closes it on the terminal ground.
@@ -420,6 +421,36 @@ Each answer:
 3. Otherwise relaunch it once with the same brief through [lane-directive.md § Recovery relaunch](lane-directive.md#recovery-relaunch).
 4. Tell the owner of a second death. Do not retry it.
 5. After the relaunched lane finishes, close it through the runtime close. Do not rebuild the pane, host and state steps by hand.
+
+### `lane-ended`
+
+`EVENT lane-ended [ITEM] lane=[STATUS] waits=[WAIT] [stop=[UTC] why=[WHY]] [tracker=unread]`: the item's latest lane record names a lane whose harness ended, and no tracker read says the item ended. The watch prints it ahead of every `heartbeat` line while that holds.
+
+The harness has ended on a record in these cases:
+
+- A `stopped` or `parked` record, by its status.
+- A `running` record that the watch reported `lane-exited`.
+- A `running` record whose sandbox the provider's `list --json` row shows stopped.
+- A `running` record whose sandbox the provider's `sandbox-stopped` notice reports stopped during the lane's current session.
+
+A `running` record whose window is gone takes § `window-gone` instead.
+
+The fields:
+
+- `lane=` is the record's status: `running`, `stopped` or `parked`.
+- `waits=` is `merge`, `owner`, `blocker`, `nothing`, `unread` (the record's wait did not parse) or `unknown` (no recorded wait, and no tracker read answered for the item's blockers).
+- `stop=` and `why=` appear where the provider's list or its notice names the stop. `stop=unreadable why=unreadable` is a stop the provider could not read back.
+- `tracker=unread` appears where the heartbeat holds no tracker answer for the item: a `running` record whose item is GitHub-tracked or not among the team's open items, every item before the tracker duty's first read of the team's open items, and every item on a fleet with no `linear_team`.
+
+The notice counts only from an `owner-note`, or a `peer-note` that is not another repository's overseer. That note's own line needs nothing beyond this line. A `data-note` never stops a lane.
+
+The heartbeat's `watch-step-failed` causes for these lines:
+
+- `ended-lanes-unread cause=[CAUSE]`: the fleet state did not read, and no `lane-ended` line printed.
+- `lane-list-unread host=[HOST] cause=[CAUSE]`: that host's list did not read, and its lanes keep only the notice's stop.
+- `host-capabilities-unread host=[HOST] cause=[CAUSE]`: that host's capability line did not read, and its list was not asked.
+
+Handle the line under [lane-reach.md § Ended lanes](lane-reach.md#ended-lanes) in the same heartbeat pass.
 
 ### `lane-unreadable`
 
@@ -697,7 +728,7 @@ A merge hold is a person who disabled a pull request's automatic merge, never a 
 - A `Proposal comment:` notice takes § Lane proposals.
 - A `copilot-*` notice takes [copilot-head-notices.md](copilot-head-notices.md).
   - A `copilot-fallback` notice whose first line carries `cause=` comes from the lane's review call, and can arrive twice.
-  - One with no `cause=` is the lane's own, from its triage's `timeout` row ([review-pr-comments.md § 7.2](../workflows/review-pr-comments.md#72-copilot-head-route)).
+  - One with no `cause=` is the lane's own, from its head route's `timeout` row ([copilot-head-route.md § The wait on a moved head](copilot-head-route.md#the-wait-on-a-moved-head)).
 - A notice may name a merge-group ejection that `queue-watch` read as `reach: outside`, with the failed checks, their reach, the run links and the head. Those red checks are ones the item's change does not select: a defect outside the item.
   1. Apply [design-review.md](design-review.md)'s filing entry.
   2. Then file the defect once through § File one item alone, naming the failed checks and the run links.
@@ -810,7 +841,7 @@ A refused `write`:
 
 ### `heartbeat`
 
-`EVENT heartbeat loops=[N] interval=[N]s since=[UTC|none]`, then its body. Take the body's lines in order.
+`EVENT heartbeat loops=[N] interval=[N]s since=[UTC|none]`, then its body. The `account` and `lane-ended` lines just above it are this pass's: handle them first. Take the body's lines in order.
 
 1. The open pull request lines carry no arm or queue state.
    - A parked record's pull request that the list shows open, with no reducer line on it, stays parked.

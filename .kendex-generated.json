@@ -340,6 +340,7 @@
   ".agents/skills/orch/references/codex-runtime.md",
   ".agents/skills/orch/references/communication-modes.md",
   ".agents/skills/orch/references/copilot-head-notices.md",
+  ".agents/skills/orch/references/copilot-head-route.md",
   ".agents/skills/orch/references/copilot-runtime.md",
   ".agents/skills/orch/references/design-review.md",
   ".agents/skills/orch/references/directed-change.md",
@@ -462,6 +463,7 @@
   ".agents/skills/orch/runtime/src/watch/baseline.rs",
   ".agents/skills/orch/runtime/src/watch/claim.rs",
   ".agents/skills/orch/runtime/src/watch/context.rs",
+  ".agents/skills/orch/runtime/src/watch/ended.rs",
   ".agents/skills/orch/runtime/src/watch/events.rs",
   ".agents/skills/orch/runtime/src/watch/github.rs",
   ".agents/skills/orch/runtime/src/watch/heartbeat.rs",
@@ -808,6 +810,7 @@
   ".pi/kendex/hooks/session-end-row.sh",
   ".pi/kendex/hooks/session-start-row.sh",
   ".pi/kendex/hooks/stop-failure-row.sh",
+  ".pi/kendex/hooks/ui-copy-note.sh",
   ".pi/kendex/hooks/worktree-session-claim.sh",
   ".pi/prompts/code-scrub.md"
 ]
