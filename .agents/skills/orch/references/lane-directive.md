@@ -86,7 +86,11 @@ A transition refusal exits 1 with `ok: false` and records nothing. Fix what the 
 - `item-foreign`: file it in its own tracker and follow `route` and [peer-mail.md](peer-mail.md#addressing).
 - `item-ineligible`: the item is a container; launch its unblocked children.
 - `launch-overlap`: launch once that lane stops, or name the file in `in_scope` where the brief adds to it append-only.
-- `join-unreachable`: the holder is hosted or a cloud session. Launch once that lane stops.
+- `join-unreachable`: the holder is hosted or a cloud session, which no join reaches. Launch once that lane stops.
+  - A hosted lane that carries the launch's blockers refuses with no branch read.
+  - A hosted lane that holds a shared path always refuses. The refusal says whether its head commit, read on its host and compared by GitHub with the repository's default branch, changes a shared path.
+  - A head that changes a shared path refuses with `item`, `holder` and `route`.
+  - Any other refusal adds `branch`, `unknown` where the head itself was unread, and `cause`. `worktree-unproved` is a head that changes none of the launch's paths. A cloud session's head is never read.
 - `read-only-unconfined`: this machine cannot confine the lane, as `cause` names. Launch it here on a harness the confinement holds. A first launch, or one over a `done` record, may instead leave out `read_only`; a relaunch keeps the record's (§ Recovery relaunch).
 - `join-unsent`, `join-tier-narrower`: repair the mailbox, or launch once the holder stops.
 - `tier-narrower`: brief the judged cycle.
@@ -255,7 +259,8 @@ A relaunch sends the item's `launch-lane` request again over its standing record
 ### Resume or fresh
 
 - A local relaunch on the same harness and account resumes the session the record binds, with the brief as its next prompt.
-- A switched harness or account, a Pi lane, a session the destination home lacks, or a standing handoff record with `relaunch` `fresh` or none starts the harness fresh instead; the observation names the reason as `route_cause`.
+- A local Claude Code relaunch on another account resumes that session too, where the request's account's home holds it.
+- A switched harness, any other switched account, a Pi lane, a session the destination home lacks, or a standing handoff record with `relaunch` `fresh` or none starts the harness fresh instead; the observation names the reason as `route_cause`.
 - A hosted relaunch always starts the harness fresh.
 
 Outside § Parked record, a host whose capability line declares `park=none` ([lane-host.md § Host kinds](../schemas/lane-host.md#host-kinds)) is asked neither `list` nor `start`: the launch goes straight to `create --relaunch`. A `park=verb` host is asked its `list`, which tells its sandbox's two states apart:
