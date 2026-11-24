@@ -65,6 +65,9 @@ ORCH_REPORT_EVERY_MINUTES = "120"
 ORCH_USER_MODE = "ceo"
 ORCH_DECISION_MODE = "auto-recommended"
 ORCH_MERGE_AUTONOMY = "auto"
+# The label a tracker-posted owner ask carries; the owner's address is in
+# the private env file.
+ORCH_OWNER_ASK_LABEL = "owner-gated"
 
 # Path globs whose changes add the needs-ui-review QA signal.
 QA_UI_PATHS = "src/ui/**"
