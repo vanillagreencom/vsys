@@ -51,15 +51,7 @@ Review holds boundaries without a named check.
 
 ## Pressure records
 
-The [pressure timer](../../warden/systemd/vsys-pressure-record.timer) samples independently of the dashboard. The [recorder](../../warden/vsys-pressure-record) reads the kernel's PSI files and marks unavailable readings explicitly. Run its service inside a top-level user slice so it can find the user manager's sibling slices. Check the timer with `systemctl --user status vsys-pressure-record.timer`.
-
-The service keeps owner-only hourly files under `${XDG_STATE_HOME:-$HOME/.local/state}/vsys-pressure/`. The first sample of each UTC hour prunes files whose last sample is at least three days old. An hourly file can also hold earlier samples from that same hour. Uninstall stops the recorder and preserves the saved records.
-
-To read a minute, select it from its UTC hourly file and expand the tab-separated fields. Each sample starts with its UTC timestamp.
-
-```sh
-grep -F '2026-10-15T14:35:' "${XDG_STATE_HOME:-$HOME/.local/state}/vsys-pressure/2026-10-15T14.log" | tr '\t' '\n'
-```
+The [pressure timer](../../warden/systemd/vsys-pressure-record.timer) samples independently of the dashboard. The [recorder](../../warden/vsys-pressure-record) reads the kernel's PSI files and marks an unavailable reading explicitly. Its service runs inside a top-level user slice so it can find the user manager's sibling slices. Its files are owner-only, and uninstall stops the recorder and keeps them. The recorder owns the file naming and retention. The [README](../../README.md#optional-components) holds the operator's steps to check the timer and read a minute.
 
 ## The canonical example
 
