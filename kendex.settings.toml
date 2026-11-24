@@ -140,7 +140,7 @@ DECISIONS_DIR = "docs/decisions"
 DEV_VALIDATE_CMD = "python3 scripts/ci.py"
 
 # The required status check whose pull request run covers DEV_VALIDATE_CMD
-# (.agents/skills/dev/README.md; orch's `dev-validate-run --help`, mode ci).
+# (the dev package; orch's `dev-validate-run --help`, mode ci).
 # CI is the context ruleset "main required checks" (24148612) requires on
 # main, and it runs everything DEV_VALIDATE_CMD runs. Empty, dev-validate-run
 # validates locally (ci-fallback=setting-empty). dev-validate-run
@@ -189,7 +189,7 @@ COMMIT_GUARDS_CHANGELOG_REQUIRED_PATHS = "src/* scripts/* packaging/* install.sh
 
 # The app's version file, beside the record. The changelog-entries lane
 # judges each version increase in it by the commit-guards release-version
-# rule (.agents/skills/commit-guards/CHECKS.md § Release versions).
+# rule.
 COMMIT_GUARDS_CHANGELOG_VERSION_PATHS = "package.json"
 
 # The markdown lanes judge every tracked markdown file, not only the files a
