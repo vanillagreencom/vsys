@@ -43,6 +43,17 @@ The warden is separate from the dashboard. It runs from a systemd user timer, mo
 vsys warden install
 ```
 
+The same install starts a pressure recorder, which samples CPU, memory and disk pressure whether or not the dashboard runs. Check its timer, then read one minute by setting `t` to that minute in UTC:
+
+```sh
+systemctl --user status vsys-pressure-record.timer
+```
+
+```sh
+t=YYYY-MM-DDTHH:MM
+grep -F "$t:" "${XDG_STATE_HOME:-$HOME/.local/state}/vsys-pressure/${t:0:13}.log" | tr '\t' '\n'
+```
+
 Naming the files a Btrfs scrub found damaged and reading a drive's lifetime writes both need root, so vsys reads reports that two root-side reporters write. Settings and Storage show the matching line while a reporter is missing.
 
 ```sh
