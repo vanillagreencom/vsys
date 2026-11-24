@@ -898,7 +898,8 @@ enum WatchOp {
         #[command(flatten)]
         target: Target,
     },
-    /// Ask the claimed runner to stop and wait for its claim's release.
+    /// Ask the claimed runner to stop and wait for its claim's release; a
+    /// claim whose runner is gone is removed.
     Stop {
         #[command(flatten)]
         target: Target,
@@ -2895,6 +2896,7 @@ fn lane_verb(op: LaneOp, flags: &Flags) -> Result<serde_json::Value> {
                 min_headroom_pct,
                 binding_floor,
                 admit_unread_scope: false,
+                provider_key: None,
                 opens_here: false,
             };
             Ok(ops::accounts::pick_fleet(
