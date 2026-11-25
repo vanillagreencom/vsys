@@ -331,6 +331,8 @@ When the fleet's last item completes:
 
 `EVENT parked-merged [ITEM] pr=[N] repo=[OWNER/REPO]`: the pull request a parked item waited on merged, and the item has work left. A dependency park waits on `parked.until_pr`, a queue park on `parked.pr`. The watch repeats the line before each heartbeat while the record reads parked.
 
+Read the item's live tracker state before any relaunch or close, including when `parked-merged` arrives before a `tracker=unread` line on a fleet with no Linear team, and follow [lane-reach.md § Ended lanes](lane-reach.md#ended-lanes) to decide whether to close the lane or continue below.
+
 1. Relaunch through [lane-directive.md § Recovery relaunch](lane-directive.md#recovery-relaunch). The relaunch starts the harness fresh on the kept disk, and the item's handoff record carries its context.
 2. A dependency park: the lane rebases and continues the held step. Record no cycle for the dependency's merge.
 3. A queue park: the lane finishes `merge-pr.md` § 5 steps 2 to 6 and § 6, and its close records the item's cycle.
@@ -880,7 +882,7 @@ A refused `write`:
    - On the terminal surface, call it from the overseer session.
    - On the managed-session surface, use that surface's own call.
    - In sequential mode, make the same call and wait for it.
-5. Send it the team project inventories and this task: `Verify only these Linear issues: [ISSUES]. For each issue, read its full body and source. Answer question 3 under Judge the approach in the project-management skill's references/filing.md in your one return line for every issue, including owner-authorized issues. If Reached by: in the Filing record names an owner or Jarvis decision that authorizes the work, also check for duplication, project and agent. If it names no such decision, apply the filing bar, including to items from a review, a worker's proposal or discovered work. Follow the Verifier returns contract in .agents/skills/orch/references/skill-rules.md under Coordination for evidence, project and agent selection, and the final return.` That contract ([skill-rules.md § Coordination](skill-rules.md#coordination)) governs the task and its acceptance.
+5. Send it the team project inventories and this task: `Verify only these Linear issues: [ISSUES]. For each issue, read its full body and source. Answer question 3 under Judge the approach in the project-management skill's references/filing.md in your one return line for every issue, including owner-authorized issues. Reached by: in the Filing record names the behavior the item reaches. If Owner: in the Filing record names a decision that authorizes the work (the owner's note or ask, or a Jarvis decision), skip the filing bar and check for duplication, project and agent. Otherwise, apply the filing bar, including to items from a review, a worker's proposal or discovered work. Follow the Verifier returns contract in .agents/skills/orch/references/skill-rules.md under Coordination for evidence, project and agent selection, and the final return.` That contract ([skill-rules.md § Coordination](skill-rules.md#coordination)) governs the task and its acceptance.
 6. Capture only its single final return ([skill-rules.md § Single Return Message](skill-rules.md#single-return-message)).
    - Once it is captured, or on any failure after the launch, retire the verifier through the surface's own shut-down call before any further launch.
 7. Validate the return against that contract. On a launch, capture, parse or validation failure, stop without writing `triaged`.
