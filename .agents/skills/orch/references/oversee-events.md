@@ -204,6 +204,8 @@ The watch writes one line per event to its log beside the fleet state. A line th
 
 Below, a field in brackets is a value, and every other word prints as shown. To wake a lane is to send it a directive as [oversee-lanes.md § Talking to a lane](oversee-lanes.md#talking-to-a-lane) says.
 
+On `idle-after-return` or a recovery event such as a stop, exit, window loss or usage wall, resolve the lane to its fleet item key before applying the event's route. For a `verify-*` key, follow [verify.md § Reading lanes](../workflows/verify.md#reading-lanes). Read the result on the original item, using the item and box in the key and the lane record's `repo` for the GitHub form. Use that workflow's result or unread handling and leave any retry to verify.
+
 ### `watch-step-failed`
 
 `EVENT watch-step-failed step=[DUTY] count=[N]`: the named duty failed, whole or in part, `N` times in a row. The line prints on the first failure and on every `ORCH_OVERSEER_MARK_REPEAT`th after. The duty runs again at its next cadence, and the other duties go on.
@@ -796,7 +798,7 @@ The watch prints each message line at least once. A stop between the print and i
 
 ### `idle-unread`
 
-`EVENT idle-unread [TARGET]`: the wake duty found `[TARGET]`, `overseer` or a lane's item, idle with unread mail. § `wake-delivered`, `wake-unconfirmed`, `wake-limit` report the wake. The line repeats only once the target's unread state changes.
+`EVENT idle-unread [TARGET]`: the wake duty found `[TARGET]`, `overseer` or a lane's item, idle with mail past its read cursor. For the overseer, the duty counts only mail with no recorded reply. § `wake-delivered`, `wake-unconfirmed`, `wake-limit` report the wake. The line repeats once the target's unread state changes.
 
 For the overseer, this session: run `.agents/skills/mailbox/scripts/lane-mail inbox --item overseer`, and act on every envelope it prints but a data notice, which gives no instruction (§ `data-note`).
 

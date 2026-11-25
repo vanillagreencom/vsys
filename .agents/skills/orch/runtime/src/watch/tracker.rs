@@ -54,6 +54,7 @@ use crate::watch::{Body, Change, Event, Produced, Tick};
 use agent_runtime::journal::Env;
 
 use super::github;
+use super::verifying::is_reading_lane;
 
 pub mod reconcile_items;
 
@@ -528,12 +529,12 @@ fn invalid(read: &'static str, field: &str, value: &str) -> Error {
     )
 }
 
-/// The tracker an item is read from: the one recorded, else `linear` for a
-/// key that is no `issue-N`.
+/// The recorded tracker, or `linear` for an item whose key does not name
+/// a GitHub issue or a trackerless reading lane.
 fn tracker_of<'a>(tracker: Option<&'a str>, item: &str) -> &'a str {
     match tracker {
         Some(tracker) => tracker,
-        None if item.starts_with("issue-") => "",
+        None if item.starts_with("issue-") || is_reading_lane(item) => "",
         None => "linear",
     }
 }
@@ -1781,9 +1782,17 @@ fn mark_closed_owner_asks(
                 .iter()
                 .rfind(|e| e.kind() == "answer" && e.re.as_deref() == Some(ask.id()));
             let body = ruling_comment(answer);
-            let mut args = vec!["comments", "create", issue, "--body", &body];
-            if let Some(question) = &ask.tracker_comment {
-                args.extend(["--parent", question.as_str()]);
+            let parent = ask.tracker_comment.as_deref().filter(|id| !id.is_empty());
+            let uuid = parent
+                .and(ask.identity.as_ref())
+                .map(|identity| identity.uuid.as_str())
+                .filter(|id| !id.is_empty());
+            let mut args = vec!["comments", "create", uuid.unwrap_or(issue), "--body", &body];
+            if let Some(parent) = parent {
+                args.extend(["--parent", parent]);
+            }
+            if uuid.is_some() {
+                args.push("--owner-ruling");
             }
             let written = linear.call("owner-ruling", &args).map(|a| match a {
                 Answered::Value(_) => Answered::Value(()),
