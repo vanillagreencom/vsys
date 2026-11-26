@@ -153,6 +153,24 @@ pub(crate) fn start_brief(lane: &Lane, harness: Harness) -> std::result::Result<
     })
 }
 
+/// What closes a relaunch's start brief where the lane's last session ended
+/// with no handoff record standing: the start workflow continues only from
+/// a standing record, so nothing else tells the worker that its last
+/// command may have landed unseen, or that a wait it held died with it.
+const INTERRUPTED_TEXT: &str = "Your last session ended without a handoff, so before your next step read your worktree's Git state and the branch's remote head, settle the last command you saw no result for (a push may already have reached the remote), and restart any wait you held, such as verify-pr or queue-watch.";
+
+/// The start brief closed by [`INTERRUPTED_TEXT`], the same on every
+/// harness.
+pub(crate) fn interrupted_start_brief(
+    lane: &Lane,
+    harness: Harness,
+) -> std::result::Result<String, String> {
+    Ok(format!(
+        "{}\n",
+        closed_by(&start_brief(lane, harness)?, INTERRUPTED_TEXT)
+    ))
+}
+
 /// The brief a launch of `lane` opens on: the request's file, else the
 /// start brief, so no launch opens a lane on nothing.
 fn opening_brief(
@@ -1302,7 +1320,14 @@ fn hosted_launch(
     if let Err(cause) = prepared {
         return failed(operation, &cause);
     }
-    if let Err(cause) = hosted_marker(&scripts, provider, &r.item, &created.path, r.refresh) {
+    if let Err(cause) = hosted_marker(
+        &scripts,
+        provider,
+        &r.item,
+        &created.path,
+        r.refresh,
+        lane.read_only,
+    ) {
         return failed(operation, &cause);
     }
     let brief = if created.unrebased {
@@ -1364,14 +1389,17 @@ fn hosted_launch(
 /// worktree's `.git` names the clone's common git directory; the marker
 /// there holds the worktree path, written where it does not; the
 /// launch-fields record names the runtime the provider built, since the
-/// lane's own workflow calls it on the host; a refresh lane's record holds
-/// the path. `Err` is the cause.
+/// lane's own workflow calls it on the host; the refresh and read-only
+/// records hold the path for a lane that is one, and are put empty for any
+/// other, since a relaunch reuses the worktree and its git directory and
+/// the provider has no verb that removes a file. `Err` is the cause.
 fn hosted_marker(
     scripts: &Path,
     host: &str,
     item: &str,
     path: &str,
     refresh: bool,
+    read_only: bool,
 ) -> std::result::Result<(), String> {
     let gitfile_path = format!("{path}/.git");
     let gitfile = match hosted::fetch(scripts, host, item, &gitfile_path) {
@@ -1435,9 +1463,13 @@ fn hosted_marker(
             "host-runtime-unbuilt path={launch} cause=runtime-unnamed"
         ));
     }
-    if refresh {
-        let record = marker::refresh_path(&git_dir).display().to_string();
-        hosted::put(scripts, host, item, &record, root_line.as_bytes())
+    for (record, stated) in [
+        (marker::refresh_path(&git_dir), refresh),
+        (marker::read_only_path(&git_dir), read_only),
+    ] {
+        let record = record.display().to_string();
+        let bytes = if stated { root_line.as_bytes() } else { &[] };
+        hosted::put(scripts, host, item, &record, bytes)
             .map_err(|cause| format!("marker-failed path={record} cause={cause}"))?;
     }
     Ok(())
