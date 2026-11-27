@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  BUN_VERSION_FILE: .bun-version
+
 # Each action from outside vanillagreencom is pinned to a commit SHA: its
 # owner can move a tag to other code, but a SHA names one fixed tree.
 jobs:
@@ -125,7 +128,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version-file: .bun-version
+          bun-version-file: ${{ env.BUN_VERSION_FILE }}
       - name: Check the application
         run: python3 scripts/ci.py
 

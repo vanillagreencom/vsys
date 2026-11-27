@@ -32,8 +32,7 @@ ROWS = (
     ("docs-only README.md", "small", "false", NONE, "docs/architecture/ui.md\nREADME.md", "success", False, False, False, True),
     ("docs-only docs/README.md", "small", "false", NONE, "docs/README.md", "success", False, False, False, True),
     ("other docs-only", "trivial", "false", NONE, "docs/architecture/ui.md", "success", False, False, False, True),
-    # The workflow test reads ci.yml, which the shared classifier also uses.
-    ("unclaimed workflow input", "standard", "true", ALL, ".github/workflows/ci.yml", "success", True, True, True, True),
+    ("Bun version file", "micro", "true", "lane_application=true\nlane_package=false\nlane_workflow=true", ".bun-version", "success", True, True, False, True),
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
     ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, True, True),
