@@ -239,6 +239,9 @@ Every vsys issue lives in one project below; the project-management skill's `ref
 ```json
 {
   "projects": [
+    {"name": "Herdr engine migration", "kind": "deliverable",
+     "admits": "Work that implements the reviewed BRAD-109 build, cutover, retirement or consumer verification in this repository.",
+     "ends_when": "The planned hosts use Herdr for agent sessions and J3 has verified the allowed tmux remainder and the canonical retirement mappings throughout the repository and render inventory."},
     {"name": "Dashboard", "kind": "standing", "role": "area", "admits": "The dashboard application under src/ other than src/warden.ts, the shared agent-tool data under data/, the scrub and SMART reporters under scripts/, and the TypeScript build, benchmark and Bun toolchain files that build it."},
     {"name": "Warden", "kind": "standing", "role": "area", "admits": "The warden and agent-confine under warden/, and the vsys warden install command in src/warden.ts."},
     {"name": "Review Gate & CI", "kind": "standing", "role": "area", "admits": "CI workflows and settings under .github/, scripts/ci.py and its tests, tools/, and the kendex manifest, settings and rendered harness files that run the review gate, lane validation and the merge rail."},
