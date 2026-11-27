@@ -16,25 +16,6 @@ metadata:
 - Use the live lifecycle and Verifying role in kendex.toml [skill-instructions].linear for planning, audits, cycles, roadmaps and research completion. (PM-038)
 - The numeric estimate is the project-management package's relative size class, and the time beside an item is one nonstop-hours-to-merge figure, per project-management § Disposition. Planned and review-created issues use it. (ORCH-M22)
 - Each post-merge Done-when observation names its evidence, location, why the branch cannot prove it, and a deadline after merge but within three days. Linear and orch use this policy. (PM-042)
-
-### Project map
-
-Every vsys issue lives in one project below; the project-management skill's `references/project-map.md` states what each kind holds and the routing order. A create names one of these projects, or holds the item as `project_needed`.
-
-```json
-{
-  "projects": [
-    {"name": "Herdr engine migration", "kind": "deliverable",
-     "admits": "Work that implements the reviewed BRAD-109 build, cutover, retirement or consumer verification in this repository.",
-     "ends_when": "The planned hosts use Herdr for agent sessions and J3 has verified the allowed tmux remainder and the canonical retirement mappings throughout the repository and render inventory."},
-    {"name": "Dashboard", "kind": "standing", "role": "area", "admits": "The dashboard application under src/ other than src/warden.ts, the shared agent-tool data under data/, the scrub and SMART reporters under scripts/, and the TypeScript build, benchmark and Bun toolchain files that build it."},
-    {"name": "Warden", "kind": "standing", "role": "area", "admits": "The warden and agent-confine under warden/, and the vsys warden install command in src/warden.ts."},
-    {"name": "Review Gate & CI", "kind": "standing", "role": "area", "admits": "CI workflows and settings under .github/, scripts/ci.py and its tests, tools/, and the kendex manifest, settings and rendered harness files that run the review gate, lane validation and the merge rail."},
-    {"name": "Packaging & Install Channels", "kind": "standing", "role": "area", "admits": "The packages under packaging/, install.sh, the package file-list check and cutting a release; a workflow file under .github/ goes to Review Gate & CI."},
-    {"name": "Docs", "kind": "standing", "role": "area", "admits": "Documentation-only changes to docs/ and the root README.md, DEVELOPMENT.md, AGENTS.md, CHANGELOG.md and LICENSE; a doc change that rides with a code change goes with that code's area."}
-  ]
-}
-```
 <!-- kendex:project-instructions:end -->
 
 # Project Management
