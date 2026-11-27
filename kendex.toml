@@ -225,7 +225,6 @@ dev = """
 linear = """
 - Use the team's live Backlog, Todo, In Progress, In Review, Verifying, Done and Canceled states. Read live states before a transition. Verifying holds merged work with open evidence checks. (LIN-027)
 - Keep tracker state writes in LINEAR_TEAM. Check the issue team before a write. Route another team's work through lane-mail peer send to its overseer. Comments and related links grant no state-write authority. (LIN-029)
-- Blocking relations connect issues with the same direct parent, or two top-level issues. Use related links across levels. Keep completed-blocker relations as history. (LIN-030)
 - Use the post-merge observation policy in kendex.toml [skill-instructions].project-management. (LIN-032)
 """
 project-management = """
