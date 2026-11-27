@@ -32,9 +32,7 @@ jobs:
       # lane condition and CI's waiver read. The classify step's `lanes:`
       # log line says why.
       lanes: ${{ steps.classify.outputs.lanes }}
-      # One output per lane .github/ci-lanes.conf declares, its verdict as
-      # the action answered it. The classify step's `lane:` log lines say
-      # why.
+      # The classify step's `lane:` log lines explain each lane verdict.
       lane_application: ${{ steps.lanes.outputs.lane_application }}
       lane_package: ${{ steps.lanes.outputs.lane_package }}
       lane_workflow: ${{ steps.lanes.outputs.lane_workflow }}
@@ -82,6 +80,14 @@ jobs:
           MIRROR_OUTCOME: ${{ steps.mirror.outcome }}
         run: >-
           echo "::warning title=render proof may be unavailable::kendex install $KENDEX_OUTCOME, source refresh $MIRROR_OUTCOME"
+      - name: Provide PyYAML for workflow lane selection
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          if ! python3 -c 'import yaml'; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq python3-yaml
+          fi
       - id: classify
         uses: vanillagreencom/kendex/.github/actions/change-class@main
         env:
@@ -105,7 +111,6 @@ jobs:
         env:
           LANE_VERDICTS: ${{ steps.classify.outputs.lane_verdicts }}
         run: |
-          set -euo pipefail
           printf '%s\n' "$LANE_VERDICTS" >>"$GITHUB_OUTPUT"
 
   application:
@@ -124,9 +129,7 @@ jobs:
       - name: Check the application
         run: python3 scripts/ci.py
 
-  # Runs scripts/ci_workflow_test.py over this checkout's harness-ci scripts.
-  # It needs no Bun, so a kendex refresh that changes those scripts selects
-  # this job and skips the Bun job.
+  # Exercise this checkout's CI helpers without installing Bun.
   workflow-test:
     name: CI workflow test
     needs: changes

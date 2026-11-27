@@ -25,15 +25,15 @@ NONE = "lane_application=false\nlane_package=false\nlane_workflow=false"
 # then the expected application, workflow-test and arch-package runs and CI
 # acceptance. Expected results are independent of the expressions under test.
 ROWS = (
-    ("harness-ci render refresh", "render", "true", "lane_application=false\nlane_package=false\nlane_workflow=true", ".agents/skills/harness-ci/scripts/harness-only", "success", False, True, False, True),
+    ("harness-ci render refresh", "render", "true", ALL, ".agents/skills/harness-ci/scripts/harness-only", "success", True, True, True, True),
     ("application-only source", "small", "true", "lane_application=true\nlane_package=false\nlane_workflow=false", "scripts/ci.py", "success", True, False, False, True),
-    ("source diff", "small", "true", ALL, "src/main.ts", "success", True, True, True, True),
-    ("README.md.bak", "small", "true", ALL, "README.md.bak", "success", True, True, True, True),
+    ("application and package source", "small", "true", "lane_application=true\nlane_package=true\nlane_workflow=false", "src/main.ts", "success", True, False, True, True),
+    ("unrelated Dependabot configuration", "small", "true", NONE, ".github/dependabot.yml", "success", False, False, False, True),
     ("docs-only README.md", "small", "false", NONE, "docs/architecture/ui.md\nREADME.md", "success", False, False, False, True),
     ("docs-only docs/README.md", "small", "false", NONE, "docs/README.md", "success", False, False, False, True),
     ("other docs-only", "trivial", "false", NONE, "docs/architecture/ui.md", "success", False, False, False, True),
-    # A declaration-only change selects the lane whose claims changed.
-    ("package declaration change", "standard", "true", "lane_application=false\nlane_package=true\nlane_workflow=false", ".github/ci-lanes.conf", "success", False, False, True, True),
+    # The workflow test reads ci.yml, which the shared classifier also uses.
+    ("unclaimed workflow input", "standard", "true", ALL, ".github/workflows/ci.yml", "success", True, True, True, True),
     # With no lane declaration read, the action publishes no verdict and
     # lanes alone decides.
     ("no lane declaration", "small", "true", "", "src/main.ts", "success", True, True, True, True),
@@ -278,7 +278,7 @@ class CiWorkflow(unittest.TestCase):
         controls = (
             ("lanes-from-subject", "lanes-from: classifier", "lanes-from: subject"),
             ("render-reach-subject", "classifier/.agents/skills/harness-ci/scripts/harness-only", "subject/.agents/skills/harness-ci/scripts/harness-only"),
-            ("kendex-timeout", "        timeout-minutes: 3\n", "        timeout-minutes: 30\n"),
+            ("kendex-timeout", "        timeout-minutes: 3\n        shell: bash\n", "        timeout-minutes: 30\n        shell: bash\n"),
             ("kendex-shell", "        shell: bash\n", "        shell: sh\n"),
             ("mirror-timeout", "        timeout-minutes: 5\n        run: kendex source refresh\n", "        timeout-minutes: 50\n        run: kendex source refresh\n"),
         )
