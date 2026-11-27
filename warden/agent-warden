@@ -44,9 +44,10 @@ Rules, per process, never per pane
     path: a desktop prefix around it does not make it the desktop app.
     A desktop prefix under /tmp never confirms a bundled CLI, because /tmp is
     world-writable on every Linux target and so is no install location at all.
-  * Build tools match by comm or by the script they run. They are adopted only
-    when the nearest marker above them is an agent or the tmux server; a
-    desktop app, an excluded helper, or nothing leaves them alone (reported).
+  * Build tools match by comm or by the script they run. Unmarked builds are
+    adopted when their nearest marker is an agent, the tmux server or a Herdr
+    terminal holder. A desktop app, an excluded helper or no marker leaves
+    them where they are and the warden reports them.
   * Descendants ride along with a root only from a bounded set: build tools,
     shells and interpreters, agent helper binaries, and executables under the
     toolchain directories (~/.cargo, ~/.rustup, mise, bun, pnpm, node_modules,
@@ -717,6 +718,13 @@ class Proc:
         return self.comm in HOST_COMMS and len(self.argv) > 1 and bool(BUILD_SCRIPT_RE.search(self.argv[1]))
 
     @property
+    def is_herdr_holder(self):
+        # Herdr starts the current executable and names the unit from its subcommand.
+        # https://github.com/herdrdev/herdr-core/blob/6e2984629fcd600b0165f69b2e5b0bda5985ec1c/crates/herdr-core/src/platform/systemd.rs#L100-L124
+        return (self.comm in {"herdr-core", "hc"} and len(self.argv) > 1 and self.argv[1] == "hold"
+                and fnmatch.fnmatchcase(unit_of(self.cgroup) or "", "hc-hold-*.service"))
+
+    @property
     def rides_along(self):
         if self.excluded or self.is_desktop:
             return False
@@ -766,14 +774,15 @@ def depth(procs, p):
     return sum(1 for _ in ancestors(procs, p.pid))
 
 
-def nearest_marker(procs, p):
+def nearest_marker(procs, p, *, for_build=False):
     return next((a for a in ancestors(procs, p.pid)
-                 if a.is_agent or a.comm == TMUX_COMM or a.is_desktop or a.excluded), None)
+                 if a.is_agent or a.comm == TMUX_COMM or a.is_desktop or a.excluded
+                 or (for_build and a.is_herdr_holder)), None)
 
 
-def has_agent_or_tmux_above(procs, p):
-    m = nearest_marker(procs, p)
-    return m is not None and (m.is_agent or m.comm == TMUX_COMM)
+def has_build_marker_above(procs, p):
+    m = nearest_marker(procs, p, for_build=True)
+    return m is not None and (m.comm == TMUX_COMM or not (m.is_desktop or m.excluded))
 
 
 def subtree(procs, children, root, stop):
@@ -1886,7 +1895,7 @@ def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=conta
             units.append(p)
         elif p.is_agent:
             units.append(p)
-        elif p.is_build and has_agent_or_tmux_above(procs, p):
+        elif p.is_build and has_build_marker_above(procs, p):
             units.append(p)
 
     for p in procs.values():
@@ -1917,7 +1926,7 @@ def plan(procs, only=None, capped=lineage_is_capped, split=None, contained=conta
     for p in procs.values():
         if not allowed(p) or p.confined or is_contained(p) or not p.is_build or p.pid in claimed:
             continue
-        if has_agent_or_tmux_above(procs, p):
+        if has_build_marker_above(procs, p):
             unconf_builds.append(p)
         else:
             unmatched.append(p)
@@ -2211,7 +2220,7 @@ def branch_ok(fresh, member, root, reason):
     """the member still hangs off the root through non-desktop, non-excluded
     processes, and the root's reason for moving still holds"""
     if member.pid == root.pid:
-        if reason == "unconfined build" and not has_agent_or_tmux_above(fresh, member):
+        if reason == "unconfined build" and not has_build_marker_above(fresh, member):
             return False
         if reason == "escaped launch" and not member.is_agent:
             m = nearest_marker(fresh, member)
@@ -3608,7 +3617,7 @@ def run(correct):
         st["_tick"].update({"procs": procs, "moves": moves, "contained": units})
         st["last_correct" if correct else "last_report"] = tick_now
         for p in unmatched:
-            log(f"unmatched build process, nearest marker above is not an agent: {p.describe()}")
+            log(f"unmatched build process, no eligible build marker above: {p.describe()}")
         for p in held:
             log(f"shared scope: session {p.describe()} shares its parent's scope; not split "
                 f"({'capped lineage' if lineage_is_capped(p.cgroup) else 'AGENT_WARDEN_SPLIT_SESSIONS=0'})")
@@ -3815,7 +3824,7 @@ def status():
     print(f"{'pid':>8} {'state':9} {'comm':14} {'env':6} cgroup")
     heldp = {p.pid for p in held}
     for p in sorted(procs.values(), key=lambda x: (not x.is_agent, x.pid)):
-        if not (p.is_agent or p.pid in pending or p.pid in unitp or (p.is_build and has_agent_or_tmux_above(procs, p))):
+        if not (p.is_agent or p.pid in pending or p.pid in unitp or (p.is_build and has_build_marker_above(procs, p))):
             continue
         env = (read(f"/proc/{p.pid}/environ", "") or "").split("\0")
         marks = ("A" if p.marked else "") + "".join(l for m, l in zip(ENV_MARKERS, "JCRL") if any(e.startswith(m + "=") for e in env))
@@ -3823,7 +3832,7 @@ def status():
                  else "ok" if p.confined else "OUTSIDE")
         print(f"{p.pid:>8} {state:9} {p.comm[:14]:14} {marks or '-':6} {p.short_cg()}")
     for p in unmatched:
-        print(f"{p.pid:>8} {'unmatched':9} {p.comm[:14]:14} {'-':5} {p.short_cg()}  (nearest marker not an agent)")
+        print(f"{p.pid:>8} {'unmatched':9} {p.comm[:14]:14} {'-':5} {p.short_cg()}  (no eligible build marker above)")
     print("env: A=launched through agent-confine J=MAKEFLAGS(jobserver) C=CARGO_BUILD_JOBS R=RUST_TEST_THREADS L=MOLD_JOBS; "
           "held = session sharing a capped lineage, left alone")
     return 0
@@ -3966,6 +3975,29 @@ def selftest():
     check("AGENT_WARDEN_ONLY uses injected containment", [p.pid for _, t in only_moves for p in t] == [10])
     dmoves, _, _, _ = plan(recs, capped=capped, split=False, contained=contained)
     check("AGENT_WARDEN_SPLIT_SESSIONS=0 reports instead of moving", 22 not in {p.pid for _, t in dmoves for p in t})
+
+    holder_unit = "hc-hold-be955077.service"
+    holder_cg = A.replace("x.scope", holder_unit)
+    hold = ["hold", "--socket", "/run/user/1000/herdr-core/default.holder.be955077.sock"]
+    for name, command, args, cgroup, parent, contained_job, adopt in (
+        ("herdr-core hold", "herdr-core", hold, holder_cg, "bash", False, True),
+        ("hc hold", "hc", hold, holder_cg, "bash", False, True),
+        ("hc hold in a contained job", "hc", hold, holder_cg, "bash", True, True),
+        ("hc with hold after the subcommand", "hc", ["serve", "hold"], holder_cg, "bash", False, False),
+        ("hc hold in another owning unit", "hc", hold, f"{A}/{holder_unit}", "bash", False, False),
+        ("desktop app between hc hold and cargo", "hc", hold, holder_cg, "ChatGPT", False, False),
+        ("excluded helper between hc hold and cargo", "hc", hold, holder_cg, "ugrep", False, False),
+    ):
+        holder = P(600, 0, command, [command, *args], cgroup, exe=f"/usr/bin/{command}")
+        build = P(602, 601, "cargo", ["cargo", "build"], cgroup, exe=f"{HOME}/.cargo/bin/cargo")
+        holder_recs = {600: holder, 601: P(601, 600, parent, [parent], cgroup), 602: build}
+        planned, unmatched, _, units = plan(holder_recs, contained=lambda _cg: contained_job)
+        if contained_job:
+            check(f"{name}: unmarked build reported in its unit", (planned, unmatched, units) == ([], [], [build]))
+            continue
+        expected = ([("unconfined build", [build])], []) if adopt else ([], [build])
+        check(f"{name}: unmarked build placement", (planned, unmatched) == expected)
+        check(f"{name}: fresh move check", branch_ok(holder_recs, build, build, "unconfined build") is adopt)
 
     with tempfile.TemporaryDirectory(prefix="agent-warden-selftest-") as tmp:
         hb = Path(tmp) / "notifier"
