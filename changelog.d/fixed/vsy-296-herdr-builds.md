@@ -1,0 +1,1 @@
+- The warden applies the agent slice’s resource limits to eligible builds started directly in Herdr terminals.
