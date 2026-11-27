@@ -719,6 +719,12 @@ class Proc:
 
     @property
     def is_herdr_holder(self):
+        # Herdr's server.status RPC returns holder PIDs through a running core.
+        # https://github.com/herdrdev/herdr-core/blob/6e2984629fcd600b0165f69b2e5b0bda5985ec1c/schema/hc.openrpc.json
+        # Holders can keep terminals and their builds running through a core restart.
+        # https://github.com/herdrdev/herdr-core/blob/6e2984629fcd600b0165f69b2e5b0bda5985ec1c/docs/security.md#L9-L12
+        # Local process and cgroup reads cover that gap and are already needed
+        # to recheck ancestry and identity before attachment.
         # Herdr starts the current executable and names the unit from its subcommand.
         # https://github.com/herdrdev/herdr-core/blob/6e2984629fcd600b0165f69b2e5b0bda5985ec1c/crates/herdr-core/src/platform/systemd.rs#L100-L124
         return (self.comm in {"herdr-core", "hc"} and len(self.argv) > 1 and self.argv[1] == "hold"
